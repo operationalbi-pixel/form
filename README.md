@@ -54,3 +54,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 2. Buka GitHub Pages dan pastikan berita publik tampil.
 3. Uji login, buka Stock Card, tambah transaksi percobaan, lalu verifikasi Sheets/BigQuery.
 4. Uji logout dan muat ulang halaman untuk memastikan sesi telah dibersihkan.
+
+Jika halaman terus menampilkan spinner, pastikan deployment GAS sudah memakai
+`gas/Code.gs` versi terbaru. Respons HtmlService harus mengirim hasil dengan
+`top.postMessage`, karena Google membungkus output GAS dalam iframe internal.
