@@ -1,0 +1,226 @@
+/* Bakerzin shared polish layer — intentionally additive to preserve existing UI behavior. */
+:root {
+  color-scheme: light;
+  --ui-focus: rgba(159, 23, 43, .18);
+  --ui-surface: rgba(255, 255, 255, .96);
+  --ui-border: rgba(74, 52, 59, .12);
+  --ui-shadow-sm: 0 8px 24px rgba(54, 35, 40, .06);
+  --ui-shadow-lg: 0 24px 64px rgba(54, 35, 40, .14);
+}
+
+html {
+  scroll-behavior: smooth;
+  background: #f8f6f6;
+}
+
+body {
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 92% 2%, rgba(199, 42, 67, .055), transparent 26rem),
+    #f8f6f6;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role="button"],
+input,
+select,
+textarea {
+  outline: none;
+}
+
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+.btn,
+.top-nav-button,
+.nav-btn,
+.storage-tab,
+.row-menu-button,
+.logout-icon-button,
+.top-menu-toggle {
+  min-height: 40px;
+}
+
+.card,
+.workspace-card,
+.summary,
+.admin-card,
+.modal {
+  border-color: var(--ui-border);
+  box-shadow: var(--ui-shadow-sm);
+}
+
+.card,
+.workspace-card,
+.summary,
+.admin-card {
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+}
+
+.modal-backdrop {
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  overscroll-behavior: contain;
+}
+
+.modal {
+  max-height: min(90dvh, 920px);
+  overflow: auto;
+  box-shadow: var(--ui-shadow-lg);
+  scrollbar-gutter: stable;
+}
+
+.toast {
+  bottom: max(20px, env(safe-area-inset-bottom));
+  right: max(20px, env(safe-area-inset-right));
+}
+
+.table-wrap,
+.transfer-history-wrap,
+.receipt-items,
+.conversion-table {
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #d9cdd0 transparent;
+}
+
+table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fbf9fa;
+}
+
+input,
+select,
+textarea {
+  accent-color: #9f172b;
+}
+
+::selection {
+  color: #fff;
+  background: #9f172b;
+}
+
+@media (hover:hover) {
+  .card:hover,
+  .workspace-card:hover,
+  .admin-card:hover {
+    border-color: rgba(159, 23, 43, .16);
+    box-shadow: 0 16px 38px rgba(54, 35, 40, .085);
+  }
+}
+
+@media (max-width: 760px) {
+  body {
+    background: #f8f6f6;
+  }
+
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+  }
+
+  .modal-backdrop {
+    align-items: flex-end;
+    padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+  }
+
+  .modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 22px 22px 16px 16px;
+  }
+
+  .modal-actions {
+    position: sticky;
+    bottom: -1px;
+    z-index: 4;
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, rgba(255,255,255,.88), #fff 22%);
+  }
+
+  .modal-actions .btn {
+    min-height: 44px;
+  }
+
+  table {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .login-panel,
+  .news-panel {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .field input,
+  .field select,
+  .field textarea,
+  .input-wrap input {
+    font-size: 16px;
+  }
+
+  .modal-actions {
+    gap: 8px;
+  }
+
+  .modal-actions .btn {
+    flex: 1 1 140px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --ui-border: rgba(48, 41, 43, .35);
+  }
+
+  .btn,
+  input,
+  select,
+  textarea {
+    border-width: 2px;
+  }
+}

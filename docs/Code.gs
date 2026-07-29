@@ -17,6 +17,7 @@ const CONFIG = Object.freeze({
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
   STOCK_CONVERSION_SHEET: 'STOCK_UNIT_CONVERSIONS',
+  STOCK_VISIBILITY_SHEET: 'STOCK_ITEM_VISIBILITY',
   BQ_PROJECT_ID: 'berita-acara-digital',
   BQ_DATASET_ID: 'bakerzin_internal',
   BQ_LOCATION: 'asia-southeast2',
@@ -91,6 +92,7 @@ function apiActions_() {
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
     addLocation: addStockLocation,
+    setItemHidden: setStockItemHidden,
     save: saveStockMovement,
     edit: updateStockMovement,
     adjust: adjustStockBalance,
@@ -459,6 +461,39 @@ function addStockLocation(token, requestedOutlet, locationName) {
     const locationSheet = ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
     locationSheet.appendRow([outlet, location, true, employee.nik, new Date()]);
     return { outlet: outlet, location: location, locations: existing.concat([location]) };
+  });
+}
+
+/** Hide or restore one stock item for an outlet and storage location. */
+function setStockItemHidden(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const item = findStockMasterItem_(payload.itemCode);
+    const hidden = Boolean(payload.hidden);
+    const sheet = ensureStockVisibilitySheet_();
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      const lastRow = sheet.getLastRow();
+      const rows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 3).getDisplayValues() : [];
+      let targetRow = 0;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (String(rows[i][0]).trim().toUpperCase() === context.outlet &&
+            normalizeLocation_(rows[i][1]).toLowerCase() === context.location.toLowerCase() &&
+            String(rows[i][2]).trim().toUpperCase() === item.code) {
+          targetRow = i + 2;
+          break;
+        }
+      }
+      const values = [[context.outlet, context.location, item.code, hidden, context.employee.nik, new Date()]];
+      if (targetRow) sheet.getRange(targetRow, 1, 1, 6).setValues(values);
+      else sheet.appendRow(values[0]);
+      SpreadsheetApp.flush();
+      return { itemCode: item.code, hidden: hidden };
+    } finally {
+      lock.releaseLock();
+    }
   });
 }
 
@@ -1740,7 +1775,7 @@ function exportCurrentStockExcel(token, requestedOutlet, requestedLocation) {
     const items = readStockItemsWithQty_(context.outlet, context.location).filter(function (item) {
       // Stock opname export only needs items that currently carry a balance.
       // Keep both positive and negative stock; omit empty/zero rows.
-      return isFinite(Number(item.qty)) && Math.abs(Number(item.qty)) > 0.0000001;
+      return !item.hidden && isFinite(Number(item.qty)) && Math.abs(Number(item.qty)) > 0.0000001;
     }).sort(function (a, b) {
       const aNegative = Number(a.qty) < 0, bNegative = Number(b.qty) < 0;
       if (aNegative !== bNegative) return aNegative ? -1 : 1;
@@ -1780,6 +1815,7 @@ function ensureStockCardInfrastructure_() {
   if (infrastructureCache.get('stock-card-infrastructure-v6') === 'ready') return;
   ensureStockMasterSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
+  ensureStockVisibilitySheet_();
   ensureStockConversionSheet_();
   try {
     BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
@@ -2926,6 +2962,7 @@ function findStockMasterItem_(itemKey) {
 function readStockItemsWithQty_(outlet, location) {
   const master = readStockMaster_();
   if (!master.length) return [];
+  const hiddenItems = readStockHiddenMap_(outlet, location);
   const sql = latestStockMovementCte_() + ' SELECT item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location });
@@ -2935,8 +2972,27 @@ function readStockItemsWithQty_(outlet, location) {
     else legacyNameQty[String(r.item_name).toLowerCase()] = Number(r.current_qty || 0);
   });
   return master.map(function (item) {
-    return { code: item.code, category: item.category, name: item.name, unit: item.unit, qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0) };
+    return { code: item.code, category: item.category, name: item.name, unit: item.unit, qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]) };
   });
+}
+
+function ensureStockVisibilitySheet_() {
+  return ensureSheet_(CONFIG.STOCK_VISIBILITY_SHEET,
+    ['OUTLET', 'LOCATION', 'ITEM_CODE', 'HIDDEN', 'UPDATED_BY', 'UPDATED_AT']);
+}
+
+function readStockHiddenMap_(outlet, location) {
+  const sheet = ensureStockVisibilitySheet_();
+  const map = {};
+  if (sheet.getLastRow() < 2) return map;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getDisplayValues();
+  rows.forEach(function (row) {
+    if (String(row[0] || '').trim().toUpperCase() !== String(outlet || '').trim().toUpperCase()) return;
+    if (normalizeLocation_(row[1]).toLowerCase() !== normalizeLocation_(location).toLowerCase()) return;
+    const code = String(row[2] || '').trim().toUpperCase();
+    if (code) map[code] = truthy_(row[3]);
+  });
+  return map;
 }
 
 function readCurrentStockCodeQtyMap_(outlet, location) {

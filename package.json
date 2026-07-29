@@ -1,0 +1,8 @@
+{
+  "name": "bakerzin-internal-hub",
+  "private": true,
+  "scripts": {
+    "sync": "node scripts/sync-files.mjs",
+    "test": "node scripts/validate.mjs"
+  }
+}
