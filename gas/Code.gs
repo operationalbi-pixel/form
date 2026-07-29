@@ -2044,6 +2044,7 @@ function previewGoodsReceiptUpload(token, payload) {
       sourceItemCount: prepared.sourceItemCount, movementCount: prepared.items.length,
       originalSourceItemCount: prepared.originalSourceItemCount,
       duplicateRowsSkipped: prepared.skippedDuplicates.length,
+      duplicateRowsUploaded: prepared.allowedDuplicates.length,
       receiptCount: prepared.receiptCount, supplierCount: prepared.supplierCount,
       expiryLotCount: prepared.expiryLotCount, noExpiryItemCount: prepared.noExpiryItemCount,
       newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount
@@ -2060,7 +2061,7 @@ function uploadGoodsReceipt(token, payload) {
     lock.waitLock(20000);
     try {
       const prepared = prepareGoodsReceiptImport_(context, payload, false);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris yang memenuhi 4 kriteria duplikat. Pilih Lewati Baris Duplikat atau batalkan upload.');
+      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
       if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date();
@@ -2086,6 +2087,7 @@ function uploadGoodsReceipt(token, payload) {
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
         sourceItemCount: prepared.sourceItemCount, movementCount: rows.length,
         duplicateRowsSkipped: prepared.skippedDuplicates.length,
+        duplicateRowsUploaded: prepared.allowedDuplicates.length,
         receiptCount: prepared.receiptCount, expiryLotCount: prepared.expiryLotCount,
         noExpiryItemCount: prepared.noExpiryItemCount, newItemCount: prepared.newItemCount,
         conversionCount: prepared.conversionCount
@@ -2175,10 +2177,12 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions) {
   if (!items.length) throw new Error('Tidak ada QTY Goods Receipt lebih dari 0 pada file ini.');
   const duplicates = findGoodsReceiptDuplicateRows_(context.outlet, sourceItems);
   const requestedSkipRows = normalizeGoodsReceiptSkipRows_(payload.skipDuplicateRows);
-  const duplicateRowMap = {}, skippedDuplicates = [], unresolvedDuplicates = [];
+  const requestedAllowRows = normalizeGoodsReceiptSkipRows_(payload.allowDuplicateRows);
+  const duplicateRowMap = {}, skippedDuplicates = [], allowedDuplicates = [], unresolvedDuplicates = [];
   duplicates.forEach(function (duplicate) {
     duplicateRowMap[duplicate.sourceRow] = true;
     if (requestedSkipRows[duplicate.sourceRow]) skippedDuplicates.push(duplicate);
+    else if (requestedAllowRows[duplicate.sourceRow]) allowedDuplicates.push(duplicate);
     else unresolvedDuplicates.push(duplicate);
   });
   const remainingSourceRowMap = {};
@@ -2193,6 +2197,7 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions) {
   baseResult.duplicates = duplicates;
   baseResult.unresolvedDuplicates = unresolvedDuplicates;
   baseResult.skippedDuplicates = skippedDuplicates;
+  baseResult.allowedDuplicates = allowedDuplicates;
   baseResult.items = filteredItems;
   baseResult.sourceItemCount = Object.keys(remainingSourceRowMap).length;
   baseResult.masterChanges = Object.keys(masterChangeMap).filter(function (code) { return remainingCodeMap[code]; }).map(function (code) { return masterChangeMap[code]; });
@@ -2293,6 +2298,7 @@ function previewGoodsDeliveryUpload(token, payload) {
       location: context.location, transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
       sourceItemCount: prepared.sourceItemCount, originalSourceItemCount: prepared.originalSourceItemCount,
       movementCount: prepared.items.length, duplicateRowsSkipped: prepared.skippedDuplicates.length,
+      duplicateRowsUploaded: prepared.allowedDuplicates.length,
       deliveryCount: prepared.deliveryCount, destinationCount: prepared.destinationCount,
       transferCount: prepared.transferCount,
       newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
@@ -2310,7 +2316,7 @@ function uploadGoodsDeliveryLegacy_(token, payload) {
     lock.waitLock(20000);
     try {
       const prepared = prepareGoodsDeliveryImport_(context, payload, false);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris yang memenuhi 5 kriteria duplikat. Pilih Lewati Baris Duplikat atau batalkan upload.');
+      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
       if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date();
@@ -2336,7 +2342,8 @@ function uploadGoodsDeliveryLegacy_(token, payload) {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
         sourceItemCount: prepared.sourceItemCount, movementCount: rows.length,
-        duplicateRowsSkipped: prepared.skippedDuplicates.length, deliveryCount: prepared.deliveryCount,
+        duplicateRowsSkipped: prepared.skippedDuplicates.length, duplicateRowsUploaded: prepared.allowedDuplicates.length,
+        deliveryCount: prepared.deliveryCount,
         destinationCount: prepared.destinationCount, newItemCount: prepared.newItemCount,
         conversionCount: prepared.conversionCount, negativeItemCount: prepared.negativeItemCount
       };
@@ -2354,7 +2361,7 @@ function uploadGoodsDelivery(token, payload) {
     lock.waitLock(20000);
     try {
       const prepared = prepareGoodsDeliveryImport_(context, payload, false);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris yang memenuhi 5 kriteria duplikat. Pilih Lewati Baris Duplikat atau batalkan upload.');
+      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
       if (!prepared.items.length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, lotQueues = {}, stockRows = [], pendingRows = [];
@@ -2412,6 +2419,7 @@ function uploadGoodsDelivery(token, payload) {
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
         sourceItemCount: prepared.sourceItemCount, movementCount: stockRows.length, pendingLineCount: pendingRows.length,
         transferCount: Object.keys(transferIds).length, duplicateRowsSkipped: prepared.skippedDuplicates.length,
+        duplicateRowsUploaded: prepared.allowedDuplicates.length,
         deliveryCount: prepared.deliveryCount, destinationCount: prepared.destinationCount,
         newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
         negativeItemCount: prepared.negativeItemCount
@@ -2506,10 +2514,12 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions) 
   if (!items.length) throw new Error('Tidak ada QTY Goods Delivery lebih dari 0 pada file ini.');
   const duplicates = findGoodsDeliveryDuplicateRows_(context.outlet, sourceItems);
   const requestedSkipRows = normalizeGoodsDeliverySkipRows_(payload.skipDuplicateRows);
-  const duplicateRowMap = {}, skippedDuplicates = [], unresolvedDuplicates = [];
+  const requestedAllowRows = normalizeGoodsDeliverySkipRows_(payload.allowDuplicateRows);
+  const duplicateRowMap = {}, skippedDuplicates = [], allowedDuplicates = [], unresolvedDuplicates = [];
   duplicates.forEach(function (duplicate) {
     duplicateRowMap[duplicate.sourceRow] = true;
     if (requestedSkipRows[duplicate.sourceRow]) skippedDuplicates.push(duplicate);
+    else if (requestedAllowRows[duplicate.sourceRow]) allowedDuplicates.push(duplicate);
     else unresolvedDuplicates.push(duplicate);
   });
   const remainingSourceRowMap = {};
@@ -2533,6 +2543,7 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions) 
   baseResult.duplicates = duplicates;
   baseResult.unresolvedDuplicates = unresolvedDuplicates;
   baseResult.skippedDuplicates = skippedDuplicates;
+  baseResult.allowedDuplicates = allowedDuplicates;
   baseResult.items = filteredItems;
   baseResult.sourceItemCount = Object.keys(remainingSourceRowMap).length;
   baseResult.masterChanges = Object.keys(masterChangeMap).filter(function (code) { return remainingCodeMap[code]; }).map(function (code) { return masterChangeMap[code]; });
