@@ -1433,7 +1433,10 @@ function extractReportCells_(base64, fileName, label) {
     parseSharedStringsXml_(map['xl/sharedStrings.xml'].getDataAsString('UTF-8')) : [];
   const xml = map[sheets[0]].getDataAsString('UTF-8');
   const cells = parseWorksheetCellsXml_(xml, shared);
-  if (typeof XmlService !== 'undefined') {
+  // Parser regex menangani shared string, inline string, dan cell kosong dari
+  // report ESB. DOM XML sangat lambat pada worksheet besar, jadi hanya pakai
+  // fallback jika parser utama benar-benar tidak menemukan cell apa pun.
+  if (!Object.keys(cells).length && typeof XmlService !== 'undefined') {
     const fallback = parseWorksheetCellsXmlDom_(xml, shared);
     Object.keys(fallback).forEach(function (address) {
       if (cells[address] === undefined || cells[address] === '') cells[address] = fallback[address];

@@ -16,6 +16,10 @@
     return 'req-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   }
 
+  function timeoutForAction(action) {
+    return /^(verify|upload)/.test(String(action || '')) ? 300000 : 90000;
+  }
+
   function call(action, args) {
     return new Promise(function (resolve, reject) {
       var id = requestId();
@@ -59,12 +63,13 @@
         resolve(message.response);
       }
 
+      var timeoutMs = timeoutForAction(action);
       var timer = setTimeout(function () {
         if (finished) return;
         finished = true;
         cleanup();
-        reject(new Error('Server tidak merespons dalam 90 detik. Periksa deployment GAS dan coba lagi.'));
-      }, 90000);
+        reject(new Error('Server tidak merespons dalam ' + Math.round(timeoutMs / 60000) + ' menit. Periksa deployment GAS dan coba lagi.'));
+      }, timeoutMs);
 
       global.addEventListener('message', onMessage);
       document.body.appendChild(iframe);
