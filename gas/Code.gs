@@ -631,7 +631,7 @@ function transferStockWithinOutlet(token, payload) {
           rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In', line.note, lot.expiryDate, employee, now, eventDate));
         });
       });
-      insertAll_('stock_card', rows);
+      insertStockCardRows_(rows);
       return { transferred: true, transferId: transferId, outlet: outlet, fromLocation: fromLocation, toLocation: toLocation, itemCount: lines.length };
     } finally { lock.releaseLock(); }
   });
@@ -669,7 +669,7 @@ function createInterOutletStockTransfer(token, payload) {
           }});
         });
       });
-      insertAll_('stock_card', stockRows);
+      insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', pendingRows);
       return { sent: true, transferId: transferId, fromOutlet: fromOutlet, toOutlet: toOutlet, itemCount: lines.length };
     } finally { lock.releaseLock(); }
@@ -727,7 +727,7 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
           accepted_by: employee.nik, accepted_by_name: employee.name, accepted_at: now.getTime() / 1000, receipt_no: receiptNo
         }});
       });
-      if (stockRows.length) insertAll_('stock_card', stockRows);
+      if (stockRows.length) insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', acceptedRows);
       transfer.status = 'ACCEPTED';
       transfer.toLocation = receiveLocation;
@@ -776,7 +776,7 @@ function saveStockMovement(token, payload) {
     if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
     const logicalId = Utilities.getUuid();
     const recordId = Utilities.getUuid();
-    insertAll_('stock_card', [{ insertId: recordId, json: {
+    insertStockCardRows_([{ insertId: recordId, json: {
       record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT', outlet: outlet, location: location,
       item_code: item.code, category: item.category, item_name: item.name, unit: item.unit, direction: direction, qty: qty,
       movement_type: movementType, info: info, expiry_date: expiryDate || null,
@@ -836,7 +836,7 @@ function updateStockMovement(token, payload) {
       if (movementType === 'Stock Adjustment' && !expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
       const info = cleanText_(payload.info, 300);
       if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
-      insertAll_('stock_card', [{ insertId: recordId, json: {
+      insertStockCardRows_([{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT', outlet: outlet, location: location,
         item_code: item.code, category: item.category, item_name: item.name, unit: item.unit, direction: direction, qty: qty,
         movement_type: movementType, info: info, expiry_date: expiryDate || null,
@@ -877,7 +877,7 @@ function adjustStockBalance(token, payload) {
       const logicalId = Utilities.getUuid();
       const recordId = Utilities.getUuid();
       const eventDate = normalizeDate_(payload.eventDate, true);
-      insertAll_('stock_card', [{ insertId: recordId, json: {
+      insertStockCardRows_([{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
         outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
         item_name: item.name, unit: item.unit, direction: direction, qty: adjustmentQty,
@@ -1008,7 +1008,7 @@ function uploadSalesUsage(token, payload) {
         }};
       });
       // One request keeps one report together and avoids a retry leaving a half-imported file.
-      insertAll_('stock_card', rows);
+      insertStockCardRows_(rows);
       markStockTaskCompleteFromUploads_(context, prepared.transactionDate, 'Terjual');
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
@@ -1073,7 +1073,7 @@ function uploadStockPosition(token, payload) {
           }});
         });
       });
-      insertAll_('stock_card', rows);
+      insertStockCardRows_(rows);
       const uploadedDates = {};
       prepared.items.forEach(function (item) { uploadedDates[item.transactionDate] = true; });
       Object.keys(uploadedDates).forEach(function (date) {
@@ -1895,7 +1895,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v6') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v7') === 'ready') return;
   ensureStockMasterSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
   ensureStockVisibilitySheet_();
@@ -1924,6 +1924,11 @@ function ensureStockCardInfrastructure_() {
     bqField_('source_file', 'STRING'), bqField_('source_hash', 'STRING'), bqField_('source_row', 'INTEGER'),
     bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING')
   ]);
+  ensureBigQueryTable_('stock_balances', [
+    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
+    bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
+    bqField_('current_qty', 'FLOAT', 'REQUIRED'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
+  ]);
   ensureBigQueryTable_('stock_transfers', [
     bqField_('event_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING', 'REQUIRED'), bqField_('status', 'STRING', 'REQUIRED'),
     bqField_('from_outlet', 'STRING'), bqField_('from_location', 'STRING'), bqField_('to_outlet', 'STRING'), bqField_('to_location', 'STRING'),
@@ -1937,7 +1942,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v6', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v7', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -2197,7 +2202,7 @@ function uploadGoodsReceipt(token, payload) {
           source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: receipt.sourceRow
         }};
       });
-      insertAll_('stock_card', rows);
+      insertStockCardRows_(rows);
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
@@ -2453,7 +2458,7 @@ function uploadGoodsDeliveryLegacy_(token, payload) {
           source_file: prepared.fileName, source_hash: delivery.rowHash, source_row: delivery.sourceRow
         }};
       });
-      insertAll_('stock_card', rows);
+      insertStockCardRows_(rows);
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
@@ -2528,7 +2533,7 @@ function uploadGoodsDelivery(token, payload) {
           }});
         });
       });
-      insertAll_('stock_card', stockRows);
+      insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', pendingRows);
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
@@ -3093,9 +3098,7 @@ function readStockItemsWithQty_(outlet, location) {
   const master = readStockMaster_();
   if (!master.length) return [];
   const hiddenItems = readStockHiddenMap_(outlet, location);
-  const sql = latestStockMovementCte_() + ' SELECT item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location });
+  const rows = readStockBalanceRows_(outlet, location);
   const codeQty = {}, legacyNameQty = {};
   rows.forEach(function (r) {
     if (String(r.item_code || '').trim()) codeQty[String(r.item_code).toLowerCase()] = Number(r.current_qty || 0);
@@ -3104,6 +3107,94 @@ function readStockItemsWithQty_(outlet, location) {
   return master.map(function (item) {
     return { code: item.code, category: item.category, name: item.name, unit: item.unit, qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]) };
   });
+}
+
+function stockBalanceStateKey_(kind, outlet, location) {
+  const scope = String(outlet || '').trim().toUpperCase() + '|' + normalizeLocation_(location).toLowerCase();
+  return 'stock-balance-' + kind + '-' + digest_(scope).slice(0, 24);
+}
+
+function markStockBalanceDirty_(rows) {
+  const properties = PropertiesService.getScriptProperties();
+  const updates = {};
+  const timestamp = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location) return;
+    updates[stockBalanceStateKey_('dirty', row.outlet, row.location)] = timestamp;
+  });
+  if (Object.keys(updates).length) properties.setProperties(updates, false);
+}
+
+function insertStockCardRows_(rows) {
+  markStockBalanceDirty_(rows);
+  insertAll_('stock_card', rows);
+  // Refresh the marker after a successful insert so a concurrent rebuild cannot clear it too early.
+  markStockBalanceDirty_(rows);
+}
+
+function readStockLedgerBalanceRows_(outlet, location) {
+  const sql = latestStockMovementCte_() + ' SELECT item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name';
+  return runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
+}
+
+function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
+  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
+  const sql = 'BEGIN TRANSACTION; ' +
+    'DELETE FROM ' + table + ' WHERE outlet = @outlet AND location = @location; ' +
+    'INSERT INTO ' + table + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
+    latestStockMovementCte_() + ' SELECT @outlet, @location, item_code, item_name, ' +
+    'SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name; ' +
+    'COMMIT TRANSACTION;';
+  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
+
+  const properties = PropertiesService.getScriptProperties();
+  const readyKey = stockBalanceStateKey_('ready', outlet, location);
+  const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
+  properties.setProperty(readyKey, '1');
+  if (String(properties.getProperty(dirtyKey) || '') === String(expectedDirtyToken || '')) {
+    properties.deleteProperty(dirtyKey);
+  }
+}
+
+function readStockBalanceRows_(outlet, location) {
+  const properties = PropertiesService.getScriptProperties();
+  const readyKey = stockBalanceStateKey_('ready', outlet, location);
+  const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
+  let ready = properties.getProperty(readyKey) === '1';
+  let dirtyToken = String(properties.getProperty(dirtyKey) || '');
+
+  try {
+    // BigQuery streaming inserts may need a moment before they are query-visible.
+    if (dirtyToken && Date.now() - Number(dirtyToken.split('-')[0]) < 3000) {
+      return readStockLedgerBalanceRows_(outlet, location);
+    }
+    if (!ready || dirtyToken) {
+      const lock = LockService.getScriptLock();
+      if (!lock.tryLock(10000)) return readStockLedgerBalanceRows_(outlet, location);
+      try {
+        // Another request may have completed the rebuild while this request waited.
+        ready = properties.getProperty(readyKey) === '1';
+        dirtyToken = String(properties.getProperty(dirtyKey) || '');
+        if (dirtyToken && Date.now() - Number(dirtyToken.split('-')[0]) < 3000) {
+          return readStockLedgerBalanceRows_(outlet, location);
+        }
+        if (!ready || dirtyToken) rebuildStockBalanceSummary_(outlet, location, dirtyToken);
+      } finally {
+        lock.releaseLock();
+      }
+    }
+    // A transaction written during the rebuild leaves a newer dirty token behind.
+    if (properties.getProperty(dirtyKey)) return readStockLedgerBalanceRows_(outlet, location);
+    const sql = 'SELECT item_code, item_name, current_qty FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances` ' +
+      'WHERE outlet = @outlet AND location = @location';
+    return runNamedQuery_(sql, { outlet: outlet, location: location });
+  } catch (error) {
+    console.error('Ringkasan stok gagal digunakan; membaca stock_card sebagai cadangan. ' + error.message);
+    return readStockLedgerBalanceRows_(outlet, location);
+  }
 }
 
 function ensureStockVisibilitySheet_() {
@@ -3279,7 +3370,7 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
         stockRows.push(stockTransferMovementRow_(transferId, transfer.fromOutlet, transfer.fromLocation, item, 'IN', line.qty, 'Transfer In', 'Pengembalian transfer ditolak oleh ' + outlet + ' · ' + reason, line.expiryDate, employee, now, eventDate));
       });
-      if (stockRows.length) insertAll_('stock_card', stockRows);
+      if (stockRows.length) insertStockCardRows_(stockRows);
       const eventId = Utilities.getUuid(), receiptNo = stockTransferReceiptNumber_(transfer);
       insertAll_('stock_transfers', [{ insertId: eventId, json: {
         event_id: eventId, transfer_id: transferId, status: 'REJECTED', from_outlet: transfer.fromOutlet, from_location: transfer.fromLocation,
