@@ -8,8 +8,16 @@ Paket ini memindahkan tampilan aplikasi dari Google Apps Script ke GitHub Pages.
 - `docs/stock-card.html` — halaman Stock Card.
 - `docs/config.js` — alamat API dan alamat GitHub Pages.
 - `docs/api-client.js` — jembatan komunikasi aman antara GitHub Pages dan GAS.
+- `docs/ui-modern.css` — lapisan desain bersama untuk aksesibilitas dan tampilan responsif.
 - `gas/Code.gs` — backend GAS yang sudah memiliki gateway JSON.
 - `gas/appsscript.json` — manifest GAS dan layanan BigQuery.
+
+## Sumber file dan sinkronisasi
+
+- Folder `docs/` adalah sumber publikasi GitHub Pages.
+- `gas/Code.gs` selalu disamakan dengan `docs/Code.gs` agar backend dan frontend memakai kontrak API yang sama.
+- Salinan frontend di root selalu disamakan dengan versi di `docs/` untuk mencegah salah unggah atau salah deployment.
+- Setelah mengubah aplikasi, jalankan `npm run sync` lalu `npm test` sebelum commit.
 
 ## 1. Perbarui backend GAS
 
@@ -54,6 +62,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 2. Buka GitHub Pages dan pastikan berita publik tampil.
 3. Uji login, buka Stock Card, tambah transaksi percobaan, lalu verifikasi Sheets/BigQuery.
 4. Uji logout dan muat ulang halaman untuk memastikan sesi telah dibersihkan.
+5. Periksa dashboard dan Stock Card pada lebar desktop, tablet, serta ponsel.
 
 Jika halaman terus menampilkan spinner, pastikan deployment GAS sudah memakai
 `gas/Code.gs` versi terbaru. Respons HtmlService harus mengirim hasil dengan

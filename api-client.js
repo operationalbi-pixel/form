@@ -50,7 +50,10 @@
 
       function onMessage(event) {
         var message = event.data;
-        if (finished || event.source !== iframe.contentWindow || !message || message.bakerzinApi !== true || message.requestId !== id) return;
+        // HtmlService GAS membungkus output dalam iframe internal Google, sehingga
+        // event.source bukan iframe luar yang dibuat halaman ini. Request ID acak
+        // tetap memastikan hanya jawaban untuk panggilan ini yang diterima.
+        if (finished || !message || message.bakerzinApi !== true || message.requestId !== id) return;
         finished = true;
         cleanup();
         resolve(message.response);
