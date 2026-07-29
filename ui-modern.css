@@ -198,9 +198,10 @@ textarea {
 }
 
 .stock-page .upload-progress-card {
+  grid-column: 1 / -1;
   width: 100%;
-  margin: 0 0 22px;
-  padding: 18px 20px 20px;
+  margin: 4px 0 0;
+  padding: 16px 18px 17px;
   border: 1px solid rgba(74, 52, 59, .12);
   border-radius: 20px;
   background: #fff;
@@ -209,15 +210,15 @@ textarea {
 
 .stock-page .upload-progress-heading {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .stock-page .upload-progress-heading h2 {
-  margin: 5px 0 0;
-  font-size: 16px;
+  margin: 0;
+  font-size: 14px;
   letter-spacing: -.02em;
 }
 
@@ -283,7 +284,7 @@ textarea {
   position: sticky;
   left: 0;
   z-index: 2;
-  min-height: 30px;
+  min-height: 20px;
   display: flex;
   align-items: center;
   padding: 0 10px;
@@ -302,19 +303,22 @@ textarea {
 
 .stock-page .upload-day {
   min-width: 26px;
-  height: 30px;
+  height: 9px;
   display: grid;
   place-items: center;
   border: 1px solid;
-  border-radius: 8px;
-  font-size: 9px;
+  border-radius: 999px;
+  font-size: 0;
   font-weight: 700;
 }
 
 .stock-page .upload-date-heading {
   color: #6f6568;
-  border-color: #e7e0e2;
-  background: #faf8f8;
+  height: 18px;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  font-size: 8px;
 }
 
 .stock-page .upload-day.today {
@@ -332,7 +336,7 @@ textarea {
 
 @media (max-width: 720px) {
   .stock-page .upload-progress-card {
-    padding: 16px 14px;
+    padding: 14px 12px 15px;
     border-radius: 17px;
   }
 
