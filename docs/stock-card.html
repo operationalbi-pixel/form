@@ -106,6 +106,10 @@
     <section class="page-head">
       <div class="page-title-wrap"><span id="stockPageIcon" class="page-form-icon" aria-label="Status Stock Card"><span class="material-symbols-rounded" aria-hidden="true">inventory_2</span></span><div><div class="eyebrow">Daily Operational Form</div><h1>Stock Card</h1><p>Pantau stok bahan baku dan histori pergerakan setiap penyimpanan.</p></div></div>
       <button id="completeDaily" class="btn btn-primary btn-icon hidden" type="button" aria-hidden="true" tabindex="-1"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"></path></svg>Selesaikan Hari Ini</button>
+      <section class="upload-progress-card" aria-labelledby="uploadProgressTitle">
+        <div class="upload-progress-heading"><h2 id="uploadProgressTitle">Progress Upload Harian</h2><div class="upload-progress-legend"><span><i class="done"></i>Selesai</span><span><i class="missing"></i>Belum</span><span><i class="upcoming"></i>Akan datang</span></div></div>
+        <div class="upload-progress-scroll"><div id="uploadProgressGrid" class="upload-progress-grid"><div class="upload-progress-loading">Memuat progress upload...</div></div></div>
+      </section>
       <div class="head-controls">
         <div id="outletControl" class="select-control hidden"><label>FILTER OUTLET</label><select id="outletSelect"></select></div>
         <div class="action-menu"><button id="uploadMenuButton" class="btn btn-icon" type="button" aria-expanded="false"><span class="button-label"><svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 14v5h14v-5"></path></svg>Upload</span><svg class="chevron" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"></path></svg></button><div id="uploadDropdown" class="action-dropdown hidden"><button type="button" onclick="triggerToolbarAction('usageUploadButton')">Upload Usage Penjualan</button><button type="button" onclick="triggerToolbarAction('goodsReceiptButton')">Upload Good Receipt</button><button type="button" onclick="triggerToolbarAction('goodsDeliveryButton')">Upload Good Delivery</button><button type="button" onclick="triggerToolbarAction('stockPositionButton')">Upload Stock Posisi</button></div></div>
@@ -114,11 +118,6 @@
         <button id="manageConversionButton" class="btn btn-light btn-icon" type="button"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="m8 3-4 4 4 4"></path><path d="M20 17H4"></path><path d="m16 13 4 4-4 4"></path></svg>Unit Konversi</button>
         <button id="usageUploadButton" class="hidden" type="button"></button><button id="goodsReceiptButton" class="hidden" type="button"></button><button id="goodsDeliveryButton" class="hidden" type="button"></button><button id="stockPositionButton" class="hidden" type="button"></button><button id="localTransferButton" class="hidden" type="button"></button><button id="outletTransferButton" class="hidden" type="button"></button>
       </div>
-    </section>
-
-    <section class="upload-progress-card" aria-labelledby="uploadProgressTitle">
-      <div class="upload-progress-heading"><div><span class="eyebrow">Progress Bulanan</span><h2 id="uploadProgressTitle">Status Upload Harian</h2></div><div class="upload-progress-legend"><span><i class="done"></i>Selesai</span><span><i class="missing"></i>Belum</span><span><i class="upcoming"></i>Akan datang</span></div></div>
-      <div class="upload-progress-scroll"><div id="uploadProgressGrid" class="upload-progress-grid"><div class="upload-progress-loading">Memuat progress upload...</div></div></div>
     </section>
 
     <div id="transferNotifications" class="notification-stack hidden"></div>
