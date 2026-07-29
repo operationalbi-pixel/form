@@ -338,6 +338,31 @@ textarea {
   font-size: 10px;
 }
 
+.stock-page .stock-position-continue {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 12px;
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.stock-page .stock-position-continue.is-warning {
+  color: #382900;
+  border-color: #e6b928;
+  background: linear-gradient(135deg, #ffd85a, #f3bd22);
+  box-shadow: 0 9px 22px rgba(203, 150, 0, .22);
+}
+
+.stock-page .stock-position-continue.is-complete {
+  color: #fff;
+  border-color: #159b5a;
+  background: linear-gradient(135deg, #22b86d, #159b5a);
+  box-shadow: 0 9px 22px rgba(21, 155, 90, .22);
+}
+
 @media (max-width: 720px) {
   .stock-page .upload-progress-card {
     padding: 14px 12px 15px;

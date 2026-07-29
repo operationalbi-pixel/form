@@ -1111,23 +1111,25 @@ function prepareStockPositionImport_(context, payload, allowPendingExpiry) {
     const delta = row.actualQty - liveQty;
     if (Math.abs(delta) <= 0.0000001) return;
     let expiryDate = '';
-    if (delta > 0) {
+    if (delta > 0 && Math.abs(row.actualQty) > 0.0000001) {
       increaseCount++;
       expiryRequests.push({ itemCode: row.code, itemName: item.name, qty: delta, unit: item.unit });
       try { expiryDate = normalizeDate_(expiryDates[row.code], false); } catch (error) { expiryDate = ''; }
       if (!expiryDate) missingExpiry.push(row.code + ' · ' + item.name);
-    } else decreaseCount++;
+    } else if (delta < 0) decreaseCount++;
+    else increaseCount++;
     items.push({
       sourceRow: row.sourceRow, item: item, cardQty: liveQty,
       actualQty: row.actualQty, delta: delta, expiryDate: expiryDate
     });
   });
-  if (missingExpiry.length && !allowPendingExpiry) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk: ' +
+  const allowMissingExpiry = Boolean(payload.allowMissingExpiry);
+  if (missingExpiry.length && !allowPendingExpiry && !allowMissingExpiry) throw new Error('Konfirmasi upload tanpa melengkapi seluruh Expiry Date terlebih dahulu. Item: ' +
     missingExpiry.slice(0, 8).join(', ') + '.');
   return {
     fileName: fileName, sourceHash: sourceHash, sourceItemCount: report.rows.length,
     items: items, increaseCount: increaseCount, decreaseCount: decreaseCount,
-    requiresExpiry: missingExpiry.length > 0, expiryRequests: expiryRequests
+    requiresExpiry: missingExpiry.length > 0 && !allowMissingExpiry, expiryRequests: expiryRequests
   };
 }
 
@@ -1142,13 +1144,12 @@ function parseStockPositionReport_(base64, fileName) {
   if (!outletMatch || !locationMatch) throw new Error('Metadata Outlet dan Penyimpanan tidak ditemukan. Gunakan file hasil Export Stok Saat Ini.');
   const outlet = cleanText_(outletMatch[1], 30).toUpperCase();
   const location = normalizeLocation_(locationMatch[1]);
-  const rows = [], missing = [], invalid = [];
+  const rows = [], invalid = [];
   reportDataRows_(cells, header, 'KODE ITEM').forEach(function (rowNumber) {
     const code = String(reportCell_(cells, header, 'KODE ITEM', rowNumber) || '').trim().toUpperCase();
     if (!code) return;
     const actualRaw = reportCell_(cells, header, 'QTY STOCK ACTUAL', rowNumber);
     if (actualRaw === '' || actualRaw === null || actualRaw === undefined) {
-      missing.push(code);
       return;
     }
     const actualQty = parseReportNumber_(actualRaw);
@@ -1164,9 +1165,8 @@ function parseStockPositionReport_(base64, fileName) {
       actualQty: actualQty
     });
   });
-  if (missing.length) throw new Error('Kolom QTY Stock Actual masih kosong untuk: ' + missing.slice(0, 10).join(', ') + '.');
   if (invalid.length) throw new Error('QTY stok tidak valid untuk: ' + invalid.slice(0, 10).join(', ') + '.');
-  if (!rows.length) throw new Error('Tidak ada item yang dapat dibaca dari file Stock Posisi.');
+  if (!rows.length) throw new Error('Tidak ada QTY Stock Actual yang diisi. Sel kosong dianggap tidak mengalami perubahan.');
   return { outlet: outlet, location: location, rows: rows, headerRow: header.row };
 }
 
