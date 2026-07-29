@@ -21,7 +21,7 @@ const CONFIG = Object.freeze({
   BQ_PROJECT_ID: 'berita-acara-digital',
   BQ_DATASET_ID: 'bakerzin_internal',
   BQ_LOCATION: 'asia-southeast2',
-  SESSION_TTL_SECONDS: 21600,
+  SESSION_TTL_SECONDS: 10800,
   PASSWORD_MIN_LENGTH: 8,
   APP_TITLE: 'Bakerzin Internal Hub'
 });
@@ -239,10 +239,12 @@ function getAppData(token, requestedOutlet) {
     const completionOutlet = employee.outlet === 'BIHQ'
       ? (allowedOutlets.indexOf(preferredOutlet) >= 0 ? preferredOutlet : (allowedOutlets[0] || employee.outlet))
       : employee.outlet;
+    const tasks = readTasksForEmployee_(employee);
+    const completions = mergeStockUploadCompletions_(readCompletionMap_(completionOutlet), tasks, completionOutlet);
     return {
       user: userView_(employee),
-      tasks: readTasksForEmployee_(employee),
-      completions: readCompletionMap_(completionOutlet),
+      tasks: tasks,
+      completions: completions,
       completionOutlet: completionOutlet,
       news: readNews_(false),
       appUrl: ScriptApp.getService().getUrl()
@@ -515,7 +517,7 @@ function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
     const task = readTasksForEmployee_(context.employee).filter(function (item) {
       return item.type === 'FORM' && item.target === 'StockCard' && item.frequency === 'DAILY';
     })[0] || null;
-    if (!task || !taskExistedForPeriod_(task, periodKey)) return false;
+    if (!task || !taskExistedForPeriod_(task, task.frequency, periodKey)) return false;
     if (readCompletionMap_(context.outlet)[task.id + '|' + periodKey]) return true;
     insertAll_('task_completions', [{
       insertId: Utilities.getUuid(),
@@ -3908,6 +3910,37 @@ function readCompletionMap_(outlet) {
   } catch (error) {
     // Dataset legitimately does not exist before the first form is registered.
     if (!/not found|Not found|404/.test(String(error))) console.error(error);
+  }
+  return map;
+}
+
+function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
+  const map = completionMap || {};
+  const stockTasks = (tasks || []).filter(function (task) {
+    return task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
+  });
+  if (!stockTasks.length || !outlet) return map;
+  try {
+    const query = 'SELECT CAST(event_date AS STRING) AS period_key ' +
+      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
+      'AND movement_type IN (\'Goods Receipt\', \'Terjual\') ' +
+      'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date ' +
+      'HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
+      'AND MAX(IF(movement_type = \'Terjual\', 1, 0)) = 1';
+    runNamedQuery_(query, { outlet: outlet }).forEach(function (row) {
+      const periodKey = String(row.period_key || '').slice(0, 10);
+      if (!periodKey) return;
+      stockTasks.forEach(function (task) {
+        if (taskExistedForPeriod_(task, task.frequency, periodKey)) {
+          map[task.id + '|' + periodKey] = map[task.id + '|' + periodKey] || 'AUTO_UPLOADS';
+        }
+      });
+    });
+  } catch (error) {
+    if (!/not found|Not found|404/.test(String(error))) {
+      console.error('Progress upload historis gagal dibaca: ' + (error && error.message ? error.message : error));
+    }
   }
   return map;
 }
