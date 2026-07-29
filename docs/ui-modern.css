@@ -197,6 +197,155 @@ textarea {
   }
 }
 
+.stock-page .upload-progress-card {
+  width: 100%;
+  margin: 0 0 22px;
+  padding: 18px 20px 20px;
+  border: 1px solid rgba(74, 52, 59, .12);
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(54, 35, 40, .055);
+}
+
+.stock-page .upload-progress-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.stock-page .upload-progress-heading h2 {
+  margin: 5px 0 0;
+  font-size: 16px;
+  letter-spacing: -.02em;
+}
+
+.stock-page .upload-progress-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: #786f72;
+  font-size: 9px;
+}
+
+.stock-page .upload-progress-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.stock-page .upload-progress-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.stock-page .upload-progress-legend .done,
+.stock-page .upload-day.done {
+  color: #fff;
+  border-color: #15945d;
+  background: linear-gradient(145deg, #31c985, #15945d);
+}
+
+.stock-page .upload-progress-legend .missing,
+.stock-page .upload-day.missing {
+  color: #fff;
+  border-color: #c72a43;
+  background: linear-gradient(145deg, #e5445d, #ad1931);
+}
+
+.stock-page .upload-progress-legend .upcoming,
+.stock-page .upload-day.upcoming {
+  color: #8f8588;
+  border-color: #e7e0e2;
+  background: #f4f1f2;
+}
+
+.stock-page .upload-progress-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.stock-page .upload-progress-grid {
+  min-width: 1080px;
+  display: grid;
+  grid-template-columns: 190px repeat(var(--progress-days, 31), minmax(26px, 1fr));
+  gap: 5px;
+  align-items: center;
+}
+
+.stock-page .upload-progress-label,
+.stock-page .upload-progress-month {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: #40373a;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.stock-page .upload-progress-month {
+  color: #8f8588;
+  font-size: 8px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.stock-page .upload-day {
+  min-width: 26px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.stock-page .upload-date-heading {
+  color: #6f6568;
+  border-color: #e7e0e2;
+  background: #faf8f8;
+}
+
+.stock-page .upload-day.today {
+  outline: 2px solid rgba(48, 41, 43, .32);
+  outline-offset: 2px;
+}
+
+.stock-page .upload-progress-loading {
+  grid-column: 1 / -1;
+  padding: 20px;
+  color: #8f8588;
+  text-align: center;
+  font-size: 10px;
+}
+
+@media (max-width: 720px) {
+  .stock-page .upload-progress-card {
+    padding: 16px 14px;
+    border-radius: 17px;
+  }
+
+  .stock-page .upload-progress-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .stock-page .upload-progress-grid {
+    grid-template-columns: 150px repeat(var(--progress-days, 31), 28px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
