@@ -773,6 +773,7 @@ function saveStockMovement(token, payload) {
     const now = new Date();
     const eventDate = normalizeDate_(payload.eventDate, true);
     const info = cleanText_(payload.info, 300);
+    if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
     const logicalId = Utilities.getUuid();
     const recordId = Utilities.getUuid();
     insertAll_('stock_card', [{ insertId: recordId, json: {
@@ -834,6 +835,7 @@ function updateStockMovement(token, payload) {
       const expiryDate = normalizeDate_(payload.expiryDate, false);
       if (movementType === 'Stock Adjustment' && !expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
       const info = cleanText_(payload.info, 300);
+      if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
       insertAll_('stock_card', [{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT', outlet: outlet, location: location,
         item_code: item.code, category: item.category, item_name: item.name, unit: item.unit, direction: direction, qty: qty,
@@ -1077,7 +1079,10 @@ function uploadStockPosition(token, payload) {
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         adjustmentCount: prepared.items.length, movementCount: rows.length,
-        increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount
+        increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
+        adjustedItems: prepared.items.map(function (line) {
+          return { itemCode: line.item.code, qty: line.actualQty };
+        })
       };
     } finally {
       lock.releaseLock();
@@ -3545,7 +3550,7 @@ function normalizeLocation_(value) {
 
 function validateMovementType_(direction, type) {
   const allowedIn = ['Opening Stock', 'Supplier In', 'Vendor In', 'Transfer In', 'Goods Receipt', 'Stock Adjustment', 'Others'];
-  const allowedOut = ['Terjual', 'Waste', 'Transfer Out', 'Transfer Out Antar Outlet', 'Stock Adjustment', 'Others'];
+  const allowedOut = ['Terjual', 'Pemakaian', 'Waste', 'Transfer Out', 'Transfer Out Antar Outlet', 'Stock Adjustment', 'Others'];
   const allowed = direction === 'IN' ? allowedIn : allowedOut;
   if (allowed.indexOf(type) < 0) throw new Error('Jenis transaksi tidak valid.');
 }
