@@ -1033,7 +1033,10 @@ function previewStockPositionUpload(token, payload) {
       fileName: prepared.fileName, outlet: context.outlet, location: context.location,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
       increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
-      requiresExpiry: prepared.requiresExpiry, expiryRequests: prepared.expiryRequests
+      requiresExpiry: prepared.requiresExpiry, expiryRequests: prepared.expiryRequests,
+      adjustedItems: prepared.items.map(function (line) {
+        return { itemCode: line.item.code, qty: line.actualQty };
+      })
     };
   });
 }
@@ -2020,6 +2023,7 @@ function getOutletProgress(token) {
       periodKeys.PREVIOUS[frequency] = previousPeriodKey_(frequency);
     });
     const completionMap = readCurrentOutletCompletionMap_(periodKeys);
+    mergeOutletStockUploadCompletions_(completionMap, outlets, tasks, assignees, periodKeys);
     const current = buildOutletProgressView_(outlets, tasks, assignees, frequencies, periodKeys.CURRENT, completionMap, {
       DAILY: 'Hari ini', WEEKLY: 'Minggu ini', MONTHLY: 'Bulan ini', YEARLY: 'Tahun ini'
     });
@@ -2066,6 +2070,41 @@ function buildOutletProgressView_(outlets, tasks, assignees, frequencies, period
       averagePercent: assignedRows.length ? Math.round(assignedRows.reduce(function (sum, row) { return sum + row.percent; }, 0) / assignedRows.length) : 0
     }
   };
+}
+
+function mergeOutletStockUploadCompletions_(completionMap, outlets, tasks, assignees, periodKeys) {
+  const stockTasks = tasks.filter(function (task) {
+    return task.active && task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
+  });
+  if (!stockTasks.length || !outlets.length) return completionMap;
+  try {
+    const query = 'SELECT outlet, CAST(event_date AS STRING) AS period_key FROM `' +
+      CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'WHERE record_type = \'MOVEMENT\' AND event_date IN (CAST(@currentDaily AS DATE), CAST(@previousDaily AS DATE)) ' +
+      'AND movement_type IN (\'Goods Receipt\', \'Terjual\') AND source_file IS NOT NULL AND source_file != \'\' ' +
+      'GROUP BY outlet, event_date HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
+      'AND MAX(IF(movement_type = \'Terjual\', 1, 0)) = 1';
+    runNamedQuery_(query, {
+      currentDaily: periodKeys.CURRENT.DAILY,
+      previousDaily: periodKeys.PREVIOUS.DAILY
+    }, { useQueryCache: false }).forEach(function (row) {
+      const outlet = String(row.outlet || '').toUpperCase();
+      const periodKey = String(row.period_key || '').slice(0, 10);
+      if (outlets.indexOf(outlet) < 0 || !periodKey) return;
+      stockTasks.forEach(function (task) {
+        if (taskAppliesToOutlet_(task, outlet, assignees[outlet] || []) &&
+            taskExistedForPeriod_(task, task.frequency, periodKey)) {
+          completionMap[outlet + '|' + task.id + '|' + periodKey] =
+            completionMap[outlet + '|' + task.id + '|' + periodKey] || 'AUTO_UPLOADS';
+        }
+      });
+    });
+  } catch (error) {
+    if (!/not found|Not found|404/.test(String(error))) {
+      console.error('Progress upload Control Tower gagal dibaca: ' + (error && error.message ? error.message : error));
+    }
+  }
+  return completionMap;
 }
 
 function taskExistedForPeriod_(task, frequency, periodKey) {
@@ -3090,7 +3129,7 @@ function readCurrentStockCodeQtyMap_(outlet, location) {
   const sql = latestStockMovementCte_() + ' SELECT item_code, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = @location AND item_code IS NOT NULL AND item_code != \'\' GROUP BY item_code';
   const map = {};
-  runNamedQuery_(sql, { outlet: outlet, location: location }).forEach(function (row) {
+  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
     map[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
   });
   return map;
@@ -3100,7 +3139,7 @@ function getCurrentStock_(outlet, location, itemCode, itemName) {
   const sql = latestStockMovementCte_() + ' SELECT COUNT(*) AS movement_count, COALESCE(SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), 0) AS current_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = @location ' +
     'AND ((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: itemCode, item: itemName });
+  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: itemCode, item: itemName }, { useQueryCache: false });
   return { count: rows.length ? Number(rows[0].movement_count || 0) : 0, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
 }
 
@@ -3870,13 +3909,14 @@ function insertAll_(tableId, rows) {
   if (result.insertErrors && result.insertErrors.length) throw new Error('BigQuery menolak data: ' + JSON.stringify(result.insertErrors));
 }
 
-function runNamedQuery_(query, params) {
+function runNamedQuery_(query, params, options) {
   const queryParameters = Object.keys(params || {}).map(function (name) {
     return { name: name, parameterType: { type: 'STRING' }, parameterValue: { value: String(params[name]) } };
   });
   const request = {
     query: query, useLegacySql: false, location: CONFIG.BQ_LOCATION,
-    parameterMode: 'NAMED', queryParameters: queryParameters, maxResults: 10000
+    parameterMode: 'NAMED', queryParameters: queryParameters, maxResults: 10000,
+    useQueryCache: !(options && options.useQueryCache === false)
   };
   let result = BigQuery.Jobs.query(request, CONFIG.BQ_PROJECT_ID);
   let attempts = 0;
