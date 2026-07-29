@@ -398,6 +398,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
       taskCompleted: taskCompleted,
+      uploadProgress: readStockUploadProgress_(outlet),
       supplementaryPending: true
     };
   });
@@ -422,7 +423,7 @@ function getStockCardData(token, requestedOutlet, location) {
       : false;
     return {
       outlet: outlet, location: location, locations: locations, items: readStockItemsWithQty_(outlet, location),
-      taskCompleted: taskCompleted, supplementaryPending: true
+      taskCompleted: taskCompleted, uploadProgress: readStockUploadProgress_(outlet), supplementaryPending: true
     };
   });
 }
@@ -439,6 +440,7 @@ function getStockCardSupplementary(token, requestedOutlet, taskId) {
     return {
       outlet: outlet,
       taskCompleted: taskId ? Boolean(readCompletionMap_(outlet)[taskId + '|' + currentPeriodKey_('DAILY')]) : false,
+      uploadProgress: readStockUploadProgress_(outlet),
       pendingTransfers: readPendingStockTransfers_(outlet)
     };
   });
@@ -462,6 +464,72 @@ function addStockLocation(token, requestedOutlet, locationName) {
     locationSheet.appendRow([outlet, location, true, employee.nik, new Date()]);
     return { outlet: outlet, location: location, locations: existing.concat([location]) };
   });
+}
+
+function readStockUploadProgress_(outlet) {
+  const today = todayIso_(), parts = today.split('-');
+  const year = Number(parts[0]), month = Number(parts[1]);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthKey = parts[0] + '-' + parts[1];
+  const startDate = monthKey + '-01';
+  const endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
+  const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
+    'MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) AS goods_receipt, ' +
+    'MAX(IF(movement_type = \'Terjual\', 1, 0)) AS sales_usage, ' +
+    'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
+    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
+    'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
+    'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') ' +
+    'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
+  const statusByDate = {};
+  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }).forEach(function (row) {
+    statusByDate[String(row.event_date || '').slice(0, 10)] = {
+      goodsReceipt: Number(row.goods_receipt || 0) > 0,
+      salesUsage: Number(row.sales_usage || 0) > 0,
+      goodsDelivery: Number(row.goods_delivery || 0) > 0
+    };
+  });
+  const days = [];
+  for (let day = 1; day <= lastDay; day++) {
+    const date = monthKey + '-' + String(day).padStart(2, '0');
+    const state = statusByDate[date] || { goodsReceipt: false, salesUsage: false, goodsDelivery: false };
+    days.push({
+      day: day, date: date, future: date > today,
+      goodsReceipt: state.goodsReceipt, salesUsage: state.salesUsage, goodsDelivery: state.goodsDelivery,
+      complete: state.goodsReceipt && state.salesUsage
+    });
+  }
+  return { monthKey: monthKey, today: today, days: days };
+}
+
+function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
+  try {
+    if (['Goods Receipt', 'Terjual'].indexOf(completedType) < 0) return false;
+    const otherType = completedType === 'Goods Receipt' ? 'Terjual' : 'Goods Receipt';
+    const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND event_date = CAST(@periodKey AS DATE) ' +
+      'AND movement_type = @movementType AND source_file IS NOT NULL AND source_file != \'\'';
+    const rows = runNamedQuery_(sql, { outlet: context.outlet, periodKey: periodKey, movementType: otherType });
+    if (!rows.length || Number(rows[0].total || 0) <= 0) return false;
+    const task = readTasksForEmployee_(context.employee).filter(function (item) {
+      return item.type === 'FORM' && item.target === 'StockCard' && item.frequency === 'DAILY';
+    })[0] || null;
+    if (!task || !taskExistedForPeriod_(task, periodKey)) return false;
+    if (readCompletionMap_(context.outlet)[task.id + '|' + periodKey]) return true;
+    insertAll_('task_completions', [{
+      insertId: Utilities.getUuid(),
+      json: {
+        completion_id: Utilities.getUuid(), task_id: task.id, nik: context.employee.nik,
+        outlet: context.outlet, period_key: periodKey, completed_at: new Date().toISOString(),
+        source: 'AUTO_UPLOADS'
+      }
+    }]);
+    return true;
+  } catch (error) {
+    console.error('Auto completion Stock Card gagal: ' + (error && error.message ? error.message : error));
+    return false;
+  }
 }
 
 /** Hide or restore one stock item for an outlet and storage location. */
@@ -937,6 +1005,7 @@ function uploadSalesUsage(token, payload) {
       });
       // One request keeps one report together and avoids a retry leaving a half-imported file.
       insertAll_('stock_card', rows);
+      markStockTaskCompleteFromUploads_(context, prepared.transactionDate, 'Terjual');
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, itemCount: rows.length,
@@ -989,7 +1058,7 @@ function uploadStockPosition(token, payload) {
             outlet: context.outlet, location: context.location, item_code: line.item.code,
             category: line.item.category, item_name: line.item.name, unit: line.item.unit,
             direction: direction, qty: Number(lot.qty), movement_type: 'Stock Adjustment',
-            info: cleanText_('Upload Stock Posisi · QTY On Stock Card ' + formatQty_(line.cardQty) +
+            info: cleanText_('Upload Stock Posisi · Saldo sistem terbaru ' + formatQty_(line.cardQty) +
               ' → QTY Stock Actual ' + formatQty_(line.actualQty), 500),
             expiry_date: lot.expiryDate || null, event_date: eventDate,
             created_at: now.getTime() / 1000, created_by: context.employee.nik,
@@ -998,6 +1067,11 @@ function uploadStockPosition(token, payload) {
         });
       });
       insertAll_('stock_card', rows);
+      const uploadedDates = {};
+      prepared.items.forEach(function (item) { uploadedDates[item.transactionDate] = true; });
+      Object.keys(uploadedDates).forEach(function (date) {
+        markStockTaskCompleteFromUploads_(context, date, 'Goods Receipt');
+      });
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         adjustmentCount: prepared.items.length, movementCount: rows.length,
@@ -1032,9 +1106,6 @@ function prepareStockPositionImport_(context, payload, allowPendingExpiry) {
     if (normalizeUnit_(item.unit) !== normalizeUnit_(row.unit)) throw new Error(row.code + ' · ' + item.name +
       ': Unit file ' + row.unit + ' berbeda dari Unit Master ' + item.unit + '.');
     const liveQty = Number(current[row.code] || 0);
-    if (Math.abs(liveQty - row.cardQty) > 0.000001) throw new Error(row.code + ' · ' + item.name +
-      ': QTY On Stock Card pada file (' + formatQty_(row.cardQty) + ') sudah berbeda dari saldo terbaru (' +
-      formatQty_(liveQty) + '). Download ulang Export Stok Saat Ini.');
     const delta = row.actualQty - liveQty;
     if (Math.abs(delta) <= 0.0000001) return;
     let expiryDate = '';
@@ -1061,7 +1132,7 @@ function prepareStockPositionImport_(context, payload, allowPendingExpiry) {
 function parseStockPositionReport_(base64, fileName) {
   const cells = extractReportCells_(base64, fileName, 'Export Stok Saat Ini');
   const header = findReportHeader_(cells, [
-    'KODE ITEM', 'CATEGORY', 'NAMA ITEM', 'UNIT', 'QTY ON STOCK CARD', 'QTY STOCK ACTUAL'
+    'KODE ITEM', 'CATEGORY', 'NAMA ITEM', 'UNIT', 'QTY STOCK ACTUAL'
   ]);
   const meta = String(cells.A2 || '');
   const outletMatch = /Outlet:\s*([^|]+)/i.exec(meta);
@@ -1079,8 +1150,7 @@ function parseStockPositionReport_(base64, fileName) {
       return;
     }
     const actualQty = parseReportNumber_(actualRaw);
-    const cardQty = parseReportNumber_(reportCell_(cells, header, 'QTY ON STOCK CARD', rowNumber));
-    if (!isFinite(actualQty) || actualQty < 0 || !isFinite(cardQty)) {
+    if (!isFinite(actualQty) || actualQty < 0) {
       invalid.push(code);
       return;
     }
@@ -1089,7 +1159,7 @@ function parseStockPositionReport_(base64, fileName) {
       category: cleanText_(reportCell_(cells, header, 'CATEGORY', rowNumber), 100),
       name: cleanText_(reportCell_(cells, header, 'NAMA ITEM', rowNumber), 180),
       unit: cleanText_(reportCell_(cells, header, 'UNIT', rowNumber), 40).toUpperCase(),
-      cardQty: cardQty, actualQty: actualQty
+      actualQty: actualQty
     });
   });
   if (missing.length) throw new Error('Kolom QTY Stock Actual masih kosong untuk: ' + missing.slice(0, 10).join(', ') + '.');
