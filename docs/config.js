@@ -1,6 +1,6 @@
 window.BAKERZIN_CONFIG = Object.freeze({
   // Tempel URL deployment Google Apps Script Web App yang berakhiran /exec.
-  API_URL: 'https://script.google.com/macros/s/AKfycbyYFvDiXjij2Rhwhs8KmJL65rHlOa1f9E_bgoA3phNU5-GzChjKWWriemai79vBXtcw/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycbzAoHmqcUxis-MEQ0GR22_5Pj4FwUsf3YUDsRb2S7LDiiHO8q9EkBAMwefsBhohwXLE/exec',
 
   // Kosongkan agar alamat dashboard mengikuti lokasi GitHub Pages saat ini.
   SITE_BASE_URL: ''
