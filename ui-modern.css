@@ -326,6 +326,10 @@ textarea {
   outline-offset: 2px;
 }
 
+.stock-page .upload-date-heading.today {
+  outline: none;
+}
+
 .stock-page .upload-progress-loading {
   grid-column: 1 / -1;
   padding: 20px;
