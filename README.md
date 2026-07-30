@@ -56,6 +56,15 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Repository private tidak selalu berarti situs Pages private; periksa paket dan kebijakan GitHub organisasi Anda.
 - Setiap kali `Code.gs` berubah, buat deployment/version baru atau perbarui deployment aktif.
 
+## Database dan alur Showcase
+
+- Backend otomatis membuat sheet `MENU_SHOWCASE` dengan delapan kolom dan 61 baris dari file sumber **Menu Showcase.xlsx** ketika infrastruktur Stock Card pertama kali dijalankan.
+- Setiap outlet otomatis memiliki pilihan penyimpanan `Showcase`. Daftar item memakai **Menu** (kolom A) sebagai nama dan **Menu Category Detail** (kolom C) sebagai kategori.
+- Transaksi Masuk pada `Showcase` otomatis mencatat pasangan transaksi: Product terkait dipotong dari `Store` berdasarkan kolom D, G, dan H, lalu QTY menu ditambahkan ke `Showcase`.
+- Jika unit Product pada database berbeda dari unit master, sistem memakai konversi unit yang telah tersimpan dan meminta konversi bila belum tersedia.
+- Upload Usage Penjualan melewati Product yang tercantum pada kolom D agar perpindahan ke showcase tidak kembali dihitung sebagai penjualan bahan.
+- Jangan mengubah nama header sheet `MENU_SHOWCASE`. Isi baris boleh dikelola langsung di sheet setelah sheet tersebut terbentuk.
+
 ## Uji cepat
 
 1. Buka URL `/exec` di browser; halaman backend lama akan muncul jika file HTML lama masih ada di project GAS.

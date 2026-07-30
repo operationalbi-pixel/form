@@ -18,6 +18,7 @@ const CONFIG = Object.freeze({
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
   STOCK_CONVERSION_SHEET: 'STOCK_UNIT_CONVERSIONS',
   STOCK_VISIBILITY_SHEET: 'STOCK_ITEM_VISIBILITY',
+  SHOWCASE_SHEET: 'MENU_SHOWCASE',
   BQ_PROJECT_ID: 'berita-acara-digital',
   BQ_DATASET_ID: 'bakerzin_internal',
   BQ_LOCATION: 'asia-southeast2',
@@ -528,7 +529,7 @@ function readStockUploadProgress_(outlet) {
     'MAX(IF(movement_type = \'Terjual\', 1, 0)) AS sales_usage, ' +
     'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
     'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
+    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') ' +
     'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
@@ -558,7 +559,7 @@ function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
     if (['Goods Receipt', 'Terjual'].indexOf(completedType) < 0) return false;
     const otherType = completedType === 'Goods Receipt' ? 'Terjual' : 'Goods Receipt';
     const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-      'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND event_date = CAST(@periodKey AS DATE) ' +
+      'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND event_date = CAST(@periodKey AS DATE) ' +
       'AND movement_type = @movementType AND source_file IS NOT NULL AND source_file != \'\'';
     const rows = runNamedQuery_(sql, { outlet: context.outlet, periodKey: periodKey, movementType: otherType });
     if (!rows.length || Number(rows[0].total || 0) <= 0) return false;
@@ -587,7 +588,7 @@ function setStockItemHidden(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const item = findStockMasterItem_(payload.itemCode);
+    const item = findStockItemForLocation_(context.location, payload.itemCode);
     const hidden = Boolean(payload.hidden);
     const sheet = ensureStockVisibilitySheet_();
     const lock = LockService.getScriptLock();
@@ -668,6 +669,9 @@ function transferStockWithinOutlet(token, payload) {
     const locations = readStockLocations_(outlet);
     if (locations.indexOf(fromLocation) < 0 || locations.indexOf(toLocation) < 0) throw new Error('Lokasi transfer tidak valid.');
     if (fromLocation.toLowerCase() === toLocation.toLowerCase()) throw new Error('Lokasi asal dan tujuan transfer tidak boleh sama.');
+    if (isShowcaseLocation_(fromLocation) || isShowcaseLocation_(toLocation)) {
+      throw new Error('Transfer ke Showcase wajib melalui Input Transaksi Masuk pada item Showcase agar Product Store terpotong otomatis.');
+    }
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -700,6 +704,7 @@ function createInterOutletStockTransfer(token, payload) {
     if (fromOutlet === toOutlet) throw new Error('Outlet asal dan tujuan transfer tidak boleh sama.');
     const fromLocation = normalizeLocation_(payload.fromLocation);
     if (readStockLocations_(fromOutlet).indexOf(fromLocation) < 0) throw new Error('Lokasi sumber tidak valid.');
+    if (isShowcaseLocation_(fromLocation)) throw new Error('Item Showcase tidak dapat dikirim melalui transfer antar-outlet.');
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -747,6 +752,9 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
     transferId = cleanText_(transferId, 100);
     receiveLocation = normalizeLocation_(receiveLocation);
     if (readStockLocations_(outlet).indexOf(receiveLocation) < 0) throw new Error('Pilih lokasi penerimaan yang valid.');
+    if (isShowcaseLocation_(receiveLocation)) {
+      throw new Error('Transfer antar-outlet tidak dapat diterima langsung ke Showcase. Terima ke Store atau Gudang terlebih dahulu.');
+    }
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -801,7 +809,7 @@ function saveStockMovement(token, payload) {
     const location = normalizeLocation_(payload.location);
     if (readStockLocations_(outlet).indexOf(location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
 
-    const item = findStockMasterItem_(payload.itemCode || payload.itemName);
+    const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
     const direction = String(payload.direction || '').toUpperCase();
     const movementType = cleanText_(payload.movementType, 60);
     const qty = Number(payload.qty);
@@ -809,6 +817,9 @@ function saveStockMovement(token, payload) {
     if (['IN', 'OUT'].indexOf(direction) < 0) throw new Error('Arah transaksi tidak valid.');
     if (!isFinite(qty) || qty <= 0) throw new Error('QTY harus lebih besar dari 0.');
     validateMovementType_(direction, movementType);
+    if (isShowcaseLocation_(location) && direction === 'IN') {
+      return saveShowcaseInboundMovement_(outlet, item, qty, payload, employee);
+    }
 
     const current = getCurrentStock_(outlet, location, item.code, item.name);
     if (movementType === 'Opening Stock' && Math.abs(current.qty) > 0.0000001) {
@@ -849,7 +860,7 @@ function updateStockMovement(token, payload) {
     const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
     const location = normalizeLocation_(payload.location);
     if (readStockLocations_(outlet).indexOf(location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
-    const item = findStockMasterItem_(payload.itemCode || payload.itemName);
+    const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
     const logicalId = cleanText_(payload.logicalId, 100);
     if (!logicalId) throw new Error('Transaksi yang akan diedit tidak ditemukan. Muat ulang Stock Card lalu coba lagi.');
 
@@ -859,6 +870,7 @@ function updateStockMovement(token, payload) {
       const previousRows = readLatestStockHistory_(outlet, location, item, logicalId);
       if (!previousRows.length) throw new Error('Transaksi tidak ditemukan atau sudah berubah. Muat ulang Stock Card lalu coba lagi.');
       const previous = previousRows[0];
+      if (previous.systemGenerated) throw new Error('Transfer otomatis Showcase tidak dapat diedit terpisah agar saldo Store tetap konsisten. Buat transaksi koreksi pada Showcase jika diperlukan.');
       let direction = String(payload.direction || '').toUpperCase();
       let movementType = cleanText_(payload.movementType, 60);
       const qty = Number(payload.qty);
@@ -904,7 +916,7 @@ function adjustStockBalance(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const item = findStockMasterItem_(payload.itemCode || payload.itemName);
+    const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
     const targetQty = Number(payload.targetQty);
     const info = cleanText_(payload.info, 300);
     const expiryDate = normalizeDate_(payload.expiryDate, false);
@@ -960,7 +972,7 @@ function previewSalesUsageUpload(token, payload) {
         verified: false, requiresConversion: true, fileName: prepared.fileName,
         outlet: prepared.outlet, outletName: prepared.outletName, location: context.location,
         transactionDate: prepared.transactionDate, itemCount: prepared.sourceItemCount,
-        zeroRowsSkipped: prepared.zeroRowsSkipped, newItemCount: prepared.newItemCount,
+        zeroRowsSkipped: prepared.zeroRowsSkipped, showcaseRowsSkipped: prepared.showcaseRowsSkipped, newItemCount: prepared.newItemCount,
         conversions: prepared.conversionRequests
       };
     }
@@ -973,6 +985,7 @@ function previewSalesUsageUpload(token, payload) {
       transactionDate: prepared.transactionDate,
       itemCount: prepared.items.length,
       zeroRowsSkipped: prepared.zeroRowsSkipped,
+      showcaseRowsSkipped: prepared.showcaseRowsSkipped,
       newItemCount: prepared.newItemCount,
       negativeItemCount: prepared.negativeItemCount,
       conversionCount: prepared.conversionCount
@@ -1055,13 +1068,22 @@ function uploadSalesUsage(token, payload) {
           source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: usage.sourceRow
         }};
       });
+      // An import marker preserves duplicate detection and daily completion even if every Showcase product was skipped.
+      const importId = Utilities.getUuid();
+      rows.push({ insertId: importId, json: {
+        record_id: importId, logical_id: importId, version: 1, record_type: 'IMPORT',
+        outlet: context.outlet, location: context.location, direction: null, qty: 0, movement_type: 'Terjual',
+        info: cleanText_('Import ESB Usage Penjualan · ' + prepared.fileName + ' · ' + prepared.showcaseRowsSkipped + ' baris Product Showcase dilewati', 500),
+        expiry_date: null, event_date: prepared.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
+        source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
+      }});
       // One request keeps one report together and avoids a retry leaving a half-imported file.
       insertStockCardRows_(rows);
       markStockTaskCompleteFromUploads_(context, prepared.transactionDate, 'Terjual');
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
-        transactionDate: prepared.transactionDate, itemCount: rows.length,
-        zeroRowsSkipped: prepared.zeroRowsSkipped, newItemCount: prepared.newItemCount,
+        transactionDate: prepared.transactionDate, itemCount: prepared.items.length,
+        zeroRowsSkipped: prepared.zeroRowsSkipped, showcaseRowsSkipped: prepared.showcaseRowsSkipped, newItemCount: prepared.newItemCount,
         negativeItemCount: prepared.negativeItemCount, conversionCount: prepared.conversionCount
       };
     } finally {
@@ -1235,6 +1257,9 @@ function stockPositionAlreadyImported_(outlet, location, sourceHash) {
 }
 
 function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
+  if (isShowcaseLocation_(context.location)) {
+    throw new Error('Upload Usage Penjualan tidak dapat diarahkan ke Showcase. Pilih penyimpanan Store atau Gudang.');
+  }
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const report = parseSalesUsageReport_(base64, fileName);
@@ -1260,7 +1285,13 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
   const savedConversions = readStockUnitConversions_();
   const conversionMap = {}, conversionRequests = [], usageTotals = {}, items = [], masterChangeMap = {};
+  const showcaseProducts = showcaseProductNameMap_();
+  let showcaseRowsSkipped = 0;
   report.rows.forEach(function (row) {
+    if (showcaseProducts[normalizeStoreName_(row.name)]) {
+      showcaseRowsSkipped++;
+      return;
+    }
     let item = masterMap[row.code];
     if (!item) {
       item = { code: row.code, category: row.category || 'Uncategorized', name: row.name || row.code, unit: row.unit, active: false };
@@ -1298,7 +1329,7 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   const baseResult = {
     fileName: fileName, sourceHash: sourceHash, outlet: reportOutlet, outletName: report.outletName,
     transactionDate: report.transactionDate, zeroRowsSkipped: report.zeroRowsSkipped,
-    sourceItemCount: report.rows.length, newItemCount: Object.keys(masterChangeMap).length
+    showcaseRowsSkipped: showcaseRowsSkipped, sourceItemCount: report.rows.length, newItemCount: Object.keys(masterChangeMap).length
   };
   if (missingConversions.length) {
     if (!allowPendingConversions) throw new Error('Lengkapi seluruh konversi unit sebelum melanjutkan upload.');
@@ -1311,7 +1342,7 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
     const available = Number(currentMap[code] || 0), required = Number(usageTotals[code] || 0);
     if (available - required < -0.0000001) negativeItemCount++;
   });
-  if (!items.length) throw new Error('Tidak ada QTY penjualan lebih dari 0 pada file ini.');
+  if (!items.length && !showcaseRowsSkipped) throw new Error('Tidak ada QTY penjualan lebih dari 0 pada file ini.');
   baseResult.requiresConversion = false;
   baseResult.items = items;
   baseResult.masterChanges = Object.keys(masterChangeMap).map(function (code) { return masterChangeMap[code]; });
@@ -1868,7 +1899,7 @@ function readStoreCodeDirectory_() {
 
 function salesUsageAlreadyImported_(outlet, transactionDate, sourceHash) {
   const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Terjual\' AND source_file IS NOT NULL ' +
+    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND movement_type = \'Terjual\' AND source_file IS NOT NULL ' +
     'AND (source_hash = @sourceHash OR event_date = CAST(@transactionDate AS DATE))';
   const rows = runNamedQuery_(sql, { outlet: outlet, transactionDate: transactionDate, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
@@ -1888,7 +1919,7 @@ function getStockHistory(token, payload) {
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
     const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
     const location = normalizeLocation_(payload.location);
-    const item = findStockMasterItem_(payload.itemCode || payload.itemName);
+    const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
     const rows = readLatestStockHistory_(outlet, location, item);
     const employeeNames = readEmployeeNameMap_();
     rows.forEach(function (row) { row.createdByUser = (employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui') + (employeeNames[row.createdBy] && row.createdBy ? ' · ' + row.createdBy : ''); });
@@ -1923,7 +1954,7 @@ function exportStockCardItem(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const item = findStockMasterItem_(payload.itemCode || payload.itemName);
+    const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
     const month = String(payload.month || '').trim();
     const format = String(payload.format || '').toLowerCase();
     if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('Pilih bulan laporan terlebih dahulu.');
@@ -1943,8 +1974,9 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v7') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v8') === 'ready') return;
   ensureStockMasterSheet_();
+  ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
   ensureStockVisibilitySheet_();
   ensureStockConversionSheet_();
@@ -1990,7 +2022,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v7', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v8', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -3124,6 +3156,130 @@ function ensureStockMasterSheet_() {
   return sheet;
 }
 
+function showcaseSeedRows_() {
+  return [
+    ['CHOCOLATE M','CAKE & DESSERT','MACARON','MACAROON CHOCO MACAROON','WIP FOOD','WIP FOOD','PCS',2],
+    ['GALAXY M','CAKE & DESSERT','MACARON','MACAROON GALAXI','WIP FOOD','WIP FOOD','PCS',1],
+    ['RASPBERRY M','CAKE & DESSERT','MACARON','MACAROON RASPBERRY MACAROON','WIP FOOD','WIP FOOD','PCS',2],
+    ['BLUEBERRY M','CAKE & DESSERT','MACARON','MACAROON BLUEBERRY MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['ISPAHAN M','CAKE & DESSERT','MACARON','MACAROON ISPAHAN MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['PISTACHIO M','CAKE & DESSERT','MACARON','MACAROON PISTCHIO MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['CARAMEL M','CAKE & DESSERT','MACARON','MACAROON CARAMEL','WIP FOOD','WIP FOOD','PCS',1],
+    ['FORET NOIR M','CAKE & DESSERT','MACARON','MACAROON FORET NOIR MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['GREENTEA M','CAKE & DESSERT','MACARON','MACAROON GREEN TEA MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['CURACAO M','CAKE & DESSERT','MACARON','BLUE LAGOON MACAROON','WIP FOOD','WIP FOOD','PCS',1],
+    ['COOKIES & CREAM M','CAKE & DESSERT','MACARON','COOKIES AND CREAM MACAROON','WIP FOOD','WIP FOOD','PCS',3],
+    ['RED VELVET M','CAKE & DESSERT','MACARON','RED VELVET MACAROON','WIP FOOD','WIP FOOD','PCS',2],
+    ['MACADAMIA ALMOND CROISSANT','PASTRY','PASTRY','Butter Croissant@90gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['ALMOND CROISSANT','PASTRY','PASTRY','Butter Croissant@90gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['CROISSANT CHOCO CHIPS COOKIES','PROMO','PASTRY','Butter Croissant @60gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['CROISSANT DOUBLE CHOCO CHIPS','PROMO','PASTRY','Butter Croissant @60gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['TRIPLE CHOCO DANISH','PASTRY','PASTRY','Choc Manjari Danish','PASTRY AND CAKES','FINISHED GOODS','PCS',1],
+    ['BUTTER CROISSANT','PASTRY','PASTRY','Butter Croissant@90gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['CINNAMON ROLL','PASTRY','PASTRY','Cinamon roll','PASTRY AND CAKES','FINISHED GOODS','PCS',1],
+    ['CROISSANT MARTABAK','PASTRY','PASTRY','CROISANT MARTABAK','PASTRY AND CAKES','FINISHED GOODS','PCS',1],
+    ['PAIN AU CHOCOLATE','PASTRY','PASTRY','Danish Chocolate@80GR','WIP FOOD','WIP FOOD','PCS',1],
+    ['BEEF SAUSAGE HONEY MUSTARD','PASTRY','PASTRY','Danish Sausage','WIP FOOD','WIP FOOD','PCS',1],
+    ['CROISSANT MATCHA COOKIES','PROMO','PASTRY','Butter Croissant @60gr','WIP FOOD','WIP FOOD','PCS',1],
+    ['NEWYORK CHEESECAKE SLICE','CAKE & DESSERT','SLICE CAKE','New York Cheese Slice','PASTRY AND CAKES','FINISHED GOODS','BOX@12SLICE',0.0833],
+    ['RED VELVET SLICE','CAKE & DESSERT','SLICE CAKE','New red velvet cake SLICE','PASTRY AND CAKES','FINISHED GOODS','Box@10slice',0.1],
+    ['BLUEBERRY CHEESECAKE SLICE','CAKE & DESSERT','SLICE CAKE','Blueberry Cheese Cake Slice new','PASTRY AND CAKES','FINISHED GOODS','BOX@12SLICE',0.0833],
+    ['CHOCOLATE AMER','CAKE & DESSERT','SLICE CAKE','CHOCOLATE AMER SLICE','WIP FOOD','WIP FOOD','SLICE',1],
+    ['EARL GREY PEACH CAKE SLICE','CAKE & DESSERT','SLICE CAKE','EARL GREY PEACH CAKE','WIP FOOD','WIP FOOD','WHOLE',0.13],
+    ['OREO CHEESECAKE SLICE','CAKE & DESSERT','SLICE CAKE','New Oreo Cheese Slice','PASTRY AND CAKES','FINISHED GOODS','BOX@12SLICE',0.0833],
+    ['TIRAMISU SLICE','CAKE & DESSERT','SLICE CAKE','New Tiramisu whole Slice','PASTRY AND CAKES','FINISHED GOODS','BOX@8SLICE',0.125],
+    ['MATCHA JASMINE SLICE','CAKE & DESSERT','SLICE CAKE','Matcha jasmine strawberry slice','PASTRY AND CAKES','FINISHED GOODS','Box@10slice',0.1],
+    ['FORET NOIR','CAKE & DESSERT','SLICE CAKE','FORET NOIR SLICE','WIP FOOD','WIP FOOD','SLICE',1],
+    ['BLUBERRY LEMON CAKE SLICE','CAKE & DESSERT','SLICE CAKE','BLUEBERRY LEMON CREAM CHEESE','WIP FOOD','WIP FOOD','WHOLE',0.13],
+    ['CHOCO AVOCADO SLICE','CAKE & DESSERT','SLICE CAKE','Choc Avocado Manjari Cake SLICE','PASTRY AND CAKES','FINISHED GOODS','SLICE',1],
+    ['HAZELNUT CHOCO SLICE','CAKE & DESSERT','SLICE CAKE','HAZELNUT WHOLE','FOOD','GROCERIES','GR',0.1],
+    ['BISCOFF CARAMEL CAKE SLICE','CAKE & DESSERT','SLICE CAKE','BISCOFF CAKE','WIP FOOD','WIP FOOD','WHOLE',0.13],
+    ['CLASSIC COFFEE CAKE SLICE','CAKE & DESSERT','SLICE CAKE','TIRAMISU CAKE1222','WIP FOOD','WIP FOOD','WHOLE',0.13],
+    ['CHOCOLATE CHARLOTTE CAKE SLICE','CAKE & DESSERT','SLICE CAKE','CHOCOLATE CHARLOTTE','WIP FOOD','WIP FOOD','WHOLE',0.13],
+    ['BLUEBERRY CHEESECAKE','CAKE & DESSERT','SLICE CAKE','BLUEBERRY CHEESE CAKE SLICE','WIP FOOD','WIP FOOD','SLICE',1],
+    ['NEW YORK CHEESECAKE','CAKE & DESSERT','SLICE CAKE','NEWYORK CHEESE CK SLICE','WIP FOOD','WIP FOOD','SLICE',1],
+    ['UBE BANANA MOUSSE TART SLICE','CAKE & DESSERT','SLICE CAKE','Ube Banana Tart Cake SLICE','PASTRY AND CAKES','FINISHED GOODS','Box@10slice',0.1],
+    ['MATCHA CHEESECAKE SLICE','CAKE & DESSERT','SLICE CAKE','FROMAGE MATCHA SLICE','PASTRY AND CAKES','FINISHED GOODS','BOX@8SLICE',0.125],
+    ['CLASSIC COFFEE CAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','TIRAMISU CAKE1222','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['RED VELVET WHOLE','CAKE & DESSERT','WHOLE CAKE','New Red Velvet Cake D.23 cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['BLUBERRY LEMON CAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','BLUEBERRY LEMON CREAM CHEESE','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['BISCOFF CARAMEL CAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','BISCOFF CAKE','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['CHOCOLATE AMER 20','CAKE & DESSERT','WHOLE CAKE','CHOCOLATE AMER SIZE 20CM','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['BLUEBERRY CHEESECAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','Blueberry Cheese Cake New D23','PASTRY AND CAKES','FINISHED GOODS','WHOLE',1],
+    ['CHOCOLATE AMER 17','CAKE & DESSERT','WHOLE CAKE','CHOCOLATE AMER SIZE 17CM','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['TIRAMISU WHOLE','CAKE & DESSERT','WHOLE CAKE','New Tiramisu whole D.20','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['CHOCOLATE CHARLOTTE CAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','CHOCOLATE CHARLOTTE','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['AVOCADO COFFEE CAKE','CAKE & DESSERT','WHOLE CAKE','Avocado Cake CO D.20 cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['CHOCOLATE AMER 28','CAKE & DESSERT','WHOLE CAKE','CHOCOLATE AMER SIZE 28CM','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['CHOCOLATE TIRAMISU CAKE','CAKE & DESSERT','WHOLE CAKE','Coffe Cake CO D.20cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['CHOCOLATE AMER 24','CAKE & DESSERT','WHOLE CAKE','CHOCOLATE AMER SIZE 24CM','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['EARL GREY PEACH CAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','EARL GREY PEACH CAKE','WIP FOOD','WIP FOOD','WHOLE',1],
+    ['NEWYORK CHEESECAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','New York Cheese New D23 cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['HAZELNUT CHOCO WHOLE','CAKE & DESSERT','WHOLE CAKE','Hazelnut Chocolate New D20 cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['CHOCO AVOCADO WHOLE','CAKE & DESSERT','WHOLE CAKE','Choco Avocado Manjari Cake','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['OREO CHEESECAKE WHOLE','CAKE & DESSERT','WHOLE CAKE','New Oreo Cheese Cake D23 cm','PASTRY AND CAKES','FINISHED GOODS','WHL',1],
+    ['FORET NOIR 22','CAKE & DESSERT','WHOLE CAKE','FORET NOIR WHOLE','WIP FOOD','WIP FOOD','WHOLE',1]
+  ];
+}
+
+function ensureShowcaseSheet_() {
+  const headers = ['Menu','Menu Category','Menu Category Detail','Product','Product Category','Product Sub Category','Unit','Qty'];
+  const sheet = ensureSheet_(CONFIG.SHOWCASE_SHEET, headers);
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (sheet.getLastRow() < 2) {
+    const rows = showcaseSeedRows_();
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.0000');
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, headers.length);
+  }
+  return sheet;
+}
+
+function showcaseItemCode_(menuName) {
+  return 'SC-' + digest_(normalizeStoreName_(menuName)).slice(0, 10).toUpperCase();
+}
+
+function readShowcaseItems_() {
+  const sheet = ensureShowcaseSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues().map(function (row, index) {
+    const name = cleanText_(row[0], 180);
+    const productQty = Number(row[7]);
+    if (!name || !cleanText_(row[3], 180) || !isFinite(productQty) || productQty <= 0) return null;
+    return {
+      code: showcaseItemCode_(name), category: cleanText_(row[2], 100) || cleanText_(row[1], 100) || 'SHOWCASE',
+      name: name, unit: 'PCS', active: true, showcase: true, sourceRow: index + 2,
+      menuCategory: cleanText_(row[1], 100), productName: cleanText_(row[3], 180),
+      productCategory: cleanText_(row[4], 100), productSubCategory: cleanText_(row[5], 100),
+      productUnit: cleanText_(row[6], 40), productQty: productQty
+    };
+  }).filter(Boolean);
+}
+
+function isShowcaseLocation_(location) {
+  return normalizeLocation_(location).toLowerCase() === 'showcase';
+}
+
+function findShowcaseItem_(itemKey) {
+  const wanted = String(itemKey || '').trim().toLowerCase();
+  const items = readShowcaseItems_();
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].code.toLowerCase() === wanted || items[i].name.toLowerCase() === wanted) return items[i];
+  }
+  throw new Error('Item Showcase tidak ditemukan pada sheet ' + CONFIG.SHOWCASE_SHEET + '.');
+}
+
+function findStockItemForLocation_(location, itemKey) {
+  return isShowcaseLocation_(location) ? findShowcaseItem_(itemKey) : findStockMasterItem_(itemKey);
+}
+
+function showcaseProductNameMap_() {
+  const map = {};
+  readShowcaseItems_().forEach(function (item) { map[normalizeStoreName_(item.productName)] = true; });
+  return map;
+}
+
 function readStockMaster_(includeInactive) {
   const sheet = ensureStockMasterSheet_();
   if (sheet.getLastRow() < 2) return [];
@@ -3143,7 +3299,7 @@ function findStockMasterItem_(itemKey) {
 }
 
 function readStockItemsWithQty_(outlet, location) {
-  const master = readStockMaster_();
+  const master = isShowcaseLocation_(location) ? readShowcaseItems_() : readStockMaster_();
   if (!master.length) return [];
   const hiddenItems = readStockHiddenMap_(outlet, location);
   const rows = readStockBalanceRows_(outlet, location);
@@ -3153,8 +3309,67 @@ function readStockItemsWithQty_(outlet, location) {
     else legacyNameQty[String(r.item_name).toLowerCase()] = Number(r.current_qty || 0);
   });
   return master.map(function (item) {
-    return { code: item.code, category: item.category, name: item.name, unit: item.unit, qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]) };
+    return {
+      code: item.code, category: item.category, name: item.name, unit: item.unit,
+      qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]),
+      showcase: Boolean(item.showcase), productName: item.productName || '', productUnit: item.productUnit || '', productQty: Number(item.productQty || 0)
+    };
   });
+}
+
+function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, employee) {
+  const product = findStockMasterItem_(showcaseItem.productName);
+  const fromUnit = normalizeUnit_(showcaseItem.productUnit);
+  const toUnit = normalizeUnit_(product.unit);
+  let factor = 1;
+  if (fromUnit !== toUnit) {
+    const conversionKey = stockConversionKey_(product.code, fromUnit, toUnit);
+    const saved = readStockUnitConversions_()[conversionKey];
+    factor = saved ? Number(saved.factor) : 0;
+    if (!isFinite(factor) || factor <= 0) {
+      throw new Error(showcaseItem.name + ': unit Product pada ' + CONFIG.SHOWCASE_SHEET + ' (' + showcaseItem.productUnit +
+        ') berbeda dari unit Master Stock ' + product.code + ' (' + product.unit + '). Tambahkan konversi unit terlebih dahulu.');
+    }
+  }
+  const productQty = Math.round(Number(menuQty) * Number(showcaseItem.productQty) * factor * 1000000) / 1000000;
+  if (!isFinite(productQty) || productQty <= 0) throw new Error('QTY Product Showcase tidak valid pada baris ' + showcaseItem.sourceRow + '.');
+  const eventDate = normalizeDate_(payload.eventDate, true);
+  const note = cleanText_(payload.info, 220);
+  const transferId = Utilities.getUuid();
+  const now = new Date();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const available = getCurrentStock_(outlet, 'Store', product.code, product.name).qty;
+    if (productQty > available + 0.0000001) {
+      throw new Error('Stok Store tidak mencukupi untuk ' + showcaseItem.name + '. Dibutuhkan ' + formatQty_(productQty) + ' ' + product.unit +
+        ' ' + product.name + ', tersedia ' + formatQty_(available) + ' ' + product.unit + '.');
+    }
+    const showcaseCurrent = getCurrentStock_(outlet, 'Showcase', showcaseItem.code, showcaseItem.name).qty;
+    const detail = showcaseItem.name + ' ' + formatQty_(menuQty) + ' PCS · Product ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit;
+    const rows = [];
+    allocateTransferLots_(outlet, 'Store', product, productQty).forEach(function (lot) {
+      rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
+        'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate));
+    });
+    const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', Number(menuQty), 'Transfer In',
+      'Peralihan dari Store · ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit + (note ? ' · ' + note : ''), '', employee, now, eventDate);
+    rows.push(showcaseRow);
+    insertStockCardRows_(rows);
+    return {
+      saved: true, transferred: true, outlet: outlet, location: 'Showcase', sourceLocation: 'Store',
+      itemCode: showcaseItem.code, itemName: showcaseItem.name, currentQty: showcaseCurrent + Number(menuQty),
+      sourceItemCode: product.code, sourceItemName: product.name, sourceQty: productQty,
+      movement: {
+        recordId: showcaseRow.json.record_id, logicalId: showcaseRow.json.logical_id, version: 1, date: eventDate,
+        direction: 'IN', qty: Number(menuQty), movementType: 'Transfer In', info: showcaseRow.json.info,
+        expiryDate: '', createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik,
+        createdAt: now.toISOString(), transferId: transferId, systemGenerated: true
+      }
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function stockBalanceStateKey_(kind, outlet, location) {
@@ -3290,7 +3505,7 @@ function latestStockMovementCte_() {
 
 function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
   let sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-    'event_date, direction, qty, movement_type, info, expiry_date, created_by, created_at FROM latest ' +
+    'event_date, direction, qty, movement_type, info, expiry_date, transfer_id, created_by, created_at FROM latest ' +
     'WHERE outlet = @outlet AND location = @location AND ((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item)) ';
   const params = { outlet: outlet, location: location, code: item.code, item: item.name };
   if (onlyLogicalId) {
@@ -3303,6 +3518,7 @@ function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
       recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
       date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
       movementType: String(r.movement_type || ''), info: String(r.info || ''), expiryDate: String(r.expiry_date || ''),
+      transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
       createdBy: String(r.created_by || ''), createdAt: String(r.created_at || '')
     };
   });
@@ -3690,7 +3906,7 @@ function cleanExportName_(value) {
 }
 
 function readStockLocations_(outlet) {
-  const locations = ['Store', 'Gudang'];
+  const locations = ['Store', 'Gudang', 'Showcase'];
   const sheet = ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
   if (sheet.getLastRow() < 2) return locations;
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getDisplayValues();
@@ -4178,7 +4394,7 @@ function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
   try {
     const query = 'SELECT CAST(event_date AS STRING) AS period_key ' +
       'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-      'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
+      'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet ' +
       'AND movement_type IN (\'Goods Receipt\', \'Terjual\') ' +
       'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date ' +
       'HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
