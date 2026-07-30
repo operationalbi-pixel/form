@@ -87,6 +87,8 @@ function apiActions_() {
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
     adminAddNews: adminAddNews,
+    adminUpdateNews: adminUpdateNews,
+    adminDeleteNews: adminDeleteNews,
     adminAddItem: adminAddItem,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
@@ -291,15 +293,61 @@ function adminAddNews(token, payload) {
     const title = cleanText_(payload.title, 120);
     const content = cleanText_(payload.content, 1000);
     if (!title || !content) throw new Error('Judul dan isi berita wajib diisi.');
+    const newsId = Utilities.getUuid();
+    const linkUrl = safeUrl_(payload.linkUrl);
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const sheet = ensureNewsSheet_();
+      const imageUrl = resolveNewsImage_(payload, '', newsId);
+      sheet.appendRow([newsId, title, content, imageUrl, linkUrl, new Date(), true, employee.nik]);
+      return { news: readNews_(false), newsId: newsId };
+    } finally { lock.releaseLock(); }
+  });
+}
 
-    const sheet = ensureSheet_(CONFIG.NEWS_SHEET,
-      ['ID', 'TITLE', 'CONTENT', 'IMAGE_URL', 'LINK_URL', 'PUBLISHED_AT', 'ACTIVE', 'CREATED_BY']);
-    sheet.appendRow([
-      Utilities.getUuid(), title, content,
-      safeUrl_(payload.imageUrl), safeUrl_(payload.linkUrl),
-      new Date(), true, employee.nik
-    ]);
-    return { news: readNews_(false) };
+/** Admin: edit an existing login-page news item without changing its original publication date. */
+function adminUpdateNews(token, payload) {
+  return safe_(function () {
+    requireAdmin_(token);
+    payload = payload || {};
+    const id = String(payload.id || '').trim();
+    const title = cleanText_(payload.title, 120);
+    const content = cleanText_(payload.content, 1000);
+    if (!id) throw new Error('Berita yang akan diedit tidak ditemukan.');
+    if (!title || !content) throw new Error('Judul dan isi berita wajib diisi.');
+    const linkUrl = safeUrl_(payload.linkUrl);
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const sheet = ensureNewsSheet_();
+      const row = findNewsRow_(sheet, id);
+      if (!row) throw new Error('Berita tidak ditemukan atau sudah dihapus.');
+      const current = sheet.getRange(row, 1, 1, 8).getValues()[0];
+      if (!truthy_(current[6])) throw new Error('Berita tidak ditemukan atau sudah dihapus.');
+      const imageUrl = resolveNewsImage_(payload, String(current[3] || ''), id);
+      sheet.getRange(row, 2, 1, 4).setValues([[title, content, imageUrl, linkUrl]]);
+      return { news: readNews_(false), newsId: id };
+    } finally { lock.releaseLock(); }
+  });
+}
+
+/** Admin: soft-delete a news item so publication history remains auditable in the sheet. */
+function adminDeleteNews(token, newsId) {
+  return safe_(function () {
+    requireAdmin_(token);
+    const id = String(newsId || '').trim();
+    if (!id) throw new Error('Berita yang akan dihapus tidak ditemukan.');
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const sheet = ensureNewsSheet_();
+      const row = findNewsRow_(sheet, id);
+      if (!row || !truthy_(sheet.getRange(row, 7).getValue())) throw new Error('Berita tidak ditemukan atau sudah dihapus.');
+      sheet.getRange(row, 7).setValue(false);
+      return { news: readNews_(false), deletedId: id };
+    } finally { lock.releaseLock(); }
   });
 }
 
@@ -3826,9 +3874,80 @@ function clearLoginFailures_(nik) { CacheService.getScriptCache().remove('loginf
 
 // ---------- News and task helpers ----------
 
-function readNews_(publicOnly) {
-  const sheet = ensureSheet_(CONFIG.NEWS_SHEET,
+function ensureNewsSheet_() {
+  return ensureSheet_(CONFIG.NEWS_SHEET,
     ['ID', 'TITLE', 'CONTENT', 'IMAGE_URL', 'LINK_URL', 'PUBLISHED_AT', 'ACTIVE', 'CREATED_BY']);
+}
+
+function findNewsRow_(sheet, newsId) {
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  const ids = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+  for (let i = 0; i < ids.length; i++) if (String(ids[i][0]).trim() === newsId) return i + 2;
+  return 0;
+}
+
+function driveFileIdFromUrl_(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  const patterns = [/\/file\/d\/([a-zA-Z0-9_-]+)/, /[?&]id=([a-zA-Z0-9_-]+)/, /\/d\/([a-zA-Z0-9_-]+)/];
+  for (let i = 0; i < patterns.length; i++) {
+    const match = url.match(patterns[i]);
+    if (match && match[1]) return match[1];
+  }
+  return '';
+}
+
+function normalizeNewsImageUrl_(value) {
+  const url = safeUrl_(value);
+  if (!url) return '';
+  if (!/^https:\/\/(drive|docs)\.google\.com\//i.test(url)) return url;
+  const fileId = driveFileIdFromUrl_(url);
+  if (!fileId) throw new Error('Link Google Drive gambar tidak valid. Gunakan link berbagi file dari Google Drive.');
+  return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(fileId) + '&sz=w1600';
+}
+
+function ensureNewsImageFolder_() {
+  const properties = PropertiesService.getScriptProperties();
+  const existingId = String(properties.getProperty('NEWS_IMAGE_FOLDER_ID') || '');
+  if (existingId) {
+    try { return DriveApp.getFolderById(existingId); }
+    catch (error) { properties.deleteProperty('NEWS_IMAGE_FOLDER_ID'); }
+  }
+  const folder = DriveApp.createFolder('BAKERZIN_NEWS_IMAGES');
+  properties.setProperty('NEWS_IMAGE_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function saveNewsImageUpload_(upload, newsId) {
+  upload = upload || {};
+  const mimeType = String(upload.mimeType || '').toLowerCase();
+  const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (allowed.indexOf(mimeType) < 0) throw new Error('Format gambar harus JPG, PNG, WEBP, atau GIF.');
+  const raw = String(upload.base64 || '').replace(/^data:[^;]+;base64,/, '');
+  if (!raw) throw new Error('File gambar upload tidak dapat dibaca.');
+  const bytes = Utilities.base64Decode(raw);
+  if (bytes.length > 5 * 1024 * 1024) throw new Error('Ukuran gambar maksimal 5 MB.');
+  const originalName = String(upload.fileName || 'image').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-90);
+  const blob = Utilities.newBlob(bytes, mimeType, 'news-' + newsId.slice(0, 8) + '-' + originalName);
+  const file = ensureNewsImageFolder_().createFile(blob);
+  try {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (error) {
+    file.setTrashed(true);
+    throw new Error('Gambar tidak dapat dipublikasikan karena kebijakan berbagi Google Drive. Hubungi admin Google Workspace.');
+  }
+  return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(file.getId()) + '&sz=w1600';
+}
+
+function resolveNewsImage_(payload, existingUrl, newsId) {
+  if (truthy_(payload.removeImage)) return '';
+  if (payload.imageUpload && payload.imageUpload.base64) return saveNewsImageUpload_(payload.imageUpload, newsId);
+  const suppliedUrl = String(payload.imageUrl || '').trim();
+  return suppliedUrl ? normalizeNewsImageUrl_(suppliedUrl) : String(existingUrl || '');
+}
+
+function readNews_(publicOnly) {
+  const sheet = ensureNewsSheet_();
   if (sheet.getLastRow() < 2) return [];
   return sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues()
     .filter(function (r) { return truthy_(r[6]); })
@@ -3836,7 +3955,7 @@ function readNews_(publicOnly) {
       const item = { id: String(r[0]), title: String(r[1]), content: String(r[2]), imageUrl: String(r[3] || ''), linkUrl: String(r[4] || ''), publishedAt: dateIso_(r[5]) };
       if (!publicOnly) item.createdBy = String(r[7] || '');
       return item;
-    }).sort(function (a, b) { return b.publishedAt.localeCompare(a.publishedAt); }).slice(0, 20);
+    }).sort(function (a, b) { return b.publishedAt.localeCompare(a.publishedAt); }).slice(0, publicOnly ? 20 : 100);
 }
 
 function readTasksForEmployee_(employee) {
