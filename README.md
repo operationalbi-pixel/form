@@ -58,12 +58,13 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 
 ## Database dan alur Showcase
 
-- Backend otomatis membuat sheet `MENU_SHOWCASE` dengan delapan kolom dan 61 baris dari file sumber **Menu Showcase.xlsx** ketika infrastruktur Stock Card pertama kali dijalankan.
+- Backend otomatis membuat sheet `MENU_SHOWCASE` dengan delapan kolom sumber dan 61 baris dari **Menu Showcase.xlsx**, ditambah kolom I `Kode Item` yang dapat diedit.
 - Setiap outlet otomatis memiliki pilihan penyimpanan `Showcase`. Daftar item memakai **Menu** (kolom A) sebagai nama dan **Menu Category Detail** (kolom C) sebagai kategori.
 - Transaksi Masuk pada `Showcase` otomatis mencatat pasangan transaksi: Product terkait dipotong dari `Store` berdasarkan kolom D, G, dan H, lalu QTY menu ditambahkan ke `Showcase`.
 - Jika unit Product pada database berbeda dari unit master, sistem memakai konversi unit yang telah tersimpan dan meminta konversi bila belum tersedia.
 - Upload Usage Penjualan melewati Product yang tercantum pada kolom D agar perpindahan ke showcase tidak kembali dihitung sebagai penjualan bahan.
 - Jangan mengubah nama header sheet `MENU_SHOWCASE`. Isi baris boleh dikelola langsung di sheet setelah sheet tersebut terbentuk.
+- Daftar pada seluruh storage menempatkan stok minus terbesar paling atas. Item lainnya diurutkan berdasarkan kategori lalu nama A–Z.
 
 ## Uji cepat
 
