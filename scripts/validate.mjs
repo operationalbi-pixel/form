@@ -4,6 +4,7 @@ import vm from 'node:vm';
 const pairs = [
   ['docs/index.html', 'index.html'],
   ['docs/stock-card.html', 'stock-card.html'],
+  ['docs/showcaselog.html', 'showcaselog.html'],
   ['docs/config.js', 'config.js'],
   ['docs/api-client.js', 'api-client.js'],
   ['docs/ui-modern.css', 'ui-modern.css'],
@@ -30,7 +31,7 @@ for (const path of ['docs/config.js', 'docs/api-client.js', 'docs/Code.gs']) {
   }
 }
 
-for (const path of ['docs/index.html', 'docs/stock-card.html']) {
+for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   const html = await text(path);
   if (!html.includes('ui-modern.css')) failures.push(`${path} belum memuat ui-modern.css`);
   if (!html.includes('name="viewport"')) failures.push(`${path} tidak memiliki viewport responsif`);
@@ -62,7 +63,7 @@ const backend = await text('docs/Code.gs');
 const actionBlock = backend.match(/function apiActions_\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:/gm)].map(match => match[1]));
 const clientActions = new Set();
-for (const path of ['docs/index.html', 'docs/stock-card.html']) {
+for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   for (const match of (await text(path)).matchAll(/(?:server|call)\(\s*['"]([^'"]+)['"]/g)) clientActions.add(match[1]);
 }
 for (const action of clientActions) {

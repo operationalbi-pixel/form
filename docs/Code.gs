@@ -120,6 +120,8 @@ function apiActions_() {
     uploadStockPosition: uploadStockPosition,
     exportCurrent: exportCurrentStockExcel,
     exportItem: exportStockCardItem,
+    showcaseLogBootstrap: getShowcaseLogBootstrap,
+    saveShowcaseLog: saveShowcaseLog,
     complete: markTaskComplete
   });
 }
@@ -495,6 +497,261 @@ function getStockCardSupplementary(token, requestedOutlet, taskId) {
       pendingTransfers: readPendingStockTransfers_(outlet)
     };
   });
+}
+
+// ---------- Showcase Log daily form ----------
+
+function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
+  return safe_(function () {
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    ensureStockCardInfrastructure_();
+    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+    const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
+    const eventDate = normalizeDate_(requestedDate, true);
+    if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
+    const totals = readShowcaseLogTotals_(outlet, eventDate);
+    const items = readStockItemsWithQty_(outlet, 'Showcase').map(function (item) {
+      const day = totals[item.name.toLowerCase()] || {};
+      return {
+        code: item.code, category: item.category, name: item.name, unit: item.unit, balance: Number(item.qty || 0),
+        totalIn: Number(day.totalIn || 0), totalSold: Number(day.totalSold || 0), totalWaste: Number(day.totalWaste || 0)
+      };
+    }).sort(function (a, b) {
+      return a.category.localeCompare(b.category) || a.name.localeCompare(b.name);
+    });
+    const task = findShowcaseLogTask_();
+    return {
+      user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
+      items: items, progress: readShowcaseLogProgress_(outlet, eventDate), taskId: task ? task.id : '',
+      appUrl: ScriptApp.getService().getUrl()
+    };
+  });
+}
+
+function saveShowcaseLog(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    ensureStockCardInfrastructure_();
+    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+    const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
+    const eventDate = normalizeDate_(payload.eventDate, true);
+    if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
+    const rawEntries = Array.isArray(payload.entries) ? payload.entries : [];
+    if (!rawEntries.length || rawEntries.length > 500) throw new Error('Belum ada input Showcase Log yang dapat disimpan.');
+    const showcaseItems = readShowcaseItems_();
+    const itemMap = {};
+    showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
+    const entries = rawEntries.map(function (raw) {
+      const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
+      if (!item) throw new Error('Item Showcase tidak ditemukan atau kode item sudah berubah. Muat ulang halaman.');
+      const hasInInput = Boolean(raw.hasInInput), hasSoldInput = Boolean(raw.hasSoldInput), hasWasteInput = Boolean(raw.hasWasteInput);
+      const values = [raw.inQty, raw.soldQty, raw.wasteQty].map(function (value) {
+        if (value === '' || value === null || value === undefined) return 0;
+        const qty = Number(value);
+        if (!isFinite(qty) || qty < 0) throw new Error(item.name + ': QTY wajib berupa angka 0 atau lebih.');
+        return Math.round(qty * 1000000) / 1000000;
+      });
+      return {
+        item: item, inQty: hasInInput ? values[0] : 0, soldQty: hasSoldInput ? values[1] : 0, wasteQty: hasWasteInput ? values[2] : 0,
+        hasInInput: hasInInput, hasSoldInput: hasSoldInput, hasWasteInput: hasWasteInput
+      };
+    }).filter(function (entry) { return entry.hasInInput || entry.hasSoldInput || entry.hasWasteInput; });
+    if (!entries.length) throw new Error('Isi minimal satu kolom In, Sold, atau Waste sebelum menyimpan.');
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      const productNeeds = {}, mappings = {};
+      entries.forEach(function (entry) {
+        const current = getCurrentStock_(outlet, 'Showcase', entry.item.code, entry.item.name).qty;
+        if (entry.soldQty + entry.wasteQty > current + entry.inQty + 0.0000001) {
+          throw new Error(entry.item.name + ': total Sold dan Waste melebihi Balance setelah In.');
+        }
+        if (!entry.inQty) return;
+        const mapping = resolveShowcaseProductMapping_(entry.item);
+        mappings[entry.item.code] = mapping;
+        if (!productNeeds[mapping.product.code]) productNeeds[mapping.product.code] = { product: mapping.product, qty: 0 };
+        productNeeds[mapping.product.code].qty += entry.inQty * mapping.productPerMenu;
+      });
+      const productPools = {};
+      Object.keys(productNeeds).forEach(function (code) {
+        const need = productNeeds[code], required = Math.round(need.qty * 1000000) / 1000000;
+        const available = getCurrentStock_(outlet, 'Store', need.product.code, need.product.name).qty;
+        if (required > available + 0.0000001) {
+          throw new Error(need.product.name + ': stok Store tidak mencukupi. Dibutuhkan ' + formatQty_(required) + ' ' + need.product.unit + ', tersedia ' + formatQty_(available) + '.');
+        }
+        productPools[code] = allocateTransferLots_(outlet, 'Store', need.product, required).map(function (lot) {
+          return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+        });
+      });
+
+      const progress = readShowcaseLogProgress_(outlet, eventDate);
+      const selectedProgress = progress.days.filter(function (day) { return day.date === eventDate; })[0] || {};
+      const now = new Date(), rows = [];
+      entries.forEach(function (entry, entryIndex) {
+        if (entry.inQty > 0) {
+          const mapping = mappings[entry.item.code];
+          const requiredProductQty = Math.round(entry.inQty * mapping.productPerMenu * 1000000) / 1000000;
+          const productLots = takeShowcaseProductLots_(productPools[mapping.product.code], requiredProductQty);
+          const transferId = Utilities.getUuid();
+          let assignedMenuQty = 0;
+          productLots.forEach(function (lot, lotIndex) {
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', '', lot.expiryDate, employee, now, eventDate);
+            storeRow.json.source_file = 'SHOWCASE_LOG';
+            storeRow.json.source_row = entryIndex + 1;
+            storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+            rows.push(storeRow);
+            const remainingMenuQty = Math.max(0, entry.inQty - assignedMenuQty);
+            const menuLotQty = lotIndex === productLots.length - 1
+              ? Math.round(remainingMenuQty * 1000000) / 1000000
+              : Math.min(remainingMenuQty, Math.round((lot.qty / mapping.productPerMenu) * 1000000) / 1000000);
+            assignedMenuQty += menuLotQty;
+            if (menuLotQty <= 0.0000001) return;
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', '', lot.expiryDate, employee, now, eventDate);
+            showcaseRow.json.source_arrival_date = lot.sourceDate || null;
+            showcaseRow.json.source_file = 'SHOWCASE_LOG';
+            showcaseRow.json.source_row = entryIndex + 1;
+            showcaseRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+            rows.push(showcaseRow);
+          });
+        }
+        [['soldQty', 'Terjual'], ['wasteQty', 'Waste']].forEach(function (definition) {
+          const qty = Number(entry[definition[0]] || 0);
+          if (qty <= 0) return;
+          const movement = stockTransferMovementRow_(Utilities.getUuid(), outlet, 'Showcase', entry.item, 'OUT', qty, definition[1], '', '', employee, now, eventDate);
+          movement.json.source_file = 'SHOWCASE_LOG';
+          movement.json.source_row = entryIndex + 1;
+          movement.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+          rows.push(movement);
+        });
+      });
+      const submittedIn = entries.some(function (entry) { return entry.hasInInput; });
+      const submittedSold = entries.some(function (entry) { return entry.hasSoldInput; });
+      const submittedWaste = entries.some(function (entry) { return entry.hasWasteInput; });
+      [[submittedIn, 'Showcase Log In'], [submittedSold, 'Showcase Log Sold'], [submittedWaste, 'Showcase Log Waste']].forEach(function (activity) {
+        if (!activity[0]) return;
+        const markerId = Utilities.getUuid();
+        rows.push({ insertId: markerId, json: {
+          record_id: markerId, logical_id: markerId, version: 1, record_type: 'LOG',
+          outlet: outlet, location: 'Showcase', direction: null, qty: 0, movement_type: activity[1], info: '',
+          expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000 + rows.length / 1000000,
+          created_by: employee.nik, source_file: 'SHOWCASE_LOG', source_row: 0
+        }});
+      });
+      insertStockCardRows_(rows);
+      const hasIn = Boolean(selectedProgress.stockIn || submittedIn);
+      const hasSold = Boolean(selectedProgress.sold || submittedSold);
+      const hasWaste = Boolean(selectedProgress.waste || submittedWaste);
+      if (hasIn && hasSold && hasWaste) markShowcaseLogTaskComplete_(employee, outlet, eventDate);
+      progress.days.forEach(function (day) {
+        if (day.date !== eventDate) return;
+        day.stockIn = hasIn; day.sold = hasSold; day.waste = hasWaste; day.complete = hasIn && hasSold && hasWaste;
+      });
+      return {
+        saved: true, outlet: outlet, eventDate: eventDate,
+        movementCount: rows.filter(function (row) { return row.json.record_type === 'MOVEMENT'; }).length,
+        entries: entries.map(function (entry) { return { itemCode: entry.item.code, inQty: entry.inQty, soldQty: entry.soldQty, wasteQty: entry.wasteQty }; }),
+        progress: progress, completed: hasIn && hasSold && hasWaste
+      };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function resolveShowcaseProductMapping_(showcaseItem) {
+  const product = findStockMasterItem_(showcaseItem.productName);
+  const fromUnit = normalizeUnit_(showcaseItem.productUnit), toUnit = normalizeUnit_(product.unit);
+  let factor = 1;
+  if (fromUnit !== toUnit) {
+    const saved = readStockUnitConversions_()[stockConversionKey_(product.code, fromUnit, toUnit)];
+    factor = saved ? Number(saved.factor) : 0;
+    if (!isFinite(factor) || factor <= 0) {
+      throw new Error(showcaseItem.name + ': konversi ' + showcaseItem.productUnit + ' ke ' + product.unit + ' untuk Product ' + product.name + ' belum tersedia.');
+    }
+  }
+  const productPerMenu = Number(showcaseItem.productQty) * factor;
+  if (!isFinite(productPerMenu) || productPerMenu <= 0) throw new Error(showcaseItem.name + ': QTY Product pada MENU_SHOWCASE tidak valid.');
+  return { product: product, factor: factor, productPerMenu: productPerMenu };
+}
+
+function takeShowcaseProductLots_(pool, qty) {
+  let remaining = Number(qty), taken = [];
+  for (let i = 0; i < pool.length && remaining > 0.0000001; i++) {
+    if (pool[i].qty <= 0.0000001) continue;
+    const amount = Math.min(pool[i].qty, remaining);
+    if (amount > 0.0000001) taken.push({ qty: amount, expiryDate: pool[i].expiryDate, sourceDate: pool[i].sourceDate });
+    pool[i].qty -= amount;
+    remaining -= amount;
+  }
+  if (remaining > 0.0000001) throw new Error('Lot FIFO Store berubah saat Showcase Log diproses. Muat ulang lalu coba lagi.');
+  return taken;
+}
+
+function readShowcaseLogTotals_(outlet, eventDate) {
+  const sql = latestStockMovementCte_() + ' SELECT item_name, ' +
+    'SUM(IF(direction = \'IN\' AND movement_type = \'Transfer In\', qty, 0)) AS total_in, ' +
+    'SUM(IF(direction = \'OUT\' AND movement_type = \'Terjual\', qty, 0)) AS total_sold, ' +
+    'SUM(IF(direction = \'OUT\' AND movement_type = \'Waste\', qty, 0)) AS total_waste ' +
+    'FROM latest WHERE outlet = @outlet AND location = \'Showcase\' AND event_date = CAST(@eventDate AS DATE) GROUP BY item_name';
+  const map = {};
+  runNamedQuery_(sql, { outlet: outlet, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
+    map[String(row.item_name || '').trim().toLowerCase()] = {
+      totalIn: Number(row.total_in || 0), totalSold: Number(row.total_sold || 0), totalWaste: Number(row.total_waste || 0)
+    };
+  });
+  return map;
+}
+
+function readShowcaseLogProgress_(outlet, anchorDate) {
+  const anchor = new Date(anchorDate + 'T00:00:00Z');
+  const year = anchor.getUTCFullYear(), month = anchor.getUTCMonth();
+  const startDate = Utilities.formatDate(new Date(Date.UTC(year, month, 1)), 'UTC', 'yyyy-MM-dd');
+  const endDate = Utilities.formatDate(new Date(Date.UTC(year, month + 1, 0)), 'UTC', 'yyyy-MM-dd');
+  const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
+    'MAX(IF(movement_type = \'Showcase Log In\', 1, 0)) AS stock_in, ' +
+    'MAX(IF(movement_type = \'Showcase Log Sold\', 1, 0)) AS sold, ' +
+    'MAX(IF(movement_type = \'Showcase Log Waste\', 1, 0)) AS waste ' +
+    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'WHERE record_type = \'LOG\' AND outlet = @outlet AND location = \'Showcase\' ' +
+    'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) GROUP BY event_date';
+  const status = {};
+  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
+    status[String(row.event_date)] = { stockIn: Number(row.stock_in || 0) > 0, sold: Number(row.sold || 0) > 0, waste: Number(row.waste || 0) > 0 };
+  });
+  const today = todayIso_(), days = [], lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  for (let day = 1; day <= lastDay; day++) {
+    const date = Utilities.formatDate(new Date(Date.UTC(year, month, day)), 'UTC', 'yyyy-MM-dd');
+    const value = status[date] || { stockIn: false, sold: false, waste: false };
+    days.push({ day: day, date: date, stockIn: value.stockIn, sold: value.sold, waste: value.waste, complete: value.stockIn && value.sold && value.waste, future: date > today });
+  }
+  return { today: today, selectedDate: anchorDate, month: startDate.slice(0, 7), days: days };
+}
+
+function findShowcaseLogTask_() {
+  const sheet = ensureTaskSheet_();
+  if (sheet.getLastRow() < 2) return null;
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues().map(taskFromRow_).filter(function (task) {
+    if (!task.active) return false;
+    return task.type === 'FORM' && String(task.target || '').toLowerCase() === 'showcaselog' && task.frequency === 'DAILY';
+  })[0] || null;
+}
+
+function markShowcaseLogTaskComplete_(employee, outlet, eventDate) {
+  const task = findShowcaseLogTask_();
+  if (!task) return false;
+  ensureBigQueryInfrastructure_();
+  if (readCompletionMap_(outlet)[task.id + '|' + eventDate]) return true;
+  insertAll_('task_completions', [{ insertId: Utilities.getUuid(), json: {
+    completion_id: Utilities.getUuid(), task_id: task.id, nik: employee.nik, outlet: outlet,
+    period_key: eventDate, completed_at: new Date().toISOString(), source: 'SHOWCASE_LOG'
+  }}]);
+  return true;
 }
 
 function addStockLocation(token, requestedOutlet, locationName) {
@@ -1970,8 +2227,8 @@ function exportStockCardItem(token, payload) {
     const rows = grouped.map(function (day) {
       return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(fifoSnapshots[day.date] || [], item.unit, context.location)];
     });
-    const detailHeader = isShowcaseLocation_(context.location) ? 'Breakdown Balance Showcase' : 'Detail Expired FIFO';
-    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Masuk', 'Info Masuk', 'Keluar', 'Info Keluar', 'Balance', detailHeader], rows, format);
+    const detailHeader = 'Stock In · Arrival · Exp';
+    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Stock In', 'Info Stock In', 'Keluar', 'Info Keluar', 'Balance', detailHeader], rows, format);
   });
 }
 
@@ -3721,15 +3978,10 @@ function calculateFifoSnapshots_(history) {
 function fifoDetailText_(lots, unit, location) {
   if (!lots.length) return 'Stok habis';
   return lots.map(function (lot) {
-    if (isShowcaseLocation_(location)) {
-      return formatQty_(lot.qty) + ' ' + (unit || '') +
-        ' | Masuk Showcase: ' + (lot.showcaseDate || '-') +
-        ' | Kedatangan Barang: ' + (lot.sourceDate || '-') +
-        ' | Expired: ' + (lot.expiryDate || 'Belum diisi');
-    }
     return formatQty_(lot.qty) + ' ' + (unit || '') +
-      ' · Datang: ' + (lot.sourceDate || '-') +
-      ' · ' + (lot.expiryDate ? 'Exp: ' + lot.expiryDate : 'Exp belum dilengkapi — edit transaksi masuk');
+      ' | Stock In: ' + (lot.showcaseDate || lot.sourceDate || '-') +
+      ' | Arrival: ' + (lot.sourceDate || '-') +
+      ' | Exp: ' + (lot.expiryDate || '-');
   }).join('\n');
 }
 
@@ -3791,19 +4043,17 @@ function exportTransferReceipt(token, transferId, requestedOutlet) {
 
 function stockMovementInfo_(movements) {
   return movements.map(function (movement) {
-    let text = (movement.movementType || '-') + ': ' + formatQty_(movement.qty);
-    if (movement.expiryDate) text += ' | Exp: ' + movement.expiryDate;
-    if (movement.info) text += ' | ' + movement.info;
-    if (movement.direction === 'OUT' && movement.fifoUsageLots && movement.fifoUsageLots.length) {
-      movement.fifoUsageLots.forEach(function (lot) {
-        text += '\nFIFO dipakai: ' + formatQty_(lot.qty) +
-          ' dari kedatangan ' + (lot.sourceDate || '-') +
-          ' | ' + (lot.expiryDate ? 'Exp: ' + lot.expiryDate : 'Exp belum diisi');
-      });
-    }
-    if (movement.direction === 'OUT' && Number(movement.fifoUncovered || 0) > 0) {
-      text += '\nFIFO belum tertutup: ' + formatQty_(movement.fifoUncovered) + ' (stok minus)';
-    }
+    const labels = { Terjual: 'Sold', Waste: 'Waste', Pemakaian: 'Usage', 'Transfer Out': 'Stock Out', 'Transfer Out Antar Outlet': 'Stock Out', 'Stock Adjustment': 'Adjustment', Others: 'Other' };
+    const title = movement.direction === 'IN' ? 'Stock In' : (labels[movement.movementType] || movement.movementType || 'Stock Out');
+    let text = title + ': ' + formatQty_(movement.qty);
+    const lots = movement.direction === 'IN' ? [{
+      showcaseDate: movement.date, sourceDate: movement.sourceArrivalDate || movement.date, expiryDate: movement.expiryDate || ''
+    }] : (movement.fifoUsageLots || []);
+    (lots.length ? lots : [{ showcaseDate: '', sourceDate: '', expiryDate: '' }]).forEach(function (lot) {
+      text += '\nStock In: ' + (lot.showcaseDate || lot.sourceDate || '-') +
+        ' | Arrival: ' + (lot.sourceDate || '-') +
+        ' | Exp: ' + (lot.expiryDate || '-');
+    });
     return text;
   }).join('\n');
 }
@@ -3855,7 +4105,7 @@ function buildStockXlsxBlobLegacy_(fileName, title, meta, headers, rows) {
         .setVerticalAlignment('top').setWrap(true);
     }
     headers.forEach(function (header, index) {
-      if (['QTY', 'Masuk', 'Keluar', 'Balance'].indexOf(header) >= 0 && allRows.length > 4) {
+      if (['QTY', 'Masuk', 'Stock In', 'Keluar', 'Balance'].indexOf(header) >= 0 && allRows.length > 4) {
         sheet.getRange(5, index + 1, allRows.length - 4, 1).setNumberFormat('#,##0.00');
       }
       const width = index === 2 || index === 4 ? 260 : index === 0 ? 140 : 160;
@@ -3900,7 +4150,7 @@ function buildStockXlsxPackage_(fileName, title, meta, headers, rows) {
   const allRows = [[title], [meta], [], headers].concat(rows.length ? rows : [['Tidak ada data pada periode ini.']]);
   const numericHeaders = {};
   headers.forEach(function (header, index) {
-    if (['QTY', 'QTY On Stock Card', 'QTY Stock Actual', 'Masuk', 'Keluar', 'Balance'].indexOf(header) >= 0) numericHeaders[index] = true;
+    if (['QTY', 'QTY On Stock Card', 'QTY Stock Actual', 'Masuk', 'Stock In', 'Keluar', 'Balance'].indexOf(header) >= 0) numericHeaders[index] = true;
   });
   const sheetRows = allRows.map(function (row, rowIndex) {
     const cells = [];
@@ -4319,6 +4569,15 @@ function ensureTaskSheet_() {
   if (currentIconHeader !== 'ICON') {
     sheet.getRange(1, 12).setValue('ICON').setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
   }
+  const existingTargets = sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 5, sheet.getLastRow() - 1, 1).getDisplayValues().map(function (row) {
+    return String(row[0] || '').trim().toLowerCase();
+  });
+  if (existingTargets.indexOf('showcaselog') < 0) {
+    sheet.appendRow([
+      'SHOWCASE_LOG_DAILY', 'Showcase Log', 'Input harian Stock In, Sold, dan Waste untuk Showcase.',
+      'FORM', 'showcaselog', 'DAILY', 'ALL', 'Hari ini', true, new Date(), 'SYSTEM', 'storefront'
+    ]);
+  }
   return sheet;
 }
 
@@ -4329,6 +4588,7 @@ function cleanTaskIcon_(value, type, target) {
   const icon = String(value || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
   if (allowed.indexOf(icon) >= 0) return icon;
   if (String(target || '') === 'StockCard') return 'inventory_2';
+  if (String(target || '').toLowerCase() === 'showcaselog') return 'storefront';
   return String(type || '').toUpperCase() === 'FORM' ? 'assignment' : 'link';
 }
 
