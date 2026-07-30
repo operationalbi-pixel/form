@@ -1974,7 +1974,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v8') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v9') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -2022,7 +2022,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v8', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v9', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -3223,15 +3223,28 @@ function showcaseSeedRows_() {
 }
 
 function ensureShowcaseSheet_() {
-  const headers = ['Menu','Menu Category','Menu Category Detail','Product','Product Category','Product Sub Category','Unit','Qty'];
+  // Kode Item sengaja ditambahkan di kolom I agar referensi sumber A/C/D/G/H tidak bergeser.
+  const headers = ['Menu','Menu Category','Menu Category Detail','Product','Product Category','Product Sub Category','Unit','Qty','Kode Item'];
   const sheet = ensureSheet_(CONFIG.SHOWCASE_SHEET, headers);
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (sheet.getLastRow() < 2) {
-    const rows = showcaseSeedRows_();
+    const rows = showcaseSeedRows_().map(function (row) { return row.concat(showcaseItemCode_(row[0])); });
     sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
     sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.0000');
     sheet.setFrozenRows(1);
     sheet.autoResizeColumns(1, headers.length);
+  } else {
+    const rowCount = sheet.getLastRow() - 1;
+    const names = sheet.getRange(2, 1, rowCount, 1).getDisplayValues();
+    const codes = sheet.getRange(2, 9, rowCount, 1).getDisplayValues();
+    let changed = false;
+    const completedCodes = codes.map(function (row, index) {
+      const existing = cleanText_(row[0], 80).toUpperCase();
+      if (existing || !cleanText_(names[index][0], 180)) return [existing];
+      changed = true;
+      return [showcaseItemCode_(names[index][0])];
+    });
+    if (changed) sheet.getRange(2, 9, rowCount, 1).setValues(completedCodes);
   }
   return sheet;
 }
@@ -3243,12 +3256,19 @@ function showcaseItemCode_(menuName) {
 function readShowcaseItems_() {
   const sheet = ensureShowcaseSheet_();
   if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues().map(function (row, index) {
+  const seenCodes = {}, seenNames = {};
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues().map(function (row, index) {
     const name = cleanText_(row[0], 180);
     const productQty = Number(row[7]);
     if (!name || !cleanText_(row[3], 180) || !isFinite(productQty) || productQty <= 0) return null;
+    const code = cleanText_(row[8], 80).toUpperCase() || showcaseItemCode_(name);
+    const nameKey = name.toLowerCase();
+    if (seenNames[nameKey]) throw new Error('Nama Menu Showcase "' + name + '" digunakan lebih dari sekali pada baris ' + seenNames[nameKey] + ' dan ' + (index + 2) + '.');
+    if (seenCodes[code]) throw new Error('Kode Item Showcase "' + code + '" digunakan lebih dari sekali pada baris ' + seenCodes[code] + ' dan ' + (index + 2) + '.');
+    seenNames[nameKey] = index + 2;
+    seenCodes[code] = index + 2;
     return {
-      code: showcaseItemCode_(name), category: cleanText_(row[2], 100) || cleanText_(row[1], 100) || 'SHOWCASE',
+      code: code, category: cleanText_(row[2], 100) || cleanText_(row[1], 100) || 'SHOWCASE',
       name: name, unit: 'PCS', active: true, showcase: true, sourceRow: index + 2,
       menuCategory: cleanText_(row[1], 100), productName: cleanText_(row[3], 180),
       productCategory: cleanText_(row[4], 100), productSubCategory: cleanText_(row[5], 100),
@@ -3299,19 +3319,22 @@ function findStockMasterItem_(itemKey) {
 }
 
 function readStockItemsWithQty_(outlet, location) {
-  const master = isShowcaseLocation_(location) ? readShowcaseItems_() : readStockMaster_();
+  const showcaseLocation = isShowcaseLocation_(location);
+  const master = showcaseLocation ? readShowcaseItems_() : readStockMaster_();
   if (!master.length) return [];
   const hiddenItems = readStockHiddenMap_(outlet, location);
   const rows = readStockBalanceRows_(outlet, location);
-  const codeQty = {}, legacyNameQty = {};
+  const codeQty = {}, nameQty = {}, legacyNameQty = {};
   rows.forEach(function (r) {
+    const rowName = String(r.item_name || '').trim().toLowerCase();
+    if (rowName) nameQty[rowName] = Number(nameQty[rowName] || 0) + Number(r.current_qty || 0);
     if (String(r.item_code || '').trim()) codeQty[String(r.item_code).toLowerCase()] = Number(r.current_qty || 0);
     else legacyNameQty[String(r.item_name).toLowerCase()] = Number(r.current_qty || 0);
   });
   return master.map(function (item) {
     return {
       code: item.code, category: item.category, name: item.name, unit: item.unit,
-      qty: (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]),
+      qty: showcaseLocation ? Number(nameQty[item.name.toLowerCase()] || 0) : (codeQty[item.code.toLowerCase()] || 0) + (legacyNameQty[item.name.toLowerCase()] || 0), hidden: Boolean(hiddenItems[item.code]),
       showcase: Boolean(item.showcase), productName: item.productName || '', productUnit: item.productUnit || '', productQty: Number(item.productQty || 0)
     };
   });
@@ -3490,9 +3513,12 @@ function readCurrentStockCodeQtyMap_(outlet, location) {
 }
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
+  const itemCondition = isShowcaseLocation_(location)
+    ? 'item_name = @item'
+    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
   const sql = latestStockMovementCte_() + ' SELECT COUNT(*) AS movement_count, COALESCE(SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), 0) AS current_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = @location ' +
-    'AND ((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
+    'AND ' + itemCondition;
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: itemCode, item: itemName }, { useQueryCache: false });
   return { count: rows.length ? Number(rows[0].movement_count || 0) : 0, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
 }
@@ -3504,9 +3530,12 @@ function latestStockMovementCte_() {
 }
 
 function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
+  const itemCondition = isShowcaseLocation_(location)
+    ? 'item_name = @item'
+    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
   let sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
     'event_date, direction, qty, movement_type, info, expiry_date, transfer_id, created_by, created_at FROM latest ' +
-    'WHERE outlet = @outlet AND location = @location AND ((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item)) ';
+    'WHERE outlet = @outlet AND location = @location AND ' + itemCondition + ' ';
   const params = { outlet: outlet, location: location, code: item.code, item: item.name };
   if (onlyLogicalId) {
     sql += 'AND COALESCE(NULLIF(logical_id, \'\'), record_id) = @logicalId ';
