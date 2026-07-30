@@ -6,6 +6,7 @@ Paket ini memindahkan tampilan aplikasi dari Google Apps Script ke GitHub Pages.
 
 - `docs/index.html` — dashboard dan login.
 - `docs/stock-card.html` — halaman Stock Card.
+- `docs/showcaselog.html` — form Daily Showcase Log untuk In, Sold, dan Waste.
 - `docs/config.js` — alamat API dan alamat GitHub Pages.
 - `docs/api-client.js` — jembatan komunikasi aman antara GitHub Pages dan GAS.
 - `docs/ui-modern.css` — lapisan desain bersama untuk aksesibilitas dan tampilan responsif.
@@ -66,6 +67,8 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Jangan mengubah nama header sheet `MENU_SHOWCASE`. Isi baris boleh dikelola langsung di sheet setelah sheet tersebut terbentuk.
 - Daftar pada seluruh storage menempatkan stok minus terbesar paling atas. Item lainnya diurutkan berdasarkan kategori lalu nama A–Z.
 - Setiap lot pada balance `Showcase` menampilkan tanggal Masuk Showcase, tanggal Kedatangan Barang asal di `Store`, dan tanggal Expired yang diwariskan dari lot Store. Transaksi lama direkonstruksi dari pasangan transfer Store bila datanya masih tersedia.
+- Informasi riwayat Stock Card disederhanakan menjadi `Stock In`, `Arrival`, dan `Exp`; catatan teknis lain tidak ditampilkan agar tabel lebih ringkas.
+- Form Daily `Showcase Log` dibuat otomatis dan memakai `showcaselog.html`. Setiap item memiliki Total/Input untuk In, Sold, dan Waste serta Balance terkini. Penyimpanan form langsung menulis ke Stock Card dan Daily selesai otomatis setelah ketiga aktivitas terisi pada tanggal tersebut.
 
 ## Uji cepat
 
