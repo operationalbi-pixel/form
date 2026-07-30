@@ -69,6 +69,9 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Setiap lot pada balance `Showcase` menampilkan tanggal Masuk Showcase, tanggal Kedatangan Barang asal di `Store`, dan tanggal Expired yang diwariskan dari lot Store. Transaksi lama direkonstruksi dari pasangan transfer Store bila datanya masih tersedia.
 - Informasi riwayat Stock Card disederhanakan menjadi `Stock In`, `Arrival`, dan `Exp`; catatan teknis lain tidak ditampilkan agar tabel lebih ringkas.
 - Form Daily `Showcase Log` dibuat otomatis dan memakai `showcaselog.html`. Setiap item memiliki Total/Input untuk In, Sold, dan Waste serta Balance terkini. Penyimpanan form langsung menulis ke Stock Card dan Daily selesai otomatis setelah ketiga aktivitas terisi pada tanggal tersebut.
+- Rincian FIFO pada Stock Card selalu direkonsiliasi dengan Balance per tanggal. Jika saldo 0 atau minus, lot sisa tidak lagi ditampilkan; jika riwayat awal tidak lengkap, sistem hanya menambahkan selisih yang diperlukan agar total rincian tetap sama dengan Balance.
+- Showcase Log memakai header dan navigasi periode yang konsisten dengan Dashboard serta Stock Card, dilengkapi pencarian global kode, kategori, nama, dan unit. Input yang sudah diketik tetap tersimpan saat daftar difilter.
+- Menu Daily, Weekly, Monthly, dan Yearly terbuka sebagai daftar vertikal ringkas tepat di bawah tombol periode setelah diklik.
 
 ## Uji cepat
 
