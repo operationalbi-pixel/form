@@ -1920,7 +1920,8 @@ function getStockHistory(token, payload) {
     const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
     const location = normalizeLocation_(payload.location);
     const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
-    const rows = readLatestStockHistory_(outlet, location, item);
+    let rows = readLatestStockHistory_(outlet, location, item);
+    if (isShowcaseLocation_(location)) rows = enrichShowcaseHistoryLots_(rows, outlet, item);
     const employeeNames = readEmployeeNameMap_();
     rows.forEach(function (row) { row.createdByUser = (employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui') + (employeeNames[row.createdBy] && row.createdBy ? ' · ' + row.createdBy : ''); });
     const current = getCurrentStock_(outlet, location, item.code, item.name);
@@ -1959,22 +1960,24 @@ function exportStockCardItem(token, payload) {
     const format = String(payload.format || '').toLowerCase();
     if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('Pilih bulan laporan terlebih dahulu.');
     if (['xlsx', 'pdf'].indexOf(format) < 0) throw new Error('Format export tidak valid.');
-    const history = readLatestStockHistory_(context.outlet, context.location, item);
+    let history = readLatestStockHistory_(context.outlet, context.location, item);
+    if (isShowcaseLocation_(context.location)) history = enrichShowcaseHistoryLots_(history, context.outlet, item);
     const employeeNames = readEmployeeNameMap_();
     history.forEach(function (row) { row.createdByUser = (employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui') + (employeeNames[row.createdBy] && row.createdBy ? ' · ' + row.createdBy : ''); });
     const current = getCurrentStock_(context.outlet, context.location, item.code, item.name);
     const fifoSnapshots = calculateFifoSnapshots_(history);
     const grouped = addBalancesToGroupedHistory_(groupStockHistoryByDate_(history), current.qty).filter(function (day) { return String(day.date).slice(0, 7) === month; });
     const rows = grouped.map(function (day) {
-      return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(fifoSnapshots[day.date] || [], item.unit)];
+      return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(fifoSnapshots[day.date] || [], item.unit, context.location)];
     });
-    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Masuk', 'Info Masuk', 'Keluar', 'Info Keluar', 'Balance', 'Detail Expired FIFO'], rows, format);
+    const detailHeader = isShowcaseLocation_(context.location) ? 'Breakdown Balance Showcase' : 'Detail Expired FIFO';
+    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Masuk', 'Info Masuk', 'Keluar', 'Info Keluar', 'Balance', detailHeader], rows, format);
   });
 }
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v9') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v10') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -2002,7 +2005,8 @@ function ensureStockCardInfrastructure_() {
   ensureBigQueryFields_('stock_card', [
     bqField_('item_code', 'STRING'), bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
     bqField_('source_file', 'STRING'), bqField_('source_hash', 'STRING'), bqField_('source_row', 'INTEGER'),
-    bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING')
+    bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING'),
+    bqField_('source_arrival_date', 'DATE')
   ]);
   ensureBigQueryTable_('stock_balances', [
     bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
@@ -2022,7 +2026,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v9', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v10', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -2050,16 +2054,18 @@ function validateTransferLines_(outlet, location, rawItems) {
 function allocateTransferLots_(outlet, location, item, qty) {
   const history = readLatestStockHistory_(outlet, location, item).slice().reverse();
   const snapshots = calculateFifoSnapshots_(history), dates = Object.keys(snapshots).sort();
-  const lots = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) { return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '' }; }) : [];
+  const lots = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
+    return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+  }) : [];
   let remaining = qty;
   const allocated = [];
   lots.forEach(function (lot) {
     if (remaining <= 0.0000001) return;
     const taken = Math.min(lot.qty, remaining);
-    if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate });
+    if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate });
     remaining -= taken;
   });
-  if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '' });
+  if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '', sourceDate: '' });
   return allocated;
 }
 
@@ -3370,25 +3376,42 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
     }
     const showcaseCurrent = getCurrentStock_(outlet, 'Showcase', showcaseItem.code, showcaseItem.name).qty;
     const detail = showcaseItem.name + ' ' + formatQty_(menuQty) + ' PCS · Product ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit;
-    const rows = [];
-    allocateTransferLots_(outlet, 'Store', product, productQty).forEach(function (lot) {
+    const rows = [], showcaseRows = [];
+    const productPerMenu = Number(showcaseItem.productQty) * factor;
+    const allocatedLots = allocateTransferLots_(outlet, 'Store', product, productQty);
+    let assignedMenuQty = 0;
+    allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
         'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate));
+      const isLast = lotIndex === allocatedLots.length - 1;
+      const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
+      const menuLotQty = isLast
+        ? Math.round(remainingMenuQty * 1000000) / 1000000
+        : Math.min(remainingMenuQty, Math.round((Number(lot.qty) / productPerMenu) * 1000000) / 1000000);
+      assignedMenuQty += menuLotQty;
+      if (menuLotQty <= 0.0000001) return;
+      const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', menuLotQty, 'Transfer In',
+        'Peralihan dari Store · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
+        lot.expiryDate, employee, now, eventDate);
+      showcaseRow.json.source_arrival_date = lot.sourceDate || null;
+      showcaseRows.push(showcaseRow);
+      rows.push(showcaseRow);
     });
-    const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', Number(menuQty), 'Transfer In',
-      'Peralihan dari Store · ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit + (note ? ' · ' + note : ''), '', employee, now, eventDate);
-    rows.push(showcaseRow);
     insertStockCardRows_(rows);
+    const movements = showcaseRows.map(function (showcaseRow) {
+      return {
+        recordId: showcaseRow.json.record_id, logicalId: showcaseRow.json.logical_id, version: 1, date: eventDate,
+        direction: 'IN', qty: Number(showcaseRow.json.qty), movementType: 'Transfer In', info: showcaseRow.json.info,
+        expiryDate: String(showcaseRow.json.expiry_date || ''), sourceArrivalDate: String(showcaseRow.json.source_arrival_date || ''),
+        createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik,
+        createdAt: now.toISOString(), transferId: transferId, systemGenerated: true
+      };
+    });
     return {
       saved: true, transferred: true, outlet: outlet, location: 'Showcase', sourceLocation: 'Store',
       itemCode: showcaseItem.code, itemName: showcaseItem.name, currentQty: showcaseCurrent + Number(menuQty),
       sourceItemCode: product.code, sourceItemName: product.name, sourceQty: productQty,
-      movement: {
-        recordId: showcaseRow.json.record_id, logicalId: showcaseRow.json.logical_id, version: 1, date: eventDate,
-        direction: 'IN', qty: Number(menuQty), movementType: 'Transfer In', info: showcaseRow.json.info,
-        expiryDate: '', createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik,
-        createdAt: now.toISOString(), transferId: transferId, systemGenerated: true
-      }
+      movement: movements[0] || null, movements: movements
     };
   } finally {
     lock.releaseLock();
@@ -3523,6 +3546,61 @@ function getCurrentStock_(outlet, location, itemCode, itemName) {
   return { count: rows.length ? Number(rows[0].movement_count || 0) : 0, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
 }
 
+function enrichShowcaseHistoryLots_(history, outlet, showcaseItem) {
+  const needsEnrichment = history.some(function (row) {
+    return row.direction === 'IN' && row.transferId && !row.sourceArrivalDate;
+  });
+  if (!needsEnrichment) return history;
+  let product;
+  try { product = findStockMasterItem_(showcaseItem.productName); } catch (error) { return history; }
+  const fromUnit = normalizeUnit_(showcaseItem.productUnit);
+  const toUnit = normalizeUnit_(product.unit);
+  let factor = 1;
+  if (fromUnit !== toUnit) {
+    const saved = readStockUnitConversions_()[stockConversionKey_(product.code, fromUnit, toUnit)];
+    factor = saved ? Number(saved.factor) : 0;
+  }
+  const productPerMenu = Number(showcaseItem.productQty) * factor;
+  if (!isFinite(productPerMenu) || productPerMenu <= 0) return history;
+  const storeHistory = readLatestStockHistory_(outlet, 'Store', product);
+  calculateFifoSnapshots_(storeHistory);
+  const lotsByTransfer = {};
+  storeHistory.forEach(function (row) {
+    if (row.direction !== 'OUT' || !row.transferId) return;
+    const lots = row.fifoUsageLots && row.fifoUsageLots.length ? row.fifoUsageLots : [{
+      qty: row.qty, expiryDate: row.expiryDate || '', sourceDate: ''
+    }];
+    if (!lotsByTransfer[row.transferId]) lotsByTransfer[row.transferId] = [];
+    lots.forEach(function (lot) { lotsByTransfer[row.transferId].push(lot); });
+  });
+  const enriched = [];
+  history.forEach(function (row) {
+    const productLots = row.direction === 'IN' && row.transferId && !row.sourceArrivalDate ? lotsByTransfer[row.transferId] : null;
+    if (!productLots || !productLots.length) {
+      enriched.push(row);
+      return;
+    }
+    let assignedMenuQty = 0;
+    productLots.forEach(function (lot, index) {
+      const remainingMenuQty = Math.max(0, Number(row.qty) - assignedMenuQty);
+      const isLast = index === productLots.length - 1;
+      const menuLotQty = isLast
+        ? Math.round(remainingMenuQty * 1000000) / 1000000
+        : Math.min(remainingMenuQty, Math.round((Number(lot.qty) / productPerMenu) * 1000000) / 1000000);
+      assignedMenuQty += menuLotQty;
+      if (menuLotQty <= 0.0000001) return;
+      const clone = Object.assign({}, row);
+      clone.recordId = row.recordId + '-lot-' + (index + 1);
+      clone.logicalId = row.logicalId + '-lot-' + (index + 1);
+      clone.qty = menuLotQty;
+      clone.expiryDate = String(lot.expiryDate || row.expiryDate || '');
+      clone.sourceArrivalDate = String(lot.sourceDate || '');
+      enriched.push(clone);
+    });
+  });
+  return enriched;
+}
+
 function latestStockMovementCte_() {
   return 'WITH latest AS (SELECT * FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
     'WHERE record_type = \'MOVEMENT\' QUALIFY ROW_NUMBER() OVER (' +
@@ -3534,7 +3612,7 @@ function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
     ? 'item_name = @item'
     : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
   let sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-    'event_date, direction, qty, movement_type, info, expiry_date, transfer_id, created_by, created_at FROM latest ' +
+    'event_date, direction, qty, movement_type, info, expiry_date, source_arrival_date, transfer_id, created_by, created_at FROM latest ' +
     'WHERE outlet = @outlet AND location = @location AND ' + itemCondition + ' ';
   const params = { outlet: outlet, location: location, code: item.code, item: item.name };
   if (onlyLogicalId) {
@@ -3547,6 +3625,7 @@ function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
       recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
       date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
       movementType: String(r.movement_type || ''), info: String(r.info || ''), expiryDate: String(r.expiry_date || ''),
+      sourceArrivalDate: String(r.source_arrival_date || ''),
       transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
       createdBy: String(r.created_by || ''), createdAt: String(r.created_at || '')
     };
@@ -3605,7 +3684,12 @@ function calculateFifoSnapshots_(history) {
     movement.fifoUsageLots = [];
     movement.fifoUncovered = 0;
     if (movement.direction === 'IN') {
-      lots.push({ qty: qty, expiryDate: String(movement.expiryDate || ''), sourceDate: String(movement.date || '') });
+      lots.push({
+        qty: qty,
+        expiryDate: String(movement.expiryDate || ''),
+        sourceDate: String(movement.sourceArrivalDate || movement.date || ''),
+        showcaseDate: String(movement.date || '')
+      });
     } else if (movement.direction === 'OUT') {
       let remaining = qty;
       for (let i = 0; i < lots.length && remaining > 0.0000001; i++) {
@@ -3617,7 +3701,8 @@ function calculateFifoSnapshots_(history) {
           movement.fifoUsageLots.push({
             qty: taken,
             expiryDate: lots[i].expiryDate,
-            sourceDate: lots[i].sourceDate
+            sourceDate: lots[i].sourceDate,
+            showcaseDate: lots[i].showcaseDate
           });
         }
       }
@@ -3627,15 +3712,21 @@ function calculateFifoSnapshots_(history) {
       }
     }
     snapshots[String(movement.date || '')] = lots.filter(function (lot) { return lot.qty > 0.0000001; }).map(function (lot) {
-      return { qty: lot.qty, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate };
+      return { qty: lot.qty, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate, showcaseDate: lot.showcaseDate };
     });
   });
   return snapshots;
 }
 
-function fifoDetailText_(lots, unit) {
+function fifoDetailText_(lots, unit, location) {
   if (!lots.length) return 'Stok habis';
   return lots.map(function (lot) {
+    if (isShowcaseLocation_(location)) {
+      return formatQty_(lot.qty) + ' ' + (unit || '') +
+        ' | Masuk Showcase: ' + (lot.showcaseDate || '-') +
+        ' | Kedatangan Barang: ' + (lot.sourceDate || '-') +
+        ' | Expired: ' + (lot.expiryDate || 'Belum diisi');
+    }
     return formatQty_(lot.qty) + ' ' + (unit || '') +
       ' · Datang: ' + (lot.sourceDate || '-') +
       ' · ' + (lot.expiryDate ? 'Exp: ' + lot.expiryDate : 'Exp belum dilengkapi — edit transaksi masuk');
