@@ -74,6 +74,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Showcase Log memakai header dan navigasi periode yang konsisten dengan Dashboard serta Stock Card, dilengkapi pencarian global kode, kategori, nama, dan unit. Input yang sudah diketik tetap tersimpan saat daftar difilter.
 - Pada ponsel, daftar Showcase Log tetap berupa tabel horizontal yang padat dan dapat digeser kanan-kiri. Header tabel serta kolom Item Showcase dibekukan, sedangkan kontrol tanggal dan Simpan sejajar, sama tinggi, serta tetap terlihat ketika halaman digulir.
 - Pencarian ikut dibekukan di bawah kontrol tanggal, header bertingkat memakai latar solid tanpa celah, dan warna In/Sold/Waste/Balance dibedakan. Balance menampilkan kalkulasi sementara secara langsung sebelum data disimpan.
+- Ikon informasi `i` abu-abu tersedia pada setiap transaksi Stock Card dan Total In/Sold/Waste Showcase Log. Tooltip hanya menampilkan nama pelaku transaksi tanpa NIK.
 - Menu Daily, Weekly, Monthly, dan Yearly terbuka sebagai daftar vertikal ringkas tepat di bawah tombol periode setelah diklik.
 
 ## Uji cepat

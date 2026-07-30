@@ -516,7 +516,8 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
       const day = totals[item.name.toLowerCase()] || {};
       return {
         code: item.code, category: item.category, name: item.name, unit: item.unit, balance: Number(item.qty || 0),
-        totalIn: Number(day.totalIn || 0), totalSold: Number(day.totalSold || 0), totalWaste: Number(day.totalWaste || 0)
+        totalIn: Number(day.totalIn || 0), totalSold: Number(day.totalSold || 0), totalWaste: Number(day.totalWaste || 0),
+        inUsers: day.inUsers || '', soldUsers: day.soldUsers || '', wasteUsers: day.wasteUsers || ''
       };
     }).sort(function (a, b) {
       return a.category.localeCompare(b.category) || a.name.localeCompare(b.name);
@@ -697,16 +698,25 @@ function takeShowcaseProductLots_(pool, qty) {
 }
 
 function readShowcaseLogTotals_(outlet, eventDate) {
-  const sql = latestStockMovementCte_() + ' SELECT item_name, ' +
-    'SUM(IF(direction = \'IN\' AND movement_type = \'Transfer In\', qty, 0)) AS total_in, ' +
-    'SUM(IF(direction = \'OUT\' AND movement_type = \'Terjual\', qty, 0)) AS total_sold, ' +
-    'SUM(IF(direction = \'OUT\' AND movement_type = \'Waste\', qty, 0)) AS total_waste ' +
-    'FROM latest WHERE outlet = @outlet AND location = \'Showcase\' AND event_date = CAST(@eventDate AS DATE) GROUP BY item_name';
+  const sql = latestStockMovementCte_() + ' SELECT item_name, direction, movement_type, created_by, SUM(qty) AS total_qty ' +
+    'FROM latest WHERE outlet = @outlet AND location = \'Showcase\' AND event_date = CAST(@eventDate AS DATE) ' +
+    'AND ((direction = \'IN\' AND movement_type = \'Transfer In\') OR (direction = \'OUT\' AND movement_type IN (\'Terjual\', \'Waste\'))) ' +
+    'GROUP BY item_name, direction, movement_type, created_by';
   const map = {};
+  const employeeNames = readEmployeeNameMap_();
   runNamedQuery_(sql, { outlet: outlet, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
-    map[String(row.item_name || '').trim().toLowerCase()] = {
-      totalIn: Number(row.total_in || 0), totalSold: Number(row.total_sold || 0), totalWaste: Number(row.total_waste || 0)
-    };
+    const key = String(row.item_name || '').trim().toLowerCase();
+    if (!map[key]) map[key] = { totalIn: 0, totalSold: 0, totalWaste: 0, inActors: {}, soldActors: {}, wasteActors: {} };
+    const item = map[key], qty = Number(row.total_qty || 0), nik = String(row.created_by || ''), name = employeeNames[nik] || 'User tidak diketahui';
+    if (row.direction === 'IN' && row.movement_type === 'Transfer In') { item.totalIn += qty; item.inActors[name] = true; }
+    if (row.direction === 'OUT' && row.movement_type === 'Terjual') { item.totalSold += qty; item.soldActors[name] = true; }
+    if (row.direction === 'OUT' && row.movement_type === 'Waste') { item.totalWaste += qty; item.wasteActors[name] = true; }
+  });
+  Object.keys(map).forEach(function (key) {
+    map[key].inUsers = Object.keys(map[key].inActors).join(', ');
+    map[key].soldUsers = Object.keys(map[key].soldActors).join(', ');
+    map[key].wasteUsers = Object.keys(map[key].wasteActors).join(', ');
+    delete map[key].inActors; delete map[key].soldActors; delete map[key].wasteActors;
   });
   return map;
 }
