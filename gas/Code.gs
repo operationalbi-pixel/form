@@ -981,9 +981,11 @@ function createInterOutletStockTransfer(token, payload) {
     try {
       const lines = validateTransferLines_(fromOutlet, fromLocation, payload.items);
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), stockRows = [], pendingRows = [];
+      const transferNo = stockTransferReceiptNumber_({ transferId: transferId, createdAt: now.toISOString() });
       lines.forEach(function (line) {
         allocateTransferLots_(fromOutlet, fromLocation, line.item, line.qty).forEach(function (lot) {
-          stockRows.push(stockTransferMovementRow_(transferId, fromOutlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out', 'Ke ' + toOutlet + ' · ' + line.note, lot.expiryDate, employee, now, eventDate));
+          stockRows.push(stockTransferMovementRow_(transferId, fromOutlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
+            'Transfer To ' + toOutlet + ' · No Transfer ' + transferNo + (line.note ? ' · ' + line.note : ''), lot.expiryDate, employee, now, eventDate));
           const eventId = Utilities.getUuid();
           pendingRows.push({ insertId: eventId, json: {
             event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: fromOutlet, from_location: fromLocation,
@@ -1043,7 +1045,9 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         const receivedQty = Object.prototype.hasOwnProperty.call(receivedMap, line.lineId) ? receivedMap[line.lineId] : Number(line.qty || 0);
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
         if (receivedQty > 0.0000001) {
-          stockRows.push(stockTransferMovementRow_(transferId, outlet, receiveLocation, item, 'IN', receivedQty, 'Transfer In', 'Dari ' + transfer.fromOutlet + ' · QTY dikirim ' + formatQty_(line.qty) + (line.note ? ' · ' + line.note : ''), line.expiryDate, employee, now, eventDate));
+          stockRows.push(stockTransferMovementRow_(transferId, outlet, receiveLocation, item, 'IN', receivedQty, 'Transfer In',
+            'Transfer From ' + transfer.fromOutlet + ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
+            (line.note ? ' · ' + line.note : ''), line.expiryDate, employee, now, eventDate));
         }
         const eventId = Utilities.getUuid();
         acceptedRows.push({ insertId: eventId, json: {
