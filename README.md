@@ -72,6 +72,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Rincian FIFO pada Stock Card selalu direkonsiliasi dengan Balance per tanggal. Jika saldo 0 atau minus, lot sisa tidak lagi ditampilkan; jika riwayat awal tidak lengkap, sistem hanya menambahkan selisih yang diperlukan agar total rincian tetap sama dengan Balance.
 - Showcase Log memakai header dan navigasi periode yang konsisten dengan Dashboard serta Stock Card, dilengkapi pencarian global kode, kategori, nama, dan unit. Input yang sudah diketik tetap tersimpan saat daftar difilter.
 - Pada ponsel, daftar Showcase Log tetap berupa tabel horizontal yang padat dan dapat digeser kanan-kiri. Header tabel serta kolom Item Showcase dibekukan, sedangkan kontrol tanggal dan Simpan sejajar, sama tinggi, serta tetap terlihat ketika halaman digulir.
+- Pencarian ikut dibekukan di bawah kontrol tanggal, header bertingkat memakai latar solid tanpa celah, dan warna In/Sold/Waste/Balance dibedakan. Balance menampilkan kalkulasi sementara secara langsung sebelum data disimpan.
 - Menu Daily, Weekly, Monthly, dan Yearly terbuka sebagai daftar vertikal ringkas tepat di bawah tombol periode setelah diklik.
 
 ## Uji cepat
