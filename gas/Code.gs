@@ -2241,7 +2241,7 @@ function exportStockCardItem(token, payload) {
       return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(reconcileFifoLots_(fifoSnapshots[day.date] || [], day.balance), item.unit, context.location)];
     });
     const detailHeader = 'Stock In · Arrival · Exp';
-    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Stock In', 'Info Stock In', 'Keluar', 'Info Keluar', 'Balance', detailHeader], rows, format);
+    return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'IN', 'Info IN', 'OUT', 'Info OUT', 'Balance', detailHeader], rows, format);
   });
 }
 
@@ -4080,15 +4080,17 @@ function exportTransferReceipt(token, transferId, requestedOutlet) {
 function stockMovementInfo_(movements) {
   return movements.map(function (movement) {
     const labels = { Terjual: 'Sold', Waste: 'Waste', Pemakaian: 'Usage', 'Transfer Out': 'Stock Out', 'Transfer Out Antar Outlet': 'Stock Out', 'Stock Adjustment': 'Adjustment', Others: 'Other' };
-    const title = movement.direction === 'IN' ? 'Stock In' : (labels[movement.movementType] || movement.movementType || 'Stock Out');
+    const title = movement.direction === 'IN' ? 'IN' : (labels[movement.movementType] || movement.movementType || 'OUT');
     let text = title + ': ' + formatQty_(movement.qty);
     const lots = movement.direction === 'IN' ? [{
       showcaseDate: movement.date, sourceDate: movement.sourceArrivalDate || movement.date, expiryDate: movement.expiryDate || ''
     }] : (movement.fifoUsageLots || []);
     (lots.length ? lots : [{ showcaseDate: '', sourceDate: '', expiryDate: '' }]).forEach(function (lot) {
-      text += '\nStock In: ' + (lot.showcaseDate || lot.sourceDate || '-') +
-        ' | Arrival: ' + (lot.sourceDate || '-') +
-        ' | Exp: ' + (lot.expiryDate || '-');
+      const stockIn = lot.showcaseDate || lot.sourceDate || '-', arrival = lot.sourceDate || '-';
+      const sameDate = stockIn !== '-' && arrival !== '-' && String(stockIn).slice(0, 10) === String(arrival).slice(0, 10);
+      text += movement.direction === 'IN' || sameDate
+        ? '\nArrival: ' + arrival + ' | Exp: ' + (lot.expiryDate || '-')
+        : '\nStock In: ' + stockIn + ' | Arrival: ' + arrival + ' | Exp: ' + (lot.expiryDate || '-');
     });
     return text;
   }).join('\n');
@@ -4141,7 +4143,7 @@ function buildStockXlsxBlobLegacy_(fileName, title, meta, headers, rows) {
         .setVerticalAlignment('top').setWrap(true);
     }
     headers.forEach(function (header, index) {
-      if (['QTY', 'Masuk', 'Stock In', 'Keluar', 'Balance'].indexOf(header) >= 0 && allRows.length > 4) {
+      if (['QTY', 'Masuk', 'Stock In', 'IN', 'Keluar', 'OUT', 'Balance'].indexOf(header) >= 0 && allRows.length > 4) {
         sheet.getRange(5, index + 1, allRows.length - 4, 1).setNumberFormat('#,##0.00');
       }
       const width = index === 2 || index === 4 ? 260 : index === 0 ? 140 : 160;
@@ -4186,7 +4188,7 @@ function buildStockXlsxPackage_(fileName, title, meta, headers, rows) {
   const allRows = [[title], [meta], [], headers].concat(rows.length ? rows : [['Tidak ada data pada periode ini.']]);
   const numericHeaders = {};
   headers.forEach(function (header, index) {
-    if (['QTY', 'QTY On Stock Card', 'QTY Stock Actual', 'Masuk', 'Stock In', 'Keluar', 'Balance'].indexOf(header) >= 0) numericHeaders[index] = true;
+    if (['QTY', 'QTY On Stock Card', 'QTY Stock Actual', 'Masuk', 'Stock In', 'IN', 'Keluar', 'OUT', 'Balance'].indexOf(header) >= 0) numericHeaders[index] = true;
   });
   const sheetRows = allRows.map(function (row, rowIndex) {
     const cells = [];
