@@ -1,14 +1,15 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 
 const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'berita-acara-digital';
 const DATASET_ID = process.env.BQ_DATASET_ID || 'bakerzin_internal';
 const BQ_LOCATION = process.env.BQ_LOCATION || 'asia-southeast2';
 const CACHE_COLLECTION = 'stock_read_models';
 const CACHE_TTL_MS = 120000;
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 500;
+const MAX_LIMIT = 500;
 
 let clients;
 
@@ -106,7 +107,7 @@ function historyQuery() {
 
 async function queryBigQuery(context) {
   const startedAt = Date.now();
-  const rowLimit = context.limit + 1;
+  const rowLimit = MAX_LIMIT + 1;
   const [rows] = await googleClients().bigquery.query({
     query: historyQuery(),
     location: BQ_LOCATION,
@@ -123,14 +124,14 @@ async function queryBigQuery(context) {
   });
   const result = rows[0] || {};
   const movements = Array.isArray(result.history) ? result.history.map(mapMovement) : [];
-  const hasMore = movements.length > context.limit;
+  const hasMore = movements.length > MAX_LIMIT;
 
   return {
     item: { code: context.itemCode, name: context.itemName },
     outlet: context.outlet,
     location: context.location,
     currentQty: Number(result.current_qty || 0),
-    history: movements.slice(0, context.limit),
+    history: movements.slice(0, MAX_LIMIT),
     hasMore,
     meta: { source: 'BIGQUERY', durationMs: Date.now() - startedAt }
   };
@@ -141,8 +142,8 @@ async function readCache(documentId) {
     const snapshot = await googleClients().firestore.collection(CACHE_COLLECTION).doc(documentId).get();
     if (!snapshot.exists) return null;
     const cached = snapshot.data() || {};
-    if (!cached.payload || Number(cached.expiresAt || 0) <= Date.now()) return null;
-    return cached.payload;
+    if (!cached.compressedPayload || Number(cached.expiresAt || 0) <= Date.now()) return null;
+    return JSON.parse(zlib.gunzipSync(Buffer.from(cached.compressedPayload, 'base64')).toString('utf8'));
   } catch (error) {
     console.warn('Firestore cache read failed:', error.message);
     return null;
@@ -158,7 +159,7 @@ async function writeCache(documentId, context, payload) {
       itemName: context.itemName,
       expiresAt: Date.now() + CACHE_TTL_MS,
       updatedAt: Date.now(),
-      payload
+      compressedPayload: zlib.gzipSync(JSON.stringify(payload)).toString('base64')
     });
   } catch (error) {
     console.warn('Firestore cache write failed:', error.message);
@@ -171,12 +172,20 @@ async function getStockHistory(input) {
   const documentId = cacheDocumentId(context);
   const cached = await readCache(documentId);
   if (cached) {
-    cached.meta = { source: 'FIRESTORE', durationMs: Date.now() - startedAt };
-    return cached;
+    return shapePayload(cached, context.limit, 'FIRESTORE', Date.now() - startedAt);
   }
   const payload = await queryBigQuery(context);
   await writeCache(documentId, context, payload);
-  return payload;
+  return shapePayload(payload, context.limit, 'BIGQUERY', Date.now() - startedAt);
+}
+
+function shapePayload(payload, limit, source, durationMs) {
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  return Object.assign({}, payload, {
+    history: history.slice(0, limit),
+    hasMore: Boolean(payload.hasMore || history.length > limit),
+    meta: { source, durationMs }
+  });
 }
 
 async function invalidateStockHistory(input) {
@@ -185,4 +194,18 @@ async function invalidateStockHistory(input) {
   return { invalidated: true };
 }
 
-module.exports = { getStockHistory, invalidateStockHistory, normalizeRequest, mapMovement };
+async function invalidateStockHistoryBatch(input) {
+  const entries = Array.isArray(input && input.entries) ? input.entries.slice(0, 500) : [];
+  if (!entries.length) throw new Error('Daftar item wajib diisi.');
+  const contexts = entries.map(function (entry) {
+    return normalizeRequest(Object.assign({}, entry, { limit: DEFAULT_LIMIT }));
+  });
+  const batch = googleClients().firestore.batch();
+  contexts.forEach(function (context) {
+    batch.delete(googleClients().firestore.collection(CACHE_COLLECTION).doc(cacheDocumentId(context)));
+  });
+  await batch.commit();
+  return { invalidated: contexts.length };
+}
+
+module.exports = { getStockHistory, invalidateStockHistory, invalidateStockHistoryBatch, normalizeRequest, mapMovement };

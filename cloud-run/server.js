@@ -79,6 +79,12 @@ function createRequestHandler(options) {
         sendJson(response, 200, { ok: true, data: result });
         return;
       }
+
+      if (request.method === 'POST' && url.pathname === '/v1/cache/invalidate-batch') {
+        const result = await stockReader.invalidateStockHistoryBatch(await readJson(request));
+        sendJson(response, 200, { ok: true, data: result });
+        return;
+      }
     } catch (error) {
       const requestId = crypto.randomUUID();
       console.error(requestId, error);

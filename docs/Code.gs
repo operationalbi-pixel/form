@@ -2198,16 +2198,72 @@ function getStockHistory(token, payload) {
     const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
     const location = normalizeLocation_(payload.location);
     const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
-    let rows = readLatestStockHistory_(outlet, location, item);
-    if (isShowcaseLocation_(location)) rows = enrichShowcaseHistoryLots_(rows, outlet, item);
+    const fastHistory = isShowcaseLocation_(location) ? null : readFastStockHistory_(outlet, location, item);
+    let rows = fastHistory ? fastHistory.history : readLatestStockHistory_(outlet, location, item);
+    if (!fastHistory && isShowcaseLocation_(location)) rows = enrichShowcaseHistoryLots_(rows, outlet, item);
     const employeeNames = readEmployeeNameMap_();
-    rows.forEach(function (row) { row.createdByUser = (employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui') + (employeeNames[row.createdBy] && row.createdBy ? ' · ' + row.createdBy : ''); });
-    const current = getCurrentStock_(outlet, location, item.code, item.name);
+    rows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
+    const currentQty = fastHistory ? Number(fastHistory.currentQty || 0) : getCurrentStock_(outlet, location, item.code, item.name).qty;
     return {
-      item: item, outlet: outlet, location: location, currentQty: current.qty,
-      history: rows
+      item: item, outlet: outlet, location: location, currentQty: currentQty,
+      history: rows, fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_FALLBACK'
     };
   });
+}
+
+function stockFastApiConfig_() {
+  const properties = PropertiesService.getScriptProperties();
+  const url = String(properties.getProperty('STOCK_CARD_API_URL') || '').replace(/\/+$/, '');
+  const key = String(properties.getProperty('STOCK_CARD_API_KEY') || '');
+  return url && key ? { url: url, key: key } : null;
+}
+
+function readFastStockHistory_(outlet, location, item) {
+  const config = stockFastApiConfig_();
+  if (!config) return null;
+  try {
+    const query = [
+      'outlet=' + encodeURIComponent(outlet),
+      'location=' + encodeURIComponent(location),
+      'itemCode=' + encodeURIComponent(item.code || ''),
+      'itemName=' + encodeURIComponent(item.name || ''),
+      'limit=500'
+    ].join('&');
+    const response = UrlFetchApp.fetch(config.url + '/v1/stock/history?' + query, {
+      method: 'get', headers: { 'x-internal-api-key': config.key }, muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) throw new Error('HTTP ' + response.getResponseCode());
+    const parsed = JSON.parse(response.getContentText() || '{}');
+    if (!parsed.ok || !parsed.data || !Array.isArray(parsed.data.history)) throw new Error('Respons tidak valid.');
+    return parsed.data;
+  } catch (error) {
+    console.error('Cloud Run Stock History gagal; menggunakan BigQuery langsung. ' + error.message);
+    return null;
+  }
+}
+
+function invalidateFastStockHistoryRows_(rows) {
+  const config = stockFastApiConfig_();
+  if (!config) return;
+  const entries = [], seen = {};
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location) return;
+    const key = [row.outlet, row.location, row.item_code || '', row.item_name || ''].join('|');
+    if (seen[key]) return;
+    seen[key] = true;
+    entries.push({ outlet: row.outlet, location: row.location, itemCode: row.item_code || '', itemName: row.item_name || '' });
+  });
+  if (!entries.length) return;
+  try {
+    const response = UrlFetchApp.fetch(config.url + '/v1/cache/invalidate-batch', {
+      method: 'post', contentType: 'application/json', headers: { 'x-internal-api-key': config.key },
+      payload: JSON.stringify({ entries: entries.slice(0, 500) }), muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) throw new Error('HTTP ' + response.getResponseCode());
+  } catch (error) {
+    console.error('Invalidasi cache Stock Card gagal; cache akan berakhir otomatis. ' + error.message);
+  }
 }
 
 function exportCurrentStockExcel(token, requestedOutlet, requestedLocation) {
@@ -3720,6 +3776,7 @@ function insertStockCardRows_(rows) {
   insertAll_('stock_card', rows);
   // Refresh the marker after a successful insert so a concurrent rebuild cannot clear it too early.
   markStockBalanceDirty_(rows);
+  invalidateFastStockHistoryRows_(rows);
 }
 
 function readStockLedgerBalanceRows_(outlet, location) {
@@ -4389,6 +4446,11 @@ function formatQty_(qty) {
 // ---------- Employee, session, and password helpers ----------
 
 function readEmployeeNameMap_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('employee-name-map-v1');
+  if (cached) {
+    try { return JSON.parse(cached); } catch (error) { console.warn('Cache nama karyawan rusak: ' + error.message); }
+  }
   const map = {};
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return map;
@@ -4397,6 +4459,7 @@ function readEmployeeNameMap_() {
     const nik = normalizeNik_(row[0]);
     if (nik) map[nik] = String(row[1] || '').trim() || nik;
   });
+  try { cache.put('employee-name-map-v1', JSON.stringify(map), 600); } catch (error) { console.warn(error.message); }
   return map;
 }
 
