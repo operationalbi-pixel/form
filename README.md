@@ -80,6 +80,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Transfer IN antar-outlet menampilkan `Transfer From [Outlet] [No Transfer]`; nomor transfer yang sama dipakai pada sisi OUT dan IN.
 - Menambahkan fondasi `cloud-run/` untuk API baca Stock Card berlatensi rendah. Tahap awal hanya menyediakan health check dan belum membuka data Stock Card.
 - Cloud Run menyediakan endpoint riwayat yang dilindungi kunci internal, memakai Firestore selama dua menit, dan hanya menjalankan satu query BigQuery terparameterisasi saat cache belum tersedia.
+- GAS memakai Cloud Run untuk riwayat Store/Gudang dengan fallback otomatis ke BigQuery lama, menghapus cache setelah setiap mutasi, dan menyimpan pemetaan nama karyawan selama sepuluh menit. Showcase tetap memakai rekonstruksi FIFO lama sampai jalur cepat Showcase selesai diverifikasi.
 - Menu Daily, Weekly, Monthly, dan Yearly terbuka sebagai daftar vertikal ringkas tepat di bawah tombol periode setelah diklik.
 
 ## Uji cepat
