@@ -522,9 +522,12 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
       return a.category.localeCompare(b.category) || a.name.localeCompare(b.name);
     });
     const task = findShowcaseLogTask_();
+    const tasks = readTasksForEmployee_(employee);
+    const completions = readCompletionMap_(outlet);
     return {
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
       items: items, progress: readShowcaseLogProgress_(outlet, eventDate), taskId: task ? task.id : '',
+      tasks: tasks, completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
   });
@@ -2225,7 +2228,7 @@ function exportStockCardItem(token, payload) {
     const fifoSnapshots = calculateFifoSnapshots_(history);
     const grouped = addBalancesToGroupedHistory_(groupStockHistoryByDate_(history), current.qty).filter(function (day) { return String(day.date).slice(0, 7) === month; });
     const rows = grouped.map(function (day) {
-      return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(fifoSnapshots[day.date] || [], item.unit, context.location)];
+      return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(reconcileFifoLots_(fifoSnapshots[day.date] || [], day.balance), item.unit, context.location)];
     });
     const detailHeader = 'Stock In · Arrival · Exp';
     return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'Stock In', 'Info Stock In', 'Keluar', 'Info Keluar', 'Balance', detailHeader], rows, format);
@@ -3933,7 +3936,11 @@ function calculateFifoSnapshots_(history) {
   const movements = history.slice().sort(function (a, b) {
     const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
     if (dateCompare) return dateCompare;
-    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    const createdCompare = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    if (createdCompare) return createdCompare;
+    const directionCompare = (a.direction === 'IN' ? 0 : 1) - (b.direction === 'IN' ? 0 : 1);
+    if (directionCompare) return directionCompare;
+    return String(a.logicalId || a.recordId || a.transferId || '').localeCompare(String(b.logicalId || b.recordId || b.transferId || ''));
   });
   const lots = [], snapshots = {};
   movements.forEach(function (movement) {
@@ -3973,6 +3980,25 @@ function calculateFifoSnapshots_(history) {
     });
   });
   return snapshots;
+}
+
+function reconcileFifoLots_(lots, balance) {
+  const target = Math.max(0, Number(balance || 0));
+  let reconciled = (lots || []).filter(function (lot) { return Number(lot.qty) > 0.0000001; }).map(function (lot) {
+    return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '', showcaseDate: lot.showcaseDate || '' };
+  });
+  if (target <= 0.0000001) return [];
+  let total = reconciled.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
+  let excess = total - target;
+  for (let i = 0; i < reconciled.length && excess > 0.0000001; i++) {
+    const removed = Math.min(reconciled[i].qty, excess);
+    reconciled[i].qty -= removed;
+    excess -= removed;
+  }
+  reconciled = reconciled.filter(function (lot) { return lot.qty > 0.0000001; });
+  total = reconciled.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
+  if (total < target - 0.0000001) reconciled.push({ qty: target - total, expiryDate: '', sourceDate: '', showcaseDate: '' });
+  return reconciled;
 }
 
 function fifoDetailText_(lots, unit, location) {
