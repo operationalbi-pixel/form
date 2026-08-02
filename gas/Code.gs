@@ -605,7 +605,8 @@ function saveShowcaseLog(token, payload) {
           const transferId = Utilities.getUuid();
           let assignedMenuQty = 0;
           productLots.forEach(function (lot, lotIndex) {
-            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            const storeInfo = 'Transfer To Showcase · Dari Store · Untuk ' + entry.item.name + ' ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             storeRow.json.source_file = 'SHOWCASE_LOG';
             storeRow.json.source_row = entryIndex + 1;
             storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
@@ -616,7 +617,8 @@ function saveShowcaseLog(token, payload) {
               : Math.min(remainingMenuQty, Math.round((lot.qty / mapping.productPerMenu) * 1000000) / 1000000);
             assignedMenuQty += menuLotQty;
             if (menuLotQty <= 0.0000001) return;
-            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            const showcaseInfo = 'Transfer From Store · Ke Showcase · Product ' + mapping.product.name + ' ' + formatQty_(lot.qty) + ' ' + mapping.product.unit;
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', showcaseInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             showcaseRow.json.source_arrival_date = lot.sourceDate || null;
             showcaseRow.json.source_file = 'SHOWCASE_LOG';
             showcaseRow.json.source_row = entryIndex + 1;
@@ -950,8 +952,11 @@ function transferStockWithinOutlet(token, payload) {
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), rows = [];
       lines.forEach(function (line) {
         allocateTransferLots_(outlet, fromLocation, line.item, line.qty).forEach(function (lot) {
-          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
-          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
+          const userNote = line.note ? ' · ' + line.note : '';
+          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
+            'Transfer To ' + toLocation + ' · Dari ' + fromLocation + userNote, lot.expiryDate, employee, now, eventDate, lot.productionDate));
+          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In',
+            'Transfer From ' + fromLocation + ' · Ke ' + toLocation + userNote, lot.expiryDate, employee, now, eventDate, lot.productionDate));
         });
       });
       insertStockCardRows_(rows);
@@ -985,7 +990,8 @@ function createInterOutletStockTransfer(token, payload) {
       lines.forEach(function (line) {
         allocateTransferLots_(fromOutlet, fromLocation, line.item, line.qty).forEach(function (lot) {
           stockRows.push(stockTransferMovementRow_(transferId, fromOutlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
-            'Transfer To ' + toOutlet + ' · No Transfer ' + transferNo + (line.note ? ' · ' + line.note : ''), lot.expiryDate, employee, now, eventDate));
+            'Transfer To ' + toOutlet + ' · Dari ' + fromOutlet + ' / ' + fromLocation + ' · No Transfer ' + transferNo +
+            (line.note ? ' · ' + line.note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
           const eventId = Utilities.getUuid();
           pendingRows.push({ insertId: eventId, json: {
             event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: fromOutlet, from_location: fromLocation,
@@ -1046,8 +1052,9 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
         if (receivedQty > 0.0000001) {
           stockRows.push(stockTransferMovementRow_(transferId, outlet, receiveLocation, item, 'IN', receivedQty, 'Transfer In',
-            'Transfer From ' + transfer.fromOutlet + ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
-            (line.note ? ' · ' + line.note : ''), line.expiryDate, employee, now, eventDate));
+            'Transfer From ' + transfer.fromOutlet + ' / ' + transfer.fromLocation + ' · Ke ' + outlet + ' / ' + receiveLocation +
+            ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
+            (line.note ? ' · ' + line.note : ''), line.expiryDate, employee, now, eventDate, line.productionDate));
         }
         const eventId = Utilities.getUuid();
         acceptedRows.push({ insertId: eventId, json: {
@@ -1107,7 +1114,7 @@ function saveStockMovement(token, payload) {
 
     const now = new Date();
     const eventDate = normalizeDate_(payload.eventDate, true);
-    const info = cleanText_(payload.info, 300);
+    const info = ensureTransferMovementInfo_(direction, movementType, payload.info);
     if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
     const logicalId = Utilities.getUuid();
     const recordId = Utilities.getUuid();
@@ -1171,7 +1178,7 @@ function updateStockMovement(token, payload) {
       const productionDate = normalizeDate_(payload.productionDate, false);
       const expiryDate = normalizeDate_(payload.expiryDate, false);
       if (movementType === 'Stock Adjustment' && !expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
-      const info = cleanText_(payload.info, 300);
+      const info = ensureTransferMovementInfo_(direction, movementType, payload.info);
       if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
       insertStockCardRows_([{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT', outlet: outlet, location: location,
@@ -2406,11 +2413,15 @@ function allocateTransferLots_(outlet, location, item, qty) {
 }
 
 function stockTransferMovementRow_(transferId, outlet, location, item, direction, qty, movementType, note, expiryDate, employee, now, eventDate, productionDate) {
+  const info = cleanText_(note, 300);
+  if (isTransferMovementType_(movementType) && !info) {
+    throw new Error('Keterangan asal atau tujuan wajib tersedia untuk setiap transaksi transfer.');
+  }
   const recordId = Utilities.getUuid();
   return { insertId: recordId, json: {
     record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
     outlet: outlet, location: location, item_code: item.code, category: item.category, item_name: item.name, unit: item.unit,
-    direction: direction, qty: qty, movement_type: movementType, info: cleanText_(note, 300), production_date: productionDate || null, expiry_date: expiryDate || null,
+    direction: direction, qty: qty, movement_type: movementType, info: info, production_date: productionDate || null, expiry_date: expiryDate || null,
     event_date: eventDate, created_at: now.getTime() / 1000, created_by: employee.nik
   }};
 }
@@ -3721,7 +3732,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
     let assignedMenuQty = 0;
     allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
-        'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
+        'Transfer To Showcase · Dari Store · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
       const isLast = lotIndex === allocatedLots.length - 1;
       const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
       const menuLotQty = isLast
@@ -3730,7 +3741,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
       assignedMenuQty += menuLotQty;
       if (menuLotQty <= 0.0000001) return;
       const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', menuLotQty, 'Transfer In',
-        'Peralihan dari Store · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
+        'Transfer From Store · Ke Showcase · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
         lot.expiryDate, employee, now, eventDate, productionDate || lot.productionDate);
       showcaseRow.json.source_arrival_date = lot.sourceDate || null;
       showcaseRows.push(showcaseRow);
@@ -4114,7 +4125,9 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
       const transfer = matches[0], now = new Date(), eventDate = todayIso_(), stockRows = [];
       transfer.items.forEach(function (line) {
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
-        stockRows.push(stockTransferMovementRow_(transferId, transfer.fromOutlet, transfer.fromLocation, item, 'IN', line.qty, 'Transfer In', 'Pengembalian transfer ditolak oleh ' + outlet + ' · ' + reason, line.expiryDate, employee, now, eventDate));
+        stockRows.push(stockTransferMovementRow_(transferId, transfer.fromOutlet, transfer.fromLocation, item, 'IN', line.qty, 'Transfer In',
+          'Transfer From ' + outlet + ' · Ke ' + transfer.fromOutlet + ' / ' + transfer.fromLocation + ' · No Transfer ' + stockTransferReceiptNumber_(transfer) +
+          ' · Pengembalian karena ditolak · ' + reason, line.expiryDate, employee, now, eventDate, line.productionDate));
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
       const eventId = Utilities.getUuid(), receiptNo = stockTransferReceiptNumber_(transfer);
@@ -4423,6 +4436,20 @@ function resolveStockOutlet_(employee, requestedOutlet, allowedOutlets) {
 
 function normalizeLocation_(value) {
   return cleanText_(value, 60).replace(/\s+/g, ' ').trim();
+}
+
+function isTransferMovementType_(movementType) {
+  return ['Transfer In', 'Transfer Out', 'Transfer Out Antar Outlet'].indexOf(String(movementType || '')) >= 0;
+}
+
+function ensureTransferMovementInfo_(direction, movementType, value) {
+  let info = cleanText_(value, 300);
+  if (!isTransferMovementType_(movementType)) return info;
+  if (!info) throw new Error('Keterangan asal atau tujuan wajib diisi untuk transaksi transfer.');
+  const incoming = String(direction || '').toUpperCase() === 'IN';
+  const hasCounterpart = incoming ? /(?:Transfer From|(?:^|[·|])\s*Dari)\s+/i.test(info) : /(?:Transfer To|(?:^|[·|])\s*Ke)\s+/i.test(info);
+  if (!hasCounterpart) info = (incoming ? 'Transfer From ' : 'Transfer To ') + info;
+  return cleanText_(info, 300);
 }
 
 function validateMovementType_(direction, type) {
