@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
 const { startServer } = require('./server');
+const { mapMovement } = require('./stock-reader');
 
 function getJson(port, path, headers) {
   return new Promise((resolve, reject) => {
@@ -90,4 +91,15 @@ test('authorized batch invalidation forwards all changed stock items', async (co
   assert.equal(result.status, 200);
   assert.equal(result.body.ok, true);
   assert.equal(result.body.data.invalidated, 1);
+});
+
+test('stock history maps optional production date', () => {
+  const movement = mapMovement({
+    record_id: 'ROW-1',
+    event_date: { value: '2026-08-02' },
+    production_date: { value: '2026-08-01' },
+    expiry_date: { value: '2026-08-10' }
+  });
+  assert.equal(movement.productionDate, '2026-08-01');
+  assert.equal(mapMovement({ record_id: 'ROW-2' }).productionDate, '');
 });

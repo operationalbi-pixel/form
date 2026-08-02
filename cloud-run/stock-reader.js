@@ -66,6 +66,7 @@ function mapMovement(row) {
     qty: Number(row.qty || 0),
     movementType: text(row.movement_type, 100),
     info: text(row.info, 500),
+    productionDate: dateValue(row.production_date).slice(0, 10),
     expiryDate: dateValue(row.expiry_date).slice(0, 10),
     sourceArrivalDate: dateValue(row.source_arrival_date).slice(0, 10),
     supplier: text(row.supplier, 180),
@@ -83,7 +84,7 @@ function historyQuery() {
   const balances = '`' + PROJECT_ID + '.' + DATASET_ID + '.stock_balances`';
   return 'WITH latest AS (' +
     ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version,' +
-    ' event_date, direction, qty, movement_type, info, expiry_date, source_arrival_date, transfer_id, supplier,' +
+    ' event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier,' +
     ' source_file, source_row, created_by, created_at' +
     ' FROM ' + stockCard +
     ' WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location' +

@@ -590,7 +590,7 @@ function saveShowcaseLog(token, payload) {
           throw new Error(need.product.name + ': stok Store tidak mencukupi. Dibutuhkan ' + formatQty_(required) + ' ' + need.product.unit + ', tersedia ' + formatQty_(available) + '.');
         }
         productPools[code] = allocateTransferLots_(outlet, 'Store', need.product, required).map(function (lot) {
-          return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+          return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
         });
       });
 
@@ -605,7 +605,7 @@ function saveShowcaseLog(token, payload) {
           const transferId = Utilities.getUuid();
           let assignedMenuQty = 0;
           productLots.forEach(function (lot, lotIndex) {
-            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', '', lot.expiryDate, employee, now, eventDate);
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
             storeRow.json.source_file = 'SHOWCASE_LOG';
             storeRow.json.source_row = entryIndex + 1;
             storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
@@ -616,7 +616,7 @@ function saveShowcaseLog(token, payload) {
               : Math.min(remainingMenuQty, Math.round((lot.qty / mapping.productPerMenu) * 1000000) / 1000000);
             assignedMenuQty += menuLotQty;
             if (menuLotQty <= 0.0000001) return;
-            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', '', lot.expiryDate, employee, now, eventDate);
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
             showcaseRow.json.source_arrival_date = lot.sourceDate || null;
             showcaseRow.json.source_file = 'SHOWCASE_LOG';
             showcaseRow.json.source_row = entryIndex + 1;
@@ -689,7 +689,7 @@ function takeShowcaseProductLots_(pool, qty) {
   for (let i = 0; i < pool.length && remaining > 0.0000001; i++) {
     if (pool[i].qty <= 0.0000001) continue;
     const amount = Math.min(pool[i].qty, remaining);
-    if (amount > 0.0000001) taken.push({ qty: amount, expiryDate: pool[i].expiryDate, sourceDate: pool[i].sourceDate });
+    if (amount > 0.0000001) taken.push({ qty: amount, productionDate: pool[i].productionDate, expiryDate: pool[i].expiryDate, sourceDate: pool[i].sourceDate });
     pool[i].qty -= amount;
     remaining -= amount;
   }
@@ -950,8 +950,8 @@ function transferStockWithinOutlet(token, payload) {
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), rows = [];
       lines.forEach(function (line) {
         allocateTransferLots_(outlet, fromLocation, line.item, line.qty).forEach(function (lot) {
-          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out', line.note, lot.expiryDate, employee, now, eventDate));
-          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In', line.note, lot.expiryDate, employee, now, eventDate));
+          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
+          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
         });
       });
       insertStockCardRows_(rows);
@@ -1088,6 +1088,7 @@ function saveStockMovement(token, payload) {
     const direction = String(payload.direction || '').toUpperCase();
     const movementType = cleanText_(payload.movementType, 60);
     const qty = Number(payload.qty);
+    const productionDate = normalizeDate_(payload.productionDate, false);
     const expiryDate = normalizeDate_(payload.expiryDate, false);
     if (['IN', 'OUT'].indexOf(direction) < 0) throw new Error('Arah transaksi tidak valid.');
     if (!isFinite(qty) || qty <= 0) throw new Error('QTY harus lebih besar dari 0.');
@@ -1113,13 +1114,13 @@ function saveStockMovement(token, payload) {
     insertStockCardRows_([{ insertId: recordId, json: {
       record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT', outlet: outlet, location: location,
       item_code: item.code, category: item.category, item_name: item.name, unit: item.unit, direction: direction, qty: qty,
-      movement_type: movementType, info: info, expiry_date: expiryDate || null,
+      movement_type: movementType, info: info, production_date: productionDate || null, expiry_date: expiryDate || null,
       event_date: eventDate, created_at: now.getTime() / 1000, created_by: employee.nik
     }}]);
     const nextQty = direction === 'IN' ? current.qty + qty : current.qty - qty;
     return {
       saved: true, outlet: outlet, location: location, itemCode: item.code, itemName: item.name, currentQty: nextQty,
-      movement: { recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() }
+      movement: { recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, productionDate: productionDate, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() }
     };
   });
 }
@@ -1167,6 +1168,7 @@ function updateStockMovement(token, payload) {
       const recordId = Utilities.getUuid();
       const version = Number(previous.version || 1) + 1;
       const eventDate = normalizeDate_(payload.eventDate, true);
+      const productionDate = normalizeDate_(payload.productionDate, false);
       const expiryDate = normalizeDate_(payload.expiryDate, false);
       if (movementType === 'Stock Adjustment' && !expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
       const info = cleanText_(payload.info, 300);
@@ -1174,12 +1176,12 @@ function updateStockMovement(token, payload) {
       insertStockCardRows_([{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT', outlet: outlet, location: location,
         item_code: item.code, category: item.category, item_name: item.name, unit: item.unit, direction: direction, qty: qty,
-        movement_type: movementType, info: info, expiry_date: expiryDate || null,
+        movement_type: movementType, info: info, production_date: productionDate || null, expiry_date: expiryDate || null,
         event_date: eventDate, created_at: now.getTime() / 1000, created_by: employee.nik
       }}]);
       return {
         saved: true, edited: true, outlet: outlet, location: location, itemCode: item.code, itemName: item.name, currentQty: nextQty,
-        movement: { recordId: recordId, logicalId: logicalId, version: version, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() }
+        movement: { recordId: recordId, logicalId: logicalId, version: version, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, productionDate: productionDate, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() }
       };
     } finally {
       lock.releaseLock();
@@ -2304,14 +2306,14 @@ function exportStockCardItem(token, payload) {
     const rows = grouped.map(function (day) {
       return [day.date, day.inQty || '', stockMovementInfo_(day.inMovements), day.outQty || '', stockMovementInfo_(day.outMovements), day.balance, fifoDetailText_(reconcileFifoLots_(fifoSnapshots[day.date] || [], day.balance), item.unit, context.location)];
     });
-    const detailHeader = 'Stock In · Arrival · Exp';
+    const detailHeader = 'Prd · Stock In · Arrival · Exp';
     return buildStockExport_('Stock Card · ' + item.code + ' · ' + item.name, context.outlet, context.location, month, ['Tanggal', 'IN', 'Info IN', 'OUT', 'Info OUT', 'Balance', detailHeader], rows, format);
   });
 }
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v10') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v11') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -2333,14 +2335,14 @@ function ensureStockCardInfrastructure_() {
     bqField_('item_code', 'STRING'), bqField_('category', 'STRING'), bqField_('item_name', 'STRING'), bqField_('unit', 'STRING'),
     bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
     bqField_('direction', 'STRING'), bqField_('qty', 'FLOAT'), bqField_('movement_type', 'STRING'),
-    bqField_('info', 'STRING'), bqField_('expiry_date', 'DATE'), bqField_('event_date', 'DATE', 'REQUIRED'),
+    bqField_('info', 'STRING'), bqField_('production_date', 'DATE'), bqField_('expiry_date', 'DATE'), bqField_('event_date', 'DATE', 'REQUIRED'),
     bqField_('created_at', 'TIMESTAMP', 'REQUIRED'), bqField_('created_by', 'STRING', 'REQUIRED')
   ], 'created_at');
   ensureBigQueryFields_('stock_card', [
     bqField_('item_code', 'STRING'), bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
     bqField_('source_file', 'STRING'), bqField_('source_hash', 'STRING'), bqField_('source_row', 'INTEGER'),
     bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING'),
-    bqField_('source_arrival_date', 'DATE')
+    bqField_('source_arrival_date', 'DATE'), bqField_('production_date', 'DATE')
   ]);
   ensureBigQueryTable_('stock_balances', [
     bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
@@ -2360,7 +2362,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v10', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v11', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -2389,26 +2391,26 @@ function allocateTransferLots_(outlet, location, item, qty) {
   const history = readLatestStockHistory_(outlet, location, item).slice().reverse();
   const snapshots = calculateFifoSnapshots_(history), dates = Object.keys(snapshots).sort();
   const lots = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
-    return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+    return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
   }) : [];
   let remaining = qty;
   const allocated = [];
   lots.forEach(function (lot) {
     if (remaining <= 0.0000001) return;
     const taken = Math.min(lot.qty, remaining);
-    if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate });
+    if (taken > 0.0000001) allocated.push({ qty: taken, productionDate: lot.productionDate, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate });
     remaining -= taken;
   });
-  if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '', sourceDate: '' });
+  if (remaining > 0.0000001) allocated.push({ qty: remaining, productionDate: '', expiryDate: '', sourceDate: '' });
   return allocated;
 }
 
-function stockTransferMovementRow_(transferId, outlet, location, item, direction, qty, movementType, note, expiryDate, employee, now, eventDate) {
+function stockTransferMovementRow_(transferId, outlet, location, item, direction, qty, movementType, note, expiryDate, employee, now, eventDate, productionDate) {
   const recordId = Utilities.getUuid();
   return { insertId: recordId, json: {
     record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
     outlet: outlet, location: location, item_code: item.code, category: item.category, item_name: item.name, unit: item.unit,
-    direction: direction, qty: qty, movement_type: movementType, info: cleanText_(note, 300), expiry_date: expiryDate || null,
+    direction: direction, qty: qty, movement_type: movementType, info: cleanText_(note, 300), production_date: productionDate || null, expiry_date: expiryDate || null,
     event_date: eventDate, created_at: now.getTime() / 1000, created_by: employee.nik
   }};
 }
@@ -3699,6 +3701,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
   const productQty = Math.round(Number(menuQty) * Number(showcaseItem.productQty) * factor * 1000000) / 1000000;
   if (!isFinite(productQty) || productQty <= 0) throw new Error('QTY Product Showcase tidak valid pada baris ' + showcaseItem.sourceRow + '.');
   const eventDate = normalizeDate_(payload.eventDate, true);
+  const productionDate = normalizeDate_(payload.productionDate, false);
   const note = cleanText_(payload.info, 220);
   const transferId = Utilities.getUuid();
   const now = new Date();
@@ -3718,7 +3721,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
     let assignedMenuQty = 0;
     allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
-        'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate));
+        'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
       const isLast = lotIndex === allocatedLots.length - 1;
       const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
       const menuLotQty = isLast
@@ -3728,7 +3731,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
       if (menuLotQty <= 0.0000001) return;
       const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', menuLotQty, 'Transfer In',
         'Peralihan dari Store · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
-        lot.expiryDate, employee, now, eventDate);
+        lot.expiryDate, employee, now, eventDate, productionDate || lot.productionDate);
       showcaseRow.json.source_arrival_date = lot.sourceDate || null;
       showcaseRows.push(showcaseRow);
       rows.push(showcaseRow);
@@ -3738,7 +3741,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
       return {
         recordId: showcaseRow.json.record_id, logicalId: showcaseRow.json.logical_id, version: 1, date: eventDate,
         direction: 'IN', qty: Number(showcaseRow.json.qty), movementType: 'Transfer In', info: showcaseRow.json.info,
-        expiryDate: String(showcaseRow.json.expiry_date || ''), sourceArrivalDate: String(showcaseRow.json.source_arrival_date || ''),
+        productionDate: String(showcaseRow.json.production_date || ''), expiryDate: String(showcaseRow.json.expiry_date || ''), sourceArrivalDate: String(showcaseRow.json.source_arrival_date || ''),
         createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik,
         createdAt: now.toISOString(), transferId: transferId, systemGenerated: true
       };
@@ -3949,7 +3952,7 @@ function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
     ? 'item_name = @item'
     : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
   let sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-    'event_date, direction, qty, movement_type, info, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at FROM latest ' +
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at FROM latest ' +
     'WHERE outlet = @outlet AND location = @location AND ' + itemCondition + ' ';
   const params = { outlet: outlet, location: location, code: item.code, item: item.name };
   if (onlyLogicalId) {
@@ -3961,7 +3964,7 @@ function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
     return {
       recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
       date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
-      movementType: String(r.movement_type || ''), info: String(r.info || ''), expiryDate: String(r.expiry_date || ''),
+      movementType: String(r.movement_type || ''), info: String(r.info || ''), productionDate: String(r.production_date || ''), expiryDate: String(r.expiry_date || ''),
       sourceArrivalDate: String(r.source_arrival_date || ''), supplier: String(r.supplier || ''),
       sourceFile: String(r.source_file || ''), sourceRow: Number(r.source_row || 0),
       transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
@@ -4028,6 +4031,7 @@ function calculateFifoSnapshots_(history) {
     if (movement.direction === 'IN') {
       lots.push({
         qty: qty,
+        productionDate: String(movement.productionDate || ''),
         expiryDate: String(movement.expiryDate || ''),
         sourceDate: String(movement.sourceArrivalDate || movement.date || ''),
         showcaseDate: String(movement.date || '')
@@ -4042,6 +4046,7 @@ function calculateFifoSnapshots_(history) {
         if (taken > 0.0000001) {
           movement.fifoUsageLots.push({
             qty: taken,
+            productionDate: lots[i].productionDate,
             expiryDate: lots[i].expiryDate,
             sourceDate: lots[i].sourceDate,
             showcaseDate: lots[i].showcaseDate
@@ -4054,7 +4059,7 @@ function calculateFifoSnapshots_(history) {
       }
     }
     snapshots[String(movement.date || '')] = lots.filter(function (lot) { return lot.qty > 0.0000001; }).map(function (lot) {
-      return { qty: lot.qty, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate, showcaseDate: lot.showcaseDate };
+      return { qty: lot.qty, productionDate: lot.productionDate, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate, showcaseDate: lot.showcaseDate };
     });
   });
   return snapshots;
@@ -4063,7 +4068,7 @@ function calculateFifoSnapshots_(history) {
 function reconcileFifoLots_(lots, balance) {
   const target = Math.max(0, Number(balance || 0));
   let reconciled = (lots || []).filter(function (lot) { return Number(lot.qty) > 0.0000001; }).map(function (lot) {
-    return { qty: Number(lot.qty), expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '', showcaseDate: lot.showcaseDate || '' };
+    return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '', showcaseDate: lot.showcaseDate || '' };
   });
   if (target <= 0.0000001) return [];
   let total = reconciled.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
@@ -4075,7 +4080,7 @@ function reconcileFifoLots_(lots, balance) {
   }
   reconciled = reconciled.filter(function (lot) { return lot.qty > 0.0000001; });
   total = reconciled.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
-  if (total < target - 0.0000001) reconciled.push({ qty: target - total, expiryDate: '', sourceDate: '', showcaseDate: '' });
+  if (total < target - 0.0000001) reconciled.push({ qty: target - total, productionDate: '', expiryDate: '', sourceDate: '', showcaseDate: '' });
   return reconciled;
 }
 
@@ -4083,6 +4088,7 @@ function fifoDetailText_(lots, unit, location) {
   if (!lots.length) return 'Stok habis';
   return lots.map(function (lot) {
     return formatQty_(lot.qty) + ' ' + (unit || '') +
+      (lot.productionDate ? ' | Prd: ' + lot.productionDate : '') +
       ' | Stock In: ' + (lot.showcaseDate || lot.sourceDate || '-') +
       ' | Arrival: ' + (lot.sourceDate || '-') +
       ' | Exp: ' + (lot.expiryDate || '-');
@@ -4151,11 +4157,12 @@ function stockMovementInfo_(movements) {
     const title = movement.direction === 'IN' ? 'IN' : (labels[movement.movementType] || movement.movementType || 'OUT');
     let text = title + ': ' + formatQty_(movement.qty);
     const lots = movement.direction === 'IN' ? [{
-      showcaseDate: movement.date, sourceDate: movement.sourceArrivalDate || movement.date, expiryDate: movement.expiryDate || ''
+      showcaseDate: movement.date, sourceDate: movement.sourceArrivalDate || movement.date, productionDate: movement.productionDate || '', expiryDate: movement.expiryDate || ''
     }] : (movement.fifoUsageLots || []);
-    (lots.length ? lots : [{ showcaseDate: '', sourceDate: '', expiryDate: '' }]).forEach(function (lot) {
+    (lots.length ? lots : [{ showcaseDate: '', sourceDate: '', productionDate: '', expiryDate: '' }]).forEach(function (lot) {
       const stockIn = lot.showcaseDate || lot.sourceDate || '-', arrival = lot.sourceDate || '-';
       const sameDate = stockIn !== '-' && arrival !== '-' && String(stockIn).slice(0, 10) === String(arrival).slice(0, 10);
+      if (lot.productionDate) text += '\nPrd: ' + lot.productionDate;
       text += movement.direction === 'IN' || sameDate
         ? '\nArrival: ' + arrival + ' | Exp: ' + (lot.expiryDate || '-')
         : '\nStock In: ' + stockIn + ' | Arrival: ' + arrival + ' | Exp: ' + (lot.expiryDate || '-');
