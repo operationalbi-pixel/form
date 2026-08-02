@@ -54,6 +54,22 @@ if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion 
 if (!/:focus-visible/.test(css)) failures.push('Focus keyboard belum tersedia');
 
 const backend = await text('docs/Code.gs');
+const frontendStockCard = await text('docs/stock-card.html');
+const transferAuditRequirements = [
+  [backend.includes("'Transfer To ' + toLocation + ' · Dari ' + fromLocation"), 'Transfer Out antar-storage belum menyimpan lokasi tujuan dan asal'],
+  [backend.includes("'Transfer From ' + fromLocation + ' · Ke ' + toLocation"), 'Transfer In antar-storage belum menyimpan lokasi asal dan tujuan'],
+  [backend.includes("'Transfer To Showcase · Dari Store"), 'Transfer Out Store ke Showcase belum memiliki keterangan tujuan'],
+  [backend.includes("'Transfer From Store · Ke Showcase"), 'Transfer In Showcase belum memiliki keterangan asal'],
+  [backend.includes('isTransferMovementType_(movementType) && !info'), 'Backend belum menolak transaksi transfer otomatis tanpa keterangan'],
+  [backend.includes('ensureTransferMovementInfo_(direction, movementType, payload.info)'), 'Backend belum mewajibkan keterangan untuk transfer manual'],
+  [frontendStockCard.includes('ASAL / TUJUAN TRANSFER'), 'Form Stock Card belum meminta asal atau tujuan transfer manual']
+];
+for (const [ok, message] of transferAuditRequirements) {
+  if (!ok) failures.push(message);
+}
+if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
+  failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');
+}
 const actionBlock = backend.match(/function apiActions_\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:/gm)].map(match => match[1]));
 const clientActions = new Set();
