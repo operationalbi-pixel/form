@@ -17,7 +17,7 @@ Paket ini memindahkan tampilan aplikasi dari Google Apps Script ke GitHub Pages.
 
 - Folder `docs/` adalah sumber publikasi GitHub Pages.
 - `gas/Code.gs` selalu disamakan dengan `docs/Code.gs` agar backend dan frontend memakai kontrak API yang sama.
-- Salinan frontend di root selalu disamakan dengan versi di `docs/` untuk mencegah salah unggah atau salah deployment.
+- Frontend hanya disimpan di `docs/`; tidak ada salinan di root repository.
 - Setelah mengubah aplikasi, jalankan `npm run sync` lalu `npm test` sebelum commit.
 
 ## 1. Perbarui backend GAS
