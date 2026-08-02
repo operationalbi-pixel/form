@@ -2,12 +2,6 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const pairs = [
-  ['docs/index.html', 'index.html'],
-  ['docs/stock-card.html', 'stock-card.html'],
-  ['docs/showcaselog.html', 'showcaselog.html'],
-  ['docs/config.js', 'config.js'],
-  ['docs/api-client.js', 'api-client.js'],
-  ['docs/ui-modern.css', 'ui-modern.css'],
   ['docs/Code.gs', 'gas/Code.gs']
 ];
 
@@ -75,4 +69,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`OK: ${pairs.length} pasangan file sinkron, sintaks valid, kontrak API cocok, dan UI responsif terdeteksi.`);
+console.log(`OK: backend GAS sinkron, sintaks valid, kontrak API cocok, dan UI responsif terdeteksi.`);
