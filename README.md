@@ -68,6 +68,7 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Daftar pada seluruh storage menempatkan stok minus terbesar paling atas. Item lainnya diurutkan berdasarkan kategori lalu nama A–Z.
 - Setiap lot pada balance `Showcase` menampilkan tanggal Masuk Showcase, tanggal Kedatangan Barang asal di `Store`, dan tanggal Expired yang diwariskan dari lot Store. Transaksi lama direkonstruksi dari pasangan transfer Store bila datanya masih tersedia.
 - Informasi riwayat Stock Card disederhanakan menjadi `Stock In`, `Arrival`, dan `Exp`; catatan teknis lain tidak ditampilkan agar tabel lebih ringkas.
+- Input transaksi manual menyediakan `Production Date` opsional yang ditampilkan sebagai `Prd` pada riwayat, rincian FIFO, dan export Stock Card. Jika tidak diisi, keterangan `Prd` tidak ditampilkan.
 - Header daftar item dan riwayat Stock Card dibekukan saat tabel digulir. Jika tanggal `Stock In` sama dengan `Arrival`, metadata hanya menampilkan `Arrival` dan `Exp` agar tidak berulang.
 - Judul kolom dan transaksi Stock Card diringkas menjadi `IN` dan `OUT`. Info transaksi IN tidak lagi mengulang tanggal Stock In; hanya `Arrival` dan `Exp` yang ditampilkan, termasuk pada export.
 - Form Daily `Showcase Log` dibuat otomatis dan memakai `showcaselog.html`. Setiap item memiliki Total/Input untuk In, Sold, dan Waste serta Balance terkini. Penyimpanan form langsung menulis ke Stock Card dan Daily selesai otomatis setelah ketiga aktivitas terisi pada tanggal tersebut.
