@@ -18,6 +18,7 @@ const CONFIG = Object.freeze({
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
   STOCK_CONVERSION_SHEET: 'STOCK_UNIT_CONVERSIONS',
   STOCK_VISIBILITY_SHEET: 'STOCK_ITEM_VISIBILITY',
+  STOCK_NO_EXPIRY_CATEGORY_SHEET: 'STOCK_NO_EXPIRY_CATEGORIES',
   SHOWCASE_SHEET: 'MENU_SHOWCASE',
   BQ_PROJECT_ID: 'berita-acara-digital',
   BQ_DATASET_ID: 'bakerzin_internal',
@@ -99,6 +100,7 @@ function apiActions_() {
     save: saveStockMovement,
     edit: updateStockMovement,
     adjust: adjustStockBalance,
+    completeExpiry: completeStockExpiryLots,
     history: getStockHistory,
     verifyUsage: previewSalesUsageUpload,
     verifyGoodsReceipt: previewGoodsReceiptUpload,
@@ -1281,6 +1283,75 @@ function adjustStockBalance(token, payload) {
         },
         movements: (adjustmentQty > 0.0000001 ? [{ recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty, movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik, createdAt: now.toISOString() }] : []).concat([{ recordId: lotRecordId, logicalId: lotLogicalId, version: 1, date: eventDate, direction: 'LOT', qty: targetQty, movementType: 'Lot Balance Override', info: lotInfo, createdBy: context.employee.nik, createdAt: new Date(now.getTime() + 1).toISOString() }])
       };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function completeStockExpiryLots(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
+    const excludedCategories = readStockNoExpiryCategoryMap_();
+    if (excludedCategories[normalizeStockCategory_(item.category)]) {
+      throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
+    }
+    const allocations = (Array.isArray(payload.lots) ? payload.lots : []).map(function (raw, index) {
+      const qty = Number(raw.qty), expiryDate = normalizeDate_(raw.expiryDate, true);
+      if (!isFinite(qty) || qty <= 0) throw new Error('QTY baris ' + (index + 1) + ' wajib lebih besar dari 0.');
+      return { qty: qty, expiryDate: expiryDate };
+    });
+    if (!allocations.length) throw new Error('Isi minimal satu pembagian QTY dan Expired Date.');
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      const remainingLots = readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
+      const datedLots = remainingLots.filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
+      const blankLots = remainingLots.filter(function (lot) { return !String(lot.expiryDate || '').slice(0, 10); });
+      const missingQty = blankLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+      const allocationTotal = allocations.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
+      if (missingQty <= 0.0000001) throw new Error('Expired Date item ini sudah lengkap. Muat ulang daftar.');
+      if (Math.abs(allocationTotal - missingQty) > 0.0000001) {
+        throw new Error('Total QTY yang dilengkapi harus ' + formatQty_(missingQty) + ' ' + item.unit + '.');
+      }
+
+      const completedLots = datedLots.map(function (lot) {
+        return { qty: Number(lot.qty), arrivalDate: lot.sourceDate || todayIso_(), stockInDate: lot.showcaseDate || lot.sourceDate || todayIso_(), expiryDate: String(lot.expiryDate).slice(0, 10) };
+      });
+      let allocationIndex = 0, allocationRemaining = allocations[0].qty;
+      blankLots.forEach(function (source) {
+        let sourceRemaining = Number(source.qty || 0);
+        while (sourceRemaining > 0.0000001 && allocationIndex < allocations.length) {
+          const used = Math.min(sourceRemaining, allocationRemaining);
+          completedLots.push({
+            qty: used,
+            arrivalDate: source.sourceDate || todayIso_(),
+            stockInDate: source.showcaseDate || source.sourceDate || todayIso_(),
+            expiryDate: allocations[allocationIndex].expiryDate
+          });
+          sourceRemaining -= used;
+          allocationRemaining -= used;
+          if (allocationRemaining <= 0.0000001) {
+            allocationIndex++;
+            allocationRemaining = allocationIndex < allocations.length ? allocations[allocationIndex].qty : 0;
+          }
+        }
+      });
+
+      const now = new Date(), recordId = Utilities.getUuid(), logicalId = Utilities.getUuid();
+      const totalQty = completedLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+      const info = JSON.stringify({ note: 'Lengkapi Expired Date melalui notifikasi', lots: completedLots });
+      insertStockCardRows_([{ insertId: recordId, json: {
+        record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
+        outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
+        item_name: item.name, unit: item.unit, direction: 'LOT', qty: totalQty,
+        movement_type: 'Lot Balance Override', info: info, event_date: todayIso_(),
+        created_at: now.getTime() / 1000, created_by: context.employee.nik
+      }}]);
+      return { saved: true, itemCode: item.code, itemName: item.name, completedQty: missingQty };
     } finally {
       lock.releaseLock();
     }
@@ -4169,6 +4240,64 @@ function readStockItemsWithQty_(outlet, location) {
   });
 }
 
+function stockNoExpiryCategorySeed_() {
+  return [
+    'KITCHEN EQUIPMENT',
+    'KITCHENWARE TOOLS',
+    'MARKETING AND DESIGN COST',
+    'MEDICINE',
+    'NCG',
+    'NON CONSUMABLE GOODS',
+    'OTHERS',
+    'STATIONARY',
+    'TAKE AWAY ITEMS'
+  ];
+}
+
+function normalizeStockCategory_(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function ensureStockNoExpiryCategorySheet_() {
+  const sheet = ensureSheet_(CONFIG.STOCK_NO_EXPIRY_CATEGORY_SHEET, ['CATEGORY']);
+  sheet.getRange(1, 1).setValue('CATEGORY').setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+  if (sheet.getLastRow() < 2) {
+    const rows = stockNoExpiryCategorySeed_().map(function (category) { return [category]; });
+    sheet.getRange(2, 1, rows.length, 1).setValues(rows);
+    sheet.autoResizeColumn(1);
+  }
+  return sheet;
+}
+
+function readStockNoExpiryCategoryMap_() {
+  const sheet = ensureStockNoExpiryCategorySheet_(), map = {};
+  if (sheet.getLastRow() < 2) return map;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues().forEach(function (row) {
+    const category = normalizeStockCategory_(row[0]);
+    if (category) map[category] = true;
+  });
+  return map;
+}
+
+function readRemainingStockLots_(outlet, location, itemCode, itemName) {
+  const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location AND ((item_code = @itemCode AND @itemCode != \'\') OR (LOWER(item_name) = LOWER(@itemName))) ' +
+    'ORDER BY event_date, created_at';
+  const history = runNamedQuery_(sql, { outlet: outlet, location: location, itemCode: String(itemCode || '').trim().toUpperCase(), itemName: itemName }, { useQueryCache: false }).map(function (row) {
+    return {
+      recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
+      movementType: String(row.movement_type || ''), info: String(row.info || ''),
+      productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+      sourceArrivalDate: String(row.source_arrival_date || ''), createdAt: String(row.created_at || '')
+    };
+  });
+  const snapshots = calculateFifoSnapshots_(history), dates = Object.keys(snapshots).sort();
+  return dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
+}
+
 function readStockExpiryAlerts_(outlet, location) {
   const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
     'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
@@ -4188,19 +4317,27 @@ function readStockExpiryAlerts_(outlet, location) {
       sourceArrivalDate: String(row.source_arrival_date || ''), createdAt: String(row.created_at || '')
     });
   });
+  const masterByCode = {}, masterByName = {}, excludedCategories = readStockNoExpiryCategoryMap_();
+  (isShowcaseLocation_(location) ? readShowcaseItems_() : readStockMaster_(true)).forEach(function (item) {
+    masterByCode[String(item.code || '').toUpperCase()] = item;
+    masterByName[String(item.name || '').trim().toLowerCase()] = item;
+  });
   const today = todayIso_(), limitDate = new Date();
   limitDate.setDate(limitDate.getDate() + 30);
   const nearLimit = Utilities.formatDate(limitDate, 'Asia/Jakarta', 'yyyy-MM-dd');
   const missingExpiry = [], nearExpiry = [];
   Object.keys(grouped).forEach(function (key) {
     const entry = grouped[key], snapshots = calculateFifoSnapshots_(entry.history), dates = Object.keys(snapshots).sort();
+    const masterItem = masterByCode[entry.code] || masterByName[entry.name.toLowerCase()] || {};
+    if (!masterItem.code || masterItem.active === false) return;
+    if (excludedCategories[normalizeStockCategory_(masterItem.category)]) return;
     const lots = dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
     if (!lots.length) return;
     const missingQty = lots.reduce(function (sum, lot) { return sum + (!String(lot.expiryDate || '').slice(0, 10) ? Number(lot.qty || 0) : 0); }, 0);
     const upcomingDates = lots.map(function (lot) { return String(lot.expiryDate || '').slice(0, 10); })
       .filter(function (date) { return date && date >= today && date <= nearLimit; }).sort();
-    if (missingQty > 0.0000001) missingExpiry.push({ code: entry.code, name: entry.name, qty: missingQty });
-    if (upcomingDates.length) nearExpiry.push({ code: entry.code, name: entry.name, expiryDate: upcomingDates[0] });
+    if (missingQty > 0.0000001) missingExpiry.push({ code: entry.code, name: entry.name, unit: String(masterItem.unit || ''), qty: missingQty });
+    if (upcomingDates.length) nearExpiry.push({ code: entry.code, name: entry.name, unit: String(masterItem.unit || ''), expiryDate: upcomingDates[0] });
   });
   missingExpiry.sort(function (a, b) { return a.name.localeCompare(b.name); });
   nearExpiry.sort(function (a, b) { return a.expiryDate.localeCompare(b.expiryDate) || a.name.localeCompare(b.name); });
