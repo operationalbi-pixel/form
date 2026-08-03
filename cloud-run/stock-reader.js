@@ -65,7 +65,7 @@ function mapMovement(row) {
     direction: text(row.direction, 10),
     qty: Number(row.qty || 0),
     movementType: text(row.movement_type, 100),
-    info: text(row.info, 500),
+    info: text(row.info, 20000),
     productionDate: dateValue(row.production_date).slice(0, 10),
     expiryDate: dateValue(row.expiry_date).slice(0, 10),
     sourceArrivalDate: dateValue(row.source_arrival_date).slice(0, 10),

@@ -605,7 +605,8 @@ function saveShowcaseLog(token, payload) {
           const transferId = Utilities.getUuid();
           let assignedMenuQty = 0;
           productLots.forEach(function (lot, lotIndex) {
-            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            const storeInfo = 'Transfer To Showcase · Dari Store · Untuk ' + entry.item.name + ' ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             storeRow.json.source_file = 'SHOWCASE_LOG';
             storeRow.json.source_row = entryIndex + 1;
             storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
@@ -616,7 +617,8 @@ function saveShowcaseLog(token, payload) {
               : Math.min(remainingMenuQty, Math.round((lot.qty / mapping.productPerMenu) * 1000000) / 1000000);
             assignedMenuQty += menuLotQty;
             if (menuLotQty <= 0.0000001) return;
-            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', '', lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            const showcaseInfo = 'Transfer From Store · Ke Showcase · Product ' + mapping.product.name + ' ' + formatQty_(lot.qty) + ' ' + mapping.product.unit;
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', showcaseInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             showcaseRow.json.source_arrival_date = lot.sourceDate || null;
             showcaseRow.json.source_file = 'SHOWCASE_LOG';
             showcaseRow.json.source_row = entryIndex + 1;
@@ -950,8 +952,11 @@ function transferStockWithinOutlet(token, payload) {
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), rows = [];
       lines.forEach(function (line) {
         allocateTransferLots_(outlet, fromLocation, line.item, line.qty).forEach(function (lot) {
-          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
-          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In', line.note, lot.expiryDate, employee, now, eventDate, lot.productionDate));
+          const userNote = line.note ? ' · ' + line.note : '';
+          rows.push(stockTransferMovementRow_(transferId, outlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
+            'Transfer To ' + toLocation + ' · Dari ' + fromLocation + userNote, lot.expiryDate, employee, now, eventDate, lot.productionDate));
+          rows.push(stockTransferMovementRow_(transferId, outlet, toLocation, line.item, 'IN', lot.qty, 'Transfer In',
+            'Transfer From ' + fromLocation + ' · Ke ' + toLocation + userNote, lot.expiryDate, employee, now, eventDate, lot.productionDate));
         });
       });
       insertStockCardRows_(rows);
@@ -985,7 +990,8 @@ function createInterOutletStockTransfer(token, payload) {
       lines.forEach(function (line) {
         allocateTransferLots_(fromOutlet, fromLocation, line.item, line.qty).forEach(function (lot) {
           stockRows.push(stockTransferMovementRow_(transferId, fromOutlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
-            'Transfer To ' + toOutlet + ' · No Transfer ' + transferNo + (line.note ? ' · ' + line.note : ''), lot.expiryDate, employee, now, eventDate));
+            'Transfer To ' + toOutlet + ' · Dari ' + fromOutlet + ' / ' + fromLocation + ' · No Transfer ' + transferNo +
+            (line.note ? ' · ' + line.note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
           const eventId = Utilities.getUuid();
           pendingRows.push({ insertId: eventId, json: {
             event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: fromOutlet, from_location: fromLocation,
@@ -1014,7 +1020,7 @@ function getPendingStockTransfers(token, requestedOutlet) {
   });
 }
 
-function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, receiveLocation, receivedItems) {
+function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, receiveLocation, receivedItems, receiptDetails) {
   return safe_(function () {
     const session = requireSession_(token);
     const employee = findEmployee_(session.nik);
@@ -1028,6 +1034,14 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
     if (isShowcaseLocation_(receiveLocation)) {
       throw new Error('Transfer antar-outlet tidak dapat diterima langsung ke Showcase. Terima ke Store atau Gudang terlebih dahulu.');
     }
+    receiptDetails = receiptDetails || {};
+    const receivedAt = new Date(String(receiptDetails.receivedAt || ''));
+    const storageEnteredAt = new Date(String(receiptDetails.storageEnteredAt || ''));
+    const productTemperature = Number(receiptDetails.productTemperature);
+    if (isNaN(receivedAt.getTime())) throw new Error('Waktu Terima wajib diisi.');
+    if (isNaN(storageEnteredAt.getTime())) throw new Error('Waktu Masuk Storage wajib diisi.');
+    if (storageEnteredAt.getTime() < receivedAt.getTime()) throw new Error('Waktu Masuk Storage tidak boleh lebih awal dari Waktu Terima.');
+    if (!isFinite(productTemperature)) throw new Error('Suhu Produk wajib diisi dengan angka.');
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -1040,14 +1054,17 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         if (!lineId || !isFinite(qty) || qty < 0) throw new Error('QTY diterima wajib berupa angka 0 atau lebih.');
         receivedMap[lineId] = qty;
       });
-      const receiptNo = stockTransferReceiptNumber_(transfer), stockRows = [], acceptedRows = [];
+      const receiptNo = stockTransferReceiptNumber_(transfer), stockRows = [], acceptedRows = [], expiryWarnings = [];
       transfer.items.forEach(function (line) {
         const receivedQty = Object.prototype.hasOwnProperty.call(receivedMap, line.lineId) ? receivedMap[line.lineId] : Number(line.qty || 0);
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
         if (receivedQty > 0.0000001) {
+          const expiryWarning = incomingFefoWarning_(outlet, receiveLocation, item, line.expiryDate);
+          if (expiryWarning) expiryWarnings.push(expiryWarning);
           stockRows.push(stockTransferMovementRow_(transferId, outlet, receiveLocation, item, 'IN', receivedQty, 'Transfer In',
-            'Transfer From ' + transfer.fromOutlet + ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
-            (line.note ? ' · ' + line.note : ''), line.expiryDate, employee, now, eventDate));
+            'Transfer From ' + transfer.fromOutlet + ' / ' + transfer.fromLocation + ' · Ke ' + outlet + ' / ' + receiveLocation +
+            ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
+            (line.note ? ' · ' + line.note : '') + (expiryWarning ? ' | FEFO ALERT: expiry masuk ' + expiryWarning.incomingExpiryDate + ' lebih cepat dari stok existing ' + expiryWarning.existingExpiryDate : ''), line.expiryDate, employee, now, eventDate, line.productionDate));
         }
         const eventId = Utilities.getUuid();
         acceptedRows.push({ insertId: eventId, json: {
@@ -1055,7 +1072,9 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
           to_outlet: outlet, to_location: receiveLocation, item_code: line.code, category: line.category, item_name: line.name,
           unit: line.unit, qty: Number(line.qty || 0), received_qty: receivedQty, note: line.note || '', expiry_date: line.expiryDate || null,
           created_by: transfer.createdBy, created_by_name: transfer.createdByName, created_at: now.getTime() / 1000,
-          accepted_by: employee.nik, accepted_by_name: employee.name, accepted_at: now.getTime() / 1000, receipt_no: receiptNo
+          accepted_by: employee.nik, accepted_by_name: employee.name, accepted_at: now.getTime() / 1000,
+          received_at: receivedAt.getTime() / 1000, storage_entered_at: storageEnteredAt.getTime() / 1000,
+          product_temperature: productTemperature, receipt_no: receiptNo
         }});
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
@@ -1065,9 +1084,12 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
       transfer.acceptedBy = employee.nik;
       transfer.acceptedByName = employee.name;
       transfer.acceptedAt = now.toISOString();
+      transfer.receivedAt = receivedAt.toISOString();
+      transfer.storageEnteredAt = storageEnteredAt.toISOString();
+      transfer.productTemperature = productTemperature;
       transfer.receiptNo = receiptNo;
       transfer.items.forEach(function (line) { line.receivedQty = Object.prototype.hasOwnProperty.call(receivedMap, line.lineId) ? receivedMap[line.lineId] : Number(line.qty || 0); });
-      return { accepted: true, transferId: transferId, itemCount: transfer.items.length, location: receiveLocation, receipt: transfer };
+      return { accepted: true, transferId: transferId, itemCount: transfer.items.length, location: receiveLocation, receipt: transfer, expiryWarnings: expiryWarnings };
     } finally { lock.releaseLock(); }
   });
 }
@@ -1107,8 +1129,10 @@ function saveStockMovement(token, payload) {
 
     const now = new Date();
     const eventDate = normalizeDate_(payload.eventDate, true);
-    const info = cleanText_(payload.info, 300);
+    let info = ensureTransferMovementInfo_(direction, movementType, payload.info);
     if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
+    const expiryWarning = direction === 'IN' ? incomingFefoWarning_(outlet, location, item, expiryDate) : null;
+    if (expiryWarning) info = cleanText_((info ? info + ' | ' : '') + 'FEFO ALERT: expiry masuk ' + expiryWarning.incomingExpiryDate + ' lebih cepat dari stok existing ' + expiryWarning.existingExpiryDate, 500);
     const logicalId = Utilities.getUuid();
     const recordId = Utilities.getUuid();
     insertStockCardRows_([{ insertId: recordId, json: {
@@ -1120,7 +1144,8 @@ function saveStockMovement(token, payload) {
     const nextQty = direction === 'IN' ? current.qty + qty : current.qty - qty;
     return {
       saved: true, outlet: outlet, location: location, itemCode: item.code, itemName: item.name, currentQty: nextQty,
-      movement: { recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, productionDate: productionDate, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() }
+      movement: { recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: qty, movementType: movementType, info: info, productionDate: productionDate, expiryDate: expiryDate, createdBy: employee.nik, createdByUser: employee.name + ' · ' + employee.nik, createdAt: now.toISOString() },
+      expiryWarning: expiryWarning
     };
   });
 }
@@ -1171,7 +1196,7 @@ function updateStockMovement(token, payload) {
       const productionDate = normalizeDate_(payload.productionDate, false);
       const expiryDate = normalizeDate_(payload.expiryDate, false);
       if (movementType === 'Stock Adjustment' && !expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
-      const info = cleanText_(payload.info, 300);
+      const info = ensureTransferMovementInfo_(direction, movementType, payload.info);
       if (movementType === 'Others' && !info) throw new Error('Catatan wajib diisi ketika Jenis Transaksi Others dipilih.');
       insertStockCardRows_([{ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT', outlet: outlet, location: location,
@@ -1196,38 +1221,55 @@ function adjustStockBalance(token, payload) {
     const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
     const targetQty = Number(payload.targetQty);
     const info = cleanText_(payload.info, 300);
-    const expiryDate = normalizeDate_(payload.expiryDate, false);
     if (!isFinite(targetQty) || targetQty < 0) throw new Error('Hasil stock fisik harus 0 atau lebih.');
     if (info.length < 3) throw new Error('Catatan penyesuaian wajib diisi agar perubahan dapat diaudit.');
-    if (!expiryDate) throw new Error('Expiry Date wajib diisi untuk Stock Adjustment Masuk maupun Keluar.');
+    const rawLots = Array.isArray(payload.lots) ? payload.lots : [];
+    if (!rawLots.length && targetQty > 0.0000001) throw new Error('Isi minimal satu baris lot stok.');
+    const lots = rawLots.map(function (raw, index) {
+      const qty = Number(raw.qty);
+      if (!isFinite(qty) || qty <= 0) throw new Error('QTY lot baris ' + (index + 1) + ' wajib lebih besar dari 0.');
+      return { qty: qty, arrivalDate: normalizeDate_(raw.arrivalDate, true), stockInDate: normalizeDate_(raw.stockInDate, true), expiryDate: normalizeDate_(raw.expiryDate, true) };
+    });
+    const lotTotal = lots.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
+    if (Math.abs(lotTotal - targetQty) > 0.0000001) throw new Error('Total QTY lot harus sama dengan hasil stock fisik (' + formatQty_(targetQty) + ').');
 
     const lock = LockService.getScriptLock();
     lock.waitLock(10000);
     try {
       const current = getCurrentStock_(context.outlet, context.location, item.code, item.name);
-      if (Math.abs(targetQty - current.qty) < 0.0000001) {
-        throw new Error('Hasil stock fisik sama dengan Current QTY; tidak ada penyesuaian yang perlu dicatat.');
-      }
-      const direction = targetQty > current.qty ? 'IN' : 'OUT';
+      const direction = targetQty >= current.qty ? 'IN' : 'OUT';
       const adjustmentQty = Math.abs(targetQty - current.qty);
       const now = new Date();
       const logicalId = Utilities.getUuid();
       const recordId = Utilities.getUuid();
       const eventDate = normalizeDate_(payload.eventDate, true);
-      insertStockCardRows_([{ insertId: recordId, json: {
+      const adjustmentExpiry = lots.length ? lots[0].expiryDate : null;
+      const rows = [];
+      if (adjustmentQty > 0.0000001) rows.push({ insertId: recordId, json: {
         record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
         outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
         item_name: item.name, unit: item.unit, direction: direction, qty: adjustmentQty,
-        movement_type: 'Stock Adjustment', info: info, expiry_date: expiryDate, event_date: eventDate,
+        movement_type: 'Stock Adjustment', info: info, expiry_date: adjustmentExpiry, event_date: eventDate,
         created_at: now.getTime() / 1000, created_by: context.employee.nik
-      }}]);
+      }});
+      const lotRecordId = Utilities.getUuid(), lotLogicalId = Utilities.getUuid();
+      const lotInfo = JSON.stringify({ note: info, lots: lots });
+      rows.push({ insertId: lotRecordId, json: {
+        record_id: lotRecordId, logical_id: lotLogicalId, version: 1, record_type: 'MOVEMENT',
+        outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
+        item_name: item.name, unit: item.unit, direction: 'LOT', qty: targetQty,
+        movement_type: 'Lot Balance Override', info: lotInfo, event_date: eventDate,
+        created_at: (now.getTime() + 1) / 1000, created_by: context.employee.nik
+      }});
+      insertStockCardRows_(rows);
       return {
         saved: true, adjusted: true, itemCode: item.code, currentQty: targetQty,
         movement: {
           recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty,
-          movementType: 'Stock Adjustment', info: info, expiryDate: expiryDate, createdBy: context.employee.nik,
+          movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik,
           createdByUser: context.employee.name + ' · ' + context.employee.nik, createdAt: now.toISOString()
-        }
+        },
+        movements: (adjustmentQty > 0.0000001 ? [{ recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty, movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik, createdAt: now.toISOString() }] : []).concat([{ recordId: lotRecordId, logicalId: lotLogicalId, version: 1, date: eventDate, direction: 'LOT', qty: targetQty, movementType: 'Lot Balance Override', info: lotInfo, createdBy: context.employee.nik, createdAt: new Date(now.getTime() + 1).toISOString() }])
       };
     } finally {
       lock.releaseLock();
@@ -1704,6 +1746,9 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
     seenRows[rowNumber] = true;
     const code = String(cells['N' + rowNumber] || '').trim().toUpperCase();
     if (!code) return;
+    const status = normalizeHeader_(cells['U' + rowNumber]);
+    const origin = cleanText_(cells['E' + rowNumber], 180);
+    if (status !== 'AUTHORIZED' || /^BAKERZIN\b/i.test(origin)) return;
     const qty = parseGoodsReceiptNumber_(cells['P' + rowNumber]);
     if (!isFinite(qty) || qty < 0) { invalidQty.push(code + ' baris ' + rowNumber); return; }
     if (qty <= 0.0000001) return;
@@ -1713,7 +1758,7 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
     if (!outletName) throw new Error('Destination pada G12 tidak dapat dibaca. Download ulang report langsung dari ESB tanpa menyimpan ulang file.');
     outlets[normalizeStoreName_(outletName)] = outletName;
     const transactionDate = parseGoodsReceiptDate_(cells['B' + rowNumber], rowNumber);
-    const grNumber = cleanText_(cells['A' + rowNumber], 100), supplier = cleanText_(cells['E' + rowNumber], 180);
+    const grNumber = cleanText_(cells['A' + rowNumber], 100), supplier = origin;
     const lots = parseGoodsReceiptExpiryLots_(cells['S' + rowNumber], qty, rowNumber, code);
     rows.push({
       sourceRow: rowNumber, transactionDate: transactionDate, grNumber: grNumber,
@@ -1729,7 +1774,7 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
   if (invalidQty.length) throw new Error('QTY tidak valid pada: ' + invalidQty.slice(0, 8).join(', ') + '.');
   const outletKeys = Object.keys(outlets);
   if (outletKeys.length !== 1) throw new Error('Semua baris kolom G wajib memiliki satu outlet yang sama. Ditemukan: ' + outletKeys.map(function (key) { return outlets[key]; }).join(', ') + '.');
-  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt dengan QTY lebih dari 0. Data harus dimulai pada baris 12.');
+  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized dan Origin yang tidak diawali Bakerzin yang diproses.');
   return {
     outletName: outlets[outletKeys[0]], rows: rows, transactionDates: Object.keys(dates),
     receiptCount: Object.keys(receipts).length, supplierCount: Object.keys(suppliers).length
@@ -1751,6 +1796,9 @@ function parseGoodsReceiptReport_(base64, fileName) {
   reportDataRows_(cells, header, 'PRODUCT CODE').forEach(function (rowNumber) {
     const code = String(reportCell_(cells, header, 'PRODUCT CODE', rowNumber) || '').trim().toUpperCase();
     if (!code) return;
+    const status = normalizeHeader_(cells['U' + rowNumber] || reportCell_(cells, header, 'STATUS', rowNumber));
+    const fixedOrigin = cleanText_(cells['E' + rowNumber], 180);
+    if (status !== 'AUTHORIZED' || /^BAKERZIN\b/i.test(fixedOrigin)) return;
     const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber));
     if (!isFinite(qty) || qty < 0) {
       invalidQty.push(code + ' · baris ' + rowNumber);
@@ -1760,7 +1808,7 @@ function parseGoodsReceiptReport_(base64, fileName) {
     const destination = cleanText_(reportCell_(cells, header, 'DESTINATION', rowNumber), 160) || lastDestination;
     if (!destination) throw new Error('Destination tidak ditemukan pada baris ' + rowNumber + '.');
     lastDestination = destination;
-    const supplier = cleanText_(reportCell_(cells, header, 'ORIGIN', rowNumber), 180) || lastSupplier;
+    const supplier = fixedOrigin || cleanText_(reportCell_(cells, header, 'ORIGIN', rowNumber), 180) || lastSupplier;
     if (supplier) lastSupplier = supplier;
     const transactionDate = parseReportDate_(reportCell_(cells, header, 'GOODS RECEIPT DATE', rowNumber), 'TRANSACTION', rowNumber, 'Goods Receipt');
     const grNumber = cleanText_(reportCell_(cells, header, 'GOODS RECEIPT NUMBER', rowNumber), 100);
@@ -1787,7 +1835,7 @@ function parseGoodsReceiptReport_(base64, fileName) {
   const outletKeys = Object.keys(outlets);
   if (outletKeys.length !== 1) throw new Error('Goods Receipt harus berisi tepat satu Destination. Ditemukan: ' +
     outletKeys.map(function (key) { return outlets[key]; }).join(', ') + '.');
-  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt dengan QTY lebih dari 0 setelah header baris ' + header.row + '.');
+  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized pada kolom U dan Origin non-Bakerzin pada kolom E yang diproses.');
   return {
     outletName: outlets[outletKeys[0]], rows: rows, transactionDates: Object.keys(dates),
     receiptCount: Object.keys(receipts).length, supplierCount: Object.keys(suppliers).length,
@@ -2313,7 +2361,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v11') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v12') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -2359,10 +2407,11 @@ function ensureStockCardInfrastructure_() {
   ], 'created_at');
   ensureBigQueryFields_('stock_transfers', [
     bqField_('received_qty', 'FLOAT'), bqField_('accepted_by_name', 'STRING'),
+    bqField_('received_at', 'TIMESTAMP'), bqField_('storage_entered_at', 'TIMESTAMP'), bqField_('product_temperature', 'FLOAT'),
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v11', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v12', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -2406,11 +2455,15 @@ function allocateTransferLots_(outlet, location, item, qty) {
 }
 
 function stockTransferMovementRow_(transferId, outlet, location, item, direction, qty, movementType, note, expiryDate, employee, now, eventDate, productionDate) {
+  const info = cleanText_(note, 300);
+  if (isTransferMovementType_(movementType) && !info) {
+    throw new Error('Keterangan asal atau tujuan wajib tersedia untuk setiap transaksi transfer.');
+  }
   const recordId = Utilities.getUuid();
   return { insertId: recordId, json: {
     record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
     outlet: outlet, location: location, item_code: item.code, category: item.category, item_name: item.name, unit: item.unit,
-    direction: direction, qty: qty, movement_type: movementType, info: cleanText_(note, 300), production_date: productionDate || null, expiry_date: expiryDate || null,
+    direction: direction, qty: qty, movement_type: movementType, info: info, production_date: productionDate || null, expiry_date: expiryDate || null,
     event_date: eventDate, created_at: now.getTime() / 1000, created_by: employee.nik
   }};
 }
@@ -2590,7 +2643,8 @@ function previewGoodsReceiptUpload(token, payload) {
       duplicateRowsUploaded: prepared.allowedDuplicates.length,
       receiptCount: prepared.receiptCount, supplierCount: prepared.supplierCount,
       expiryLotCount: prepared.expiryLotCount, noExpiryItemCount: prepared.noExpiryItemCount,
-      newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount
+      newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
+      expiryWarnings: prepared.expiryWarnings || []
     };
   });
 }
@@ -2610,6 +2664,7 @@ function uploadGoodsReceipt(token, payload) {
       const now = new Date();
       const rows = prepared.items.map(function (receipt) {
         const logicalId = Utilities.getUuid(), recordId = Utilities.getUuid();
+        const alertInfo = receipt.fefoAlert ? ' | FEFO ALERT: expiry masuk ' + receipt.expiryDate + ' lebih cepat dari stok existing ' + receipt.existingExpiryDate : '';
         const conversionInfo = receipt.converted ? ' · Konversi ' + formatQty_(receipt.originalQty) + ' ' + receipt.originalUnit + ' = ' + formatQty_(receipt.qty) + ' ' + receipt.item.unit : '';
         return { insertId: recordId, json: {
           record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
@@ -2618,8 +2673,8 @@ function uploadGoodsReceipt(token, payload) {
           direction: 'IN', qty: receipt.qty, movement_type: 'Goods Receipt',
           supplier: cleanText_(receipt.supplier || '-', 180),
           info: cleanText_('Supplier ' + (receipt.supplier || '-') + ' · PO ' + (receipt.poNumber || '-') + ' · GR ' + (receipt.grNumber || '-') +
-            ' · ' + prepared.fileName + ' · Baris ' + receipt.sourceRow + conversionInfo, 500),
-          expiry_date: receipt.expiryDate || null, event_date: receipt.transactionDate,
+            ' · ' + prepared.fileName + ' · Baris ' + receipt.sourceRow + conversionInfo + alertInfo, 500),
+          expiry_date: receipt.expiryDate || null, source_arrival_date: receipt.transactionDate, event_date: receipt.transactionDate,
           created_at: now.getTime() / 1000, created_by: context.employee.nik,
           source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: receipt.sourceRow
         }};
@@ -2633,7 +2688,7 @@ function uploadGoodsReceipt(token, payload) {
         duplicateRowsUploaded: prepared.allowedDuplicates.length,
         receiptCount: prepared.receiptCount, expiryLotCount: prepared.expiryLotCount,
         noExpiryItemCount: prepared.noExpiryItemCount, newItemCount: prepared.newItemCount,
-        conversionCount: prepared.conversionCount
+        conversionCount: prepared.conversionCount, expiryWarnings: prepared.expiryWarnings || []
       };
     } finally {
       lock.releaseLock();
@@ -2733,6 +2788,7 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions) {
     if (!(duplicateRowMap[sourceItem.sourceRow] && requestedSkipRows[sourceItem.sourceRow])) remainingSourceRowMap[sourceItem.sourceRow] = true;
   });
   const filteredItems = items.filter(function (item) { return remainingSourceRowMap[item.sourceRow]; });
+  const expiryWarnings = applyGoodsReceiptFefoWarnings_(context.outlet, context.location, filteredItems);
   const remainingCodeMap = {};
   filteredItems.forEach(function (item) { remainingCodeMap[String(item.item.code || '').toUpperCase()] = true; });
   baseResult.requiresConversion = false;
@@ -2747,7 +2803,50 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions) {
   baseResult.expiryLotCount = filteredItems.filter(function (item) { return Boolean(item.expiryDate); }).length;
   baseResult.noExpiryItemCount = filteredItems.filter(function (item) { return !item.expiryDate; }).length;
   baseResult.conversionCount = conversionRequests.length;
+  baseResult.expiryWarnings = expiryWarnings;
   return baseResult;
+}
+
+function applyGoodsReceiptFefoWarnings_(outlet, location, items) {
+  const grouped = {}, warnings = [], histories = {};
+  items.forEach(function (entry) {
+    const code = String(entry.item.code || '').toUpperCase();
+    if (!grouped[code]) grouped[code] = { item: entry.item, entries: [] };
+    grouped[code].entries.push(entry);
+  });
+  const codes = Object.keys(grouped);
+  if (!codes.length) return warnings;
+  const params = { outlet: outlet, location: location }, placeholders = [];
+  codes.forEach(function (code, index) { const name = 'code' + index; params[name] = code; placeholders.push('@' + name); });
+  const sql = latestStockMovementCte_() + ' SELECT item_code, record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, created_at FROM latest ' +
+    'WHERE outlet = @outlet AND location = @location AND item_code IN (' + placeholders.join(',') + ') ORDER BY event_date, created_at LIMIT 10000';
+  runNamedQuery_(sql, params).forEach(function (row) {
+    const code = String(row.item_code || '').toUpperCase();
+    if (!histories[code]) histories[code] = [];
+    histories[code].push({ recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0), movementType: String(row.movement_type || ''),
+      info: String(row.info || ''), productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+      sourceArrivalDate: String(row.source_arrival_date || ''), transferId: String(row.transfer_id || ''), createdAt: String(row.created_at || '') });
+  });
+  codes.forEach(function (code) {
+    const group = grouped[code];
+    const snapshots = calculateFifoSnapshots_(histories[code] || []);
+    const dates = Object.keys(snapshots).sort();
+    const existingLots = dates.length ? snapshots[dates[dates.length - 1]] : [];
+    const existingExpiries = existingLots.map(function (lot) { return String(lot.expiryDate || '').slice(0, 10); }).filter(Boolean).sort();
+    if (!existingExpiries.length) return;
+    const nearestExisting = existingExpiries[0];
+    group.entries.forEach(function (entry) {
+      const incoming = String(entry.expiryDate || '').slice(0, 10);
+      if (incoming && incoming < nearestExisting) {
+        entry.fefoAlert = true;
+        entry.existingExpiryDate = nearestExisting;
+        warnings.push({ itemCode: entry.item.code, itemName: entry.item.name, qty: entry.qty, incomingExpiryDate: incoming, existingExpiryDate: nearestExisting });
+      }
+    });
+  });
+  return warnings;
 }
 
 function normalizeGoodsReceiptSkipRows_(value) {
@@ -3332,7 +3431,7 @@ function readStockTransferHistory_(outlet) {
 }
 
 function stockTransferSelectFields_() {
-  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no';
+  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no';
 }
 
 function buildStockTransferFromRows_(rows) {
@@ -3361,6 +3460,9 @@ function buildStockTransferFromRows_(rows) {
     transfer.acceptedBy = String(accepted[0].accepted_by || '');
     transfer.acceptedByName = String(accepted[0].accepted_by_name || accepted[0].accepted_by || '');
     transfer.acceptedAt = String(accepted[0].accepted_at || accepted[0].created_at || '');
+    transfer.receivedAt = String(accepted[0].received_at || '');
+    transfer.storageEnteredAt = String(accepted[0].storage_entered_at || '');
+    transfer.productTemperature = accepted[0].product_temperature === null || accepted[0].product_temperature === undefined ? null : Number(accepted[0].product_temperature);
     transfer.receiptNo = String(accepted[0].receipt_no || '');
     const receivedQueues = {};
     accepted.forEach(function (row) {
@@ -3448,7 +3550,7 @@ function buildTransferReceiptPdf_(transfer) {
     '<div class="header"><div class="logo">' + bakerzinReceiptLogo_() + '</div><div class="doc-title"><h1>E-TRANSFER GOODS</h1><b>' + receiptHtmlEscape_(receiptNo) + '</b><div>Transfer ID: ' + receiptHtmlEscape_(transfer.transferId) + '</div></div></div>' +
     '<div class="stamp ' + statusClass + '">' + statusTitle + '<small>' + statusDescription + '</small></div>' +
     '<div class="meta-grid"><div class="meta"><span class="label">PENGIRIM</span><h3>' + receiptHtmlEscape_(transfer.fromOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.fromLocation || '-') + '</p><p>Nama: ' + receiptHtmlEscape_(transfer.createdByName || '-') + '</p><p>NIK: ' + receiptHtmlEscape_(transfer.createdBy || '-') + '</p><p>Dikirim: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.createdAt, true)) + '</p>' + senderStamp + '</div>' +
-    '<div class="meta"><span class="label">PENERIMA</span><h3>' + receiptHtmlEscape_(transfer.toOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.toLocation || 'Belum dipilih') + '</p><p>Nama: ' + receiptHtmlEscape_(receiverName) + '</p><p>NIK: ' + receiptHtmlEscape_(status === 'ACCEPTED' ? transfer.acceptedBy : status === 'REJECTED' ? transfer.rejectedBy : '-') + '</p><p>Diproses: ' + receiptHtmlEscape_(processedAt ? transferReceiptDate_(processedAt, true) : 'Belum diproses') + '</p>' + receiverStamp + '</div></div>' +
+    '<div class="meta"><span class="label">PENERIMA</span><h3>' + receiptHtmlEscape_(transfer.toOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.toLocation || 'Belum dipilih') + '</p><p>Nama: ' + receiptHtmlEscape_(receiverName) + '</p><p>NIK: ' + receiptHtmlEscape_(status === 'ACCEPTED' ? transfer.acceptedBy : status === 'REJECTED' ? transfer.rejectedBy : '-') + '</p><p>Diproses: ' + receiptHtmlEscape_(processedAt ? transferReceiptDate_(processedAt, true) : 'Belum diproses') + '</p>' + (status === 'ACCEPTED' ? '<p>Waktu Terima: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.receivedAt, true)) + '</p><p>Masuk Storage: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.storageEnteredAt, true)) + '</p><p>Suhu Produk: ' + receiptHtmlEscape_(formatQty_(transfer.productTemperature)) + ' °C</p>' : '') + receiverStamp + '</div></div>' +
     '<div class="summary"><div><span class="label">JUMLAH BARIS</span><b>' + transfer.items.length + '</b></div><div><span class="label">TOTAL QTY DIKIRIM</span><b>' + formatQty_(sentTotal) + '</b></div><div><span class="label">TOTAL QTY DITERIMA</span><b>' + (status === 'ACCEPTED' ? formatQty_(receivedTotal) : '-') + '</b></div></div>' +
     '<table><thead><tr><th style="width:4%">NO</th><th style="width:23%">ITEM</th><th style="width:8%">UNIT</th><th style="width:10%">DIKIRIM</th><th style="width:10%">DITERIMA</th><th style="width:9%">SELISIH</th><th style="width:15%">EXPIRY</th><th style="width:21%">CATATAN</th></tr></thead><tbody>' + rows + '</tbody></table>' + rejection +
     '<div class="declaration">Dokumen elektronik ini merupakan bukti operasional internal Bakerzin. Identitas pengguna, tanggal, jam, nomor dokumen, serta rincian kuantitas tersimpan sebagai jejak audit. Dokumen ini tidak memerlukan tanda tangan manual.</div>' +
@@ -3721,7 +3823,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
     let assignedMenuQty = 0;
     allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
-        'Peralihan ke Showcase · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
+        'Transfer To Showcase · Dari Store · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
       const isLast = lotIndex === allocatedLots.length - 1;
       const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
       const menuLotQty = isLast
@@ -3730,7 +3832,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
       assignedMenuQty += menuLotQty;
       if (menuLotQty <= 0.0000001) return;
       const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', showcaseItem, 'IN', menuLotQty, 'Transfer In',
-        'Peralihan dari Store · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
+        'Transfer From Store · Ke Showcase · ' + product.name + ' ' + formatQty_(lot.qty) + ' ' + product.unit + (note ? ' · ' + note : ''),
         lot.expiryDate, employee, now, eventDate, productionDate || lot.productionDate);
       showcaseRow.json.source_arrival_date = lot.sourceDate || null;
       showcaseRows.push(showcaseRow);
@@ -3988,6 +4090,7 @@ function resolveStockContext_(token, requestedOutlet, requestedLocation) {
 function groupStockHistoryByDate_(history) {
   const map = {}, order = [];
   history.forEach(function (movement) {
+    if (movement.direction !== 'IN' && movement.direction !== 'OUT') return;
     const date = String(movement.date || '').slice(0, 10);
     if (!map[date]) {
       map[date] = { date: date, inQty: 0, outQty: 0, inMovements: [], outMovements: [] };
@@ -4024,11 +4127,29 @@ function calculateFifoSnapshots_(history) {
     return String(a.logicalId || a.recordId || a.transferId || '').localeCompare(String(b.logicalId || b.recordId || b.transferId || ''));
   });
   const lots = [], snapshots = {};
+  function sortLots() {
+    lots.sort(function (a, b) {
+      return String(a.expiryDate || '9999-12-31').localeCompare(String(b.expiryDate || '9999-12-31')) ||
+        String(a.sourceDate || '').localeCompare(String(b.sourceDate || '')) ||
+        String(a.showcaseDate || '').localeCompare(String(b.showcaseDate || ''));
+    });
+  }
   movements.forEach(function (movement) {
     const qty = Number(movement.qty || 0);
     movement.fifoUsageLots = [];
     movement.fifoUncovered = 0;
-    if (movement.direction === 'IN') {
+    if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
+      let override = null;
+      try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
+      if (override && Array.isArray(override.lots)) {
+        lots.length = 0;
+        override.lots.forEach(function (lot) {
+          const lotQty = Number(lot.qty || 0);
+          if (lotQty > 0.0000001) lots.push({ qty: lotQty, productionDate: '', expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.arrivalDate || ''), showcaseDate: String(lot.stockInDate || '') });
+        });
+        sortLots();
+      }
+    } else if (movement.direction === 'IN') {
       lots.push({
         qty: qty,
         productionDate: String(movement.productionDate || ''),
@@ -4036,7 +4157,9 @@ function calculateFifoSnapshots_(history) {
         sourceDate: String(movement.sourceArrivalDate || movement.date || ''),
         showcaseDate: String(movement.date || '')
       });
+      sortLots();
     } else if (movement.direction === 'OUT') {
+      sortLots();
       let remaining = qty;
       for (let i = 0; i < lots.length && remaining > 0.0000001; i++) {
         if (lots[i].qty <= 0.0000001) continue;
@@ -4063,6 +4186,18 @@ function calculateFifoSnapshots_(history) {
     });
   });
   return snapshots;
+}
+
+function incomingFefoWarning_(outlet, location, item, incomingExpiryDate) {
+  const incoming = String(incomingExpiryDate || '').slice(0, 10);
+  if (!incoming) return null;
+  const history = readLatestStockHistory_(outlet, location, item);
+  const snapshots = calculateFifoSnapshots_(history);
+  const dates = Object.keys(snapshots).sort();
+  const existingLots = dates.length ? snapshots[dates[dates.length - 1]] : [];
+  const expiries = existingLots.map(function (lot) { return String(lot.expiryDate || '').slice(0, 10); }).filter(Boolean).sort();
+  if (!expiries.length || incoming >= expiries[0]) return null;
+  return { itemCode: item.code, itemName: item.name, incomingExpiryDate: incoming, existingExpiryDate: expiries[0] };
 }
 
 function reconcileFifoLots_(lots, balance) {
@@ -4114,7 +4249,9 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
       const transfer = matches[0], now = new Date(), eventDate = todayIso_(), stockRows = [];
       transfer.items.forEach(function (line) {
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
-        stockRows.push(stockTransferMovementRow_(transferId, transfer.fromOutlet, transfer.fromLocation, item, 'IN', line.qty, 'Transfer In', 'Pengembalian transfer ditolak oleh ' + outlet + ' · ' + reason, line.expiryDate, employee, now, eventDate));
+        stockRows.push(stockTransferMovementRow_(transferId, transfer.fromOutlet, transfer.fromLocation, item, 'IN', line.qty, 'Transfer In',
+          'Transfer From ' + outlet + ' · Ke ' + transfer.fromOutlet + ' / ' + transfer.fromLocation + ' · No Transfer ' + stockTransferReceiptNumber_(transfer) +
+          ' · Pengembalian karena ditolak · ' + reason, line.expiryDate, employee, now, eventDate, line.productionDate));
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
       const eventId = Utilities.getUuid(), receiptNo = stockTransferReceiptNumber_(transfer);
@@ -4423,6 +4560,20 @@ function resolveStockOutlet_(employee, requestedOutlet, allowedOutlets) {
 
 function normalizeLocation_(value) {
   return cleanText_(value, 60).replace(/\s+/g, ' ').trim();
+}
+
+function isTransferMovementType_(movementType) {
+  return ['Transfer In', 'Transfer Out', 'Transfer Out Antar Outlet'].indexOf(String(movementType || '')) >= 0;
+}
+
+function ensureTransferMovementInfo_(direction, movementType, value) {
+  let info = cleanText_(value, 300);
+  if (!isTransferMovementType_(movementType)) return info;
+  if (!info) throw new Error('Keterangan asal atau tujuan wajib diisi untuk transaksi transfer.');
+  const incoming = String(direction || '').toUpperCase() === 'IN';
+  const hasCounterpart = incoming ? /(?:Transfer From|(?:^|[·|])\s*Dari)\s+/i.test(info) : /(?:Transfer To|(?:^|[·|])\s*Ke)\s+/i.test(info);
+  if (!hasCounterpart) info = (incoming ? 'Transfer From ' : 'Transfer To ') + info;
+  return cleanText_(info, 300);
 }
 
 function validateMovementType_(direction, type) {
