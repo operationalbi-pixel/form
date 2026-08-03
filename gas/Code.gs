@@ -983,12 +983,11 @@ function createInterOutletStockTransfer(token, payload) {
     if (isShowcaseLocation_(fromLocation)) throw new Error('Item Showcase tidak dapat dikirim melalui transfer antar-outlet.');
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
-    let photoFileIds = [];
     try {
       const lines = validateTransferLines_(fromOutlet, fromLocation, payload.items);
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), stockRows = [], pendingRows = [];
       const transferNo = stockTransferReceiptNumber_({ transferId: transferId, createdAt: now.toISOString() });
-      photoFileIds = saveTransferPhotoUploads_(payload.photos, transferId);
+      const photoData = prepareTransferPhotoData_(payload.photos);
       lines.forEach(function (line) {
         allocateTransferLots_(fromOutlet, fromLocation, line.item, line.qty).forEach(function (lot) {
           stockRows.push(stockTransferMovementRow_(transferId, fromOutlet, fromLocation, line.item, 'OUT', lot.qty, 'Transfer Out',
@@ -1000,16 +999,14 @@ function createInterOutletStockTransfer(token, payload) {
             to_outlet: toOutlet, to_location: null, item_code: line.item.code, category: line.item.category,
             item_name: line.item.name, unit: line.item.unit, qty: lot.qty, note: line.note, expiry_date: lot.expiryDate || null,
             created_by: employee.nik, created_by_name: employee.name, created_at: now.getTime() / 1000,
-            photo_file_ids: JSON.stringify(photoFileIds)
+            photo_count: photoData.length
           }});
         });
       });
+      if (pendingRows.length && photoData.length) pendingRows[0].json.photo_data_json = JSON.stringify(photoData);
       insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', pendingRows);
-      return { sent: true, transferId: transferId, fromOutlet: fromOutlet, toOutlet: toOutlet, itemCount: lines.length, photoCount: photoFileIds.length };
-    } catch (error) {
-      cleanupTransferPhotoFiles_(photoFileIds);
-      throw error;
+      return { sent: true, transferId: transferId, fromOutlet: fromOutlet, toOutlet: toOutlet, itemCount: lines.length, photoCount: photoData.length };
     } finally { lock.releaseLock(); }
   });
 }
@@ -2372,7 +2369,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v13') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v14') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -2421,9 +2418,9 @@ function ensureStockCardInfrastructure_() {
     bqField_('received_at', 'TIMESTAMP'), bqField_('storage_entered_at', 'TIMESTAMP'), bqField_('product_temperature', 'FLOAT'),
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING'),
-    bqField_('photo_file_ids', 'STRING')
+    bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v13', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v14', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -3423,6 +3420,25 @@ function readStockTransfer_(transferId, outlet) {
   return buildStockTransferFromRows_(rows);
 }
 
+function readTransferPhotoData_(transferId) {
+  const sql = 'SELECT photo_data_json FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` ' +
+    'WHERE transfer_id = @transferId AND photo_data_json IS NOT NULL AND LENGTH(photo_data_json) > 0 LIMIT 1';
+  const rows = runNamedQuery_(sql, { transferId: transferId });
+  if (!rows.length) return [];
+  try {
+    const photos = JSON.parse(String(rows[0].photo_data_json || '[]'));
+    if (!Array.isArray(photos)) return [];
+    return photos.slice(0, 5).map(function (photo) {
+      const mimeType = String(photo && photo.mimeType || '').toLowerCase();
+      const base64 = String(photo && photo.base64 || '').replace(/^data:[^;]+;base64,/, '');
+      if (['image/jpeg', 'image/png', 'image/webp'].indexOf(mimeType) < 0 || !base64) return '';
+      return 'data:' + mimeType + ';base64,' + base64;
+    }).filter(Boolean);
+  } catch (error) {
+    return [];
+  }
+}
+
 function readStockTransferHistory_(outlet) {
   const sql = 'SELECT ' + stockTransferSelectFields_() + ' ' +
     'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` WHERE from_outlet = @outlet OR to_outlet = @outlet ORDER BY created_at DESC';
@@ -3443,7 +3459,7 @@ function readStockTransferHistory_(outlet) {
 }
 
 function stockTransferSelectFields_() {
-  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids';
+  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids, photo_count';
 }
 
 function buildStockTransferFromRows_(rows) {
@@ -3455,14 +3471,16 @@ function buildStockTransferFromRows_(rows) {
     transferId: String(first.transfer_id || ''), status: 'PENDING', fromOutlet: String(first.from_outlet || ''),
     fromLocation: String(first.from_location || ''), toOutlet: String(first.to_outlet || ''), toLocation: String(first.to_location || ''),
     createdBy: String(first.created_by || ''), createdByName: String(first.created_by_name || first.created_by || ''),
-    createdAt: String(first.created_at || ''), receiptNo: '', photoFileIds: [], items: []
+    createdAt: String(first.created_at || ''), receiptNo: '', photoFileIds: [], photoCount: 0, items: []
   };
+  transfer.photoCount = pending.reduce(function (count, row) { return Math.max(count, Number(row.photo_count || 0)); }, 0);
   try {
     const parsedPhotoIds = JSON.parse(String(first.photo_file_ids || '[]'));
     if (Array.isArray(parsedPhotoIds)) transfer.photoFileIds = parsedPhotoIds.map(String).filter(Boolean).slice(0, 5);
   } catch (error) {
     transfer.photoFileIds = [];
   }
+  if (!transfer.photoCount) transfer.photoCount = transfer.photoFileIds.length;
   pending.forEach(function (row) {
     transfer.items.push({
       lineId: String(row.event_id || ''), code: String(row.item_code || ''), category: String(row.category || ''),
@@ -3906,8 +3924,9 @@ function buildTransferReceiptPdf_(transfer) {
   const rejection = status === 'REJECTED' ? '<div class="reason"><b>ALASAN PENOLAKAN</b><br>' + receiptHtmlEscape_(transfer.rejectionReason || '-') + '</div>' : '';
   const receiverStamp = status === 'ACCEPTED' ? '<div class="party-stamp">WELL RECEIVED BY<small>' +
     receiptHtmlEscape_(receiverName) + '</small></div>' : '';
-  const photoCards = (Array.isArray(transfer.photoFileIds) ? transfer.photoFileIds : []).map(function (fileId, index) {
-    const dataUrl = transferPhotoDataUrl_(fileId);
+  let photoDataUrls = Array.isArray(transfer.photoDataUrls) ? transfer.photoDataUrls : [];
+  if (!photoDataUrls.length) photoDataUrls = (Array.isArray(transfer.photoFileIds) ? transfer.photoFileIds : []).map(transferPhotoDataUrl_).filter(Boolean);
+  const photoCards = photoDataUrls.map(function (dataUrl, index) {
     return dataUrl ? '<div class="photo-card"><img src="' + dataUrl + '"><div>Foto ' + (index + 1) + '</div></div>' : '';
   }).filter(Boolean).join('');
   const photos = photoCards ? '<div class="photos"><div class="photos-title">FOTO PENGIRIMAN</div><div class="photo-grid">' + photoCards + '</div></div>' : '';
@@ -4649,6 +4668,7 @@ function exportTransferReceipt(token, transferId, requestedOutlet) {
     transferId = cleanText_(transferId, 100);
     const transfer = readStockTransfer_(transferId, outlet);
     if (!transfer) throw new Error('Data transfer tidak ditemukan.');
+    transfer.photoDataUrls = readTransferPhotoData_(transferId);
     const blob = buildTransferReceiptPdf_(transfer);
     return { fileName: blob.getName(), mimeType: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
   });
@@ -5140,24 +5160,11 @@ function ensureNewsImageFolder_() {
   return folder;
 }
 
-function ensureTransferPhotoFolder_() {
-  const properties = PropertiesService.getScriptProperties();
-  const existingId = String(properties.getProperty('TRANSFER_PHOTO_FOLDER_ID') || '');
-  if (existingId) {
-    try { return DriveApp.getFolderById(existingId); }
-    catch (error) { properties.deleteProperty('TRANSFER_PHOTO_FOLDER_ID'); }
-  }
-  const folder = DriveApp.createFolder('BAKERZIN_TRANSFER_PHOTOS');
-  properties.setProperty('TRANSFER_PHOTO_FOLDER_ID', folder.getId());
-  return folder;
-}
-
-function saveTransferPhotoUploads_(uploads, transferId) {
+function prepareTransferPhotoData_(uploads) {
   uploads = Array.isArray(uploads) ? uploads : [];
   if (!uploads.length) return [];
   if (uploads.length > 5) throw new Error('Maksimal 5 foto pengiriman.');
-  const allowed = ['image/jpeg', 'image/png', 'image/webp'];
-  const prepared = [], maxFileBytes = 2 * 1024 * 1024, maxTotalBytes = 8 * 1024 * 1024;
+  const allowed = ['image/jpeg', 'image/png', 'image/webp'], prepared = [];
   let totalBytes = 0;
   uploads.forEach(function (upload, index) {
     upload = upload || {};
@@ -5166,29 +5173,12 @@ function saveTransferPhotoUploads_(uploads, transferId) {
     const raw = String(upload.base64 || '').replace(/^data:[^;]+;base64,/, '');
     if (!raw) throw new Error('Foto ' + (index + 1) + ' tidak dapat dibaca.');
     const bytes = Utilities.base64Decode(raw);
-    if (bytes.length > maxFileBytes) throw new Error('Ukuran setiap foto maksimal 2 MB.');
+    if (bytes.length > 300 * 1024) throw new Error('Foto ' + (index + 1) + ' terlalu besar setelah kompresi. Maksimal 300 KB.');
     totalBytes += bytes.length;
-    if (totalBytes > maxTotalBytes) throw new Error('Total ukuran foto maksimal 8 MB.');
-    const originalName = String(upload.fileName || ('foto-' + (index + 1))).replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-90);
-    prepared.push({ bytes: bytes, mimeType: mimeType, fileName: 'transfer-' + String(transferId || '').slice(0, 8) + '-' + originalName });
+    if (totalBytes > 1500 * 1024) throw new Error('Total foto setelah kompresi maksimal 1,5 MB.');
+    prepared.push({ mimeType: mimeType, base64: Utilities.base64Encode(bytes) });
   });
-  const ids = [];
-  try {
-    const folder = ensureTransferPhotoFolder_();
-    prepared.forEach(function (photo) {
-      ids.push(folder.createFile(Utilities.newBlob(photo.bytes, photo.mimeType, photo.fileName)).getId());
-    });
-    return ids;
-  } catch (error) {
-    cleanupTransferPhotoFiles_(ids);
-    throw new Error('Foto pengiriman tidak dapat disimpan. ' + error.message);
-  }
-}
-
-function cleanupTransferPhotoFiles_(fileIds) {
-  (Array.isArray(fileIds) ? fileIds : []).forEach(function (fileId) {
-    try { DriveApp.getFileById(String(fileId)).setTrashed(true); } catch (error) {}
-  });
+  return prepared;
 }
 
 function transferPhotoDataUrl_(fileId) {
