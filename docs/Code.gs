@@ -447,6 +447,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
       locations: locations,
       selectedLocation: locations[0] || 'Store',
       items: readStockItemsWithQty_(outlet, locations[0] || 'Store'),
+      expiryAlerts: readStockExpiryAlerts_(outlet, locations[0] || 'Store'),
       taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card',
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
@@ -476,6 +477,7 @@ function getStockCardData(token, requestedOutlet, location) {
       : false;
     return {
       outlet: outlet, location: location, locations: locations, items: readStockItemsWithQty_(outlet, location),
+      expiryAlerts: readStockExpiryAlerts_(outlet, location),
       taskCompleted: taskCompleted, uploadProgress: readStockUploadProgress_(outlet), supplementaryPending: true
     };
   });
@@ -1048,11 +1050,11 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
       (Array.isArray(receivedItems) ? receivedItems : []).forEach(function (line) {
         const lineId = cleanText_(line.lineId, 100), qty = Number(line.qty);
         if (!lineId || !isFinite(qty) || qty < 0) throw new Error('QTY diterima wajib berupa angka 0 atau lebih.');
-        const receivedAt = new Date(String(line.receivedAt || receiptDetails.receivedAt || ''));
-        const storageEnteredAt = new Date(String(line.storageEnteredAt || receiptDetails.storageEnteredAt || ''));
+        const receivedAt = new Date(String(receiptDetails.receivedAt || line.receivedAt || ''));
+        const storageEnteredAt = new Date(String(receiptDetails.storageEnteredAt || line.storageEnteredAt || ''));
         const productTemperature = Number(line.productTemperature === '' || line.productTemperature === null || line.productTemperature === undefined ? receiptDetails.productTemperature : line.productTemperature);
-        if (isNaN(receivedAt.getTime())) throw new Error('Waktu Terima wajib diisi untuk setiap item.');
-        if (isNaN(storageEnteredAt.getTime())) throw new Error('Waktu Masuk Storage wajib diisi untuk setiap item.');
+        if (isNaN(receivedAt.getTime())) throw new Error('Waktu Terima wajib diisi.');
+        if (isNaN(storageEnteredAt.getTime())) throw new Error('Waktu Masuk Storage wajib diisi.');
         if (storageEnteredAt.getTime() < receivedAt.getTime()) throw new Error('Waktu Masuk Storage tidak boleh lebih awal dari Waktu Terima.');
         if (!isFinite(productTemperature)) throw new Error('Suhu Produk wajib diisi dengan angka untuk setiap item.');
         receivedMap[lineId] = { qty: qty, receivedAt: receivedAt, storageEnteredAt: storageEnteredAt, productTemperature: productTemperature };
@@ -3909,15 +3911,11 @@ function buildTransferReceiptPdf_(transfer) {
     sentTotal += sent;
     if (received !== null) receivedTotal += received;
     const variance = received === null ? '-' : formatQty_(received - sent);
-    const itemRow = '<tr><td>' + (index + 1) + '</td><td><b>' + receiptHtmlEscape_(item.code) + '</b><br><span>' + receiptHtmlEscape_(item.name) + '</span></td>' +
+    return '<tr><td>' + (index + 1) + '</td><td><b>' + receiptHtmlEscape_(item.code) + '</b><br><span>' + receiptHtmlEscape_(item.name) + '</span></td>' +
       '<td>' + receiptHtmlEscape_(item.unit) + '</td><td class="num">' + formatQty_(sent) + '</td><td class="num">' + (received === null ? '-' : formatQty_(received)) + '</td>' +
       '<td class="num ' + (received !== null && Math.abs(received - sent) > 0.0000001 ? 'variance' : '') + '">' + variance + '</td>' +
+      '<td>' + receiptHtmlEscape_(status === 'ACCEPTED' && item.productTemperature !== null && item.productTemperature !== undefined && item.productTemperature !== '' ? formatQty_(item.productTemperature) + ' °C' : '-') + '</td>' +
       '<td>' + receiptHtmlEscape_(item.expiryDate ? transferReceiptDate_(item.expiryDate, false) : 'Tidak dicatat') + '</td><td>' + receiptHtmlEscape_(item.note || '-') + '</td></tr>';
-    if (status !== 'ACCEPTED') return itemRow;
-    return itemRow + '<tr class="item-receipt-detail"><td></td><td colspan="7"><b>Detail penerimaan item:</b> Waktu Terima ' +
-      receiptHtmlEscape_(transferReceiptDate_(item.receivedAt || transfer.receivedAt, true)) + ' &nbsp;|&nbsp; Waktu Masuk Storage ' +
-      receiptHtmlEscape_(transferReceiptDate_(item.storageEnteredAt || transfer.storageEnteredAt, true)) + ' &nbsp;|&nbsp; Suhu Produk ' +
-      receiptHtmlEscape_(item.productTemperature === null || item.productTemperature === undefined || item.productTemperature === '' ? '-' : formatQty_(item.productTemperature) + ' °C') + '</td></tr>';
   }).join('');
   const receiverName = status === 'ACCEPTED' ? (transfer.acceptedByName || transfer.acceptedBy || '-') : status === 'REJECTED' ? (transfer.rejectedByName || transfer.rejectedBy || '-') : 'Belum dikonfirmasi';
   const processedAt = status === 'ACCEPTED' ? transfer.acceptedAt : status === 'REJECTED' ? transfer.rejectedAt : '';
@@ -3935,9 +3933,9 @@ function buildTransferReceiptPdf_(transfer) {
     '<div class="header"><div class="logo">' + bakerzinReceiptLogo_() + '</div><div class="doc-title"><h1>E-TRANSFER GOODS</h1><b>' + receiptHtmlEscape_(receiptNo) + '</b><div>Transfer ID: ' + receiptHtmlEscape_(transfer.transferId) + '</div></div></div>' +
     '<div class="stamp ' + statusClass + '">' + statusTitle + '<small>' + statusDescription + '</small></div>' +
     '<div class="meta-grid"><div class="meta"><span class="label">PENGIRIM</span><h3>' + receiptHtmlEscape_(transfer.fromOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.fromLocation || '-') + '</p><p>Nama: ' + receiptHtmlEscape_(transfer.createdByName || '-') + '</p><p>NIK: ' + receiptHtmlEscape_(transfer.createdBy || '-') + '</p><p>Dikirim: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.createdAt, true)) + '</p></div>' +
-    '<div class="meta"><span class="label">PENERIMA</span><h3>' + receiptHtmlEscape_(transfer.toOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.toLocation || 'Belum dipilih') + '</p><p>Nama: ' + receiptHtmlEscape_(receiverName) + '</p><p>NIK: ' + receiptHtmlEscape_(status === 'ACCEPTED' ? transfer.acceptedBy : status === 'REJECTED' ? transfer.rejectedBy : '-') + '</p><p>Diproses: ' + receiptHtmlEscape_(processedAt ? transferReceiptDate_(processedAt, true) : 'Belum diproses') + '</p>' + receiverStamp + '</div></div>' +
+    '<div class="meta"><span class="label">PENERIMA</span><h3>' + receiptHtmlEscape_(transfer.toOutlet) + '</h3><p>Lokasi: ' + receiptHtmlEscape_(transfer.toLocation || 'Belum dipilih') + '</p><p>Nama: ' + receiptHtmlEscape_(receiverName) + '</p><p>NIK: ' + receiptHtmlEscape_(status === 'ACCEPTED' ? transfer.acceptedBy : status === 'REJECTED' ? transfer.rejectedBy : '-') + '</p><p>Diproses: ' + receiptHtmlEscape_(processedAt ? transferReceiptDate_(processedAt, true) : 'Belum diproses') + '</p>' + (status === 'ACCEPTED' ? '<p>Waktu Terima: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.receivedAt, true)) + '</p><p>Waktu Masuk Storage: ' + receiptHtmlEscape_(transferReceiptDate_(transfer.storageEnteredAt, true)) + '</p>' : '') + receiverStamp + '</div></div>' +
     '<div class="summary"><div><span class="label">JUMLAH BARIS</span><b>' + transfer.items.length + '</b></div><div><span class="label">TOTAL QTY DIKIRIM</span><b>' + formatQty_(sentTotal) + '</b></div><div><span class="label">TOTAL QTY DITERIMA</span><b>' + (status === 'ACCEPTED' ? formatQty_(receivedTotal) : '-') + '</b></div></div>' +
-    '<table><thead><tr><th style="width:4%">NO</th><th style="width:23%">ITEM</th><th style="width:8%">UNIT</th><th style="width:10%">DIKIRIM</th><th style="width:10%">DITERIMA</th><th style="width:9%">SELISIH</th><th style="width:15%">EXPIRY</th><th style="width:21%">CATATAN</th></tr></thead><tbody>' + rows + '</tbody></table>' + rejection + photos +
+    '<table><thead><tr><th style="width:4%">NO</th><th style="width:20%">ITEM</th><th style="width:7%">UNIT</th><th style="width:9%">DIKIRIM</th><th style="width:9%">DITERIMA</th><th style="width:8%">SELISIH</th><th style="width:9%">SUHU</th><th style="width:14%">EXPIRY</th><th style="width:20%">CATATAN</th></tr></thead><tbody>' + rows + '</tbody></table>' + rejection + photos +
     '<div class="declaration">Dokumen elektronik ini merupakan bukti operasional internal Bakerzin. Identitas pengguna, tanggal, jam, nomor dokumen, serta rincian kuantitas tersimpan sebagai jejak audit. Dokumen ini tidak memerlukan tanda tangan manual.</div>' +
     '<div class="footer"><span>BAKERZIN - Stock Transfer Control</span><span>Dibuat: ' + receiptHtmlEscape_(transferReceiptDate_(new Date(), true)) + '</span></div></body></html>';
   const blob = HtmlService.createHtmlOutput(html).getBlob().getAs(MimeType.PDF);
@@ -4169,6 +4167,44 @@ function readStockItemsWithQty_(outlet, location) {
       showcase: Boolean(item.showcase), productName: item.productName || '', productUnit: item.productUnit || '', productQty: Number(item.productQty || 0)
     };
   });
+}
+
+function readStockExpiryAlerts_(outlet, location) {
+  const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
+    'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location ORDER BY event_date, created_at';
+  const grouped = {};
+  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    const name = String(row.item_name || '').trim();
+    const key = code || 'NAME|' + name.toLowerCase();
+    if (!key || key === 'NAME|') return;
+    if (!grouped[key]) grouped[key] = { code: code, name: name, history: [] };
+    grouped[key].history.push({
+      recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
+      movementType: String(row.movement_type || ''), info: String(row.info || ''),
+      productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+      sourceArrivalDate: String(row.source_arrival_date || ''), createdAt: String(row.created_at || '')
+    });
+  });
+  const today = todayIso_(), limitDate = new Date();
+  limitDate.setDate(limitDate.getDate() + 30);
+  const nearLimit = Utilities.formatDate(limitDate, 'Asia/Jakarta', 'yyyy-MM-dd');
+  const missingExpiry = [], nearExpiry = [];
+  Object.keys(grouped).forEach(function (key) {
+    const entry = grouped[key], snapshots = calculateFifoSnapshots_(entry.history), dates = Object.keys(snapshots).sort();
+    const lots = dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
+    if (!lots.length) return;
+    const missingQty = lots.reduce(function (sum, lot) { return sum + (!String(lot.expiryDate || '').slice(0, 10) ? Number(lot.qty || 0) : 0); }, 0);
+    const upcomingDates = lots.map(function (lot) { return String(lot.expiryDate || '').slice(0, 10); })
+      .filter(function (date) { return date && date >= today && date <= nearLimit; }).sort();
+    if (missingQty > 0.0000001) missingExpiry.push({ code: entry.code, name: entry.name, qty: missingQty });
+    if (upcomingDates.length) nearExpiry.push({ code: entry.code, name: entry.name, expiryDate: upcomingDates[0] });
+  });
+  missingExpiry.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  nearExpiry.sort(function (a, b) { return a.expiryDate.localeCompare(b.expiryDate) || a.name.localeCompare(b.name); });
+  return { missingExpiry: missingExpiry, nearExpiry: nearExpiry, nearExpiryDays: 30 };
 }
 
 function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, employee) {
