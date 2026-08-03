@@ -447,6 +447,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
       locations: locations,
       selectedLocation: locations[0] || 'Store',
       items: readStockItemsWithQty_(outlet, locations[0] || 'Store'),
+      expiryAlerts: readStockExpiryAlerts_(outlet, locations[0] || 'Store'),
       taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card',
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
@@ -476,6 +477,7 @@ function getStockCardData(token, requestedOutlet, location) {
       : false;
     return {
       outlet: outlet, location: location, locations: locations, items: readStockItemsWithQty_(outlet, location),
+      expiryAlerts: readStockExpiryAlerts_(outlet, location),
       taskCompleted: taskCompleted, uploadProgress: readStockUploadProgress_(outlet), supplementaryPending: true
     };
   });
@@ -4165,6 +4167,44 @@ function readStockItemsWithQty_(outlet, location) {
       showcase: Boolean(item.showcase), productName: item.productName || '', productUnit: item.productUnit || '', productQty: Number(item.productQty || 0)
     };
   });
+}
+
+function readStockExpiryAlerts_(outlet, location) {
+  const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
+    'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location ORDER BY event_date, created_at';
+  const grouped = {};
+  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    const name = String(row.item_name || '').trim();
+    const key = code || 'NAME|' + name.toLowerCase();
+    if (!key || key === 'NAME|') return;
+    if (!grouped[key]) grouped[key] = { code: code, name: name, history: [] };
+    grouped[key].history.push({
+      recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
+      movementType: String(row.movement_type || ''), info: String(row.info || ''),
+      productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+      sourceArrivalDate: String(row.source_arrival_date || ''), createdAt: String(row.created_at || '')
+    });
+  });
+  const today = todayIso_(), limitDate = new Date();
+  limitDate.setDate(limitDate.getDate() + 30);
+  const nearLimit = Utilities.formatDate(limitDate, 'Asia/Jakarta', 'yyyy-MM-dd');
+  const missingExpiry = [], nearExpiry = [];
+  Object.keys(grouped).forEach(function (key) {
+    const entry = grouped[key], snapshots = calculateFifoSnapshots_(entry.history), dates = Object.keys(snapshots).sort();
+    const lots = dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
+    if (!lots.length) return;
+    const missingQty = lots.reduce(function (sum, lot) { return sum + (!String(lot.expiryDate || '').slice(0, 10) ? Number(lot.qty || 0) : 0); }, 0);
+    const upcomingDates = lots.map(function (lot) { return String(lot.expiryDate || '').slice(0, 10); })
+      .filter(function (date) { return date && date >= today && date <= nearLimit; }).sort();
+    if (missingQty > 0.0000001) missingExpiry.push({ code: entry.code, name: entry.name, qty: missingQty });
+    if (upcomingDates.length) nearExpiry.push({ code: entry.code, name: entry.name, expiryDate: upcomingDates[0] });
+  });
+  missingExpiry.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  nearExpiry.sort(function (a, b) { return a.expiryDate.localeCompare(b.expiryDate) || a.name.localeCompare(b.name); });
+  return { missingExpiry: missingExpiry, nearExpiry: nearExpiry, nearExpiryDays: 30 };
 }
 
 function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, employee) {
