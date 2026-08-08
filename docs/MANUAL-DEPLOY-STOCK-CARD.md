@@ -32,6 +32,8 @@ Fungsi instalasi aman dijalankan ulang. Jika trigger sudah ada, fungsi tidak mem
 
 Setelah backend versi ini pertama kali di-deploy, jalankan fungsi `backfillStockTransferDeliveryDates` satu kali dari editor Google Apps Script. Fungsi ini mengisi tanggal Good Delivery untuk transfer lama yang masih belum memiliki field `delivery_date`; data transaksi tidak dihapus.
 
+Jalankan juga fungsi `backfillStockUploadDailySummary` satu kali. Fungsi ini mengisi tabel monitoring ringkas dari transaksi aktual yang sudah ada. Setelah itu, trigger yang sama akan memperbarui hanya tanggal/outlet yang berubah. Tanpa backfill ini, monitoring lama akan tampak belum lengkap sampai setiap tanggal diperbarui lagi.
+
 Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke background. Tanpa trigger, data tetap akurat karena sistem membaca ledger aktual, tetapi pembacaan dapat lebih lambat.
 
 ## 4. Pemeriksaan setelah deployment
@@ -63,6 +65,9 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 
 ## 6. Perubahan yang tidak memerlukan setup manual
 
+- Bootstrap halaman, navigasi, progress, dan completion digabungkan sehingga pembukaan awal tidak meminta data yang sama berulang kali.
+- Daftar stok menggunakan cache 45 detik dan monitoring seluruh outlet menggunakan cache 60 detik. Cache terkait dibersihkan otomatis setelah perubahan stok.
+- Monitoring BIHQ membaca tabel ringkas `stock_upload_daily_summary`, bukan memindai seluruh history setiap membuka halaman.
 - Cache master item, outlet, lokasi, dan unit berjalan otomatis selama 10 menit.
 - Raw material WIP yang belum ada akan ditambahkan otomatis ke `STOCK_ITEMS` saat dibutuhkan.
 - Monitoring membaca transaksi aktual dari BigQuery, bukan hanya marker import.
@@ -73,7 +78,34 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Deployment backend pertama dapat meminta izin Google Drive saat membuat template Excel. File Google Sheets sementara otomatis dipindahkan ke Trash setelah file XLSX selesai dibuat.
 - Field BigQuery `stock_transfers.delivery_date` ditambahkan otomatis ketika backend versi baru pertama kali dijalankan.
 
-## 7. Rencana reset upload tanpa menghapus Showcase Log
+## 7. Migrasi aman partisi `stock_card` ke `event_date`
+
+Lakukan setelah deployment dan backfill monitoring selesai, sebaiknya pada jam aktivitas rendah. Seluruh fungsi dijalankan satu per satu dari editor Google Apps Script. Tabel lama tidak pernah dihapus otomatis.
+
+Jika reset dan reupload data masih direncanakan, selesaikan reset/reupload terlebih dahulu sebelum memulai migrasi v2. Jangan menjalankan `RESET-UPLOAD-DATA.sql` ketika dual-write sedang aktif karena penghapusan langsung di BigQuery tidak otomatis dicerminkan ke tabel pasangannya.
+
+1. Jalankan `prepareStockCardV2Migration`.
+   - Sistem membuat `stock_card_v2` dengan partisi harian `event_date` dan clustering outlet, lokasi, item, serta jenis record.
+   - Sistem langsung mengaktifkan dual-write ke tabel lama dan v2, lalu menyalin data lama.
+   - Periksa hasil eksekusi. `matched` dan `safeToActivate` harus bernilai `true`.
+2. Jalankan `auditStockCardV2Migration`.
+   - Bandingkan `rowCount`, `recordCount`, `qtyTotal`, `minDate`, dan `maxDate` antara tabel lama dan v2.
+   - Jangan lanjut apabila `matched` masih `false`.
+3. Jika belum cocok, jalankan `syncStockCardV2Migration`, lalu audit ulang. Tabel lama masih menjadi sumber aktif selama tahap ini.
+4. Jika audit cocok, jalankan `activateStockCardV2AfterAudit`.
+   - Fungsi melakukan sinkronisasi dan audit sekali lagi sebelum beralih.
+   - `stock_card_v2` menjadi tabel aktif; `stock_card` lama tetap menerima mirror sebagai jalur rollback.
+5. Uji Stock Card, upload, transfer, produksi WIP, Showcase, dan monitoring BIHQ. Pantau minimal tujuh hari.
+6. Jika ada masalah, jalankan `rollbackStockCardV2Migration`. Peralihan kembali ke tabel lama berlangsung tanpa menghapus v2.
+7. Setelah masa observasi dan audit tetap cocok, jalankan `finishStockCardV2Migration` untuk menghentikan dual-write. Tabel `stock_card` lama tetap disimpan di BigQuery dan dapat dihapus manual hanya setelah kebijakan retensi internal mengizinkan.
+
+Catatan penting:
+
+- Jangan mengubah Script Properties `STOCK_CARD_TABLE_ID` dan `STOCK_CARD_MIRROR_TABLE_ID` secara manual.
+- Jika Script Property `STOCK_CARD_MIRROR_LAST_ERROR` terisi, jalankan `syncStockCardV2Migration` dan pastikan audit cocok sebelum aktivasi/finalisasi.
+- Migrasi ini tidak mengubah presisi QTY dan tidak menghapus Showcase Log.
+
+## 8. Rencana reset upload tanpa menghapus Showcase Log
 
 Jangan menghapus tabel `stock_card` seluruhnya. Showcase Log berada pada tabel yang sama dengan transaksi upload dan ditandai dengan `source_file = 'SHOWCASE_LOG'`.
 

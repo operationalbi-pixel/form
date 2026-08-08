@@ -29,6 +29,15 @@ const CONFIG = Object.freeze({
   APP_TITLE: 'Bakerzin Internal Hub'
 });
 
+function stockCardTableId_() {
+  const configured = String(PropertiesService.getScriptProperties().getProperty('STOCK_CARD_TABLE_ID') || 'stock_card').trim();
+  return /^[A-Za-z0-9_]+$/.test(configured) ? configured : 'stock_card';
+}
+
+function stockCardTable_() {
+  return '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + stockCardTableId_() + '`';
+}
+
 function doGet(e) {
   const requestedForm = normalizeHtmlFile_(e && e.parameter && e.parameter.form);
   if (requestedForm && isRegisteredFormFile_(requestedForm)) {
@@ -450,7 +459,8 @@ function getStockCardBootstrap(token, requestedOutlet) {
     const requested = String(requestedOutlet || '').trim().toUpperCase();
     const outlet = isBihq && !requested ? '' : resolveStockOutlet_(employee, requested, outlets);
     const locations = outlet ? readStockLocations_(outlet) : [];
-    const stockTask = readTasksForEmployee_(employee).filter(function (task) {
+    const navigationTasks = readTasksForEmployee_(employee);
+    const stockTask = navigationTasks.filter(function (task) {
       return task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
     })[0] || null;
     const taskCompleted = outlet && stockTask
@@ -462,12 +472,14 @@ function getStockCardBootstrap(token, requestedOutlet) {
       selectedOutlet: outlet,
       locations: locations,
       selectedLocation: outlet ? (locations[0] || 'Store') : '',
-      items: outlet ? readStockItemsWithQty_(outlet, locations[0] || 'Store') : [],
+      items: outlet ? readStockItemsWithQtyCached_(outlet, locations[0] || 'Store') : [],
       expiryAlerts: { missingExpiry: [], nearExpiry: [] },
-      taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card',
+      taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + stockCardTableId_(),
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
       taskCompleted: taskCompleted,
+      navigationTasks: navigationTasks,
+      completions: outlet ? mergeStockUploadCompletions_(readCompletionMap_(outlet), navigationTasks, outlet) : {},
       uploadProgress: null,
       supplementaryPending: true
     };
@@ -492,7 +504,7 @@ function getStockCardData(token, requestedOutlet, location) {
       ? Boolean(readCompletionMap_(outlet)[stockTask.id + '|' + currentPeriodKey_('DAILY')])
       : false;
     return {
-      outlet: outlet, location: location, locations: locations, items: readStockItemsWithQty_(outlet, location),
+      outlet: outlet, location: location, locations: locations, items: readStockItemsWithQtyCached_(outlet, location),
       expiryAlerts: { missingExpiry: [], nearExpiry: [] },
       taskCompleted: taskCompleted, uploadProgress: null, supplementaryPending: true
     };
@@ -786,7 +798,7 @@ function readShowcaseLogProgress_(outlet, anchorDate) {
     'MAX(IF(movement_type = \'Showcase Log In\', 1, 0)) AS stock_in, ' +
     'MAX(IF(movement_type = \'Showcase Log Sold\', 1, 0)) AS sold, ' +
     'MAX(IF(movement_type = \'Showcase Log Waste\', 1, 0)) AS waste ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'LOG\' AND outlet = @outlet AND location = \'Showcase\' ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) GROUP BY event_date';
   const status = {};
@@ -813,7 +825,7 @@ function getShowcaseLogMonitoring(token, monthKey) {
       'MAX(IF(movement_type = \'Showcase Log In\', 1, 0)) AS stock_in, ' +
       'MAX(IF(movement_type = \'Showcase Log Sold\', 1, 0)) AS sold, ' +
       'MAX(IF(movement_type = \'Showcase Log Waste\', 1, 0)) AS waste ' +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'FROM ' + stockCardTable_() + ' ' +
       'WHERE record_type = \'LOG\' AND location = \'Showcase\' ' +
       'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) GROUP BY outlet, event_date';
     const map = {};
@@ -888,7 +900,7 @@ function readStockUploadProgress_(outlet) {
     'MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) AS goods_receipt, ' +
     'MAX(IF(movement_type = \'Terjual\', 1, 0)) AS sales_usage, ' +
     'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
     'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
@@ -920,23 +932,20 @@ function getStockUploadMonitoring(token, monthKey) {
   return safe_(function () {
     const employee = requireAdmin_(token);
     monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
+    const cacheKey = 'stock-upload-monitor-v1-' + monthKey, cached = readScriptJsonCache_(cacheKey);
+    if (cached) return cached;
     const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
     const startDate = monthKey + '-01', endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
     const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
-    const sql = 'SELECT outlet, CAST(event_date AS STRING) AS event_date, movement_type, ' +
-      'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\') AS actual_rows, ' +
-      'COUNTIF(record_type = \'IMPORT\') AS marker_rows, MAX(created_at) AS last_upload, ' +
-      'ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)] AS last_user ' +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-      'WHERE event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
-      'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') ' +
-      'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY outlet, event_date, movement_type';
+    const sql = 'SELECT outlet, CAST(event_date AS STRING) AS event_date, upload_type, actual_item_count AS actual_rows, marker_count AS marker_rows, ' +
+      'CAST(last_upload AS STRING) AS last_upload, last_user FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary` ' +
+      'WHERE event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE)';
     const map = {}, problemCount = { markerWithoutData: 0 };
     runNamedQuery_(sql, { startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
       const key = String(row.outlet || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10);
       if (!map[key]) map[key] = {};
-      const type = String(row.movement_type || '') === 'Goods Receipt' ? 'goodsReceipt' :
-        String(row.movement_type || '') === 'Terjual' ? 'salesUsage' : 'goodsDelivery';
+      const type = String(row.upload_type || '');
+      if (['goodsReceipt', 'salesUsage', 'goodsDelivery'].indexOf(type) < 0) return;
       const actualRows = Number(row.actual_rows || 0), markerRows = Number(row.marker_rows || 0);
       if (!actualRows && markerRows) problemCount.markerWithoutData++;
       map[key][type] = { done: actualRows > 0, actualRows: actualRows, markerWithoutData: !actualRows && markerRows > 0,
@@ -955,7 +964,9 @@ function getStockUploadMonitoring(token, monthKey) {
           complete: Boolean(state.goodsReceipt && state.goodsReceipt.done && state.salesUsage && state.salesUsage.done) });
       }
     });
-    return { monthKey: monthKey, rows: rows, outlets: outlets, problems: problemCount, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
+    const response = { monthKey: monthKey, rows: rows, outlets: outlets, problems: problemCount, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
+    writeScriptJsonCache_(cacheKey, response, 60);
+    return response;
   });
 }
 
@@ -1098,7 +1109,7 @@ function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
   try {
     if (['Goods Receipt', 'Terjual'].indexOf(completedType) < 0) return false;
     const otherType = completedType === 'Goods Receipt' ? 'Terjual' : 'Goods Receipt';
-    const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
       'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND item_code IS NOT NULL AND item_code != \'\' AND event_date = CAST(@periodKey AS DATE) ' +
       'AND movement_type = @movementType AND source_file IS NOT NULL AND source_file != \'\'';
     const rows = runNamedQuery_(sql, { outlet: context.outlet, periodKey: periodKey, movementType: otherType });
@@ -1149,6 +1160,7 @@ function setStockItemHidden(token, payload) {
       if (targetRow) sheet.getRange(targetRow, 1, 1, 6).setValues(values);
       else sheet.appendRow(values[0]);
       SpreadsheetApp.flush();
+      removeScriptCacheKeys_([stockItemsCacheKey_(context.outlet, context.location)]);
       return { itemCode: item.code, hidden: hidden };
     } finally {
       lock.releaseLock();
@@ -1946,7 +1958,7 @@ function parseStockPositionReport_(base64, fileName) {
 }
 
 function stockPositionAlreadyImported_(outlet, location, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location ' +
     'AND movement_type = \'Stock Adjustment\' AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash });
@@ -2690,14 +2702,14 @@ function readStoreCodeDirectory_() {
 }
 
 function salesUsageHashAlreadyImported_(outlet, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND movement_type = \'Terjual\' AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
 }
 
 function readExistingSalesUsageItemCodes_(outlet, transactionDate) {
-  const sql = 'SELECT DISTINCT UPPER(item_code) AS item_code FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  const sql = 'SELECT DISTINCT UPPER(item_code) AS item_code FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Terjual\' ' +
     'AND event_date = CAST(@transactionDate AS DATE) AND source_file IS NOT NULL AND source_file != \'\' AND item_code IS NOT NULL';
   const map = {};
@@ -3072,7 +3084,7 @@ function processWipProduction(token, payload) {
 
 function wipProductionHashAlreadyImported_(outlet, location, sourceHash) {
   if (!sourceHash) return false;
-  const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
     'WHERE outlet = @outlet AND location = @location AND movement_type = \'Production\' AND source_hash = @sourceHash ' +
     'AND STARTS_WITH(COALESCE(source_file, \'\'), \'WIP_PRODUCTION|\')';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash }, { useQueryCache: false });
@@ -3226,7 +3238,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v15') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v16') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -3251,17 +3263,25 @@ function ensureStockCardInfrastructure_() {
     bqField_('info', 'STRING'), bqField_('production_date', 'DATE'), bqField_('expiry_date', 'DATE'), bqField_('event_date', 'DATE', 'REQUIRED'),
     bqField_('created_at', 'TIMESTAMP', 'REQUIRED'), bqField_('created_by', 'STRING', 'REQUIRED')
   ], 'created_at');
-  ensureBigQueryFields_('stock_card', [
+  const stockCardAdditionalFields = [
     bqField_('item_code', 'STRING'), bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
     bqField_('source_file', 'STRING'), bqField_('source_hash', 'STRING'), bqField_('source_row', 'INTEGER'),
     bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING'),
     bqField_('source_arrival_date', 'DATE'), bqField_('production_date', 'DATE')
-  ]);
+  ];
+  ensureBigQueryFields_('stock_card', stockCardAdditionalFields);
+  if (stockCardTableId_() !== 'stock_card') ensureBigQueryFields_(stockCardTableId_(), stockCardAdditionalFields);
   ensureBigQueryTable_('stock_balances', [
     bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
     bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
     bqField_('current_qty', 'FLOAT', 'REQUIRED'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
   ]);
+  ensureBigQueryTable_('stock_upload_daily_summary', [
+    bqField_('event_date', 'DATE', 'REQUIRED'), bqField_('outlet', 'STRING', 'REQUIRED'),
+    bqField_('upload_type', 'STRING', 'REQUIRED'), bqField_('actual_item_count', 'INTEGER', 'REQUIRED'),
+    bqField_('marker_count', 'INTEGER', 'REQUIRED'), bqField_('last_upload', 'TIMESTAMP'),
+    bqField_('last_user', 'STRING'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
+  ], 'event_date', ['outlet', 'upload_type']);
   ensureBigQueryTable_('stock_transfers', [
     bqField_('event_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING', 'REQUIRED'), bqField_('status', 'STRING', 'REQUIRED'),
     bqField_('from_outlet', 'STRING'), bqField_('from_location', 'STRING'), bqField_('to_outlet', 'STRING'), bqField_('to_location', 'STRING'),
@@ -3278,7 +3298,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING'),
     bqField_('delivery_date', 'DATE')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v15', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v16', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -3426,7 +3446,7 @@ function mergeOutletStockUploadCompletions_(completionMap, outlets, tasks, assig
   if (!stockTasks.length || !outlets.length) return completionMap;
   try {
     const query = 'SELECT outlet, CAST(event_date AS STRING) AS period_key FROM `' +
-      CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + stockCardTableId_() + '` ' +
       'WHERE record_type = \'MOVEMENT\' AND event_date IN (CAST(@currentDaily AS DATE), CAST(@previousDaily AS DATE)) ' +
       'AND movement_type IN (\'Goods Receipt\', \'Terjual\') AND source_file IS NOT NULL AND source_file != \'\' ' +
       'GROUP BY outlet, event_date HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
@@ -3470,7 +3490,7 @@ function taskExistedForPeriod_(task, frequency, periodKey) {
 }
 
 function goodsReceiptAlreadyImported_(outlet, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Goods Receipt\' AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
@@ -3746,7 +3766,7 @@ function findGoodsReceiptDuplicateRows_(outlet, sourceItems) {
   const sql = 'SELECT CAST(event_date AS STRING) AS event_date, item_code, ANY_VALUE(item_name) AS item_name, ' +
     'SUM(qty) AS qty, ANY_VALUE(unit) AS unit, ANY_VALUE(supplier) AS supplier, ANY_VALUE(info) AS info, ' +
     'source_hash, source_file, source_row, CAST(MIN(created_at) AS STRING) AS created_at ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND direction = \'IN\' AND movement_type = \'Goods Receipt\' ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'GROUP BY event_date, item_code, source_hash, source_file, source_row';
@@ -4233,7 +4253,7 @@ function findGoodsDeliveryDuplicateRows_(outlet, sourceItems) {
   const dates = sourceItems.map(function (item) { return item.transactionDate; }).sort();
   const sql = 'SELECT CAST(event_date AS STRING) AS event_date, item_code, ANY_VALUE(item_name) AS item_name, ' +
     'SUM(qty) AS qty, ANY_VALUE(unit) AS unit, source_hash, source_file, source_row, CAST(MIN(created_at) AS STRING) AS created_at ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND direction = \'OUT\' AND movement_type = \'Transfer Out Antar Outlet\' ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'GROUP BY event_date, item_code, source_hash, source_file, source_row';
@@ -5034,6 +5054,31 @@ function readStockItemsWithQty_(outlet, location) {
   });
 }
 
+function stockItemsCacheKey_(outlet, location) {
+  return 'stock-items-fast-v1-' + digest_(String(outlet || '').trim().toUpperCase() + '|' + normalizeLocation_(location).toLowerCase()).slice(0, 28);
+}
+
+function readStockItemsWithQtyCached_(outlet, location) {
+  const key = stockItemsCacheKey_(outlet, location);
+  const cached = readScriptJsonCache_(key);
+  if (cached) return cached;
+  const items = readStockItemsWithQty_(outlet, location);
+  writeScriptJsonCache_(key, items, 45);
+  return items;
+}
+
+function invalidateStockItemCachesForRows_(rows) {
+  const keys = {}, monitorKeys = {};
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || !row.outlet || !row.location) return;
+    keys[stockItemsCacheKey_(row.outlet, row.location)] = true;
+    const date = String(row.event_date || '').slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) monitorKeys['stock-upload-monitor-v1-' + date.slice(0, 7)] = true;
+  });
+  removeScriptCacheKeys_(Object.keys(keys).concat(Object.keys(monitorKeys)));
+}
+
 function stockNoExpiryCategorySeed_() {
   return [
     'KITCHEN EQUIPMENT',
@@ -5227,12 +5272,91 @@ function markStockBalanceDirty_(rows) {
   if (Object.keys(updates).length) properties.setProperties(updates, false);
 }
 
+function stockUploadTypeForMovement_(movementType) {
+  const type = String(movementType || '');
+  return type === 'Goods Receipt' ? 'goodsReceipt' : type === 'Terjual' ? 'salesUsage' : type === 'Transfer Out Antar Outlet' ? 'goodsDelivery' : '';
+}
+
+function stockUploadSummaryDirtyKey_(outlet, eventDate, uploadType) {
+  return 'stock-upload-summary-dirty-' + digest_([String(outlet || '').toUpperCase(), eventDate, uploadType].join('|')).slice(0, 24);
+}
+
+function markStockUploadSummaryDirty_(rows) {
+  const properties = PropertiesService.getScriptProperties(), updates = {}, token = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    const uploadType = row && stockUploadTypeForMovement_(row.movement_type), eventDate = String(row && row.event_date || '').slice(0, 10);
+    if (!uploadType || !row.outlet || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return;
+    if (row.record_type === 'MOVEMENT' && !row.source_file) return;
+    const key = stockUploadSummaryDirtyKey_(row.outlet, eventDate, uploadType);
+    updates[key] = JSON.stringify({ token: token, outlet: String(row.outlet).toUpperCase(), eventDate: eventDate, uploadType: uploadType, movementType: row.movement_type });
+  });
+  if (Object.keys(updates).length) properties.setProperties(updates, false);
+}
+
 function insertStockCardRows_(rows) {
   markStockBalanceDirty_(rows);
-  insertAll_('stock_card', rows);
+  markStockUploadSummaryDirty_(rows);
+  insertAll_(stockCardTableId_(), rows);
+  mirrorStockCardRows_(rows);
   // Refresh the marker after a successful insert so a concurrent rebuild cannot clear it too early.
   markStockBalanceDirty_(rows);
+  markStockUploadSummaryDirty_(rows);
+  invalidateStockItemCachesForRows_(rows);
   invalidateFastStockHistoryRows_(rows);
+}
+
+function stockCardMirrorTableId_() {
+  const configured = String(PropertiesService.getScriptProperties().getProperty('STOCK_CARD_MIRROR_TABLE_ID') || '').trim();
+  return /^[A-Za-z0-9_]+$/.test(configured) ? configured : '';
+}
+
+function mirrorStockCardRows_(rows) {
+  const mirrorTableId = stockCardMirrorTableId_();
+  if (!mirrorTableId || mirrorTableId === stockCardTableId_()) return;
+  try {
+    insertAll_(mirrorTableId, rows);
+    PropertiesService.getScriptProperties().deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
+  } catch (error) {
+    // The primary write has succeeded. Keep the app available and make the migration gap auditable/recoverable.
+    PropertiesService.getScriptProperties().setProperty('STOCK_CARD_MIRROR_LAST_ERROR', JSON.stringify({
+      at: new Date().toISOString(), tableId: mirrorTableId,
+      message: String(error && error.message ? error.message : error)
+    }));
+    console.error('Mirror stock card gagal; jalankan syncStockCardV2Migration: ' + error.message);
+  }
+}
+
+function rebuildStockUploadDailySummary_(state, expectedRaw) {
+  const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const sql = 'BEGIN TRANSACTION; DELETE FROM ' + summary + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND upload_type = @uploadType; ' +
+    'INSERT INTO ' + summary + ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
+    'SELECT CAST(@eventDate AS DATE), @outlet, @uploadType, ' +
+    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
+    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND movement_type = @movementType; COMMIT TRANSACTION;';
+  runNamedQuery_(sql, {
+    outlet: state.outlet, eventDate: state.eventDate,
+    uploadType: state.uploadType, movementType: state.movementType
+  }, { useQueryCache: false });
+  const properties = PropertiesService.getScriptProperties(), key = stockUploadSummaryDirtyKey_(state.outlet, state.eventDate, state.uploadType);
+  if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
+  removeScriptCacheKeys_(['stock-upload-monitor-v1-' + state.eventDate.slice(0, 7)]);
+}
+
+/** Run once after deployment, then only the small dirty slices are refreshed. */
+function backfillStockUploadDailySummary() {
+  ensureStockCardInfrastructure_();
+  const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const sql = 'TRUNCATE TABLE ' + summary + '; INSERT INTO ' + summary +
+    ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
+    'SELECT event_date, outlet, CASE movement_type WHEN \'Goods Receipt\' THEN \'goodsReceipt\' WHEN \'Terjual\' THEN \'salesUsage\' ELSE \'goodsDelivery\' END, ' +
+    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
+    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, movement_type';
+  runNamedQuery_(sql, {}, { useQueryCache: false });
+  removeScriptCacheKeys_(['stock-upload-monitor-v1-' + todayIso_().slice(0, 7)]);
+  return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
 }
 
 function readStockLedgerBalanceRows_(outlet, location) {
@@ -5295,6 +5419,16 @@ function refreshDirtyStockBalances() {
       console.error('Gagal memperbarui ringkasan saldo: ' + error.message);
     }
   });
+  const refreshed = PropertiesService.getScriptProperties().getProperties();
+  Object.keys(refreshed).filter(function (key) { return key.indexOf('stock-upload-summary-dirty-') === 0; }).slice(0, 12).forEach(function (key) {
+    try {
+      const raw = String(refreshed[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
+      if (!state || !state.outlet || !state.eventDate || !state.uploadType || !state.movementType) return;
+      rebuildStockUploadDailySummary_(state, raw);
+    } catch (error) {
+      console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message);
+    }
+  });
 }
 
 /** Run once manually after deployment to install the background balance refresh. */
@@ -5310,7 +5444,7 @@ function installStockMaintenanceTrigger() {
 function backfillStockTransferDeliveryDates() {
   ensureStockCardInfrastructure_();
   const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
-  const card = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card`';
+  const card = stockCardTable_();
   const sql = 'UPDATE ' + transfers + ' AS target SET delivery_date = source.delivery_date FROM (' +
     'SELECT transfer_id, MIN(event_date) AS delivery_date FROM ' + card + ' ' +
     'WHERE transfer_id IS NOT NULL AND transfer_id != \'\' AND direction = \'OUT\' ' +
@@ -5318,6 +5452,139 @@ function backfillStockTransferDeliveryDates() {
     ') AS source WHERE target.transfer_id = source.transfer_id AND target.delivery_date IS NULL';
   runNamedQuery_(sql, {}, { useQueryCache: false });
   return { completed: true, field: 'stock_transfers.delivery_date' };
+}
+
+function stockCardMigrationTable_() {
+  return '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card_v2`';
+}
+
+function ensureStockCardV2Table_() {
+  let existing = null;
+  try {
+    existing = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card_v2');
+  } catch (error) {
+    if (!/not found|Not found|404/.test(String(error))) throw error;
+  }
+  if (!existing) {
+    const source = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card');
+    BigQuery.Tables.insert({
+      tableReference: {
+        projectId: CONFIG.BQ_PROJECT_ID,
+        datasetId: CONFIG.BQ_DATASET_ID,
+        tableId: 'stock_card_v2'
+      },
+      schema: JSON.parse(JSON.stringify(source.schema)),
+      timePartitioning: { type: 'DAY', field: 'event_date' },
+      clustering: { fields: ['outlet', 'location', 'item_code', 'record_type'] },
+      description: 'Stock card partitioned by event_date. Created by safe v2 migration.'
+    }, CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
+    existing = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card_v2');
+  }
+  const partitionField = existing.timePartitioning && existing.timePartitioning.field;
+  if (partitionField !== 'event_date') {
+    throw new Error('stock_card_v2 sudah ada tetapi bukan dipartisi berdasarkan event_date. Hapus/ubah nama tabel v2 yang salah terlebih dahulu; stock_card lama tidak disentuh.');
+  }
+  return existing;
+}
+
+function syncStockCardV2Migration() {
+  ensureStockCardInfrastructure_();
+  ensureStockCardV2Table_();
+  const source = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card`';
+  const target = stockCardMigrationTable_();
+  const sql = 'MERGE ' + target + ' AS target USING ' + source + ' AS source ON target.record_id = source.record_id ' +
+    'WHEN NOT MATCHED THEN INSERT ROW';
+  runNamedQuery_(sql, {}, { useQueryCache: false });
+  PropertiesService.getScriptProperties().deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
+  return auditStockCardV2Migration();
+}
+
+function stockCardMigrationStats_(tableId) {
+  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + tableId + '`';
+  const rows = runNamedQuery_(
+    'SELECT COUNT(*) AS row_count, COUNT(DISTINCT record_id) AS record_count, ' +
+    'COALESCE(SUM(qty), 0) AS qty_total, CAST(MIN(event_date) AS STRING) AS min_date, ' +
+    'CAST(MAX(event_date) AS STRING) AS max_date FROM ' + table,
+    {}, { useQueryCache: false }
+  );
+  const row = rows[0] || {};
+  return {
+    tableId: tableId,
+    rowCount: Number(row.row_count || 0),
+    recordCount: Number(row.record_count || 0),
+    qtyTotal: Number(row.qty_total || 0),
+    minDate: String(row.min_date || ''),
+    maxDate: String(row.max_date || '')
+  };
+}
+
+function auditStockCardV2Migration() {
+  ensureStockCardV2Table_();
+  const oldStats = stockCardMigrationStats_('stock_card');
+  const newStats = stockCardMigrationStats_('stock_card_v2');
+  const matched = oldStats.rowCount === newStats.rowCount &&
+    oldStats.recordCount === newStats.recordCount &&
+    Math.abs(oldStats.qtyTotal - newStats.qtyTotal) < 0.000001 &&
+    oldStats.minDate === newStats.minDate && oldStats.maxDate === newStats.maxDate;
+  return {
+    matched: matched,
+    safeToActivate: matched,
+    activeTable: stockCardTableId_(),
+    mirrorTable: stockCardMirrorTableId_(),
+    oldTable: oldStats,
+    newTable: newStats,
+    mirrorLastError: PropertiesService.getScriptProperties().getProperty('STOCK_CARD_MIRROR_LAST_ERROR') || ''
+  };
+}
+
+/** Step 1: create v2, enable dual-write, copy all existing rows, and return the audit result. */
+function prepareStockCardV2Migration() {
+  ensureStockCardInfrastructure_();
+  if (stockCardTableId_() === 'stock_card_v2') {
+    throw new Error('stock_card_v2 sudah aktif. Gunakan auditStockCardV2Migration untuk pemeriksaan atau rollbackStockCardV2Migration untuk kembali.');
+  }
+  ensureStockCardV2Table_();
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
+  properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
+  properties.setProperty('STOCK_CARD_MIGRATION_PREPARED_AT', new Date().toISOString());
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  return syncStockCardV2Migration();
+}
+
+/** Step 2: sync once more and switch reads/writes only when every audit total matches. */
+function activateStockCardV2AfterAudit() {
+  const audit = syncStockCardV2Migration();
+  if (!audit.safeToActivate) {
+    throw new Error('Migrasi belum cocok. stock_card tetap aktif. Periksa hasil audit lalu jalankan syncStockCardV2Migration lagi.');
+  }
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card_v2');
+  properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card');
+  properties.setProperty('STOCK_CARD_MIGRATION_ACTIVATED_AT', new Date().toISOString());
+  properties.deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  return { activated: true, activeTable: 'stock_card_v2', rollbackMirror: 'stock_card', audit: audit };
+}
+
+/** Emergency rollback: old table becomes active immediately; v2 remains mirrored and no table is deleted. */
+function rollbackStockCardV2Migration() {
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
+  properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
+  properties.setProperty('STOCK_CARD_MIGRATION_ROLLED_BACK_AT', new Date().toISOString());
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  return { rolledBack: true, activeTable: 'stock_card', mirrorTable: 'stock_card_v2' };
+}
+
+/** Optional final step after the agreed observation period. Both tables remain in BigQuery. */
+function finishStockCardV2Migration() {
+  if (stockCardTableId_() !== 'stock_card_v2') throw new Error('stock_card_v2 belum aktif; finalisasi dibatalkan.');
+  const audit = auditStockCardV2Migration();
+  if (!audit.matched) throw new Error('Audit tabel lama dan v2 tidak cocok; finalisasi dibatalkan.');
+  PropertiesService.getScriptProperties().deleteProperty('STOCK_CARD_MIRROR_TABLE_ID');
+  PropertiesService.getScriptProperties().setProperty('STOCK_CARD_MIGRATION_FINISHED_AT', new Date().toISOString());
+  return { finished: true, activeTable: 'stock_card_v2', oldTablePreserved: true };
 }
 
 function ensureStockVisibilitySheet_() {
@@ -5416,7 +5683,7 @@ function enrichShowcaseHistoryLots_(history, outlet, showcaseItem) {
 }
 
 function latestStockMovementCte_() {
-  return 'WITH latest AS (SELECT * FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+  return 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' QUALIFY ROW_NUMBER() OVER (' +
     'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1)';
 }
@@ -6375,7 +6642,7 @@ function ensureBigQueryInfrastructure_() {
   ]);
 }
 
-function ensureBigQueryTable_(tableId, fields, partitionField) {
+function ensureBigQueryTable_(tableId, fields, partitionField, clusteringFields) {
   try {
     BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
   } catch (error) {
@@ -6386,6 +6653,7 @@ function ensureBigQueryTable_(tableId, fields, partitionField) {
     };
     const field = partitionField || (tableId === 'form_responses' ? 'submitted_at' : tableId === 'task_completions' ? 'completed_at' : '');
     if (field) table.timePartitioning = { type: 'DAY', field: field };
+    if (clusteringFields && clusteringFields.length) table.clustering = { fields: clusteringFields.slice(0, 4) };
     BigQuery.Tables.insert(table, CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
   }
 }
@@ -6480,7 +6748,7 @@ function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
   if (!stockTasks.length || !outlet) return map;
   try {
     const query = 'SELECT CAST(event_date AS STRING) AS period_key ' +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'FROM ' + stockCardTable_() + ' ' +
       'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet ' +
       'AND movement_type IN (\'Goods Receipt\', \'Terjual\') ' +
       'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date ' +
