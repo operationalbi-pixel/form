@@ -17,6 +17,7 @@ const CONFIG = Object.freeze({
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
   STOCK_CONVERSION_SHEET: 'STOCK_UNIT_CONVERSIONS',
+  WIP_RECIPE_SHEET: 'WIP_RECIPES',
   STOCK_VISIBILITY_SHEET: 'STOCK_ITEM_VISIBILITY',
   STOCK_NO_EXPIRY_CATEGORY_SHEET: 'STOCK_NO_EXPIRY_CATEGORIES',
   SHOWCASE_SHEET: 'MENU_SHOWCASE',
@@ -95,6 +96,10 @@ function apiActions_() {
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
+    expiryAlerts: getStockExpiryAlerts,
+    uploadMonitoring: getStockUploadMonitoring,
+    verifyBihqBatch: previewBihqBatchUpload,
+    uploadBihqBatch: uploadBihqBatch,
     addLocation: addStockLocation,
     setItemHidden: setStockItemHidden,
     save: saveStockMovement,
@@ -108,6 +113,10 @@ function apiActions_() {
     verifyStockPosition: previewStockPositionUpload,
     saveConversions: saveStockUnitConversions,
     getConversions: getStockUnitConversions,
+    wipOptions: getWipProductionOptions,
+    wipProduce: processWipProduction,
+    wipProduction: getWipProductionDetail,
+    wipCancel: cancelWipProduction,
     transferOptions: getStockTransferOptions,
     transferLocal: transferStockWithinOutlet,
     transferOutlet: createInterOutletStockTransfer,
@@ -449,12 +458,12 @@ function getStockCardBootstrap(token, requestedOutlet) {
       locations: locations,
       selectedLocation: locations[0] || 'Store',
       items: readStockItemsWithQty_(outlet, locations[0] || 'Store'),
-      expiryAlerts: readStockExpiryAlerts_(outlet, locations[0] || 'Store'),
+      expiryAlerts: { missingExpiry: [], nearExpiry: [] },
       taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card',
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
       taskCompleted: taskCompleted,
-      uploadProgress: readStockUploadProgress_(outlet),
+      uploadProgress: null,
       supplementaryPending: true
     };
   });
@@ -479,8 +488,8 @@ function getStockCardData(token, requestedOutlet, location) {
       : false;
     return {
       outlet: outlet, location: location, locations: locations, items: readStockItemsWithQty_(outlet, location),
-      expiryAlerts: readStockExpiryAlerts_(outlet, location),
-      taskCompleted: taskCompleted, uploadProgress: readStockUploadProgress_(outlet), supplementaryPending: true
+      expiryAlerts: { missingExpiry: [], nearExpiry: [] },
+      taskCompleted: taskCompleted, uploadProgress: null, supplementaryPending: true
     };
   });
 }
@@ -500,6 +509,13 @@ function getStockCardSupplementary(token, requestedOutlet, taskId) {
       uploadProgress: readStockUploadProgress_(outlet),
       pendingTransfers: readPendingStockTransfers_(outlet)
     };
+  });
+}
+
+function getStockExpiryAlerts(token, requestedOutlet, location) {
+  return safe_(function () {
+    const context = resolveStockContext_(token, requestedOutlet, location);
+    return { outlet: context.outlet, location: context.location, alerts: readStockExpiryAlerts_(context.outlet, context.location) };
   });
 }
 
@@ -790,6 +806,7 @@ function addStockLocation(token, requestedOutlet, locationName) {
     }
     const locationSheet = ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
     locationSheet.appendRow([outlet, location, true, employee.nik, new Date()]);
+    removeScriptCacheKeys_(['stock-locations-' + outlet]);
     return { outlet: outlet, location: location, locations: existing.concat([location]) };
   });
 }
@@ -806,7 +823,8 @@ function readStockUploadProgress_(outlet) {
     'MAX(IF(movement_type = \'Terjual\', 1, 0)) AS sales_usage, ' +
     'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
     'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet ' +
+    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
+    'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') ' +
     'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
@@ -831,12 +849,190 @@ function readStockUploadProgress_(outlet) {
   return { monthKey: monthKey, today: today, days: days };
 }
 
+/** BIHQ-only day-by-day monitoring, derived from actual item movements. */
+function getStockUploadMonitoring(token, monthKey) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
+    const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
+    const startDate = monthKey + '-01', endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
+    const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
+    const sql = 'SELECT outlet, CAST(event_date AS STRING) AS event_date, movement_type, ' +
+      'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\') AS actual_rows, ' +
+      'COUNTIF(record_type = \'IMPORT\') AS marker_rows, MAX(created_at) AS last_upload, ' +
+      'ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)] AS last_user ' +
+      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'WHERE event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
+      'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Transfer Out Antar Outlet\') ' +
+      'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY outlet, event_date, movement_type';
+    const map = {}, problemCount = { markerWithoutData: 0 };
+    runNamedQuery_(sql, { startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
+      const key = String(row.outlet || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10);
+      if (!map[key]) map[key] = {};
+      const type = String(row.movement_type || '') === 'Goods Receipt' ? 'goodsReceipt' :
+        String(row.movement_type || '') === 'Terjual' ? 'salesUsage' : 'goodsDelivery';
+      const actualRows = Number(row.actual_rows || 0), markerRows = Number(row.marker_rows || 0);
+      if (!actualRows && markerRows) problemCount.markerWithoutData++;
+      map[key][type] = { done: actualRows > 0, actualRows: actualRows, markerWithoutData: !actualRows && markerRows > 0,
+        lastUpload: String(row.last_upload || ''), lastUser: String(row.last_user || '') };
+    });
+    const rows = [];
+    outlets.forEach(function (outlet) {
+      for (let day = 1; day <= lastDay; day++) {
+        const date = monthKey + '-' + String(day).padStart(2, '0');
+        if (date > todayIso_()) continue;
+        const state = map[outlet + '|' + date] || {};
+        rows.push({ outlet: outlet, date: date,
+          goodsReceipt: state.goodsReceipt || { done: false, actualRows: 0, markerWithoutData: false },
+          salesUsage: state.salesUsage || { done: false, actualRows: 0, markerWithoutData: false },
+          goodsDelivery: state.goodsDelivery || { done: false, actualRows: 0, markerWithoutData: false },
+          complete: Boolean(state.goodsReceipt && state.goodsReceipt.done && state.salesUsage && state.salesUsage.done) });
+      }
+    });
+    return { monthKey: monthKey, rows: rows, outlets: outlets, problems: problemCount, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
+  });
+}
+
+function parseBihqBatchGroups_(payload) {
+  const type = String(payload.type || '').toUpperCase();
+  if (['GOODS_RECEIPT', 'GOODS_DELIVERY'].indexOf(type) < 0) throw new Error('Pilih jenis batch Good Receipt atau Good Delivery.');
+  const fileName = cleanText_(payload.fileName, 180);
+  const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
+  const report = type === 'GOODS_RECEIPT' ? parseGoodsReceiptReport_(base64, fileName, true) : parseGoodsDeliveryReport_(base64, fileName, true);
+  const directory = readStoreCodeDirectory_(), active = readActiveOutlets_(), grouped = {};
+  report.rows.forEach(function (row) {
+    const outletName = type === 'GOODS_RECEIPT' ? row.outletName : row.originName;
+    const entry = directory.byName[normalizeStoreName_(outletName)] || null;
+    if (!entry) throw new Error('Outlet "' + outletName + '" belum terdaftar di sheet STORE CODE.');
+    if (active.indexOf(entry.code) < 0 || entry.code === 'BIHQ') throw new Error('Outlet ' + entry.code + ' tidak aktif atau tidak dapat dipakai untuk batch.');
+    if (!grouped[entry.code]) grouped[entry.code] = { outlet: entry.code, outletName: entry.name, rows: [] };
+    grouped[entry.code].rows.push(row);
+  });
+  return { type: type, fileName: fileName, base64: base64, groups: Object.keys(grouped).sort().map(function (code) {
+    const group = grouped[code], dates = {}, documents = {}, counterparties = {};
+    group.rows.forEach(function (row) {
+      dates[row.transactionDate] = true;
+      documents[type === 'GOODS_RECEIPT' ? row.grNumber : row.gdNumber] = true;
+      counterparties[type === 'GOODS_RECEIPT' ? row.supplier : row.destinationName] = true;
+    });
+    group.report = { outletName: group.outletName, rows: group.rows, transactionDates: Object.keys(dates),
+      receiptCount: type === 'GOODS_RECEIPT' ? Object.keys(documents).length : 0,
+      supplierCount: type === 'GOODS_RECEIPT' ? Object.keys(counterparties).length : 0,
+      deliveryCount: type === 'GOODS_DELIVERY' ? Object.keys(documents).length : 0,
+      destinationCount: type === 'GOODS_DELIVERY' ? Object.keys(counterparties).length : 0 };
+    return group;
+  }) };
+}
+
+function prepareBihqBatch_(employee, payload) {
+  const batch = parseBihqBatchGroups_(payload), location = normalizeLocation_(payload.location) || 'Store', preparedGroups = [], conversions = [];
+  batch.groups.forEach(function (group) {
+    if (readStockLocations_(group.outlet).indexOf(location) < 0) throw new Error('Lokasi ' + location + ' tidak tersedia pada outlet ' + group.outlet + '.');
+    const context = { outlet: group.outlet, location: location, employee: employee };
+    let localPayload = { fileName: batch.fileName, base64: batch.base64, conversions: payload.conversions || {} };
+    let prepared = batch.type === 'GOODS_RECEIPT'
+      ? prepareGoodsReceiptImport_(context, localPayload, true, group.report)
+      : prepareGoodsDeliveryImport_(context, localPayload, true, group.report);
+    if (prepared.requiresConversion) {
+      (prepared.conversionRequests || []).forEach(function (entry) { conversions.push(entry); });
+      preparedGroups.push({ outlet: group.outlet, outletName: group.outletName, prepared: prepared, context: context });
+      return;
+    }
+    if (prepared.requiresDuplicateDecision) {
+      localPayload.skipDuplicateRows = (prepared.unresolvedDuplicates || []).map(function (entry) { return entry.sourceRow; });
+      prepared = batch.type === 'GOODS_RECEIPT'
+        ? prepareGoodsReceiptImport_(context, localPayload, true, group.report)
+        : prepareGoodsDeliveryImport_(context, localPayload, true, group.report);
+    }
+    preparedGroups.push({ outlet: group.outlet, outletName: group.outletName, prepared: prepared, context: context });
+  });
+  return { type: batch.type, fileName: batch.fileName, location: location, groups: preparedGroups, conversions: conversions };
+}
+
+function previewBihqBatchUpload(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    const batch = prepareBihqBatch_(employee, payload || {});
+    return { verified: batch.conversions.length === 0, requiresConversion: batch.conversions.length > 0,
+      type: batch.type, fileName: batch.fileName, location: batch.location, conversions: batch.conversions,
+      outlets: batch.groups.map(function (group) { return { outlet: group.outlet, outletName: group.outletName,
+        sourceItemCount: group.prepared.originalSourceItemCount || group.prepared.sourceItemCount || 0,
+        uploadItemCount: group.prepared.items ? group.prepared.items.length : 0,
+        duplicateRowsSkipped: group.prepared.skippedDuplicates ? group.prepared.skippedDuplicates.length : 0 }; }) };
+  });
+}
+
+function uploadBihqBatch(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    const batch = prepareBihqBatch_(employee, payload || {});
+    if (batch.conversions.length) throw new Error('Batch memiliki perbedaan unit. Lengkapi Unit Konversi terlebih dahulu lalu verifikasi ulang.');
+    const results = [];
+    batch.groups.forEach(function (group) {
+      const prepared = group.prepared;
+      if (!prepared.items || !prepared.items.length) {
+        results.push({ outlet: group.outlet, uploaded: 0, skipped: prepared.skippedDuplicates ? prepared.skippedDuplicates.length : 0 });
+        return;
+      }
+      appendOrActivateStockMasterItems_(prepared.masterChanges);
+      const lock = acquireStockWriteLock_();
+      try {
+        if (batch.type === 'GOODS_RECEIPT') writeBihqGoodsReceiptGroup_(group.context, prepared);
+        else writeBihqGoodsDeliveryGroup_(group.context, prepared);
+      } finally { lock.releaseLock(); }
+      results.push({ outlet: group.outlet, uploaded: prepared.items.length, skipped: prepared.skippedDuplicates.length });
+    });
+    return { uploaded: true, type: batch.type, fileName: batch.fileName, outletCount: results.length, results: results };
+  });
+}
+
+function writeBihqGoodsReceiptGroup_(context, prepared) {
+  const now = new Date(), rows = prepared.items.map(function (receipt) {
+    const recordId = Utilities.getUuid(), conversionInfo = receipt.converted ? ' | Konversi ' + formatQty_(receipt.originalQty) + ' ' + receipt.originalUnit + ' = ' + formatQty_(receipt.qty) + ' ' + receipt.item.unit : '';
+    return { insertId: recordId, json: { record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
+      outlet: context.outlet, location: context.location, item_code: receipt.item.code, category: receipt.item.category, item_name: receipt.item.name, unit: receipt.item.unit,
+      direction: 'IN', qty: receipt.qty, movement_type: 'Goods Receipt', supplier: cleanText_(receipt.supplier || '-', 180),
+      info: cleanText_('Supplier ' + (receipt.supplier || '-') + ' | PO ' + (receipt.poNumber || '-') + ' | GR ' + (receipt.grNumber || '-') + ' | Batch BIHQ | ' + prepared.fileName + ' | Baris ' + receipt.sourceRow + conversionInfo, 500),
+      expiry_date: receipt.expiryDate || null, source_arrival_date: receipt.transactionDate, event_date: receipt.transactionDate,
+      created_at: now.getTime() / 1000, created_by: context.employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: receipt.sourceRow } };
+  });
+  insertStockCardRows_(rows);
+}
+
+function writeBihqGoodsDeliveryGroup_(context, prepared) {
+  const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, queues = {}, stockRows = [], pendingRows = [];
+  prepared.items.forEach(function (line) { totalByCode[line.item.code] = Number(totalByCode[line.item.code] || 0) + Number(line.qty || 0); itemByCode[line.item.code] = line.item; });
+  Object.keys(totalByCode).forEach(function (code) { queues[code] = allocateTransferLots_(context.outlet, context.location, itemByCode[code], totalByCode[code]); });
+  prepared.items.forEach(function (line) {
+    const groupKey = line.gdNumber + '|' + line.destinationCode;
+    if (!transferIds[groupKey]) transferIds[groupKey] = Utilities.getUuid();
+    const transferId = transferIds[groupKey], queue = queues[line.item.code] || [], allocated = [];
+    let remaining = Number(line.qty || 0);
+    while (remaining > 0.0000001 && queue.length) { const lot = queue[0], taken = Math.min(remaining, Number(lot.qty || 0)); if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate || '' }); remaining -= taken; lot.qty -= taken; if (lot.qty <= 0.0000001) queue.shift(); }
+    if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '' });
+    const destination = line.destinationName + ' (' + line.destinationCode + ')';
+    allocated.forEach(function (lot) {
+      const recordId = Utilities.getUuid(), eventId = Utilities.getUuid(), note = cleanText_('Transfer To ' + destination + ' | GD ' + line.gdNumber + ' | Batch BIHQ | ' + prepared.fileName + ' | Baris ' + line.sourceRow, 300);
+      stockRows.push({ insertId: recordId, json: { record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
+        outlet: context.outlet, location: context.location, item_code: line.item.code, category: line.item.category, item_name: line.item.name, unit: line.item.unit,
+        direction: 'OUT', qty: lot.qty, movement_type: 'Transfer Out Antar Outlet', supplier: cleanText_(line.destinationName, 180), info: note,
+        expiry_date: lot.expiryDate || null, event_date: line.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
+        source_file: prepared.fileName, source_hash: line.rowHash, source_row: line.sourceRow } });
+      pendingRows.push({ insertId: eventId, json: { event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
+        to_outlet: line.destinationCode, to_location: null, item_code: line.item.code, category: line.item.category, item_name: line.item.name, unit: line.item.unit,
+        qty: lot.qty, note: note, expiry_date: lot.expiryDate || null, created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000 } });
+    });
+  });
+  insertStockCardRows_(stockRows);
+  insertAll_('stock_transfers', pendingRows);
+}
+
 function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
   try {
     if (['Goods Receipt', 'Terjual'].indexOf(completedType) < 0) return false;
     const otherType = completedType === 'Goods Receipt' ? 'Terjual' : 'Goods Receipt';
     const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-      'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND event_date = CAST(@periodKey AS DATE) ' +
+      'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND item_code IS NOT NULL AND item_code != \'\' AND event_date = CAST(@periodKey AS DATE) ' +
       'AND movement_type = @movementType AND source_file IS NOT NULL AND source_file != \'\'';
     const rows = runNamedQuery_(sql, { outlet: context.outlet, periodKey: periodKey, movementType: otherType });
     if (!rows.length || Number(rows[0].total || 0) <= 0) return false;
@@ -949,8 +1145,7 @@ function transferStockWithinOutlet(token, payload) {
     if (isShowcaseLocation_(fromLocation) || isShowcaseLocation_(toLocation)) {
       throw new Error('Transfer ke Showcase wajib melalui Input Transaksi Masuk pada item Showcase agar Product Store terpotong otomatis.');
     }
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const lock = acquireStockWriteLock_();
     try {
       const lines = validateTransferLines_(outlet, fromLocation, payload.items);
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), rows = [];
@@ -985,8 +1180,7 @@ function createInterOutletStockTransfer(token, payload) {
     const fromLocation = normalizeLocation_(payload.fromLocation);
     if (readStockLocations_(fromOutlet).indexOf(fromLocation) < 0) throw new Error('Lokasi sumber tidak valid.');
     if (isShowcaseLocation_(fromLocation)) throw new Error('Item Showcase tidak dapat dikirim melalui transfer antar-outlet.');
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const lock = acquireStockWriteLock_();
     try {
       const lines = validateTransferLines_(fromOutlet, fromLocation, payload.items);
       const transferId = Utilities.getUuid(), now = new Date(), eventDate = todayIso_(), stockRows = [], pendingRows = [];
@@ -1042,8 +1236,7 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
       throw new Error('Transfer antar-outlet tidak dapat diterima langsung ke Showcase. Terima ke Store atau Gudang terlebih dahulu.');
     }
     receiptDetails = receiptDetails || {};
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const lock = acquireStockWriteLock_();
     try {
       const transfers = readPendingStockTransfers_(outlet).filter(function (transfer) { return transfer.transferId === transferId; });
       if (!transfers.length) throw new Error('Transfer sudah diproses atau tidak ditemukan untuk outlet ini.');
@@ -1177,8 +1370,7 @@ function updateStockMovement(token, payload) {
     const logicalId = cleanText_(payload.logicalId, 100);
     if (!logicalId) throw new Error('Transaksi yang akan diedit tidak ditemukan. Muat ulang Stock Card lalu coba lagi.');
 
-    const lock = LockService.getScriptLock();
-    lock.waitLock(10000);
+    const lock = acquireStockWriteLock_();
     try {
       const previousRows = readLatestStockHistory_(outlet, location, item, logicalId);
       if (!previousRows.length) throw new Error('Transaksi tidak ditemukan atau sudah berubah. Muat ulang Stock Card lalu coba lagi.');
@@ -1245,8 +1437,7 @@ function adjustStockBalance(token, payload) {
     const lotTotal = lots.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
     if (Math.abs(lotTotal - targetQty) > 0.0000001) throw new Error('Total QTY lot harus sama dengan hasil stock fisik (' + formatQty_(targetQty) + ').');
 
-    const lock = LockService.getScriptLock();
-    lock.waitLock(10000);
+    const lock = acquireStockWriteLock_();
     try {
       const current = getCurrentStock_(context.outlet, context.location, item.code, item.name);
       const direction = targetQty >= current.qty ? 'IN' : 'OUT';
@@ -1305,8 +1496,7 @@ function completeStockExpiryLots(token, payload) {
     });
     if (!allocations.length) throw new Error('Isi minimal satu pembagian QTY dan Expired Date.');
 
-    const lock = LockService.getScriptLock();
-    lock.waitLock(10000);
+    const lock = acquireStockWriteLock_();
     try {
       const remainingLots = readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
       const datedLots = remainingLots.filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
@@ -1367,6 +1557,15 @@ function previewSalesUsageUpload(token, payload) {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
     const prepared = prepareSalesUsageImport_(context, payload, true);
+    if (prepared.requiresWipChoice) {
+      return {
+        verified: false, requiresWipChoice: true, fileName: prepared.fileName,
+        outlet: prepared.outlet, outletName: prepared.outletName, location: context.location,
+        transactionDate: prepared.transactionDate, itemCount: prepared.sourceItemCount,
+        zeroRowsSkipped: prepared.zeroRowsSkipped, showcaseRowsSkipped: prepared.showcaseRowsSkipped,
+        wipChoices: prepared.wipChoices
+      };
+    }
     if (prepared.requiresConversion) {
       return {
         verified: false, requiresConversion: true, fileName: prepared.fileName,
@@ -1388,7 +1587,9 @@ function previewSalesUsageUpload(token, payload) {
       showcaseRowsSkipped: prepared.showcaseRowsSkipped,
       newItemCount: prepared.newItemCount,
       negativeItemCount: prepared.negativeItemCount,
-      conversionCount: prepared.conversionCount
+      conversionCount: prepared.conversionCount,
+      autoWipProductionCount: prepared.autoWipProductionCount,
+      rawShortages: prepared.rawShortages
     };
   });
 }
@@ -1415,8 +1616,7 @@ function saveStockUnitConversions(token, payload) {
       return { key: stockConversionKey_(itemCode, fromUnit, toUnit), itemCode: itemCode, itemName: itemName, fromUnit: fromUnit, toUnit: toUnit, factor: factor };
     });
 
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const lock = acquireStockWriteLock_();
     try {
       const sheet = ensureStockConversionSheet_();
       const existing = {};
@@ -1434,6 +1634,7 @@ function saveStockUnitConversions(token, payload) {
       });
       if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 8).setValues(additions);
       SpreadsheetApp.flush();
+      removeScriptCacheKeys_(['stock-unit-conversions']);
       return { saved: true, count: normalized.length, sheetName: CONFIG.STOCK_CONVERSION_SHEET };
     } finally {
       lock.releaseLock();
@@ -1446,17 +1647,42 @@ function uploadSalesUsage(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
+    // Parse and validate before locking; only the final write is serialized.
+    const prepared = prepareSalesUsageImport_(context, payload, false);
     const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
     try {
-      // Repeat every verification on the server immediately before writing.
-      const prepared = prepareSalesUsageImport_(context, payload, false);
+      if (salesUsageHashAlreadyImported_(context.outlet, prepared.sourceHash)) {
+        throw new Error('File yang sama sudah pernah diproses untuk outlet ' + context.outlet + '.');
+      }
       appendOrActivateStockMasterItems_(prepared.masterChanges);
-      const now = new Date();
-      const rows = prepared.items.map(function (usage) {
+      const now = new Date(), rows = [];
+      (prepared.autoWipPlans || []).forEach(function (plan) {
+        const productionId = Utilities.getUuid(), outputId = Utilities.getUuid();
+        rows.push({ insertId: outputId, json: {
+          record_id: outputId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
+          outlet: context.outlet, location: context.location, item_code: plan.outputItem.code, category: plan.outputItem.category,
+          item_name: plan.outputItem.name, unit: plan.outputItem.unit, direction: 'IN', qty: plan.outputQty, movement_type: 'Production',
+          info: cleanText_('Produksi WIP Otomatis - Kekurangan Usage Penjualan - ' + plan.variant.name + ' - Resep ' + plan.variant.key + ' - Formula ' + formatQty_(plan.formulaQty) + ' ' + plan.variant.unit, 500),
+          expiry_date: null, event_date: prepared.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
+          source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0, transfer_id: productionId
+        }});
+        plan.materials.forEach(function (material) {
+          const rawId = Utilities.getUuid();
+          rows.push({ insertId: rawId, json: {
+            record_id: rawId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
+            outlet: context.outlet, location: context.location, item_code: material.item.code, category: material.item.category,
+            item_name: material.item.name, unit: material.item.unit, direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage',
+            info: cleanText_('Bahan produksi otomatis ' + plan.variant.code + ' - ' + plan.variant.name + ' - Usage ' + prepared.fileName, 500),
+            expiry_date: null, event_date: prepared.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
+            source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: material.sourceRow, transfer_id: productionId
+          }});
+        });
+      });
+      prepared.items.forEach(function (usage) {
         const logicalId = Utilities.getUuid();
         const recordId = Utilities.getUuid();
-        return { insertId: recordId, json: {
+        rows.push({ insertId: recordId, json: {
           record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
           outlet: context.outlet, location: context.location, item_code: usage.item.code,
           category: usage.item.category, item_name: usage.item.name, unit: usage.item.unit,
@@ -1466,7 +1692,7 @@ function uploadSalesUsage(token, payload) {
           expiry_date: null, event_date: prepared.transactionDate,
           created_at: now.getTime() / 1000, created_by: context.employee.nik,
           source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: usage.sourceRow
-        }};
+        }});
       });
       // An import marker preserves duplicate detection and daily completion even if every Showcase product was skipped.
       const importId = Utilities.getUuid();
@@ -1484,7 +1710,9 @@ function uploadSalesUsage(token, payload) {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, itemCount: prepared.items.length,
         zeroRowsSkipped: prepared.zeroRowsSkipped, showcaseRowsSkipped: prepared.showcaseRowsSkipped, newItemCount: prepared.newItemCount,
-        negativeItemCount: prepared.negativeItemCount, conversionCount: prepared.conversionCount
+        negativeItemCount: prepared.negativeItemCount, conversionCount: prepared.conversionCount,
+        autoWipProductionCount: prepared.autoWipProductionCount, rawShortageCount: (prepared.rawShortages || []).length,
+        duplicateItemsSkipped: prepared.duplicateItemsSkipped || 0
       };
     } finally {
       lock.releaseLock();
@@ -1516,11 +1744,10 @@ function uploadStockPosition(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const prepared = prepareStockPositionImport_(context, payload, false);
+    if (!prepared.items.length) throw new Error('QTY Stock Actual sama dengan saldo terbaru. Tidak ada Stock Adjustment yang perlu dicatat.');
+    const lock = acquireStockWriteLock_();
     try {
-      const prepared = prepareStockPositionImport_(context, payload, false);
-      if (!prepared.items.length) throw new Error('QTY Stock Actual sama dengan saldo terbaru. Tidak ada Stock Adjustment yang perlu dicatat.');
       const now = new Date(), eventDate = todayIso_(), rows = [];
       prepared.items.forEach(function (line) {
         const direction = line.delta > 0 ? 'IN' : 'OUT';
@@ -1674,8 +1901,8 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   }
 
   const sourceHash = digest_(base64);
-  if (salesUsageAlreadyImported_(context.outlet, report.transactionDate, sourceHash)) {
-    throw new Error('Usage Penjualan tanggal ' + report.transactionDate + ' sudah pernah di-upload untuk outlet ' + context.outlet + '.');
+  if (salesUsageHashAlreadyImported_(context.outlet, sourceHash)) {
+    throw new Error('File yang sama sudah pernah di-upload untuk outlet ' + context.outlet + '.');
   }
 
   const master = readStockMaster_(true);
@@ -1685,9 +1912,15 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
   const savedConversions = readStockUnitConversions_();
   const conversionMap = {}, conversionRequests = [], usageTotals = {}, items = [], masterChangeMap = {};
+  const existingItemCodes = readExistingSalesUsageItemCodes_(context.outlet, report.transactionDate);
+  let duplicateItemsSkipped = 0;
   const showcaseProducts = showcaseProductNameMap_();
   let showcaseRowsSkipped = 0;
   report.rows.forEach(function (row) {
+    if (existingItemCodes[row.code]) {
+      duplicateItemsSkipped++;
+      return;
+    }
     if (showcaseProducts[normalizeStoreName_(row.name)]) {
       showcaseRowsSkipped++;
       return;
@@ -1729,7 +1962,8 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   const baseResult = {
     fileName: fileName, sourceHash: sourceHash, outlet: reportOutlet, outletName: report.outletName,
     transactionDate: report.transactionDate, zeroRowsSkipped: report.zeroRowsSkipped,
-    showcaseRowsSkipped: showcaseRowsSkipped, sourceItemCount: report.rows.length, newItemCount: Object.keys(masterChangeMap).length
+    showcaseRowsSkipped: showcaseRowsSkipped, sourceItemCount: report.rows.length,
+    newItemCount: Object.keys(masterChangeMap).length, duplicateItemsSkipped: duplicateItemsSkipped
   };
   if (missingConversions.length) {
     if (!allowPendingConversions) throw new Error('Lengkapi seluruh konversi unit sebelum melanjutkan upload.');
@@ -1737,17 +1971,89 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
     baseResult.conversionRequests = missingConversions;
     return baseResult;
   }
+  const catalog = readWipRecipeCatalog_(), wipChoices = payload.wipChoices && typeof payload.wipChoices === 'object' ? payload.wipChoices : {};
+  const wipChoiceRequests = [], autoWipPlans = [], autoProducedCodes = {}, rawTotals = {};
+  Object.keys(usageTotals).forEach(function (code) {
+    const variants = catalog.byCode[code] || [], required = Number(usageTotals[code] || 0), available = Math.max(0, Number(currentMap[code] || 0));
+    const shortage = Math.max(0, required - available);
+    if (!variants.length || shortage <= 0.0000001) return;
+    let variant = null, selectedKey = cleanText_(wipChoices[code], 500);
+    if (variants.length === 1) variant = variants[0];
+    else if (selectedKey) variant = variants.filter(function (entry) { return entry.key === selectedKey; })[0];
+    if (!variant) {
+      wipChoiceRequests.push({ itemCode: code, itemName: masterMap[code] ? masterMap[code].name : variants[0].name, shortageQty: shortage,
+        unit: masterMap[code] ? masterMap[code].unit : variants[0].unit,
+        options: variants.map(function (entry, index) { return { key: entry.key, label: 'Pilihan ' + String.fromCharCode(65 + index), name: entry.name, unit: entry.unit, materialCount: entry.materials.length }; }) });
+      return;
+    }
+    const outputItem = masterMap[code];
+    if (!outputItem) throw new Error(code + ' · ' + variant.name + ': item hasil WIP belum tersedia pada STOCK_ITEMS.');
+    const outputToFormula = wipConversionFactor_(code, outputItem.unit, variant.unit, providedConversions, savedConversions);
+    if (!outputToFormula) wipConversionRequest_(conversionRequests, conversionMap, outputItem, outputItem.unit, variant.unit);
+    const formulaQty = outputToFormula ? shortage * outputToFormula : 0, materials = [];
+    variant.materials.forEach(function (recipe) {
+      let material = masterMap[recipe.code];
+      if (!material) {
+        material = { code: recipe.code, category: 'WIP RAW MATERIAL', name: recipe.name || recipe.code, unit: recipe.unit || '', active: false };
+        masterMap[recipe.code] = material;
+        masterChangeMap[recipe.code] = material;
+      }
+      const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, providedConversions, savedConversions);
+      if (!factor) wipConversionRequest_(conversionRequests, conversionMap, material, recipe.unit, material.unit);
+      const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
+      materials.push({ item: material, qty: rawQty, recipeQty: recipe.qty, recipeUnit: recipe.unit, sourceRow: recipe.sourceRow });
+      if (factor) rawTotals[material.code] = Number(rawTotals[material.code] || 0) + rawQty;
+    });
+    autoProducedCodes[code] = true;
+    autoWipPlans.push({ variant: variant, outputItem: outputItem, outputQty: shortage, formulaQty: formulaQty, materials: materials });
+  });
+  if (wipChoiceRequests.length) {
+    if (!allowPendingConversions) throw new Error('Pilih salah satu resep untuk kode WIP ganda sebelum upload dilanjutkan.');
+    baseResult.requiresWipChoice = true;
+    baseResult.wipChoices = wipChoiceRequests;
+    return baseResult;
+  }
+  const wipMissingConversions = conversionRequests.filter(function (request) {
+    const factor = Number(providedConversions[request.key]);
+    const savedFactor = savedConversions[request.key] && Number(savedConversions[request.key].factor);
+    const inverseKey = stockConversionKey_(request.itemCode, request.toUnit, request.fromUnit);
+    const inverseProvided = Number(providedConversions[inverseKey]);
+    const inverseSaved = savedConversions[inverseKey] && Number(savedConversions[inverseKey].factor);
+    return (!isFinite(factor) || factor <= 0) && (!isFinite(savedFactor) || savedFactor <= 0) &&
+      (!isFinite(inverseProvided) || inverseProvided <= 0) && (!isFinite(inverseSaved) || inverseSaved <= 0);
+  });
+  if (wipMissingConversions.length) {
+    if (!allowPendingConversions) throw new Error('Lengkapi seluruh konversi unit resep WIP sebelum melanjutkan upload.');
+    baseResult.requiresConversion = true;
+    baseResult.conversionRequests = wipMissingConversions;
+    return baseResult;
+  }
   let negativeItemCount = 0;
   Object.keys(usageTotals).forEach(function (code) {
     const available = Number(currentMap[code] || 0), required = Number(usageTotals[code] || 0);
-    if (available - required < -0.0000001) negativeItemCount++;
+    if (!autoProducedCodes[code] && available - required < -0.0000001) negativeItemCount++;
   });
-  if (!items.length && !showcaseRowsSkipped) throw new Error('Tidak ada QTY penjualan lebih dari 0 pada file ini.');
+  const rawShortages = [];
+  Object.keys(rawTotals).forEach(function (code) {
+    const available = Number(currentMap[code] || 0), required = Number(rawTotals[code] || 0);
+    if (available - required < -0.0000001) {
+      negativeItemCount++;
+      rawShortages.push({ itemCode: code, itemName: masterMap[code].name, unit: masterMap[code].unit, available: available, required: required, shortage: required - available });
+    }
+  });
+  if (!items.length && !showcaseRowsSkipped) {
+    if (duplicateItemsSkipped) throw new Error('Semua item pada file ini sudah tersimpan untuk outlet dan tanggal tersebut. Gunakan file yang berisi item berbeda.');
+    throw new Error('Tidak ada QTY penjualan lebih dari 0 pada file ini.');
+  }
   baseResult.requiresConversion = false;
   baseResult.items = items;
   baseResult.masterChanges = Object.keys(masterChangeMap).map(function (code) { return masterChangeMap[code]; });
   baseResult.negativeItemCount = negativeItemCount;
   baseResult.conversionCount = conversionRequests.length;
+  baseResult.autoWipPlans = autoWipPlans;
+  baseResult.autoWipProductionCount = autoWipPlans.length;
+  baseResult.rawShortages = rawShortages;
+  baseResult.newItemCount = Object.keys(masterChangeMap).length;
   return baseResult;
 }
 
@@ -1769,6 +2075,7 @@ function appendOrActivateStockMasterItems_(items) {
   });
   if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
   SpreadsheetApp.flush();
+  removeScriptCacheKeys_(['stock-master-active', 'stock-master-all']);
 }
 
 function convertSalesUsageQty_(qty, factor) {
@@ -1866,7 +2173,7 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
  * Reads a Goods Receipt report by column names instead of fixed row numbers.
  * ESB metadata may grow or move; only the table header names are authoritative.
  */
-function parseGoodsReceiptReport_(base64, fileName) {
+function parseGoodsReceiptReport_(base64, fileName, allowMultipleOutlets) {
   const cells = extractReportCells_(base64, fileName, 'Goods Receipt');
   const header = findReportHeader_(cells, [
     'GOODS RECEIPT NUMBER', 'GOODS RECEIPT DATE', 'DESTINATION',
@@ -1914,11 +2221,11 @@ function parseGoodsReceiptReport_(base64, fileName) {
   });
   if (invalidQty.length) throw new Error('QTY Goods Receipt tidak valid pada ' + invalidQty.slice(0, 8).join(', ') + '.');
   const outletKeys = Object.keys(outlets);
-  if (outletKeys.length !== 1) throw new Error('Goods Receipt harus berisi tepat satu Destination. Ditemukan: ' +
+  if (!allowMultipleOutlets && outletKeys.length !== 1) throw new Error('Goods Receipt harus berisi tepat satu Destination. Ditemukan: ' +
     outletKeys.map(function (key) { return outlets[key]; }).join(', ') + '.');
   if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized pada kolom U dan Origin non-Bakerzin pada kolom E yang diproses.');
   return {
-    outletName: outlets[outletKeys[0]], rows: rows, transactionDates: Object.keys(dates),
+    outletName: outlets[outletKeys[0]], outletNames: outletKeys.map(function (key) { return outlets[key]; }), rows: rows, transactionDates: Object.keys(dates),
     receiptCount: Object.keys(receipts).length, supplierCount: Object.keys(suppliers).length,
     headerRow: header.row
   };
@@ -2287,6 +2594,8 @@ function readStoreCodeMap_() {
 }
 
 function readStoreCodeDirectory_() {
+  const cached = readScriptJsonCache_('stock-store-code-directory');
+  if (cached) return cached;
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.STORE_CODE_SHEET);
   if (!sheet || sheet.getLastRow() < 1) throw new Error('Sheet STORE CODE belum tersedia atau masih kosong. Isi nama outlet panjang di kolom A dan kode singkat di kolom B.');
   const rows = sheet.getRange(1, 1, sheet.getLastRow(), 2).getDisplayValues();
@@ -2303,15 +2612,28 @@ function readStoreCodeDirectory_() {
     byCode[code] = entry;
   });
   if (!Object.keys(byName).length) throw new Error('Sheet STORE CODE belum berisi pasangan nama outlet dan kode.');
-  return { byName: byName, byCode: byCode };
+  const result = { byName: byName, byCode: byCode };
+  writeScriptJsonCache_('stock-store-code-directory', result, 600);
+  return result;
 }
 
-function salesUsageAlreadyImported_(outlet, transactionDate, sourceHash) {
+function salesUsageHashAlreadyImported_(outlet, sourceHash) {
   const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
-    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND movement_type = \'Terjual\' AND source_file IS NOT NULL ' +
-    'AND (source_hash = @sourceHash OR event_date = CAST(@transactionDate AS DATE))';
-  const rows = runNamedQuery_(sql, { outlet: outlet, transactionDate: transactionDate, sourceHash: sourceHash });
+    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND movement_type = \'Terjual\' AND source_hash = @sourceHash';
+  const rows = runNamedQuery_(sql, { outlet: outlet, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
+}
+
+function readExistingSalesUsageItemCodes_(outlet, transactionDate) {
+  const sql = 'SELECT DISTINCT UPPER(item_code) AS item_code FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Terjual\' ' +
+    'AND event_date = CAST(@transactionDate AS DATE) AND source_file IS NOT NULL AND source_file != \'\' AND item_code IS NOT NULL';
+  const map = {};
+  runNamedQuery_(sql, { outlet: outlet, transactionDate: transactionDate }).forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    if (code) map[code] = true;
+  });
+  return map;
 }
 
 function normalizeStoreName_(value) { return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase(); }
@@ -2339,6 +2661,254 @@ function getStockHistory(token, payload) {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
       history: rows, fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_FALLBACK'
     };
+  });
+}
+
+/** WIP recipe master and production ledger. */
+function ensureWipRecipeSheet_() {
+  const headers = ['FORMULA_CODE', 'FORMULA_NAME', 'FINISHED_UNIT', 'MATERIAL_CODE', 'MATERIAL_NAME', 'QTY_USAGE', 'MATERIAL_UNIT'];
+  const sheet = ensureSheet_(CONFIG.WIP_RECIPE_SHEET, headers);
+  if (sheet.getLastRow() < 2) {
+    const seed = wipRecipeSeedRows_();
+    if (seed.length) sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
+  }
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidths(1, 1, 120);
+  sheet.setColumnWidths(2, 1, 260);
+  sheet.setColumnWidths(3, 1, 95);
+  sheet.setColumnWidths(4, 1, 120);
+  sheet.setColumnWidths(5, 1, 260);
+  sheet.setColumnWidths(6, 2, 105);
+  return sheet;
+}
+
+function wipRecipeSeedRows_() {
+  const encoded = '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';
+  if (!encoded || encoded.indexOf('__WIP_') === 0) return [];
+  const json = Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(encoded))).getDataAsString('UTF-8');
+  return JSON.parse(json);
+}
+
+function readWipRecipeCatalog_() {
+  const sheet = ensureWipRecipeSheet_(), result = { variants: [], byCode: {}, invalidRowsSkipped: 0 };
+  if (sheet.getLastRow() < 2) return result;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getDisplayValues();
+  const variants = {};
+  rows.forEach(function (row, index) {
+    const code = cleanText_(row[0], 80).toUpperCase(), name = cleanText_(row[1], 180), finishedUnit = normalizeUnit_(row[2]);
+    const materialCode = cleanText_(row[3], 80).toUpperCase(), materialName = cleanText_(row[4], 180);
+    const qty = Number(String(row[5] || '').replace(',', '.')), materialUnit = normalizeUnit_(row[6]);
+    if (!code || !name || !finishedUnit || !materialCode || materialCode === '0' || !materialName || materialName === '0' ||
+        !isFinite(qty) || qty <= 0 || !materialUnit || materialUnit === '0' || materialUnit === '-') {
+      result.invalidRowsSkipped++;
+      return;
+    }
+    const key = code + '|' + name.toUpperCase() + '|' + finishedUnit;
+    if (!variants[key]) variants[key] = { key: key, code: code, name: name, unit: finishedUnit, materials: [] };
+    variants[key].materials.push({ sourceRow: index + 2, code: materialCode, name: materialName, qty: qty, unit: materialUnit });
+  });
+  Object.keys(variants).forEach(function (key) {
+    const variant = variants[key];
+    result.variants.push(variant);
+    if (!result.byCode[variant.code]) result.byCode[variant.code] = [];
+    result.byCode[variant.code].push(variant);
+  });
+  result.variants.sort(function (a, b) { return a.name.localeCompare(b.name) || a.code.localeCompare(b.code); });
+  Object.keys(result.byCode).forEach(function (code) {
+    result.byCode[code].sort(function (a, b) { return a.name.localeCompare(b.name) || a.key.localeCompare(b.key); });
+  });
+  return result;
+}
+
+function wipConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
+  fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
+  if (fromUnit === toUnit) return 1;
+  const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
+  let factor = Number(provided && provided[direct]);
+  if (!isFinite(factor) || factor <= 0) factor = saved[direct] && Number(saved[direct].factor);
+  if (isFinite(factor) && factor > 0) return factor;
+  let inverseFactor = Number(provided && provided[inverse]);
+  if (!isFinite(inverseFactor) || inverseFactor <= 0) inverseFactor = saved[inverse] && Number(saved[inverse].factor);
+  return isFinite(inverseFactor) && inverseFactor > 0 ? 1 / inverseFactor : 0;
+}
+
+function wipConversionRequest_(requests, requestMap, item, fromUnit, toUnit) {
+  const key = stockConversionKey_(item.code, fromUnit, toUnit);
+  if (!requestMap[key]) {
+    requestMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: fromUnit, toUnit: toUnit };
+    requests.push(requestMap[key]);
+  }
+}
+
+function getWipProductionOptions(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    if (isShowcaseLocation_(context.location)) throw new Error('Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
+    const catalog = readWipRecipeCatalog_(), masterMap = {}, saved = readStockUnitConversions_();
+    readStockMaster_(true).forEach(function (item) { masterMap[item.code.toUpperCase()] = item; });
+    const variants = catalog.variants.filter(function (variant) { return Boolean(masterMap[variant.code]); }).map(function (variant) {
+      const item = masterMap[variant.code], candidates = {};
+      candidates[variant.unit] = true; candidates[normalizeUnit_(item.unit)] = true;
+      Object.keys(saved).forEach(function (key) {
+        const conversion = saved[key];
+        if (conversion.itemCode !== variant.code) return;
+        if (wipConversionFactor_(variant.code, conversion.fromUnit, variant.unit, {}, saved)) candidates[conversion.fromUnit] = true;
+        if (wipConversionFactor_(variant.code, conversion.toUnit, variant.unit, {}, saved)) candidates[conversion.toUnit] = true;
+      });
+      const units = Object.keys(candidates).filter(function (unit) { return wipConversionFactor_(variant.code, unit, variant.unit, {}, saved) > 0; });
+      return { key: variant.key, code: variant.code, name: variant.name, formulaUnit: variant.unit, stockUnit: item.unit, units: units, materialCount: variant.materials.length };
+    });
+    return { outlet: context.outlet, location: context.location, variants: variants, invalidRowsSkipped: catalog.invalidRowsSkipped, sheetName: CONFIG.WIP_RECIPE_SHEET };
+  });
+}
+
+function prepareWipProductionLines_(context, payload, allowNegativeRaw) {
+  const lines = Array.isArray(payload.lines) ? payload.lines : [], catalog = readWipRecipeCatalog_();
+  if (!lines.length) throw new Error('Tambahkan minimal satu item WIP yang akan diproduksi.');
+  const masterMap = {};
+  readStockMaster_(true).forEach(function (item) { masterMap[item.code.toUpperCase()] = item; });
+  const saved = readStockUnitConversions_(), provided = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
+  const conversionRequests = [], requestMap = {}, plans = [], rawTotals = {};
+  lines.forEach(function (line, lineIndex) {
+    const code = cleanText_(line.code, 80).toUpperCase(), variants = catalog.byCode[code] || [];
+    const variantKey = cleanText_(line.variantKey, 500);
+    const variant = variants.filter(function (entry) { return entry.key === variantKey; })[0];
+    const outputItem = masterMap[code], qty = Number(line.qty), inputUnit = normalizeUnit_(line.unit);
+    if (!variant) throw new Error('Resep WIP baris ' + (lineIndex + 1) + ' tidak ditemukan atau belum dipilih.');
+    if (!outputItem) throw new Error(code + ' · ' + variant.name + ': belum tersedia pada STOCK_ITEMS.');
+    if (!isFinite(qty) || qty <= 0) throw new Error(code + ' · ' + variant.name + ': QTY produksi wajib lebih besar dari 0.');
+    const outputToFormula = wipConversionFactor_(code, inputUnit, variant.unit, provided, saved);
+    if (!outputToFormula) wipConversionRequest_(conversionRequests, requestMap, outputItem, inputUnit, variant.unit);
+    const formulaQty = outputToFormula ? qty * outputToFormula : 0;
+    const formulaToStock = wipConversionFactor_(code, variant.unit, outputItem.unit, provided, saved);
+    if (!formulaToStock) wipConversionRequest_(conversionRequests, requestMap, outputItem, variant.unit, outputItem.unit);
+    const outputQty = formulaToStock ? formulaQty * formulaToStock : 0;
+    const materials = [];
+    variant.materials.forEach(function (recipe) {
+      const material = masterMap[recipe.code];
+      if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': raw material belum tersedia pada STOCK_ITEMS.');
+      const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, provided, saved);
+      if (!factor) wipConversionRequest_(conversionRequests, requestMap, material, recipe.unit, material.unit);
+      const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
+      materials.push({ item: material, qty: rawQty, recipeQty: recipe.qty, recipeUnit: recipe.unit, sourceRow: recipe.sourceRow });
+      if (factor) rawTotals[material.code] = Number(rawTotals[material.code] || 0) + rawQty;
+    });
+    plans.push({ variant: variant, outputItem: outputItem, inputQty: qty, inputUnit: inputUnit, formulaQty: formulaQty, outputQty: outputQty, materials: materials,
+      productionDate: normalizeDate_(line.productionDate || payload.productionDate, false), expiryDate: normalizeDate_(line.expiryDate || payload.expiryDate, false) });
+  });
+  if (conversionRequests.length) return { requiresConversion: true, conversionRequests: conversionRequests };
+  const current = readCurrentStockCodeQtyMap_(context.outlet, context.location), credits = payload._stockCredits || {}, shortages = [];
+  Object.keys(rawTotals).forEach(function (code) {
+    const available = Number(current[code] || 0) + Number(credits[code] || 0), required = Number(rawTotals[code] || 0);
+    if (available + 0.0000001 < required) shortages.push({ itemCode: code, itemName: masterMap[code].name, unit: masterMap[code].unit, available: available, required: required, shortage: required - available });
+  });
+  if (shortages.length && !allowNegativeRaw) throw new Error('Produksi diblokir karena raw material tidak mencukupi: ' + shortages.slice(0, 8).map(function (line) { return line.itemCode + ' · kurang ' + formatQty_(line.shortage) + ' ' + line.unit; }).join(', ') + '.');
+  return { requiresConversion: false, plans: plans, rawTotals: rawTotals, shortages: shortages, current: current };
+}
+
+function processWipProduction(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    if (isShowcaseLocation_(context.location)) throw new Error('Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
+    const lock = acquireStockWriteLock_();
+    try {
+      const editId = cleanText_(payload.productionId, 100), previous = editId ? readLatestProductionRows_(context.outlet, context.location, editId).filter(function (row) { return Number(row.qty || 0) > 0; }) : [];
+      if (editId && !previous.length) throw new Error('Produksi yang akan diedit tidak ditemukan atau sudah dibatalkan.');
+      const credits = {};
+      previous.forEach(function (row) { if (String(row.direction || '') === 'OUT') credits[String(row.item_code || '').toUpperCase()] = Number(credits[String(row.item_code || '').toUpperCase()] || 0) + Number(row.qty || 0); });
+      const previousOutput = previous.filter(function (row) { return String(row.movement_type || '') === 'Production'; })[0];
+      if (previousOutput) {
+        const liveOutput = getCurrentStock_(context.outlet, context.location, String(previousOutput.item_code || ''), String(previousOutput.item_name || '')).qty;
+        if (liveOutput + 0.0000001 < Number(previousOutput.qty || 0)) throw new Error('Produksi tidak dapat diedit karena sebagian hasil WIP sudah digunakan.');
+      }
+      const preparedPayload = Object.assign({}, payload, { _stockCredits: credits });
+      const prepared = prepareWipProductionLines_(context, preparedPayload, false);
+      if (prepared.requiresConversion) return { produced: false, requiresConversion: true, conversions: prepared.conversionRequests };
+      if (editId && prepared.plans.length !== 1) throw new Error('Edit produksi hanya dapat dilakukan untuk satu item.');
+      const now = new Date(), eventDate = normalizeDate_(payload.eventDate, true), rows = [], productionIds = [];
+      previous.forEach(function (row) {
+        const id = Utilities.getUuid();
+        rows.push({ insertId: id, json: {
+          record_id: id, logical_id: String(row.logical_id || ''), version: Number(row.version || 1) + 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
+          item_code: String(row.item_code || ''), category: String(row.category || ''), item_name: String(row.item_name || ''), unit: String(row.unit || ''),
+          direction: String(row.direction || ''), qty: 0, movement_type: String(row.movement_type || ''), info: cleanText_('Diganti melalui edit produksi · ' + editId, 500),
+          production_date: row.production_date || null, expiry_date: row.expiry_date || null, event_date: String(row.event_date || eventDate), created_at: now.getTime() / 1000,
+          created_by: context.employee.nik, transfer_id: editId
+        }});
+      });
+      prepared.plans.forEach(function (plan) {
+        const productionId = editId || Utilities.getUuid(), outputId = Utilities.getUuid();
+        productionIds.push(productionId);
+        const label = 'Produksi WIP · ' + plan.variant.name + ' · Resep ' + plan.variant.key + ' · Formula ' + formatQty_(plan.formulaQty) + ' ' + plan.variant.unit;
+        rows.push({ insertId: outputId, json: {
+          record_id: outputId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
+          item_code: plan.outputItem.code, category: plan.outputItem.category, item_name: plan.outputItem.name, unit: plan.outputItem.unit,
+          direction: 'IN', qty: plan.outputQty, movement_type: 'Production', info: cleanText_(label, 500), production_date: plan.productionDate || null,
+          expiry_date: plan.expiryDate || null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId
+        }});
+        plan.materials.forEach(function (material) {
+          const recordId = Utilities.getUuid();
+          rows.push({ insertId: recordId, json: {
+            record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
+            item_code: material.item.code, category: material.item.category, item_name: material.item.name, unit: material.item.unit,
+            direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage', info: cleanText_('Bahan untuk ' + plan.variant.code + ' · ' + plan.variant.name + ' · Produksi ' + productionId, 500),
+            expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId
+          }});
+        });
+      });
+      insertStockCardRows_(rows);
+      return { produced: true, edited: Boolean(editId), productionCount: prepared.plans.length, movementCount: rows.length, productionIds: productionIds, shortages: [] };
+    } finally { lock.releaseLock(); }
+  });
+}
+
+function readLatestProductionRows_(outlet, location, productionId) {
+  const sql = latestStockMovementCte_() + ' SELECT * FROM latest WHERE outlet = @outlet AND location = @location AND transfer_id = @productionId ' +
+    'AND movement_type IN (\'Production\', \'WIP Material Usage\') ORDER BY created_at ASC';
+  return runNamedQuery_(sql, { outlet: outlet, location: location, productionId: productionId }, { useQueryCache: false });
+}
+
+function getWipProductionDetail(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location), productionId = cleanText_(payload.productionId, 100);
+    const rows = readLatestProductionRows_(context.outlet, context.location, productionId), output = rows.filter(function (row) { return row.movement_type === 'Production' && Number(row.qty || 0) > 0; })[0];
+    if (!output) throw new Error('Data produksi tidak ditemukan atau sudah dibatalkan.');
+    const recipeMatch = /Resep\s+(.+?)\s+·\s+Formula/i.exec(String(output.info || ''));
+    return { productionId: productionId, line: { code: String(output.item_code || ''), name: String(output.item_name || ''), qty: Number(output.qty || 0), unit: String(output.unit || ''), variantKey: recipeMatch ? recipeMatch[1].trim() : '', productionDate: String(output.production_date || ''), expiryDate: String(output.expiry_date || ''), eventDate: String(output.event_date || '') } };
+  });
+}
+
+function cancelWipProduction(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location), productionId = cleanText_(payload.productionId, 100);
+    if (!productionId) throw new Error('Nomor produksi tidak ditemukan.');
+    const lock = acquireStockWriteLock_();
+    try {
+      const previous = readLatestProductionRows_(context.outlet, context.location, productionId).filter(function (row) { return Number(row.qty || 0) > 0; });
+      if (!previous.length) throw new Error('Produksi sudah dibatalkan atau tidak ditemukan.');
+      const output = previous.filter(function (row) { return row.movement_type === 'Production'; })[0];
+      if (output) {
+        const live = getCurrentStock_(context.outlet, context.location, String(output.item_code || ''), String(output.item_name || '')).qty;
+        if (live + 0.0000001 < Number(output.qty || 0)) throw new Error('Produksi tidak dapat dihapus karena sebagian hasil WIP sudah digunakan. Buat Stock Adjustment bila perlu.');
+      }
+      const now = new Date(), rows = previous.map(function (row) {
+        const id = Utilities.getUuid();
+        return { insertId: id, json: {
+          record_id: id, logical_id: String(row.logical_id || ''), version: Number(row.version || 1) + 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
+          item_code: String(row.item_code || ''), category: String(row.category || ''), item_name: String(row.item_name || ''), unit: String(row.unit || ''),
+          direction: String(row.direction || ''), qty: 0, movement_type: String(row.movement_type || ''), info: cleanText_('Produksi dibatalkan · ' + productionId, 500),
+          production_date: row.production_date || null, expiry_date: row.expiry_date || null, event_date: String(row.event_date || todayIso_()), created_at: now.getTime() / 1000,
+          created_by: context.employee.nik, transfer_id: productionId
+        }};
+      });
+      insertStockCardRows_(rows);
+      return { cancelled: true, productionId: productionId };
+    } finally { lock.releaseLock(); }
   });
 }
 
@@ -2736,12 +3306,12 @@ function uploadGoodsReceipt(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const prepared = prepareGoodsReceiptImport_(context, payload, false);
+    if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+    if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
     const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
     try {
-      const prepared = prepareGoodsReceiptImport_(context, payload, false);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-      if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date();
       const rows = prepared.items.map(function (receipt) {
@@ -2778,10 +3348,10 @@ function uploadGoodsReceipt(token, payload) {
   });
 }
 
-function prepareGoodsReceiptImport_(context, payload, allowPendingConversions) {
+function prepareGoodsReceiptImport_(context, payload, allowPendingConversions, reportOverride) {
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
-  const report = parseGoodsReceiptReport_(base64, fileName);
+  const report = reportOverride || parseGoodsReceiptReport_(base64, fileName);
   const storeDirectory = readStoreCodeDirectory_(), outletKey = normalizeStoreName_(report.outletName);
   const storeEntry = storeDirectory.byName[outletKey] || null;
   const reportOutlet = storeEntry ? storeEntry.code : '';
@@ -3081,12 +3651,12 @@ function uploadGoodsDelivery(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const prepared = prepareGoodsDeliveryImport_(context, payload, false);
+    if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+    if (!prepared.items.length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
     const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
     try {
-      const prepared = prepareGoodsDeliveryImport_(context, payload, false);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-      if (!prepared.items.length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, lotQueues = {}, stockRows = [], pendingRows = [];
       prepared.items.forEach(function (delivery) {
@@ -3154,10 +3724,10 @@ function uploadGoodsDelivery(token, payload) {
   });
 }
 
-function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions) {
+function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, reportOverride) {
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
-  const report = parseGoodsDeliveryReport_(base64, fileName);
+  const report = reportOverride || parseGoodsDeliveryReport_(base64, fileName);
   const storeDirectory = readStoreCodeDirectory_(), originKey = normalizeStoreName_(report.outletName);
   const originEntry = storeDirectory.byName[originKey] || null;
   const reportOutlet = originEntry ? originEntry.code : '';
@@ -3360,7 +3930,7 @@ function parseGoodsDeliveryReportLegacy_(base64, fileName) {
  * Reads a Goods Delivery report by its header labels. The sample supplied by
  * the user has the header on row 11, but this remains valid if ESB moves it.
  */
-function parseGoodsDeliveryReport_(base64, fileName) {
+function parseGoodsDeliveryReport_(base64, fileName, allowMultipleOutlets) {
   const cells = extractReportCells_(base64, fileName, 'Goods Delivery');
   const header = findReportHeader_(cells, [
     'GOODS DELIVERY NUMBER', 'GOODS DELIVERY DATE', 'ORIGIN', 'DESTINATION',
@@ -3402,11 +3972,11 @@ function parseGoodsDeliveryReport_(base64, fileName) {
   });
   if (invalidQty.length) throw new Error('QTY Goods Delivery tidak valid pada ' + invalidQty.slice(0, 8).join(', ') + '.');
   const originKeys = Object.keys(origins);
-  if (originKeys.length !== 1) throw new Error('Goods Delivery harus berisi tepat satu Origin. Ditemukan: ' +
+  if (!allowMultipleOutlets && originKeys.length !== 1) throw new Error('Goods Delivery harus berisi tepat satu Origin. Ditemukan: ' +
     originKeys.map(function (key) { return origins[key]; }).join(', ') + '.');
   if (!rows.length) throw new Error('Tidak ada baris Goods Delivery dengan QTY lebih dari 0 setelah header baris ' + header.row + '.');
   return {
-    outletName: origins[originKeys[0]], rows: rows, transactionDates: Object.keys(dates),
+    outletName: origins[originKeys[0]], outletNames: originKeys.map(function (key) { return origins[key]; }), rows: rows, transactionDates: Object.keys(dates),
     deliveryCount: Object.keys(deliveries).length, destinationCount: Object.keys(destinations).length,
     headerRow: header.row
   };
@@ -4025,6 +4595,8 @@ function stockConversionKey_(itemCode, fromUnit, toUnit) {
 }
 
 function readStockUnitConversions_() {
+  const cached = readScriptJsonCache_('stock-unit-conversions');
+  if (cached) return cached;
   const sheet = ensureStockConversionSheet_();
   if (sheet.getLastRow() < 2) return {};
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues();
@@ -4197,18 +4769,24 @@ function findStockItemForLocation_(location, itemKey) {
 function showcaseProductNameMap_() {
   const map = {};
   readShowcaseItems_().forEach(function (item) { map[normalizeStoreName_(item.productName)] = true; });
+  writeScriptJsonCache_('stock-unit-conversions', map, 600);
   return map;
 }
 
 function readStockMaster_(includeInactive) {
+  const cacheKey = includeInactive ? 'stock-master-all' : 'stock-master-active';
+  const cached = readScriptJsonCache_(cacheKey);
+  if (cached) return cached;
   const sheet = ensureStockMasterSheet_();
   if (sheet.getLastRow() < 2) return [];
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getDisplayValues();
-  return rows.filter(function (r) {
+  const result = rows.filter(function (r) {
     return String(r[0] || '').trim() && String(r[2] || '').trim() && (includeInactive || String(r[4] || '').trim() === '' || truthy_(r[4]));
   }).map(function (r) {
     return { code: String(r[0]).trim().toUpperCase(), category: String(r[1] || 'Uncategorized').trim(), name: String(r[2]).trim(), unit: String(r[3] || '').trim(), active: String(r[4] || '').trim() === '' || truthy_(r[4]) };
   }).sort(function (a, b) { return a.category.localeCompare(b.category) || a.name.localeCompare(b.name); });
+  writeScriptJsonCache_(cacheKey, result, 600);
+  return result;
 }
 
 function findStockMasterItem_(itemKey) {
@@ -4365,8 +4943,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
   const note = cleanText_(payload.info, 220);
   const transferId = Utilities.getUuid();
   const now = new Date();
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  const lock = acquireStockWriteLock_();
   try {
     const available = getCurrentStock_(outlet, 'Store', product.code, product.name).qty;
     if (productQty > available + 0.0000001) {
@@ -4429,7 +5006,7 @@ function markStockBalanceDirty_(rows) {
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry;
     if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location) return;
-    updates[stockBalanceStateKey_('dirty', row.outlet, row.location)] = timestamp;
+    updates[stockBalanceStateKey_('dirty', row.outlet, row.location)] = JSON.stringify({ token: timestamp, outlet: row.outlet, location: row.location });
   });
   if (Object.keys(updates).length) properties.setProperties(updates, false);
 }
@@ -4472,31 +5049,13 @@ function readStockBalanceRows_(outlet, location) {
   const properties = PropertiesService.getScriptProperties();
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
   const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
-  let ready = properties.getProperty(readyKey) === '1';
-  let dirtyToken = String(properties.getProperty(dirtyKey) || '');
+  const ready = properties.getProperty(readyKey) === '1';
+  const dirtyToken = String(properties.getProperty(dirtyKey) || '');
 
   try {
-    // BigQuery streaming inserts may need a moment before they are query-visible.
-    if (dirtyToken && Date.now() - Number(dirtyToken.split('-')[0]) < 3000) {
-      return readStockLedgerBalanceRows_(outlet, location);
-    }
-    if (!ready || dirtyToken) {
-      const lock = LockService.getScriptLock();
-      if (!lock.tryLock(10000)) return readStockLedgerBalanceRows_(outlet, location);
-      try {
-        // Another request may have completed the rebuild while this request waited.
-        ready = properties.getProperty(readyKey) === '1';
-        dirtyToken = String(properties.getProperty(dirtyKey) || '');
-        if (dirtyToken && Date.now() - Number(dirtyToken.split('-')[0]) < 3000) {
-          return readStockLedgerBalanceRows_(outlet, location);
-        }
-        if (!ready || dirtyToken) rebuildStockBalanceSummary_(outlet, location, dirtyToken);
-      } finally {
-        lock.releaseLock();
-      }
-    }
-    // A transaction written during the rebuild leaves a newer dirty token behind.
-    if (properties.getProperty(dirtyKey)) return readStockLedgerBalanceRows_(outlet, location);
+    // Heavy BigQuery rebuilds never run inside a user's request. A time-driven
+    // trigger refreshes dirty summaries; the live ledger is accurate meanwhile.
+    if (!ready || dirtyToken) return readStockLedgerBalanceRows_(outlet, location);
     const sql = 'SELECT item_code, item_name, current_qty FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances` ' +
       'WHERE outlet = @outlet AND location = @location';
     return runNamedQuery_(sql, { outlet: outlet, location: location });
@@ -4504,6 +5063,31 @@ function readStockBalanceRows_(outlet, location) {
     console.error('Ringkasan stok gagal digunakan; membaca stock_card sebagai cadangan. ' + error.message);
     return readStockLedgerBalanceRows_(outlet, location);
   }
+}
+
+/** Install as a time-driven trigger (every 5 minutes). */
+function refreshDirtyStockBalances() {
+  const properties = PropertiesService.getScriptProperties();
+  const all = properties.getProperties();
+  Object.keys(all).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 8).forEach(function (key) {
+    try {
+      const raw = String(all[key] || '');
+      const state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
+      if (!state || !state.outlet || !state.location) return;
+      rebuildStockBalanceSummary_(state.outlet, state.location, raw);
+    } catch (error) {
+      console.error('Gagal memperbarui ringkasan saldo: ' + error.message);
+    }
+  });
+}
+
+/** Run once manually after deployment to install the background balance refresh. */
+function installStockMaintenanceTrigger() {
+  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
+    return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
+  });
+  if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(5).create();
+  return { installed: true, alreadyExisted: exists, handler: 'refreshDirtyStockBalances', intervalMinutes: 5 };
 }
 
 function ensureStockVisibilitySheet_() {
@@ -4799,8 +5383,7 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
     transferId = cleanText_(transferId, 100);
     reason = cleanText_(reason, 500);
     if (!reason) throw new Error('Alasan penolakan wajib diisi untuk keperluan audit.');
-    const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    const lock = acquireStockWriteLock_();
     try {
       const matches = readPendingStockTransfers_(outlet).filter(function (transfer) { return transfer.transferId === transferId; });
       if (!matches.length) throw new Error('Transfer sudah diproses atau tidak ditemukan untuk outlet ini.');
@@ -5085,6 +5668,9 @@ function cleanExportName_(value) {
 }
 
 function readStockLocations_(outlet) {
+  const cacheKey = 'stock-locations-' + String(outlet || '').trim().toUpperCase();
+  const cached = readScriptJsonCache_(cacheKey);
+  if (cached) return cached;
   const locations = ['Store', 'Gudang', 'Showcase'];
   const sheet = ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
   if (sheet.getLastRow() < 2) return locations;
@@ -5094,10 +5680,14 @@ function readStockLocations_(outlet) {
     const name = normalizeLocation_(r[1]);
     if (name && locations.map(function (v) { return v.toLowerCase(); }).indexOf(name.toLowerCase()) < 0) locations.push(name);
   });
-  return locations.slice(0, 2).concat(locations.slice(2).sort());
+  const result = locations.slice(0, 2).concat(locations.slice(2).sort());
+  writeScriptJsonCache_(cacheKey, result, 600);
+  return result;
 }
 
 function readActiveOutlets_() {
+  const cached = readScriptJsonCache_('stock-active-outlets');
+  if (cached) return cached;
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return ['BIHQ'];
   const rows = sheet.getRange(2, 3, sheet.getLastRow() - 1, 7).getDisplayValues();
@@ -5107,7 +5697,33 @@ function readActiveOutlets_() {
     const status = String(r[6] || '').trim().toLowerCase();
     if (outlet && status !== 'resign') map[outlet] = true;
   });
-  return Object.keys(map).sort();
+  const result = Object.keys(map).sort();
+  writeScriptJsonCache_('stock-active-outlets', result, 600);
+  return result;
+}
+
+function readScriptJsonCache_(key) {
+  try {
+    const value = CacheService.getScriptCache().get(String(key || ''));
+    return value ? JSON.parse(value) : null;
+  } catch (error) { return null; }
+}
+
+function writeScriptJsonCache_(key, value, ttlSeconds) {
+  try {
+    const json = JSON.stringify(value);
+    if (json.length < 95000) CacheService.getScriptCache().put(String(key || ''), json, Number(ttlSeconds || 300));
+  } catch (error) { /* Cache is optional and must never block the app. */ }
+}
+
+function removeScriptCacheKeys_(keys) {
+  try { CacheService.getScriptCache().removeAll(keys || []); } catch (error) { /* no-op */ }
+}
+
+function acquireStockWriteLock_() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
+  return lock;
 }
 
 function resolveStockOutlet_(employee, requestedOutlet, allowedOutlets) {
@@ -5136,7 +5752,7 @@ function ensureTransferMovementInfo_(direction, movementType, value) {
 }
 
 function validateMovementType_(direction, type) {
-  const allowedIn = ['Opening Stock', 'Supplier In', 'Vendor In', 'Transfer In', 'Goods Receipt', 'Stock Adjustment', 'Others'];
+  const allowedIn = ['Opening Stock', 'Supplier In', 'Vendor In', 'Transfer In', 'Goods Receipt', 'Production', 'Stock Adjustment', 'Others'];
   const allowedOut = ['Terjual', 'Pemakaian', 'Waste', 'Transfer Out', 'Transfer Out Antar Outlet', 'Stock Adjustment', 'Others'];
   const allowed = direction === 'IN' ? allowedIn : allowedOut;
   if (allowed.indexOf(type) < 0) throw new Error('Jenis transaksi tidak valid.');
