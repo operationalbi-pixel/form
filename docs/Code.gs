@@ -1751,7 +1751,7 @@ function uploadSalesUsage(token, payload) {
             record_id: rawId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
             outlet: context.outlet, location: context.location, item_code: material.item.code, category: material.item.category,
             item_name: material.item.name, unit: material.item.unit, direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage',
-            info: cleanText_('Keluar utk WIP: ' + plan.variant.code + ' · ' + plan.variant.name + ' · Otomatis dari Usage ' + prepared.fileName, 500),
+            info: cleanText_('Keluar untuk Produk WIP: ' + plan.variant.name + ' (' + plan.variant.code + ') · Otomatis dari Usage ' + prepared.fileName, 500),
             expiry_date: null, event_date: prepared.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
             source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: material.sourceRow, transfer_id: productionId
           }});
@@ -3094,7 +3094,7 @@ function processWipProduction(token, payload) {
           rows.push({ insertId: recordId, json: {
             record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
             item_code: material.item.code, category: material.item.category, item_name: material.item.name, unit: material.item.unit,
-            direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage', info: cleanText_('Keluar utk WIP: ' + plan.variant.code + ' · ' + plan.variant.name + ' · Produksi ' + productionId, 500),
+            direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage', info: cleanText_('Keluar untuk Produk WIP: ' + plan.variant.name + ' (' + plan.variant.code + ') · Produksi ' + productionId, 500),
             expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId,
             source_file: sourceFile ? 'WIP_PRODUCTION|' + sourceFile : null, source_hash: sourceHash || null, source_row: sourceFile ? plan.sourceRow : null
           }});
