@@ -4954,9 +4954,8 @@ function ensureShowcaseSheet_() {
   const sheet = ensureSheet_(CONFIG.SHOWCASE_SHEET, headers);
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (sheet.getLastRow() < 2) {
-    const rows = showcaseSeedRows_().map(function (row) { return row.concat(showcaseItemCode_(row[0])); });
-    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
-    sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.0000');
+    // An empty MENU_SHOWCASE is valid. Do not restore defaults automatically;
+    // this lets operations temporarily disable Showcase by clearing its rows.
     sheet.setFrozenRows(1);
     sheet.autoResizeColumns(1, headers.length);
   } else {
@@ -4973,6 +4972,26 @@ function ensureShowcaseSheet_() {
     if (changed) sheet.getRange(2, 9, rowCount, 1).setValues(completedCodes);
   }
   return sheet;
+}
+
+/** Restores the original Showcase menu only when run manually from Apps Script. */
+function restoreDefaultShowcaseMenu() {
+  const lock = acquireStockWriteLock_();
+  try {
+    const sheet = ensureShowcaseSheet_();
+    if (sheet.getLastRow() >= 2) {
+      throw new Error('MENU_SHOWCASE masih memiliki data. Kosongkan baris data sebelum memulihkan menu bawaan.');
+    }
+    const rows = showcaseSeedRows_().map(function (row) { return row.concat(showcaseItemCode_(row[0])); });
+    sheet.getRange(2, 1, rows.length, 9).setValues(rows);
+    sheet.getRange(2, 8, rows.length, 1).setNumberFormat('0.0000');
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, 9);
+    SpreadsheetApp.flush();
+    return { restored: true, sheetName: CONFIG.SHOWCASE_SHEET, itemCount: rows.length };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function showcaseItemCode_(menuName) {
