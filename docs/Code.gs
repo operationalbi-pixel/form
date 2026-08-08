@@ -114,6 +114,8 @@ function apiActions_() {
     saveConversions: saveStockUnitConversions,
     getConversions: getStockUnitConversions,
     wipOptions: getWipProductionOptions,
+    wipTemplate: downloadWipProductionTemplate,
+    wipUploadPreview: previewWipProductionUpload,
     wipProduce: processWipProduction,
     wipProduction: getWipProductionDetail,
     wipCancel: cancelWipProduction,
@@ -132,6 +134,7 @@ function apiActions_() {
     exportCurrent: exportCurrentStockExcel,
     exportItem: exportStockCardItem,
     showcaseLogBootstrap: getShowcaseLogBootstrap,
+    showcaseLogMonitoring: getShowcaseLogMonitoring,
     saveShowcaseLog: saveShowcaseLog,
     complete: markTaskComplete
   });
@@ -570,35 +573,46 @@ function saveShowcaseLog(token, payload) {
     const showcaseItems = readShowcaseItems_();
     const itemMap = {};
     showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
+    const existingTotals = readShowcaseLogTotals_(outlet, eventDate);
     const entries = rawEntries.map(function (raw) {
       const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
       if (!item) throw new Error('Item Showcase tidak ditemukan atau kode item sudah berubah. Muat ulang halaman.');
-      const hasInInput = Boolean(raw.hasInInput), hasSoldInput = Boolean(raw.hasSoldInput), hasWasteInput = Boolean(raw.hasWasteInput);
+      const hasInInput = Boolean(raw.hasInInput || raw.hasInTotal), hasSoldInput = Boolean(raw.hasSoldInput || raw.hasSoldTotal), hasWasteInput = Boolean(raw.hasWasteInput || raw.hasWasteTotal);
       const values = [raw.inQty, raw.soldQty, raw.wasteQty].map(function (value) {
         if (value === '' || value === null || value === undefined) return 0;
         const qty = Number(value);
         if (!isFinite(qty) || qty < 0) throw new Error(item.name + ': QTY wajib berupa angka 0 atau lebih.');
         return Math.round(qty * 1000000) / 1000000;
       });
+      const day = existingTotals[item.name.toLowerCase()] || { totalIn: 0, totalSold: 0, totalWaste: 0 };
+      const targetValues = [[raw.hasInTotal, raw.inTotal, day.totalIn, 'In'], [raw.hasSoldTotal, raw.soldTotal, day.totalSold, 'Sold'], [raw.hasWasteTotal, raw.wasteTotal, day.totalWaste, 'Waste']].map(function (definition) {
+        if (!definition[0]) return null;
+        const target = Number(definition[1]);
+        if (!isFinite(target) || target < 0) throw new Error(item.name + ': Total ' + definition[3] + ' wajib berupa angka 0 atau lebih.');
+        return Math.round((target - Number(definition[2] || 0)) * 1000000) / 1000000;
+      });
       return {
-        item: item, inQty: hasInInput ? values[0] : 0, soldQty: hasSoldInput ? values[1] : 0, wasteQty: hasWasteInput ? values[2] : 0,
+        item: item,
+        inQty: raw.hasInTotal ? targetValues[0] : (hasInInput ? values[0] : 0),
+        soldQty: raw.hasSoldTotal ? targetValues[1] : (hasSoldInput ? values[1] : 0),
+        wasteQty: raw.hasWasteTotal ? targetValues[2] : (hasWasteInput ? values[2] : 0),
         hasInInput: hasInInput, hasSoldInput: hasSoldInput, hasWasteInput: hasWasteInput
       };
     }).filter(function (entry) { return entry.hasInInput || entry.hasSoldInput || entry.hasWasteInput; });
     if (!entries.length) throw new Error('Isi minimal satu kolom In, Sold, atau Waste sebelum menyimpan.');
 
-    const lock = LockService.getScriptLock();
-    lock.waitLock(30000);
+    const lock = acquireStockWriteLock_();
     try {
       const productNeeds = {}, mappings = {};
       entries.forEach(function (entry) {
         const current = getCurrentStock_(outlet, 'Showcase', entry.item.code, entry.item.name).qty;
-        if (entry.soldQty + entry.wasteQty > current + entry.inQty + 0.0000001) {
+        if (current + entry.inQty - entry.soldQty - entry.wasteQty < -0.0000001) {
           throw new Error(entry.item.name + ': total Sold dan Waste melebihi Balance setelah In.');
         }
         if (!entry.inQty) return;
         const mapping = resolveShowcaseProductMapping_(entry.item);
         mappings[entry.item.code] = mapping;
+        if (entry.inQty < 0) return;
         if (!productNeeds[mapping.product.code]) productNeeds[mapping.product.code] = { product: mapping.product, qty: 0 };
         productNeeds[mapping.product.code].qty += entry.inQty * mapping.productPerMenu;
       });
@@ -625,7 +639,7 @@ function saveShowcaseLog(token, payload) {
           const transferId = Utilities.getUuid();
           let assignedMenuQty = 0;
           productLots.forEach(function (lot, lotIndex) {
-            const storeInfo = 'Transfer To Showcase · Dari Store · Untuk ' + entry.item.name + ' ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
+            const storeInfo = 'Transfer To Showcase · Dari Store · Keluar utk Produk: ' + entry.item.name + ' · ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
             const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             storeRow.json.source_file = 'SHOWCASE_LOG';
             storeRow.json.source_row = entryIndex + 1;
@@ -646,10 +660,26 @@ function saveShowcaseLog(token, payload) {
             rows.push(showcaseRow);
           });
         }
+        if (entry.inQty < 0) {
+          const mapping = mappings[entry.item.code], correctionQty = Math.abs(entry.inQty);
+          const menuLots = allocateTransferLots_(outlet, 'Showcase', entry.item, correctionQty);
+          menuLots.forEach(function (lot) {
+            const transferId = Utilities.getUuid(), productQty = Math.round(Number(lot.qty) * mapping.productPerMenu * 1000000) / 1000000;
+            const showcaseInfo = 'Koreksi Total In · Transfer To Store · Dari Showcase';
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'OUT', lot.qty, 'Transfer In', showcaseInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            showcaseRow.json.source_file = 'SHOWCASE_LOG'; showcaseRow.json.source_row = entryIndex + 1;
+            showcaseRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000; rows.push(showcaseRow);
+            const storeInfo = 'Koreksi Total In Showcase · Transfer From Showcase · Ke Store · ' + entry.item.name;
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'IN', productQty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            storeRow.json.source_arrival_date = lot.sourceDate || null; storeRow.json.source_file = 'SHOWCASE_LOG'; storeRow.json.source_row = entryIndex + 1;
+            storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000; rows.push(storeRow);
+          });
+        }
         [['soldQty', 'Terjual'], ['wasteQty', 'Waste']].forEach(function (definition) {
           const qty = Number(entry[definition[0]] || 0);
-          if (qty <= 0) return;
-          const movement = stockTransferMovementRow_(Utilities.getUuid(), outlet, 'Showcase', entry.item, 'OUT', qty, definition[1], '', '', employee, now, eventDate);
+          if (Math.abs(qty) <= 0.0000001) return;
+          const direction = qty > 0 ? 'OUT' : 'IN';
+          const movement = stockTransferMovementRow_(Utilities.getUuid(), outlet, 'Showcase', entry.item, direction, Math.abs(qty), definition[1], 'Koreksi Total Showcase Log', '', employee, now, eventDate);
           movement.json.source_file = 'SHOWCASE_LOG';
           movement.json.source_row = entryIndex + 1;
           movement.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
@@ -720,20 +750,21 @@ function takeShowcaseProductLots_(pool, qty) {
 }
 
 function readShowcaseLogTotals_(outlet, eventDate) {
-  const sql = latestStockMovementCte_() + ' SELECT item_name, direction, movement_type, created_by, source_file, SUM(qty) AS total_qty ' +
+  const sql = latestStockMovementCte_() + ' SELECT item_name, direction, movement_type, created_by, source_file, ' +
+    'SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS signed_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = \'Showcase\' AND event_date = CAST(@eventDate AS DATE) ' +
-    'AND ((direction = \'IN\' AND movement_type = \'Transfer In\') OR (direction = \'OUT\' AND movement_type IN (\'Terjual\', \'Waste\'))) ' +
+    'AND movement_type IN (\'Transfer In\', \'Terjual\', \'Waste\') ' +
     'GROUP BY item_name, direction, movement_type, created_by, source_file';
   const map = {};
   const employeeNames = readEmployeeNameMap_();
   runNamedQuery_(sql, { outlet: outlet, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
     const key = String(row.item_name || '').trim().toLowerCase();
     if (!map[key]) map[key] = { totalIn: 0, totalSold: 0, totalWaste: 0, inActors: {}, soldActors: {}, wasteActors: {} };
-    const item = map[key], qty = Number(row.total_qty || 0), nik = String(row.created_by || ''), name = employeeNames[nik] || 'User tidak diketahui';
+    const item = map[key], signedQty = Number(row.signed_qty || 0), nik = String(row.created_by || ''), name = employeeNames[nik] || 'User tidak diketahui';
     const sourceFile = String(row.source_file || ''), actor = name + ' | ' + (sourceFile && sourceFile !== 'SHOWCASE_LOG' ? 'Generated By Upload' : 'Manual Input');
-    if (row.direction === 'IN' && row.movement_type === 'Transfer In') { item.totalIn += qty; item.inActors[actor] = true; }
-    if (row.direction === 'OUT' && row.movement_type === 'Terjual') { item.totalSold += qty; item.soldActors[actor] = true; }
-    if (row.direction === 'OUT' && row.movement_type === 'Waste') { item.totalWaste += qty; item.wasteActors[actor] = true; }
+    if (row.movement_type === 'Transfer In') { item.totalIn += signedQty; item.inActors[actor] = true; }
+    if (row.movement_type === 'Terjual') { item.totalSold -= signedQty; item.soldActors[actor] = true; }
+    if (row.movement_type === 'Waste') { item.totalWaste -= signedQty; item.wasteActors[actor] = true; }
   });
   Object.keys(map).forEach(function (key) {
     map[key].inUsers = Object.keys(map[key].inActors).join(', ');
@@ -767,6 +798,39 @@ function readShowcaseLogProgress_(outlet, anchorDate) {
     days.push({ day: day, date: date, stockIn: value.stockIn, sold: value.sold, waste: value.waste, complete: value.stockIn && value.sold && value.waste, future: date > today });
   }
   return { today: today, selectedDate: anchorDate, month: startDate.slice(0, 7), days: days };
+}
+
+function getShowcaseLogMonitoring(token, monthKey) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
+    const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
+    const startDate = monthKey + '-01', endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
+    const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
+    const sql = 'SELECT outlet, CAST(event_date AS STRING) AS event_date, ' +
+      'MAX(IF(movement_type = \'Showcase Log In\', 1, 0)) AS stock_in, ' +
+      'MAX(IF(movement_type = \'Showcase Log Sold\', 1, 0)) AS sold, ' +
+      'MAX(IF(movement_type = \'Showcase Log Waste\', 1, 0)) AS waste ' +
+      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+      'WHERE record_type = \'LOG\' AND location = \'Showcase\' ' +
+      'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) GROUP BY outlet, event_date';
+    const map = {};
+    runNamedQuery_(sql, { startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
+      map[String(row.outlet || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10)] = {
+        stockIn: Number(row.stock_in || 0) > 0, sold: Number(row.sold || 0) > 0, waste: Number(row.waste || 0) > 0
+      };
+    });
+    const rows = [], today = todayIso_();
+    outlets.forEach(function (outlet) {
+      for (let day = 1; day <= lastDay; day++) {
+        const date = monthKey + '-' + String(day).padStart(2, '0');
+        if (date > today) continue;
+        const state = map[outlet + '|' + date] || {};
+        rows.push({ outlet: outlet, date: date, stockIn: Boolean(state.stockIn), sold: Boolean(state.sold), waste: Boolean(state.waste) });
+      }
+    });
+    return { monthKey: monthKey, today: today, outlets: outlets, rows: rows, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
+  });
 }
 
 function findShowcaseLogTask_() {
@@ -1020,7 +1084,8 @@ function writeBihqGoodsDeliveryGroup_(context, prepared) {
         source_file: prepared.fileName, source_hash: line.rowHash, source_row: line.sourceRow } });
       pendingRows.push({ insertId: eventId, json: { event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
         to_outlet: line.destinationCode, to_location: null, item_code: line.item.code, category: line.item.category, item_name: line.item.name, unit: line.item.unit,
-        qty: lot.qty, note: note, expiry_date: lot.expiryDate || null, created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000 } });
+        qty: lot.qty, note: note, expiry_date: lot.expiryDate || null, delivery_date: line.transactionDate,
+        created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000 } });
     });
   });
   insertStockCardRows_(stockRows);
@@ -1196,7 +1261,7 @@ function createInterOutletStockTransfer(token, payload) {
             event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: fromOutlet, from_location: fromLocation,
             to_outlet: toOutlet, to_location: null, item_code: line.item.code, category: line.item.category,
             item_name: line.item.name, unit: line.item.unit, qty: lot.qty, note: line.note, expiry_date: lot.expiryDate || null,
-            created_by: employee.nik, created_by_name: employee.name, created_at: now.getTime() / 1000,
+            created_by: employee.nik, created_by_name: employee.name, created_at: now.getTime() / 1000, delivery_date: eventDate,
             photo_count: photoData.length
           }});
         });
@@ -1240,7 +1305,8 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
     try {
       const transfers = readPendingStockTransfers_(outlet).filter(function (transfer) { return transfer.transferId === transferId; });
       if (!transfers.length) throw new Error('Transfer sudah diproses atau tidak ditemukan untuk outlet ini.');
-      const transfer = transfers[0], now = new Date(), eventDate = todayIso_();
+      const transfer = transfers[0], now = new Date();
+      let eventDate = todayIso_();
       const receivedMap = {};
       (Array.isArray(receivedItems) ? receivedItems : []).forEach(function (line) {
         const lineId = cleanText_(line.lineId, 100), qty = Number(line.qty);
@@ -1254,6 +1320,8 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         if (!isFinite(productTemperature)) throw new Error('Suhu Produk wajib diisi dengan angka untuk setiap item.');
         receivedMap[lineId] = { qty: qty, receivedAt: receivedAt, storageEnteredAt: storageEnteredAt, productTemperature: productTemperature };
       });
+      const firstReceivedKey = Object.keys(receivedMap)[0];
+      if (firstReceivedKey) eventDate = Utilities.formatDate(receivedMap[firstReceivedKey].receivedAt, 'Asia/Jakarta', 'yyyy-MM-dd');
       const receiptNo = stockTransferReceiptNumber_(transfer), stockRows = [], acceptedRows = [], expiryWarnings = [];
       transfer.items.forEach(function (line) {
         const receipt = receivedMap[line.lineId];
@@ -1276,7 +1344,7 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
           created_by: transfer.createdBy, created_by_name: transfer.createdByName, created_at: now.getTime() / 1000,
           accepted_by: employee.nik, accepted_by_name: employee.name, accepted_at: now.getTime() / 1000,
           received_at: receipt.receivedAt.getTime() / 1000, storage_entered_at: receipt.storageEnteredAt.getTime() / 1000,
-          product_temperature: receipt.productTemperature, receipt_no: receiptNo
+          product_temperature: receipt.productTemperature, receipt_no: receiptNo, delivery_date: transfer.deliveryDate || null
         }});
         line.receivedQty = receivedQty;
         line.receivedAt = receipt.receivedAt.toISOString();
@@ -1673,7 +1741,7 @@ function uploadSalesUsage(token, payload) {
             record_id: rawId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
             outlet: context.outlet, location: context.location, item_code: material.item.code, category: material.item.category,
             item_name: material.item.name, unit: material.item.unit, direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage',
-            info: cleanText_('Bahan produksi otomatis ' + plan.variant.code + ' - ' + plan.variant.name + ' - Usage ' + prepared.fileName, 500),
+            info: cleanText_('Keluar utk WIP: ' + plan.variant.code + ' · ' + plan.variant.name + ' · Otomatis dari Usage ' + prepared.fileName, 500),
             expiry_date: null, event_date: prepared.transactionDate, created_at: now.getTime() / 1000, created_by: context.employee.nik,
             source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: material.sourceRow, transfer_id: productionId
           }});
@@ -1988,6 +2056,7 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
     }
     const outputItem = masterMap[code];
     if (!outputItem) throw new Error(code + ' · ' + variant.name + ': item hasil WIP belum tersedia pada STOCK_ITEMS.');
+    if (!normalizeUnit_(outputItem.unit)) throw new Error(code + ' · ' + variant.name + ': Unit Default hasil WIP pada STOCK_ITEMS masih kosong.');
     const outputToFormula = wipConversionFactor_(code, outputItem.unit, variant.unit, providedConversions, savedConversions);
     if (!outputToFormula) wipConversionRequest_(conversionRequests, conversionMap, outputItem, outputItem.unit, variant.unit);
     const formulaQty = outputToFormula ? shortage * outputToFormula : 0, materials = [];
@@ -1998,6 +2067,7 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
         masterMap[recipe.code] = material;
         masterChangeMap[recipe.code] = material;
       }
+      if (!normalizeUnit_(material.unit)) throw new Error(recipe.code + ' · ' + material.name + ': Unit Default bahan pada STOCK_ITEMS masih kosong.');
       const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, providedConversions, savedConversions);
       if (!factor) wipConversionRequest_(conversionRequests, conversionMap, material, recipe.unit, material.unit);
       const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
@@ -2735,6 +2805,8 @@ function wipConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
 
 function wipConversionRequest_(requests, requestMap, item, fromUnit, toUnit) {
   const key = stockConversionKey_(item.code, fromUnit, toUnit);
+  const inverseKey = stockConversionKey_(item.code, toUnit, fromUnit);
+  if (requestMap[inverseKey]) return;
   if (!requestMap[key]) {
     requestMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: fromUnit, toUnit: toUnit };
     requests.push(requestMap[key]);
@@ -2748,7 +2820,7 @@ function getWipProductionOptions(token, payload) {
     if (isShowcaseLocation_(context.location)) throw new Error('Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
     const catalog = readWipRecipeCatalog_(), masterMap = {}, saved = readStockUnitConversions_();
     readStockMaster_(true).forEach(function (item) { masterMap[item.code.toUpperCase()] = item; });
-    const variants = catalog.variants.filter(function (variant) { return Boolean(masterMap[variant.code]); }).map(function (variant) {
+    const variants = catalog.variants.filter(function (variant) { return Boolean(masterMap[variant.code] && masterMap[variant.code].active); }).map(function (variant) {
       const item = masterMap[variant.code], candidates = {};
       candidates[variant.unit] = true; candidates[normalizeUnit_(item.unit)] = true;
       Object.keys(saved).forEach(function (key) {
@@ -2757,10 +2829,129 @@ function getWipProductionOptions(token, payload) {
         if (wipConversionFactor_(variant.code, conversion.fromUnit, variant.unit, {}, saved)) candidates[conversion.fromUnit] = true;
         if (wipConversionFactor_(variant.code, conversion.toUnit, variant.unit, {}, saved)) candidates[conversion.toUnit] = true;
       });
-      const units = Object.keys(candidates).filter(function (unit) { return wipConversionFactor_(variant.code, unit, variant.unit, {}, saved) > 0; });
+      const units = Object.keys(candidates).filter(function (unit) {
+        return unit === normalizeUnit_(item.unit) || wipConversionFactor_(variant.code, unit, variant.unit, {}, saved) > 0;
+      });
       return { key: variant.key, code: variant.code, name: variant.name, formulaUnit: variant.unit, stockUnit: item.unit, units: units, materialCount: variant.materials.length };
     });
     return { outlet: context.outlet, location: context.location, variants: variants, invalidRowsSkipped: catalog.invalidRowsSkipped, sheetName: CONFIG.WIP_RECIPE_SHEET };
+  });
+}
+
+function wipTemplateOptions_() {
+  const catalog = readWipRecipeCatalog_(), masterMap = {}, counts = {}, indexes = {};
+  readStockMaster_(true).forEach(function (item) { masterMap[item.code.toUpperCase()] = item; });
+  catalog.variants.forEach(function (variant) { if (masterMap[variant.code] && masterMap[variant.code].active) counts[variant.code] = Number(counts[variant.code] || 0) + 1; });
+  return catalog.variants.filter(function (variant) { return Boolean(masterMap[variant.code] && masterMap[variant.code].active); }).map(function (variant) {
+    const item = masterMap[variant.code];
+    indexes[variant.code] = Number(indexes[variant.code] || 0) + 1;
+    const choice = counts[variant.code] > 1 ? ' | Pilihan ' + String.fromCharCode(64 + indexes[variant.code]) : '';
+    return {
+      label: variant.code + ' | ' + variant.name + choice,
+      key: variant.key, code: variant.code, name: variant.name,
+      stockUnit: normalizeUnit_(item.unit), formulaUnit: variant.unit
+    };
+  });
+}
+
+function downloadWipProductionTemplate(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    if (isShowcaseLocation_(context.location)) throw new Error('Template Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
+    const options = wipTemplateOptions_();
+    if (!options.length) throw new Error('Belum ada produk WIP aktif yang cocok antara WIP_RECIPES dan STOCK_ITEMS.');
+    let workbook = null;
+    try {
+      workbook = SpreadsheetApp.create('TEMP_WIP_TEMPLATE_' + Utilities.getUuid());
+      const sheet = workbook.getSheets()[0], list = workbook.insertSheet('WIP_LIST');
+      sheet.setName('Produksi WIP');
+      sheet.getRange('A1:E1').merge().setValue('TEMPLATE UPLOAD PRODUKSI WIP').setBackground('#7f1d32').setFontColor('#ffffff').setFontWeight('bold').setFontSize(15);
+      sheet.getRange('A2').setValue('TANGGAL TRANSAKSI').setFontWeight('bold');
+      sheet.getRange('B2').setValue(new Date()).setNumberFormat('dd/mm/yyyy');
+      sheet.getRange('A3:E3').merge().setValue('Pilih item dari dropdown. Unit otomatis mengikuti Unit Default STOCK_ITEMS. Production Date dan Expired Date bersifat opsional.');
+      const headers = ['WIP ITEM', 'QTY', 'UNIT', 'PRODUCTION DATE', 'EXPIRED DATE'];
+      sheet.getRange(4, 1, 1, headers.length).setValues([headers]).setBackground('#9f172b').setFontColor('#ffffff').setFontWeight('bold');
+      sheet.setFrozenRows(4);
+      sheet.setColumnWidths(1, 1, 390); sheet.setColumnWidths(2, 1, 100); sheet.setColumnWidths(3, 1, 110); sheet.setColumnWidths(4, 2, 140);
+      const listRows = [['WIP ITEM', 'UNIT DEFAULT', 'UNIT RESEP', 'RECIPE KEY']].concat(options.map(function (option) {
+        return [option.label, option.stockUnit, option.formulaUnit, option.key];
+      }));
+      list.getRange(1, 1, listRows.length, 4).setValues(listRows);
+      const inputRows = 300, firstInputRow = 5;
+      const validation = SpreadsheetApp.newDataValidation().requireValueInRange(list.getRange(2, 1, options.length, 1), true).setAllowInvalid(false).build();
+      sheet.getRange(firstInputRow, 1, inputRows, 1).setDataValidation(validation);
+      sheet.getRange(firstInputRow, 2, inputRows, 1).setNumberFormat('#,##0.00');
+      sheet.getRange(firstInputRow, 3, inputRows, 1).setFormulaR1C1('=IFERROR(VLOOKUP(RC[-2],WIP_LIST!R2C1:R' + (options.length + 1) + 'C2,2,FALSE),"")');
+      sheet.getRange(firstInputRow, 4, inputRows, 2).setNumberFormat('dd/mm/yyyy');
+      sheet.getRange(firstInputRow, 1, inputRows, 5).setVerticalAlignment('middle');
+      list.hideSheet();
+      SpreadsheetApp.flush();
+      const response = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + workbook.getId() + '/export?format=xlsx', {
+        method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+      });
+      if (response.getResponseCode() !== 200) throw new Error('Export template merespons HTTP ' + response.getResponseCode() + '.');
+      const blob = response.getBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .setName('Template_Produksi_WIP_' + context.outlet + '.xlsx');
+      const bytes = blob.getBytes();
+      if (bytes.length < 4 || bytes[0] !== 80 || bytes[1] !== 75) throw new Error('Hasil template bukan file XLSX yang valid.');
+      return { fileName: blob.getName(), mimeType: blob.getContentType(), data: Utilities.base64Encode(bytes) };
+    } finally {
+      if (workbook) {
+        try { DriveApp.getFileById(workbook.getId()).setTrashed(true); } catch (cleanupError) {}
+      }
+    }
+  });
+}
+
+function parseOptionalWipTemplateDate_(value, rowNumber, label) {
+  if (value === null || value === undefined || String(value).trim() === '') return '';
+  return parseReportDate_(value, 'TRANSACTION', rowNumber, label);
+}
+
+function parseWipProductionTemplate_(base64, fileName) {
+  const cells = extractReportCells_(base64, fileName, 'Produksi WIP');
+  const header = findReportHeader_(cells, ['WIP ITEM', 'QTY']);
+  const eventDate = parseReportDate_(cells.B2, 'TRANSACTION', 2, 'Tanggal Transaksi');
+  const options = wipTemplateOptions_(), byLabel = {}, byCode = {};
+  options.forEach(function (option) {
+    byLabel[option.label.trim().toUpperCase()] = option;
+    if (!byCode[option.code]) byCode[option.code] = [];
+    byCode[option.code].push(option);
+  });
+  const lines = [], errors = [];
+  reportDataRows_(cells, header, 'WIP ITEM').forEach(function (rowNumber) {
+    const selected = cleanText_(reportCell_(cells, header, 'WIP ITEM', rowNumber), 500);
+    const code = selected.trim().toUpperCase(), matches = byCode[code] || [];
+    const option = byLabel[selected.trim().toUpperCase()] || (matches.length === 1 ? matches[0] : null);
+    const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber));
+    if (!option) { errors.push('Baris ' + rowNumber + ': WIP ITEM tidak dikenali atau bukan pilihan dropdown.'); return; }
+    if (!isFinite(qty) || qty <= 0) { errors.push('Baris ' + rowNumber + ': QTY ' + option.code + ' harus lebih besar dari 0.'); return; }
+    const unit = normalizeUnit_(reportCell_(cells, header, 'UNIT', rowNumber)) || option.stockUnit;
+    lines.push({
+      sourceRow: rowNumber, code: option.code, name: option.name, variantKey: option.key, qty: qty, unit: unit,
+      productionDate: parseOptionalWipTemplateDate_(reportCell_(cells, header, 'PRODUCTION DATE', rowNumber), rowNumber, 'Production Date'),
+      expiryDate: parseOptionalWipTemplateDate_(reportCell_(cells, header, 'EXPIRED DATE', rowNumber), rowNumber, 'Expired Date')
+    });
+  });
+  if (errors.length) throw new Error(errors.slice(0, 8).join(' '));
+  if (!lines.length) throw new Error('Template Produksi WIP belum memiliki baris dengan item dan QTY.');
+  if (lines.length > 300) throw new Error('Maksimal 300 baris produksi dalam satu file.');
+  return { eventDate: eventDate, lines: lines, sourceHash: digest_(String(base64 || '')) };
+}
+
+function previewWipProductionUpload(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    if (isShowcaseLocation_(context.location)) throw new Error('Upload Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
+    const parsed = parseWipProductionTemplate_(String(payload.base64 || '').replace(/^data:[^,]+,/, ''), cleanText_(payload.fileName, 180));
+    const prepared = prepareWipProductionLines_(context, { lines: parsed.lines, eventDate: parsed.eventDate, conversions: payload.conversions || {} }, false);
+    return {
+      fileName: cleanText_(payload.fileName, 180), eventDate: parsed.eventDate, sourceHash: parsed.sourceHash,
+      lines: parsed.lines, requiresConversion: Boolean(prepared.requiresConversion),
+      conversions: prepared.requiresConversion ? prepared.conversionRequests : [], productionCount: parsed.lines.length
+    };
   });
 }
 
@@ -2775,9 +2966,10 @@ function prepareWipProductionLines_(context, payload, allowNegativeRaw) {
     const code = cleanText_(line.code, 80).toUpperCase(), variants = catalog.byCode[code] || [];
     const variantKey = cleanText_(line.variantKey, 500);
     const variant = variants.filter(function (entry) { return entry.key === variantKey; })[0];
-    const outputItem = masterMap[code], qty = Number(line.qty), inputUnit = normalizeUnit_(line.unit);
+    const outputItem = masterMap[code], qty = Number(line.qty), inputUnit = normalizeUnit_(line.unit) || normalizeUnit_(outputItem && outputItem.unit);
     if (!variant) throw new Error('Resep WIP baris ' + (lineIndex + 1) + ' tidak ditemukan atau belum dipilih.');
     if (!outputItem) throw new Error(code + ' · ' + variant.name + ': belum tersedia pada STOCK_ITEMS.');
+    if (!normalizeUnit_(outputItem.unit)) throw new Error(code + ' · ' + variant.name + ': Unit Default hasil WIP pada STOCK_ITEMS masih kosong.');
     if (!isFinite(qty) || qty <= 0) throw new Error(code + ' · ' + variant.name + ': QTY produksi wajib lebih besar dari 0.');
     const outputToFormula = wipConversionFactor_(code, inputUnit, variant.unit, provided, saved);
     if (!outputToFormula) wipConversionRequest_(conversionRequests, requestMap, outputItem, inputUnit, variant.unit);
@@ -2789,13 +2981,14 @@ function prepareWipProductionLines_(context, payload, allowNegativeRaw) {
     variant.materials.forEach(function (recipe) {
       const material = masterMap[recipe.code];
       if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': raw material belum tersedia pada STOCK_ITEMS.');
+      if (!normalizeUnit_(material.unit)) throw new Error(recipe.code + ' · ' + material.name + ': Unit Default bahan pada STOCK_ITEMS masih kosong.');
       const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, provided, saved);
       if (!factor) wipConversionRequest_(conversionRequests, requestMap, material, recipe.unit, material.unit);
       const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
       materials.push({ item: material, qty: rawQty, recipeQty: recipe.qty, recipeUnit: recipe.unit, sourceRow: recipe.sourceRow });
       if (factor) rawTotals[material.code] = Number(rawTotals[material.code] || 0) + rawQty;
     });
-    plans.push({ variant: variant, outputItem: outputItem, inputQty: qty, inputUnit: inputUnit, formulaQty: formulaQty, outputQty: outputQty, materials: materials,
+    plans.push({ variant: variant, outputItem: outputItem, inputQty: qty, inputUnit: inputUnit, formulaQty: formulaQty, outputQty: outputQty, materials: materials, sourceRow: Number(line.sourceRow || 0),
       productionDate: normalizeDate_(line.productionDate || payload.productionDate, false), expiryDate: normalizeDate_(line.expiryDate || payload.expiryDate, false) });
   });
   if (conversionRequests.length) return { requiresConversion: true, conversionRequests: conversionRequests };
@@ -2804,7 +2997,7 @@ function prepareWipProductionLines_(context, payload, allowNegativeRaw) {
     const available = Number(current[code] || 0) + Number(credits[code] || 0), required = Number(rawTotals[code] || 0);
     if (available + 0.0000001 < required) shortages.push({ itemCode: code, itemName: masterMap[code].name, unit: masterMap[code].unit, available: available, required: required, shortage: required - available });
   });
-  if (shortages.length && !allowNegativeRaw) throw new Error('Produksi diblokir karena raw material tidak mencukupi: ' + shortages.slice(0, 8).map(function (line) { return line.itemCode + ' · kurang ' + formatQty_(line.shortage) + ' ' + line.unit; }).join(', ') + '.');
+  if (shortages.length && !allowNegativeRaw) throw new Error('Produksi diblokir karena raw material tidak mencukupi: ' + shortages.slice(0, 8).map(function (line) { return line.itemCode + ' · ' + line.itemName + ' · kurang ' + formatQty_(line.shortage) + ' ' + line.unit; }).join(', ') + '.');
   return { requiresConversion: false, plans: plans, rawTotals: rawTotals, shortages: shortages, current: current };
 }
 
@@ -2815,8 +3008,12 @@ function processWipProduction(token, payload) {
     if (isShowcaseLocation_(context.location)) throw new Error('Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
     const lock = acquireStockWriteLock_();
     try {
-      const editId = cleanText_(payload.productionId, 100), previous = editId ? readLatestProductionRows_(context.outlet, context.location, editId).filter(function (row) { return Number(row.qty || 0) > 0; }) : [];
+      const editId = cleanText_(payload.productionId, 100), sourceFile = cleanText_(payload.sourceFile, 180), sourceHash = cleanText_(payload.sourceHash, 100);
+      const previous = editId ? readLatestProductionRows_(context.outlet, context.location, editId).filter(function (row) { return Number(row.qty || 0) > 0; }) : [];
       if (editId && !previous.length) throw new Error('Produksi yang akan diedit tidak ditemukan atau sudah dibatalkan.');
+      if (!editId && sourceHash && wipProductionHashAlreadyImported_(context.outlet, context.location, sourceHash)) {
+        throw new Error('File Produksi WIP yang sama sudah pernah diproses untuk outlet dan penyimpanan ini.');
+      }
       const credits = {};
       previous.forEach(function (row) { if (String(row.direction || '') === 'OUT') credits[String(row.item_code || '').toUpperCase()] = Number(credits[String(row.item_code || '').toUpperCase()] || 0) + Number(row.qty || 0); });
       const previousOutput = previous.filter(function (row) { return String(row.movement_type || '') === 'Production'; })[0];
@@ -2847,15 +3044,17 @@ function processWipProduction(token, payload) {
           record_id: outputId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
           item_code: plan.outputItem.code, category: plan.outputItem.category, item_name: plan.outputItem.name, unit: plan.outputItem.unit,
           direction: 'IN', qty: plan.outputQty, movement_type: 'Production', info: cleanText_(label, 500), production_date: plan.productionDate || null,
-          expiry_date: plan.expiryDate || null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId
+          expiry_date: plan.expiryDate || null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId,
+          source_file: sourceFile ? 'WIP_PRODUCTION|' + sourceFile : null, source_hash: sourceHash || null, source_row: sourceFile ? plan.sourceRow : null
         }});
         plan.materials.forEach(function (material) {
           const recordId = Utilities.getUuid();
           rows.push({ insertId: recordId, json: {
             record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: context.outlet, location: context.location,
             item_code: material.item.code, category: material.item.category, item_name: material.item.name, unit: material.item.unit,
-            direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage', info: cleanText_('Bahan untuk ' + plan.variant.code + ' · ' + plan.variant.name + ' · Produksi ' + productionId, 500),
-            expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId
+            direction: 'OUT', qty: material.qty, movement_type: 'WIP Material Usage', info: cleanText_('Keluar utk WIP: ' + plan.variant.code + ' · ' + plan.variant.name + ' · Produksi ' + productionId, 500),
+            expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000, created_by: context.employee.nik, transfer_id: productionId,
+            source_file: sourceFile ? 'WIP_PRODUCTION|' + sourceFile : null, source_hash: sourceHash || null, source_row: sourceFile ? plan.sourceRow : null
           }});
         });
       });
@@ -2863,6 +3062,15 @@ function processWipProduction(token, payload) {
       return { produced: true, edited: Boolean(editId), productionCount: prepared.plans.length, movementCount: rows.length, productionIds: productionIds, shortages: [] };
     } finally { lock.releaseLock(); }
   });
+}
+
+function wipProductionHashAlreadyImported_(outlet, location, sourceHash) {
+  if (!sourceHash) return false;
+  const sql = 'SELECT COUNT(*) AS total FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card` ' +
+    'WHERE outlet = @outlet AND location = @location AND movement_type = \'Production\' AND source_hash = @sourceHash ' +
+    'AND STARTS_WITH(COALESCE(source_file, \'\'), \'WIP_PRODUCTION|\')';
+  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash }, { useQueryCache: false });
+  return rows.length && Number(rows[0].total || 0) > 0;
 }
 
 function readLatestProductionRows_(outlet, location, productionId) {
@@ -3012,7 +3220,7 @@ function exportStockCardItem(token, payload) {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v14') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v15') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -3061,9 +3269,10 @@ function ensureStockCardInfrastructure_() {
     bqField_('received_at', 'TIMESTAMP'), bqField_('storage_entered_at', 'TIMESTAMP'), bqField_('product_temperature', 'FLOAT'),
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING'),
-    bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING')
+    bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING'),
+    bqField_('delivery_date', 'DATE')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v14', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v15', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -3121,7 +3330,7 @@ function stockTransferMovementRow_(transferId, outlet, location, item, direction
 }
 
 function readPendingStockTransfers_(outlet) {
-  const sql = 'SELECT p.event_id, p.transfer_id, p.from_outlet, p.from_location, p.to_outlet, p.to_location, p.item_code, p.category, p.item_name, p.unit, p.qty, p.note, p.expiry_date, p.created_by, p.created_by_name, p.created_at ' +
+  const sql = 'SELECT p.event_id, p.transfer_id, p.from_outlet, p.from_location, p.to_outlet, p.to_location, p.item_code, p.category, p.item_name, p.unit, p.qty, p.note, p.expiry_date, p.delivery_date, p.created_by, p.created_by_name, p.created_at ' +
     'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` p WHERE p.status = \'PENDING\' AND p.to_outlet = @outlet ' +
     'AND NOT EXISTS (SELECT 1 FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` a WHERE a.transfer_id = p.transfer_id AND a.status IN (\'ACCEPTED\', \'REJECTED\')) ORDER BY p.created_at DESC, p.item_name, p.expiry_date';
   const grouped = {};
@@ -3130,7 +3339,7 @@ function readPendingStockTransfers_(outlet) {
     if (!grouped[id]) grouped[id] = {
       transferId: id, status: 'PENDING', fromOutlet: String(row.from_outlet || ''), fromLocation: String(row.from_location || ''),
       toOutlet: String(row.to_outlet || ''), toLocation: String(row.to_location || ''), createdBy: String(row.created_by || ''),
-      createdByName: String(row.created_by_name || row.created_by || ''), createdAt: String(row.created_at || ''), items: []
+      createdByName: String(row.created_by_name || row.created_by || ''), createdAt: String(row.created_at || ''), deliveryDate: String(row.delivery_date || '').slice(0, 10), items: []
     };
     grouped[id].items.push({ lineId: String(row.event_id || ''), code: String(row.item_code || ''), category: String(row.category || ''), name: String(row.item_name || ''), unit: String(row.unit || ''), qty: Number(row.qty || 0), receivedQty: null, note: String(row.note || ''), expiryDate: String(row.expiry_date || '') });
   });
@@ -3702,7 +3911,8 @@ function uploadGoodsDelivery(token, payload) {
             event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
             to_outlet: delivery.destinationCode, to_location: null, item_code: delivery.item.code, category: delivery.item.category,
             item_name: delivery.item.name, unit: delivery.item.unit, qty: lot.qty, note: lineNote, expiry_date: lot.expiryDate || null,
-            created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000
+            created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000,
+            delivery_date: delivery.transactionDate
           }});
         });
       });
@@ -4102,7 +4312,7 @@ function readStockTransferHistory_(outlet) {
 }
 
 function stockTransferSelectFields_() {
-  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids, photo_count';
+  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, delivery_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids, photo_count';
 }
 
 function buildStockTransferFromRows_(rows) {
@@ -4114,7 +4324,7 @@ function buildStockTransferFromRows_(rows) {
     transferId: String(first.transfer_id || ''), status: 'PENDING', fromOutlet: String(first.from_outlet || ''),
     fromLocation: String(first.from_location || ''), toOutlet: String(first.to_outlet || ''), toLocation: String(first.to_location || ''),
     createdBy: String(first.created_by || ''), createdByName: String(first.created_by_name || first.created_by || ''),
-    createdAt: String(first.created_at || ''), receiptNo: '', photoFileIds: [], photoCount: 0, items: []
+    createdAt: String(first.created_at || ''), deliveryDate: String(first.delivery_date || '').slice(0, 10), receiptNo: '', photoFileIds: [], photoCount: 0, items: []
   };
   transfer.photoCount = pending.reduce(function (count, row) { return Math.max(count, Number(row.photo_count || 0)); }, 0);
   try {
@@ -4958,7 +5168,7 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
     let assignedMenuQty = 0;
     allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
-        'Transfer To Showcase · Dari Store · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
+        'Transfer To Showcase · Dari Store · Keluar utk Produk: ' + showcaseItem.name + ' · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
       const isLast = lotIndex === allocatedLots.length - 1;
       const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
       const menuLotQty = isLast
@@ -5088,6 +5298,20 @@ function installStockMaintenanceTrigger() {
   });
   if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(5).create();
   return { installed: true, alreadyExisted: exists, handler: 'refreshDirtyStockBalances', intervalMinutes: 5 };
+}
+
+/** Run once after deploying delivery_date to preserve the original date on older pending transfers. */
+function backfillStockTransferDeliveryDates() {
+  ensureStockCardInfrastructure_();
+  const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
+  const card = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card`';
+  const sql = 'UPDATE ' + transfers + ' AS target SET delivery_date = source.delivery_date FROM (' +
+    'SELECT transfer_id, MIN(event_date) AS delivery_date FROM ' + card + ' ' +
+    'WHERE transfer_id IS NOT NULL AND transfer_id != \'\' AND direction = \'OUT\' ' +
+    'AND movement_type IN (\'Transfer Out\', \'Transfer Out Antar Outlet\') GROUP BY transfer_id' +
+    ') AS source WHERE target.transfer_id = source.transfer_id AND target.delivery_date IS NULL';
+  runNamedQuery_(sql, {}, { useQueryCache: false });
+  return { completed: true, field: 'stock_transfers.delivery_date' };
 }
 
 function ensureStockVisibilitySheet_() {
@@ -5400,7 +5624,7 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
         event_id: eventId, transfer_id: transferId, status: 'REJECTED', from_outlet: transfer.fromOutlet, from_location: transfer.fromLocation,
         to_outlet: outlet, to_location: null, created_by: transfer.createdBy, created_by_name: transfer.createdByName,
         created_at: now.getTime() / 1000, rejected_by: employee.nik, rejected_by_name: employee.name,
-        rejected_at: now.getTime() / 1000, rejection_reason: reason, receipt_no: receiptNo
+        rejected_at: now.getTime() / 1000, rejection_reason: reason, receipt_no: receiptNo, delivery_date: transfer.deliveryDate || null
       }}]);
       transfer.status = 'REJECTED';
       transfer.rejectedBy = employee.nik;
@@ -5773,7 +5997,7 @@ function todayIso_() {
 }
 
 function formatQty_(qty) {
-  return Number(qty || 0).toFixed(3).replace(/\.000$/, '').replace(/(\.\d*?)0+$/, '$1');
+  return Number(qty || 0).toFixed(2).replace(/\.?0+$/, '');
 }
 
 // ---------- Employee, session, and password helpers ----------

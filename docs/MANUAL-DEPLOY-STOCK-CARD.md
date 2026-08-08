@@ -30,6 +30,8 @@ Cara paling mudah:
 
 Fungsi instalasi aman dijalankan ulang. Jika trigger sudah ada, fungsi tidak membuat trigger kedua.
 
+Setelah backend versi ini pertama kali di-deploy, jalankan fungsi `backfillStockTransferDeliveryDates` satu kali dari editor Google Apps Script. Fungsi ini mengisi tanggal Good Delivery untuk transfer lama yang masih belum memiliki field `delivery_date`; data transaksi tidak dihapus.
+
 Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke background. Tanpa trigger, data tetap akurat karena sistem membaca ledger aktual, tetapi pembacaan dapat lebih lambat.
 
 ## 4. Pemeriksaan setelah deployment
@@ -43,6 +45,12 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 7. Login sebagai BIHQ, lalu klik **Monitoring Semua Outlet** pada kartu progress.
 8. Pastikan status hanya menjadi selesai apabila transaksi item aktual sudah ada.
 9. Untuk batch BIHQ, buka **Upload > Batch Multi-Outlet (BIHQ)**, pilih jenis file, verifikasi, lalu upload.
+10. Klik lingkaran persentase pada monitoring Stock Card atau Showcase Log dan pastikan daftar tanggal yang belum selesai muncul.
+11. Pada Showcase Log, ubah salah satu kolom **Total**, simpan, lalu pastikan Balance dan history berubah sebesar selisihnya.
+12. Buka **Produksi WIP**, lalu coba pencarian kode/nama dan pilih hasil autosuggest.
+13. Klik **Download Template Excel**, isi minimal satu baris dari dropdown WIP, lalu upload kembali melalui **Upload Produksi WIP**.
+14. Jika Unit Resep berbeda dengan Unit Default hasil atau bahan, pastikan pop-up konversi muncul sebelum produksi dapat diproses.
+15. Buka kiriman Good Delivery pada outlet penerima dan pastikan tanggal default Waktu Terima serta Waktu Masuk Storage sama dengan tanggal Good Delivery.
 
 ## 5. Aturan batch BIHQ
 
@@ -59,4 +67,37 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Raw material WIP yang belum ada akan ditambahkan otomatis ke `STOCK_ITEMS` saat dibutuhkan.
 - Monitoring membaca transaksi aktual dari BigQuery, bukan hanya marker import.
 - Notifikasi expired dan progress dimuat setelah daftar stok agar tampilan awal lebih cepat.
+- Angka QTY, suhu, saldo, konversi, dan total pada tampilan aplikasi serta tanda terima ditampilkan dengan maksimal dua angka di belakang koma. Nilai asli di database tidak dibulatkan.
+- Produksi WIP dapat diinput melalui autosuggest atau template Excel dengan dropdown item WIP. File yang sama tidak dapat diproses dua kali pada outlet dan penyimpanan yang sama.
+- Hasil WIP selalu disimpan menggunakan Unit Default hasil pada `STOCK_ITEMS`; bahan baku juga selalu dipotong dalam Unit Default masing-masing. Perbedaan unit wajib melewati `STOCK_UNIT_CONVERSIONS`.
+- Deployment backend pertama dapat meminta izin Google Drive saat membuat template Excel. File Google Sheets sementara otomatis dipindahkan ke Trash setelah file XLSX selesai dibuat.
+- Field BigQuery `stock_transfers.delivery_date` ditambahkan otomatis ketika backend versi baru pertama kali dijalankan.
 
+## 7. Rencana reset upload tanpa menghapus Showcase Log
+
+Jangan menghapus tabel `stock_card` seluruhnya. Showcase Log berada pada tabel yang sama dengan transaksi upload dan ditandai dengan `source_file = 'SHOWCASE_LOG'`.
+
+Urutan reset yang aman:
+
+1. Hentikan sementara aktivitas upload dan penerimaan transfer oleh seluruh outlet.
+2. Nonaktifkan sementara trigger `refreshDirtyStockBalances`.
+3. Buat snapshot BigQuery untuk tabel `stock_card`, `stock_transfers`, `task_completions`, dan `stock_balances`. Catat waktu serta nama snapshot.
+4. Buat daftar `transfer_id` Good Delivery dari baris `stock_card` dengan movement type `Transfer Out Antar Outlet` yang berasal dari file upload.
+5. Dalam satu transaksi BigQuery:
+   - hapus data Upload Penjualan beserta `Production` dan `WIP Material Usage` otomatis yang berasal dari file Usage;
+   - hapus data Good Receipt;
+   - hapus seluruh baris `stock_card` untuk `transfer_id` Good Delivery yang sudah didaftar, termasuk Transfer In penerima;
+   - hapus transaksi yang sama dari `stock_transfers`;
+   - hapus `task_completions` dengan source `AUTO_UPLOADS` saja;
+   - pertahankan seluruh baris dengan `source_file = 'SHOWCASE_LOG'` dan `task_completions` dengan source `SHOWCASE_LOG`.
+6. Kosongkan ringkasan `stock_balances`, lalu tandai semua outlet/lokasi agar saldo dibangun kembali dari ledger aktual.
+7. Bersihkan cache aplikasi dan aktifkan kembali trigger `refreshDirtyStockBalances`.
+8. Periksa Showcase Log masih tampil, lalu upload ulang secara kronologis: Good Receipt, Usage Penjualan, kemudian Good Delivery.
+9. Untuk Good Delivery, lakukan kembali proses penerimaan di outlet tujuan.
+
+Peringatan penting:
+
+- Reset Good Delivery penuh ikut menghapus status penerimaan, waktu terima, waktu masuk storage, suhu per item, dan foto tanda terima karena semuanya berada pada record transfer yang sama.
+- Selama data sumber belum selesai di-upload ulang, saldo Store dapat sementara minus atau tidak seimbang terhadap Showcase. Hal ini normal selama urutan reupload belum lengkap.
+- Jangan menjalankan penghapusan tanpa snapshot dan hasil preview jumlah baris per jenis transaksi serta outlet.
+- Gunakan query `RESET-UPLOAD-DATA.sql`. Nilai awal `execute_reset` adalah `FALSE`, sehingga query hanya menampilkan preview. Ubah menjadi `TRUE` hanya setelah hasil preview diperiksa.
