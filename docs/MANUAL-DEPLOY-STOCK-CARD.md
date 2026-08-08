@@ -61,7 +61,9 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Baris yang sudah tercatat akan dilewati; item berbeda tetap diproses.
 - Semua nama outlet pada file wajib tersedia di sheet `STORE CODE` dan outlet harus aktif.
 - Jika unit file berbeda dengan unit master, lengkapi dahulu melalui menu **Unit Konversi**, kemudian verifikasi batch kembali.
-- Usage Penjualan ESB saat ini hanya memberikan satu outlet pada sel B6. Satu file Usage belum dapat dibagi menjadi beberapa outlet kecuali format file menyediakan outlet pada setiap baris atau section.
+- Usage Penjualan ESB memberikan satu outlet pada sel B6. Melalui **Batch Multi-Outlet (BIHQ)**, pilih beberapa file Usage sekaligus; sistem menentukan outlet setiap file dari B6 lalu memverifikasi dan meng-upload secara berurutan agar ukuran permintaan tetap ringan. Satu file tetap hanya berlaku untuk satu outlet.
+- Jika salah satu file Usage membutuhkan Unit Konversi baru atau pilihan resep WIP ganda, batch dihentikan sebelum upload. Lengkapi file tersebut melalui Upload Usage individual, kemudian verifikasi batch kembali.
+- Stock Position dan Produksi WIP bukan bagian dari tiga upload harian multi-outlet. Keduanya tetap mengikuti outlet yang dipilih karena file/template dibentuk dari kondisi stok outlet tertentu.
 
 ## 6. Perubahan yang tidak memerlukan setup manual
 
