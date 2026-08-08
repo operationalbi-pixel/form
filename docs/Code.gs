@@ -1637,7 +1637,7 @@ function completeStockExpiryLots(token, payload) {
 function previewSalesUsageUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const context = resolveSalesUsageContext_(token, payload);
     const prepared = prepareSalesUsageImport_(context, payload, true);
     if (prepared.requiresWipChoice) {
       return {
@@ -1728,7 +1728,7 @@ function saveStockUnitConversions(token, payload) {
 function uploadSalesUsage(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const context = resolveSalesUsageContext_(token, payload);
     // Parse and validate before locking; only the final write is serialized.
     const prepared = prepareSalesUsageImport_(context, payload, false);
     const lock = LockService.getScriptLock();
@@ -2139,6 +2139,22 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   baseResult.rawShortages = rawShortages;
   baseResult.newItemCount = Object.keys(masterChangeMap).length;
   return baseResult;
+}
+
+function resolveSalesUsageContext_(token, payload) {
+  payload = payload || {};
+  if (String(payload.outlet || '').trim()) {
+    return resolveStockContext_(token, payload.outlet, payload.location);
+  }
+  const session = requireSession_(token), employee = findEmployee_(session.nik);
+  assertEmployeeActive_(employee);
+  if (employee.outlet !== 'BIHQ') throw new Error('Outlet wajib dipilih.');
+  const fileName = cleanText_(payload.fileName, 180);
+  const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
+  const report = parseSalesUsageReport_(base64, fileName);
+  const reportOutlet = readStoreCodeMap_()[normalizeStoreName_(report.outletName)] || '';
+  if (!reportOutlet) throw new Error('Outlet "' + report.outletName + '" pada cell B6 belum terdaftar di sheet STORE CODE.');
+  return resolveStockContext_(token, reportOutlet, payload.location || 'Store');
 }
 
 function appendOrActivateStockMasterItems_(items) {
