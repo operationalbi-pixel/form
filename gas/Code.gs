@@ -445,13 +445,15 @@ function getStockCardBootstrap(token, requestedOutlet) {
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
     ensureStockCardInfrastructure_();
-    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
-    const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
-    const locations = readStockLocations_(outlet);
+    const isBihq = employee.outlet === 'BIHQ';
+    const outlets = isBihq ? readActiveOutlets_() : [employee.outlet];
+    const requested = String(requestedOutlet || '').trim().toUpperCase();
+    const outlet = isBihq && !requested ? '' : resolveStockOutlet_(employee, requested, outlets);
+    const locations = outlet ? readStockLocations_(outlet) : [];
     const stockTask = readTasksForEmployee_(employee).filter(function (task) {
       return task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
     })[0] || null;
-    const taskCompleted = stockTask
+    const taskCompleted = outlet && stockTask
       ? Boolean(readCompletionMap_(outlet)[stockTask.id + '|' + currentPeriodKey_('DAILY')])
       : false;
     return {
@@ -459,8 +461,8 @@ function getStockCardBootstrap(token, requestedOutlet) {
       outlets: outlets,
       selectedOutlet: outlet,
       locations: locations,
-      selectedLocation: locations[0] || 'Store',
-      items: readStockItemsWithQty_(outlet, locations[0] || 'Store'),
+      selectedLocation: outlet ? (locations[0] || 'Store') : '',
+      items: outlet ? readStockItemsWithQty_(outlet, locations[0] || 'Store') : [],
       expiryAlerts: { missingExpiry: [], nearExpiry: [] },
       taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card',
       appUrl: ScriptApp.getService().getUrl(),
@@ -2882,7 +2884,11 @@ function downloadWipProductionTemplate(token, payload) {
       const validation = SpreadsheetApp.newDataValidation().requireValueInRange(list.getRange(2, 1, options.length, 1), true).setAllowInvalid(false).build();
       sheet.getRange(firstInputRow, 1, inputRows, 1).setDataValidation(validation);
       sheet.getRange(firstInputRow, 2, inputRows, 1).setNumberFormat('#,##0.00');
-      sheet.getRange(firstInputRow, 3, inputRows, 1).setFormulaR1C1('=IFERROR(VLOOKUP(RC[-2],WIP_LIST!R2C1:R' + (options.length + 1) + 'C2,2,FALSE),"")');
+      const unitFormulas = [];
+      for (let rowNumber = firstInputRow; rowNumber < firstInputRow + inputRows; rowNumber++) {
+        unitFormulas.push(['=IFERROR(VLOOKUP(A' + rowNumber + ',WIP_LIST!$A$2:$B$' + (options.length + 1) + ',2,FALSE),"")']);
+      }
+      sheet.getRange(firstInputRow, 3, inputRows, 1).setFormulas(unitFormulas);
       sheet.getRange(firstInputRow, 4, inputRows, 2).setNumberFormat('dd/mm/yyyy');
       sheet.getRange(firstInputRow, 1, inputRows, 5).setVerticalAlignment('middle');
       list.hideSheet();

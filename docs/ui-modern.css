@@ -409,7 +409,15 @@ textarea {
 
 /* Stock Card visual system: matches the approved preview and adapts cleanly. */
 .stock-page .head-controls {
+  width: 100%;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.stock-page .head-controls > .btn,
+.stock-page .head-controls > .action-menu,
+.stock-page .head-controls > .action-menu > .btn {
+  width: 100%;
+  min-width: 0;
 }
 
 .stock-page #outletControl {
@@ -452,6 +460,92 @@ textarea {
   box-shadow: 0 10px 22px rgba(168, 23, 49, .24);
 }
 
+.stock-page.bihq-awaiting-outlet #outletControl {
+  width: min(100%, 520px);
+}
+
+.stock-page .bihq-monitoring-panel {
+  width: 100%;
+}
+
+.stock-page .bihq-monitoring-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 10px;
+}
+
+.stock-page .bihq-monitoring-toolbar p {
+  max-width: 760px;
+  margin: 0;
+  color: #786f72;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.stock-page .bihq-monitoring-toolbar .field {
+  flex: 0 0 190px;
+  margin: 0;
+}
+
+.stock-page .bihq-monitoring-toolbar .field span {
+  display: block;
+  margin-bottom: 5px;
+  color: #786f72;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.stock-page .bihq-monitoring-toolbar input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #e3dcde;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.stock-page .bihq-monitoring-panel .monitor-table-wrap {
+  max-height: min(58dvh, 620px);
+}
+
+.stock-page .outlet-required-state {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 22px;
+  border: 1px dashed #d9cdd0;
+  border-radius: 17px;
+  color: #6e6266;
+  background: #fff;
+}
+
+.stock-page .outlet-required-state > .material-symbols-rounded {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 46px;
+  border-radius: 14px;
+  color: #9f172b;
+  background: #fbedf0;
+}
+
+.stock-page .outlet-required-state strong,
+.stock-page .outlet-required-state p {
+  display: block;
+  margin: 0;
+}
+
+.stock-page .outlet-required-state p {
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 @media (max-width: 980px) {
   .stock-page .head-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -471,6 +565,16 @@ textarea {
 
   .stock-page .toolbar {
     align-items: stretch;
+  }
+
+  .stock-page .bihq-monitoring-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .stock-page .bihq-monitoring-toolbar .field {
+    width: 100%;
+    flex-basis: auto;
   }
 
   .stock-page .toolbar-main {
