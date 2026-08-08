@@ -737,13 +737,9 @@ function saveShowcaseLog(token, payload) {
 function resolveShowcaseProductMapping_(showcaseItem) {
   const product = findStockMasterItem_(showcaseItem.productName);
   const fromUnit = normalizeUnit_(showcaseItem.productUnit), toUnit = normalizeUnit_(product.unit);
-  let factor = 1;
-  if (fromUnit !== toUnit) {
-    const saved = readStockUnitConversions_()[stockConversionKey_(product.code, fromUnit, toUnit)];
-    factor = saved ? Number(saved.factor) : 0;
-    if (!isFinite(factor) || factor <= 0) {
-      throw new Error(showcaseItem.name + ': konversi ' + showcaseItem.productUnit + ' ke ' + product.unit + ' untuk Product ' + product.name + ' belum tersedia.');
-    }
+  const factor = resolveUnitConversionFactor_(product.code, fromUnit, toUnit, {}, readStockUnitConversions_());
+  if (!factor) {
+    throw new Error(showcaseItem.name + ': konversi ' + showcaseItem.productUnit + ' ke ' + product.unit + ' untuk Product ' + product.name + ' belum tersedia.');
   }
   const productPerMenu = Number(showcaseItem.productQty) * factor;
   if (!isFinite(productPerMenu) || productPerMenu <= 0) throw new Error(showcaseItem.name + ': QTY Product pada MENU_SHOWCASE tidak valid.');
@@ -2020,16 +2016,14 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
     if (masterUnit !== esbUnit) {
       converted = true;
       const conversionKey = stockConversionKey_(row.code, esbUnit, masterUnit);
-      if (!conversionMap[conversionKey]) {
+      factor = resolveUnitConversionFactor_(row.code, esbUnit, masterUnit, providedConversions, savedConversions);
+      if (!factor && !conversionMap[conversionKey]) {
         conversionMap[conversionKey] = {
           key: conversionKey, itemCode: row.code, itemName: item.name,
           fromUnit: row.unit || '-', toUnit: item.unit || '-'
         };
         conversionRequests.push(conversionMap[conversionKey]);
       }
-      factor = Number(providedConversions[conversionKey]);
-      if ((!isFinite(factor) || factor <= 0) && savedConversions[conversionKey]) factor = Number(savedConversions[conversionKey].factor);
-      if (!isFinite(factor) || factor <= 0) factor = 0;
     }
     if (converted && !factor) return;
     const convertedQty = converted ? convertSalesUsageQty_(row.qty, factor) : row.qty;
@@ -2742,6 +2736,26 @@ function normalizeStoreName_(value) { return String(value || '').trim().replace(
 function normalizeHeader_(value) { return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase(); }
 function normalizeUnit_(value) { return String(value || '').trim().replace(/\s+/g, '').toUpperCase(); }
 
+function defaultUnitConversionFactor_(fromUnit, toUnit) {
+  const pair = normalizeUnit_(fromUnit) + '|' + normalizeUnit_(toUnit);
+  const defaults = { 'KG|GR': 1000, 'GR|KG': 0.001, 'L|ML': 1000, 'ML|L': 0.001 };
+  return Number(defaults[pair] || 0);
+}
+
+function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
+  fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
+  if (fromUnit === toUnit) return 1;
+  const standard = defaultUnitConversionFactor_(fromUnit, toUnit);
+  if (standard) return standard;
+  const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
+  let factor = Number(provided && provided[direct]);
+  if (!isFinite(factor) || factor <= 0) factor = saved && saved[direct] && Number(saved[direct].factor);
+  if (isFinite(factor) && factor > 0) return factor;
+  let inverseFactor = Number(provided && provided[inverse]);
+  if (!isFinite(inverseFactor) || inverseFactor <= 0) inverseFactor = saved && saved[inverse] && Number(saved[inverse].factor);
+  return isFinite(inverseFactor) && inverseFactor > 0 ? 1 / inverseFactor : 0;
+}
+
 function getStockHistory(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -2824,15 +2838,7 @@ function readWipRecipeCatalog_() {
 }
 
 function wipConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
-  fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
-  if (fromUnit === toUnit) return 1;
-  const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
-  let factor = Number(provided && provided[direct]);
-  if (!isFinite(factor) || factor <= 0) factor = saved[direct] && Number(saved[direct].factor);
-  if (isFinite(factor) && factor > 0) return factor;
-  let inverseFactor = Number(provided && provided[inverse]);
-  if (!isFinite(inverseFactor) || inverseFactor <= 0) inverseFactor = saved[inverse] && Number(saved[inverse].factor);
-  return isFinite(inverseFactor) && inverseFactor > 0 ? 1 / inverseFactor : 0;
+  return resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved);
 }
 
 function wipConversionRequest_(requests, requestMap, item, fromUnit, toUnit) {
@@ -3630,13 +3636,11 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions, r
     if (reportUnit !== masterUnit) {
       converted = true;
       const key = stockConversionKey_(row.code, reportUnit, masterUnit);
-      if (!conversionMap[key]) {
+      factor = resolveUnitConversionFactor_(row.code, reportUnit, masterUnit, providedConversions, savedConversions);
+      if (!factor && !conversionMap[key]) {
         conversionMap[key] = { key: key, itemCode: row.code, itemName: row.name || item.name, fromUnit: row.unit || '-', toUnit: item.unit || '-' };
         conversionRequests.push(conversionMap[key]);
       }
-      factor = Number(providedConversions[key]);
-      if ((!isFinite(factor) || factor <= 0) && savedConversions[key]) factor = Number(savedConversions[key].factor);
-      if (!isFinite(factor) || factor <= 0) factor = 0;
     }
     if (converted && !factor) return;
     let convertedSourceQty = 0;
@@ -4006,13 +4010,11 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, 
     if (reportUnit !== masterUnit) {
       converted = true;
       const key = stockConversionKey_(row.code, reportUnit, masterUnit);
-      if (!conversionMap[key]) {
+      factor = resolveUnitConversionFactor_(row.code, reportUnit, masterUnit, providedConversions, savedConversions);
+      if (!factor && !conversionMap[key]) {
         conversionMap[key] = { key: key, itemCode: row.code, itemName: row.name || item.name, fromUnit: row.unit || '-', toUnit: item.unit || '-' };
         conversionRequests.push(conversionMap[key]);
       }
-      factor = Number(providedConversions[key]);
-      if ((!isFinite(factor) || factor <= 0) && savedConversions[key]) factor = Number(savedConversions[key].factor);
-      if (!isFinite(factor) || factor <= 0) factor = 0;
     }
     if (converted && !factor) return;
     const convertedQty = converted ? convertSalesUsageQty_(row.qty, factor) : row.qty;
@@ -5042,7 +5044,6 @@ function findStockItemForLocation_(location, itemKey) {
 function showcaseProductNameMap_() {
   const map = {};
   readShowcaseItems_().forEach(function (item) { map[normalizeStoreName_(item.productName)] = true; });
-  writeScriptJsonCache_('stock-unit-conversions', map, 600);
   return map;
 }
 
@@ -5224,15 +5225,10 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
   const product = findStockMasterItem_(showcaseItem.productName);
   const fromUnit = normalizeUnit_(showcaseItem.productUnit);
   const toUnit = normalizeUnit_(product.unit);
-  let factor = 1;
-  if (fromUnit !== toUnit) {
-    const conversionKey = stockConversionKey_(product.code, fromUnit, toUnit);
-    const saved = readStockUnitConversions_()[conversionKey];
-    factor = saved ? Number(saved.factor) : 0;
-    if (!isFinite(factor) || factor <= 0) {
-      throw new Error(showcaseItem.name + ': unit Product pada ' + CONFIG.SHOWCASE_SHEET + ' (' + showcaseItem.productUnit +
-        ') berbeda dari unit Master Stock ' + product.code + ' (' + product.unit + '). Tambahkan konversi unit terlebih dahulu.');
-    }
+  const factor = resolveUnitConversionFactor_(product.code, fromUnit, toUnit, {}, readStockUnitConversions_());
+  if (!factor) {
+    throw new Error(showcaseItem.name + ': unit Product pada ' + CONFIG.SHOWCASE_SHEET + ' (' + showcaseItem.productUnit +
+      ') berbeda dari unit Master Stock ' + product.code + ' (' + product.unit + '). Tambahkan konversi unit terlebih dahulu.');
   }
   const productQty = Math.round(Number(menuQty) * Number(showcaseItem.productQty) * factor * 1000000) / 1000000;
   if (!isFinite(productQty) || productQty <= 0) throw new Error('QTY Product Showcase tidak valid pada baris ' + showcaseItem.sourceRow + '.');
@@ -5673,11 +5669,7 @@ function enrichShowcaseHistoryLots_(history, outlet, showcaseItem) {
   try { product = findStockMasterItem_(showcaseItem.productName); } catch (error) { return history; }
   const fromUnit = normalizeUnit_(showcaseItem.productUnit);
   const toUnit = normalizeUnit_(product.unit);
-  let factor = 1;
-  if (fromUnit !== toUnit) {
-    const saved = readStockUnitConversions_()[stockConversionKey_(product.code, fromUnit, toUnit)];
-    factor = saved ? Number(saved.factor) : 0;
-  }
+  const factor = resolveUnitConversionFactor_(product.code, fromUnit, toUnit, {}, readStockUnitConversions_());
   const productPerMenu = Number(showcaseItem.productQty) * factor;
   if (!isFinite(productPerMenu) || productPerMenu <= 0) return history;
   const storeHistory = readLatestStockHistory_(outlet, 'Store', product);
