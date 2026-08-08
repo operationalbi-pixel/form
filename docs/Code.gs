@@ -2143,12 +2143,14 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
 
 function resolveSalesUsageContext_(token, payload) {
   payload = payload || {};
-  if (String(payload.outlet || '').trim()) {
-    return resolveStockContext_(token, payload.outlet, payload.location);
-  }
   const session = requireSession_(token), employee = findEmployee_(session.nik);
   assertEmployeeActive_(employee);
-  if (employee.outlet !== 'BIHQ') throw new Error('Outlet wajib dipilih.');
+  // An outlet user is always restricted to their assigned outlet. BIHQ is
+  // different: every Usage workbook determines its own outlet from cell B6,
+  // including when a Stock Card outlet filter is currently selected.
+  if (employee.outlet !== 'BIHQ') {
+    return resolveStockContext_(token, employee.outlet, payload.location);
+  }
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const report = parseSalesUsageReport_(base64, fileName);
