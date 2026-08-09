@@ -1730,7 +1730,7 @@ function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, n
     if (options.allowAlreadyComplete) return { completedQty: 0, row: null, alreadyCompleted: true };
     throw new Error('Expired Date ' + item.code + ' sudah lengkap. Download ulang daftar terbaru.');
   }
-  if (Math.abs(allocationTotal - missingQty) > 0.0000001) {
+  if (!options.allowQuantityMismatch && Math.abs(allocationTotal - missingQty) > 0.0000001) {
     throw new Error('Total QTY ' + item.code + ' harus ' + formatQty_(missingQty) + ' ' + item.unit + ', tetapi file berisi ' + formatQty_(allocationTotal) + '.');
   }
   const completedLots = datedLots.map(function (lot) {
@@ -1749,10 +1749,16 @@ function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, n
         allocationRemaining = allocationIndex < allocations.length ? allocations[allocationIndex].qty : 0;
       }
     }
+    // Jika QTY Excel lebih kecil, pertahankan sisa lot tanpa Expired Date.
+    // Dengan begitu saldo tidak berubah dan sisanya tetap muncul untuk dilengkapi.
+    if (sourceRemaining > 0.0000001) {
+      completedLots.push({ qty: sourceRemaining, arrivalDate: source.sourceDate || todayIso_(),
+        stockInDate: source.showcaseDate || source.sourceDate || todayIso_(), expiryDate: '' });
+    }
   });
   const recordId = options.requestId ? 'EXPIRY-' + options.requestId : Utilities.getUuid(), logicalId = recordId;
   const totalQty = completedLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
-  return { completedQty: missingQty, row: { insertId: recordId, json: {
+  return { completedQty: Math.min(missingQty, allocationTotal), row: { insertId: recordId, json: {
     record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
     outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
     item_name: item.name, unit: item.unit, direction: 'LOT', qty: totalQty,
@@ -1981,7 +1987,7 @@ function processMissingExpiryJobChunk_(job) {
     const item = items[index], code = String(item.code || '').trim().toUpperCase();
     const completed = buildStockExpiryCompletionRow_(context, item, normalizeStockExpiryAllocations_(request.lots, item.code),
       Date.now() / 1000 + index / 1000, 'Lengkapi Expired Date melalui upload Excel background', lotsByCode[code] || [], null,
-      { allowAlreadyComplete: true, requestId: request.requestId, sourceFile: job.sourceFileName });
+      { allowAlreadyComplete: true, allowQuantityMismatch: true, requestId: request.requestId, sourceFile: job.sourceFileName });
     if (completed.row) { rows.push(completed.row); batchSaved++; } else batchSkipped++;
   });
   job.stage = 'Menyimpan item ' + (startIndex + 1) + '-' + (startIndex + batch.length) + ' dari ' + requests.length + '.';
