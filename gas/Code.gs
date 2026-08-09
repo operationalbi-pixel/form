@@ -17,6 +17,7 @@ const CONFIG = Object.freeze({
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
   STOCK_CONVERSION_SHEET: 'STOCK_UNIT_CONVERSIONS',
+  STOCK_DEFAULT_UNIT_LOG_SHEET: 'STOCK_DEFAULT_UNIT_LOG',
   WIP_RECIPE_SHEET: 'WIP_RECIPES',
   STOCK_VISIBILITY_SHEET: 'STOCK_ITEM_VISIBILITY',
   STOCK_NO_EXPIRY_CATEGORY_SHEET: 'STOCK_NO_EXPIRY_CATEGORIES',
@@ -122,6 +123,8 @@ function apiActions_() {
     verifyStockPosition: previewStockPositionUpload,
     saveConversions: saveStockUnitConversions,
     getConversions: getStockUnitConversions,
+    defaultUnitOptions: getStockDefaultUnitOptions,
+    changeDefaultUnit: changeStockItemDefaultUnit,
     wipOptions: getWipProductionOptions,
     wipTemplate: downloadWipProductionTemplate,
     wipUploadPreview: previewWipProductionUpload,
@@ -587,6 +590,8 @@ function saveShowcaseLog(token, payload) {
     const showcaseItems = readShowcaseItems_();
     const itemMap = {};
     showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
+    const lock = acquireStockScopeLock_('showcase|' + outlet, 15000);
+    try {
     const existingTotals = readShowcaseLogTotals_(outlet, eventDate);
     const entries = rawEntries.map(function (raw) {
       const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
@@ -615,11 +620,10 @@ function saveShowcaseLog(token, payload) {
     }).filter(function (entry) { return entry.hasInInput || entry.hasSoldInput || entry.hasWasteInput; });
     if (!entries.length) throw new Error('Isi minimal satu kolom In, Sold, atau Waste sebelum menyimpan.');
 
-    const lock = acquireStockWriteLock_();
-    try {
       const productNeeds = {}, mappings = {};
+      const showcaseQtyByCode = readCurrentStockCodeQtyMap_(outlet, 'Showcase');
       entries.forEach(function (entry) {
-        const current = getCurrentStock_(outlet, 'Showcase', entry.item.code, entry.item.name).qty;
+        const current = Number(showcaseQtyByCode[String(entry.item.code || '').toUpperCase()] || 0);
         if (current + entry.inQty - entry.soldQty - entry.wasteQty < -0.0000001) {
           throw new Error(entry.item.name + ': total Sold dan Waste melebihi Balance setelah In.');
         }
@@ -630,10 +634,10 @@ function saveShowcaseLog(token, payload) {
         if (!productNeeds[mapping.product.code]) productNeeds[mapping.product.code] = { product: mapping.product, qty: 0 };
         productNeeds[mapping.product.code].qty += entry.inQty * mapping.productPerMenu;
       });
-      const productPools = {};
+      const productPools = {}, storeQtyByCode = readCurrentStockCodeQtyMap_(outlet, 'Store');
       Object.keys(productNeeds).forEach(function (code) {
         const need = productNeeds[code], required = Math.round(need.qty * 1000000) / 1000000;
-        const available = getCurrentStock_(outlet, 'Store', need.product.code, need.product.name).qty;
+        const available = Number(storeQtyByCode[String(need.product.code || '').toUpperCase()] || 0);
         if (required > available + 0.0000001) {
           throw new Error(need.product.name + ': stok Store tidak mencukupi. Dibutuhkan ' + formatQty_(required) + ' ' + need.product.unit + ', tersedia ' + formatQty_(available) + '.');
         }
@@ -1181,6 +1185,119 @@ function getStockUnitConversions(token) {
   });
 }
 
+/** BIHQ-only catalog for changing an item's default unit. */
+function getStockDefaultUnitOptions(token) {
+  return safe_(function () {
+    requireAdmin_(token);
+    const items = readStockMaster_(true).map(function (item) {
+      return { code: item.code, category: item.category, name: item.name, unit: normalizeUnit_(item.unit), active: item.active };
+    });
+    const units = {};
+    ['PCS', 'GR', 'KG', 'ML', 'L', 'PORSI', 'PACK', 'BOX', 'BTL'].forEach(function (unit) { units[unit] = true; });
+    items.forEach(function (item) { if (item.unit) units[item.unit] = true; });
+    return { items: items, units: Object.keys(units).sort() };
+  });
+}
+
+/** Changes STOCK_ITEMS.UNIT and converts every stored quantity for that item. */
+function changeStockItemDefaultUnit(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const itemCode = cleanText_(payload.itemCode, 80).toUpperCase();
+    const newUnit = normalizeUnit_(payload.newUnit);
+    if (!itemCode || !newUnit) throw new Error('Pilih item dan Unit Default baru terlebih dahulu.');
+
+    const masterSheet = ensureStockMasterSheet_();
+    if (masterSheet.getLastRow() < 2) throw new Error('STOCK_ITEMS masih kosong.');
+    const masterRows = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 5).getDisplayValues();
+    let masterIndex = -1;
+    for (let i = 0; i < masterRows.length; i++) {
+      if (String(masterRows[i][0] || '').trim().toUpperCase() === itemCode) { masterIndex = i; break; }
+    }
+    if (masterIndex < 0) throw new Error('Item ' + itemCode + ' tidak ditemukan pada STOCK_ITEMS.');
+    const itemName = String(masterRows[masterIndex][2] || '').trim();
+    const oldUnit = normalizeUnit_(masterRows[masterIndex][3]);
+    if (!oldUnit) throw new Error(itemCode + ' · Unit Default lama masih kosong.');
+    if (oldUnit === newUnit) throw new Error(itemCode + ' sudah menggunakan Unit Default ' + newUnit + '.');
+    const factor = defaultUnitConversionFactor_(oldUnit, newUnit) || Number(payload.factor);
+    if (!isFinite(factor) || factor <= 0) throw new Error('Masukkan faktor: 1 ' + oldUnit + ' setara dengan berapa ' + newUnit + '.');
+
+    ensureStockCardInfrastructure_();
+    const lock = acquireStockWriteLock_();
+    let converted = false;
+    try {
+      const contexts = runNamedQuery_(
+        'SELECT DISTINCT outlet, location FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' AND (item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))',
+        { code: itemCode, name: itemName }, { useQueryCache: false });
+      const result = convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor);
+      converted = true;
+      try {
+        masterSheet.getRange(masterIndex + 2, 4).setValue(newUnit);
+        const conversionRows = [
+          { itemCode: itemCode, itemName: itemName, fromUnit: oldUnit, toUnit: newUnit, factor: factor },
+          { itemCode: itemCode, itemName: itemName, fromUnit: newUnit, toUnit: oldUnit, factor: 1 / factor }
+        ];
+        const savedConversions = readStockUnitConversions_();
+        Object.keys(savedConversions).forEach(function (key) {
+          const row = savedConversions[key];
+          if (row.itemCode !== itemCode) return;
+          if (row.toUnit === oldUnit && row.fromUnit !== newUnit) {
+            conversionRows.push({ itemCode: itemCode, itemName: itemName, fromUnit: row.fromUnit, toUnit: newUnit, factor: Number(row.factor) * factor });
+          }
+          if (row.fromUnit === oldUnit && row.toUnit !== newUnit) {
+            conversionRows.push({ itemCode: itemCode, itemName: itemName, fromUnit: row.toUnit, toUnit: newUnit, factor: factor / Number(row.factor) });
+          }
+        });
+        upsertStockConversionRows_(conversionRows, employee);
+        SpreadsheetApp.flush();
+      } catch (sheetError) {
+        try { masterSheet.getRange(masterIndex + 2, 4).setValue(oldUnit); SpreadsheetApp.flush(); } catch (restoreSheetError) { console.error(restoreSheetError); }
+        convertStockDefaultUnitBigQuery_(itemCode, itemName, oldUnit, 1 / factor);
+        converted = false;
+        throw new Error('Perubahan sheet gagal dan konversi stok telah dipulihkan: ' + sheetError.message);
+      }
+      try {
+        ensureSheet_(CONFIG.STOCK_DEFAULT_UNIT_LOG_SHEET, ['CHANGED_AT', 'ITEM_CODE', 'ITEM_NAME', 'OLD_UNIT', 'NEW_UNIT', 'FACTOR_OLD_TO_NEW', 'CHANGED_BY'])
+          .appendRow([new Date(), itemCode, itemName, oldUnit, newUnit, factor, employee.nik]);
+      } catch (auditError) { console.error('Audit perubahan Unit Default gagal dicatat: ' + auditError.message); }
+
+      removeScriptCacheKeys_(['stock-master-all', 'stock-master-active', 'stock-unit-conversions']);
+      const cacheRows = contexts.map(function (row) { return { outlet: row.outlet, location: row.location, item_code: itemCode, item_name: itemName, record_type: 'MOVEMENT' }; });
+      invalidateStockItemCachesForRows_(cacheRows);
+      invalidateFastStockHistoryRows_(cacheRows);
+      return { changed: true, itemCode: itemCode, itemName: itemName, oldUnit: oldUnit, newUnit: newUnit, factor: factor,
+        affectedStockRows: Number(result.stock_rows || 0), affectedTransferRows: Number(result.transfer_rows || 0) };
+    } catch (error) {
+      if (converted) console.error('Konversi Unit Default sudah menyentuh BigQuery sebelum error: ' + error.message);
+      if (/streaming buffer/i.test(String(error && error.message || error))) {
+        throw new Error('Item ini baru saja memiliki transaksi. Tunggu sekitar 30 menit lalu ulangi Change Default Unit agar BigQuery dapat mengonversi seluruh baris dengan aman.');
+      }
+      throw error;
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor) {
+  const active = stockCardTable_();
+  const mirrorId = stockCardMirrorTableId_();
+  const mirror = mirrorId && mirrorId !== stockCardTableId_() ? '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + mirrorId + '`' : '';
+  const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
+  const balances = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
+  const condition = '(item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))';
+  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
+  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
+  sql += 'UPDATE ' + transfers + ' SET qty = qty * CAST(@factor AS FLOAT64), received_qty = IF(received_qty IS NULL, NULL, received_qty * CAST(@factor AS FLOAT64)), unit = @newUnit WHERE ' + condition + '; ' +
+    'DELETE FROM ' + balances + ' WHERE ' + condition + '; ' +
+    'INSERT INTO ' + balances + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
+    'WITH latest AS (SELECT * FROM ' + active + ' WHERE record_type = \'MOVEMENT\' QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+    'SELECT outlet, location, item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() FROM latest WHERE ' + condition + ' GROUP BY outlet, location, item_code, item_name; ' +
+    'COMMIT TRANSACTION; SELECT (SELECT COUNT(*) FROM ' + active + ' WHERE ' + condition + ') AS stock_rows, (SELECT COUNT(*) FROM ' + transfers + ' WHERE ' + condition + ') AS transfer_rows;';
+  return runNamedQuery_(sql, { code: itemCode, name: itemName, newUnit: newUnit, factor: factor }, { useQueryCache: false })[0] || {};
+}
+
 function getStockTransferOptions(token, requestedOutlet, sourceLocation) {
   return safe_(function () {
     const session = requireSession_(token);
@@ -1679,6 +1796,9 @@ function saveStockUnitConversions(token, payload) {
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
     payload = payload || {};
+    const mode = String(payload.mode || 'UPLOAD').trim().toUpperCase();
+    const isAdmin = employee.outlet === 'BIHQ';
+    if (!isAdmin && mode !== 'UPLOAD') throw new Error('Unit Konversi hanya dapat diubah oleh BIHQ. Outlet tetap dapat mengisi konversi baru saat diminta oleh proses upload.');
     const conversions = Array.isArray(payload.conversions) ? payload.conversions : [];
     if (!conversions.length) throw new Error('Belum ada data konversi unit yang dapat disimpan.');
 
@@ -1707,8 +1827,13 @@ function saveStockUnitConversions(token, payload) {
       const now = new Date(), additions = [];
       normalized.forEach(function (entry) {
         const values = [entry.itemCode, entry.itemName, entry.fromUnit, entry.toUnit, entry.factor, true, employee.nik, now];
-        if (existing[entry.key]) sheet.getRange(existing[entry.key], 1, 1, 8).setValues([values]);
-        else additions.push(values);
+        if (existing[entry.key]) {
+          const currentFactor = Number(sheet.getRange(existing[entry.key], 5).getValue());
+          if (!isAdmin && Math.abs(currentFactor - entry.factor) > 0.000000001) {
+            throw new Error(entry.itemCode + ' · Konversi ini sudah tersimpan. Perubahan nilai hanya dapat dilakukan oleh BIHQ.');
+          }
+          if (isAdmin) sheet.getRange(existing[entry.key], 1, 1, 8).setValues([values]);
+        } else additions.push(values);
       });
       if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 8).setValues(additions);
       SpreadsheetApp.flush();
@@ -4843,6 +4968,24 @@ function ensureStockConversionSheet_() {
   return ensureSheet_(CONFIG.STOCK_CONVERSION_SHEET, ['ITEM_CODE', 'ITEM_NAME', 'FROM_UNIT', 'TO_UNIT', 'FACTOR', 'ACTIVE', 'UPDATED_BY', 'UPDATED_AT']);
 }
 
+function upsertStockConversionRows_(entries, employee) {
+  const sheet = ensureStockConversionSheet_(), existing = {};
+  if (sheet.getLastRow() >= 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues().forEach(function (row, index) {
+      const key = stockConversionKey_(row[0], row[2], row[3]);
+      if (key) existing[key] = index + 2;
+    });
+  }
+  const additions = [], now = new Date();
+  (entries || []).forEach(function (entry) {
+    const key = stockConversionKey_(entry.itemCode, entry.fromUnit, entry.toUnit);
+    const values = [entry.itemCode, entry.itemName, normalizeUnit_(entry.fromUnit), normalizeUnit_(entry.toUnit), Number(entry.factor), true, employee.nik, now];
+    if (existing[key]) sheet.getRange(existing[key], 1, 1, 8).setValues([values]);
+    else additions.push(values);
+  });
+  if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 8).setValues(additions);
+}
+
 function stockConversionKey_(itemCode, fromUnit, toUnit) {
   const code = String(itemCode || '').trim().toUpperCase();
   const from = normalizeUnit_(fromUnit);
@@ -6250,6 +6393,39 @@ function acquireStockWriteLock_() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
   return lock;
+}
+
+/**
+ * A short global gate only claims a named lease; the actual work then runs in
+ * parallel for different outlets. The same outlet remains serialized.
+ */
+function acquireStockScopeLock_(scope, waitMs) {
+  const key = 'stock-scope-lock-' + digest_(String(scope || '')).slice(0, 32);
+  const token = Utilities.getUuid(), deadline = Date.now() + Math.max(1000, Number(waitMs || 10000));
+  const properties = PropertiesService.getScriptProperties();
+  while (Date.now() < deadline) {
+    const gate = LockService.getScriptLock();
+    if (gate.tryLock(1000)) {
+      try {
+        const raw = properties.getProperty(key), lease = raw ? JSON.parse(raw) : null;
+        if (!lease || Number(lease.expiresAt || 0) <= Date.now()) {
+          properties.setProperty(key, JSON.stringify({ token: token, scope: String(scope || ''), expiresAt: Date.now() + 180000 }));
+          return {
+            releaseLock: function () {
+              const releaseGate = LockService.getScriptLock();
+              if (!releaseGate.tryLock(3000)) return;
+              try {
+                const currentRaw = properties.getProperty(key), current = currentRaw ? JSON.parse(currentRaw) : null;
+                if (current && current.token === token) properties.deleteProperty(key);
+              } finally { releaseGate.releaseLock(); }
+            }
+          };
+        }
+      } finally { gate.releaseLock(); }
+    }
+    Utilities.sleep(180 + Math.floor(Math.random() * 140));
+  }
+  throw new Error('Sistem sedang menyimpan transaksi lain untuk outlet ini. Tunggu sebentar lalu coba lagi; data Anda belum disimpan.');
 }
 
 function resolveStockOutlet_(employee, requestedOutlet, allowedOutlets) {
