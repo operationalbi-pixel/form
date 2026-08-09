@@ -458,7 +458,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
     const session = requireSession_(token);
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
-    ensureStockCardInfrastructure_();
+    ensureStockCardReadInfrastructure_();
     const isBihq = employee.outlet === 'BIHQ';
     const outlets = isBihq ? readActiveOutlets_() : [employee.outlet];
     const requested = String(requestedOutlet || '').trim().toUpperCase();
@@ -468,9 +468,6 @@ function getStockCardBootstrap(token, requestedOutlet) {
     const stockTask = navigationTasks.filter(function (task) {
       return task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
     })[0] || null;
-    const taskCompleted = outlet && stockTask
-      ? Boolean(readCompletionMap_(outlet)[stockTask.id + '|' + currentPeriodKey_('DAILY')])
-      : false;
     return {
       user: userView_(employee),
       outlets: outlets,
@@ -482,9 +479,9 @@ function getStockCardBootstrap(token, requestedOutlet) {
       taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + stockCardTableId_(),
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
-      taskCompleted: taskCompleted,
+      taskCompleted: false,
       navigationTasks: navigationTasks,
-      completions: outlet ? mergeStockUploadCompletions_(readCompletionMap_(outlet), navigationTasks, outlet) : {},
+      completions: {},
       uploadProgress: null,
       supplementaryPending: true
     };
@@ -496,22 +493,16 @@ function getStockCardData(token, requestedOutlet, location) {
     const session = requireSession_(token);
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
-    ensureStockCardInfrastructure_();
+    ensureStockCardReadInfrastructure_();
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
     const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
     location = normalizeLocation_(location);
     const locations = readStockLocations_(outlet);
     if (locations.indexOf(location) < 0) throw new Error('Lokasi penyimpanan tidak ditemukan untuk outlet ini.');
-    const stockTask = readTasksForEmployee_(employee).filter(function (task) {
-      return task.type === 'FORM' && task.target === 'StockCard' && task.frequency === 'DAILY';
-    })[0] || null;
-    const taskCompleted = stockTask
-      ? Boolean(readCompletionMap_(outlet)[stockTask.id + '|' + currentPeriodKey_('DAILY')])
-      : false;
     return {
       outlet: outlet, location: location, locations: locations, items: readStockItemsWithQtyCached_(outlet, location),
       expiryAlerts: { missingExpiry: [], nearExpiry: [] },
-      taskCompleted: taskCompleted, uploadProgress: null, supplementaryPending: true
+      taskCompleted: false, uploadProgress: null, supplementaryPending: true
     };
   });
 }
@@ -525,11 +516,14 @@ function getStockCardSupplementary(token, requestedOutlet, taskId) {
     const allowed = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
     const outlet = resolveStockOutlet_(employee, requestedOutlet, allowed);
     taskId = cleanText_(taskId, 100);
+    const navigationTasks = readTasksForEmployee_(employee);
+    const completions = mergeStockUploadCompletions_(readCompletionMap_(outlet), navigationTasks, outlet);
     return {
       outlet: outlet,
-      taskCompleted: taskId ? Boolean(readCompletionMap_(outlet)[taskId + '|' + currentPeriodKey_('DAILY')]) : false,
+      taskCompleted: taskId ? Boolean(completions[taskId + '|' + currentPeriodKey_('DAILY')]) : false,
       uploadProgress: readStockUploadProgress_(outlet),
-      pendingTransfers: readPendingStockTransfers_(outlet)
+      pendingTransfers: readPendingStockTransfers_(outlet),
+      completions: completions
     };
   });
 }
@@ -548,7 +542,7 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const session = requireSession_(token);
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
-    ensureStockCardInfrastructure_();
+    ensureStockCardReadInfrastructure_();
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
     const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
     const eventDate = normalizeDate_(requestedDate, true);
@@ -636,14 +630,12 @@ function saveShowcaseLog(token, payload) {
         if (!productNeeds[mapping.product.code]) productNeeds[mapping.product.code] = { product: mapping.product, qty: 0 };
         productNeeds[mapping.product.code].qty += entry.inQty * mapping.productPerMenu;
       });
-      const productPools = {}, storeQtyByCode = readCurrentStockCodeQtyMap_(outlet, 'Store');
+      const productPools = {};
+      const productItems = Object.keys(productNeeds).map(function (code) { return productNeeds[code].product; });
+      const storeLotsByCode = readRemainingStockLotsBatch_(outlet, 'Store', productItems);
       Object.keys(productNeeds).forEach(function (code) {
         const need = productNeeds[code], required = Math.round(need.qty * 1000000) / 1000000;
-        const available = Number(storeQtyByCode[String(need.product.code || '').toUpperCase()] || 0);
-        if (required > available + 0.0000001) {
-          throw new Error(need.product.name + ': stok Store tidak mencukupi. Dibutuhkan ' + formatQty_(required) + ' ' + need.product.unit + ', tersedia ' + formatQty_(available) + '.');
-        }
-        productPools[code] = allocateTransferLots_(outlet, 'Store', need.product, required).map(function (lot) {
+        productPools[code] = allocateTransferLotsFromAvailable_(storeLotsByCode[need.product.code] || [], required).map(function (lot) {
           return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
         });
       });
@@ -3519,6 +3511,20 @@ function exportStockCardItem(token, payload) {
   });
 }
 
+function ensureStockCardReadInfrastructure_() {
+  const version = 'stock-card-read-ready-v17';
+  const properties = PropertiesService.getScriptProperties();
+  if (properties.getProperty(version) === '1') return;
+  try {
+    BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, stockCardTableId_());
+    BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_balances');
+    properties.setProperty(version, '1');
+  } catch (error) {
+    ensureStockCardInfrastructure_();
+    properties.setProperty(version, '1');
+  }
+}
+
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
   if (infrastructureCache.get('stock-card-infrastructure-v16') === 'ready') return;
@@ -3612,12 +3618,16 @@ function allocateTransferLots_(outlet, location, item, qty) {
   const lots = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
     return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
   }) : [];
-  let remaining = qty;
+  return allocateTransferLotsFromAvailable_(lots, qty);
+}
+
+function allocateTransferLotsFromAvailable_(lots, qty) {
+  let remaining = Number(qty || 0);
   const allocated = [];
-  lots.forEach(function (lot) {
+  (lots || []).forEach(function (lot) {
     if (remaining <= 0.0000001) return;
-    const taken = Math.min(lot.qty, remaining);
-    if (taken > 0.0000001) allocated.push({ qty: taken, productionDate: lot.productionDate, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate });
+    const taken = Math.min(Number(lot.qty || 0), remaining);
+    if (taken > 0.0000001) allocated.push({ qty: taken, productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' });
     remaining -= taken;
   });
   if (remaining > 0.0000001) allocated.push({ qty: remaining, productionDate: '', expiryDate: '', sourceDate: '' });
@@ -5546,11 +5556,6 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
   const now = new Date();
   const lock = acquireStockWriteLock_();
   try {
-    const available = getCurrentStock_(outlet, 'Store', product.code, product.name).qty;
-    if (productQty > available + 0.0000001) {
-      throw new Error('Stok Store tidak mencukupi untuk ' + showcaseItem.name + '. Dibutuhkan ' + formatQty_(productQty) + ' ' + product.unit +
-        ' ' + product.name + ', tersedia ' + formatQty_(available) + ' ' + product.unit + '.');
-    }
     const showcaseCurrent = getCurrentStock_(outlet, 'Showcase', showcaseItem.code, showcaseItem.name).qty;
     const detail = showcaseItem.name + ' ' + formatQty_(menuQty) + ' PCS · Product ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit;
     const rows = [], showcaseRows = [];
@@ -5699,6 +5704,27 @@ function backfillStockUploadDailySummary() {
   return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
 }
 
+/** Run once after deployment so the first Stock Card view can use compact balances immediately. */
+function backfillStockBalanceSummaries() {
+  ensureStockCardInfrastructure_();
+  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
+  const sql = 'TRUNCATE TABLE ' + table + '; INSERT INTO ' + table +
+    ' (outlet, location, item_code, item_name, current_qty, updated_at) ' + latestStockMovementCte_() +
+    ' SELECT outlet, location, item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() ' +
+    'FROM latest GROUP BY outlet, location, item_code, item_name; SELECT DISTINCT outlet, location FROM ' + table;
+  const scopes = runNamedQuery_(sql, {}, { useQueryCache: false });
+  const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), cacheKeys = [];
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf('stock-balance-ready-') === 0 || key.indexOf('stock-balance-dirty-') === 0) properties.deleteProperty(key);
+  });
+  scopes.forEach(function (scope) {
+    properties.setProperty(stockBalanceStateKey_('ready', scope.outlet, scope.location), '1');
+    cacheKeys.push(stockItemsCacheKey_(scope.outlet, scope.location));
+  });
+  removeScriptCacheKeys_(cacheKeys);
+  return { completed: true, scopeCount: scopes.length, table: 'stock_balances', sourceTable: stockCardTableId_() };
+}
+
 function readStockLedgerBalanceRows_(outlet, location) {
   const sql = latestStockMovementCte_() + ' SELECT item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
     'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name';
@@ -5723,29 +5749,28 @@ function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
   if (String(properties.getProperty(dirtyKey) || '') === String(expectedDirtyToken || '')) {
     properties.deleteProperty(dirtyKey);
   }
+  removeScriptCacheKeys_([stockItemsCacheKey_(outlet, location)]);
 }
 
 function readStockBalanceRows_(outlet, location) {
   const properties = PropertiesService.getScriptProperties();
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
-  const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
   const ready = properties.getProperty(readyKey) === '1';
-  const dirtyToken = String(properties.getProperty(dirtyKey) || '');
-
   try {
-    // Heavy BigQuery rebuilds never run inside a user's request. A time-driven
-    // trigger refreshes dirty summaries; the live ledger is accurate meanwhile.
-    if (!ready || dirtyToken) return readStockLedgerBalanceRows_(outlet, location);
+    // The item list must never wait for a complete ledger scan. Serve the compact
+    // balance summary immediately; a one-minute trigger refreshes dirty scopes.
     const sql = 'SELECT item_code, item_name, current_qty FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances` ' +
       'WHERE outlet = @outlet AND location = @location';
-    return runNamedQuery_(sql, { outlet: outlet, location: location });
+    const summaryRows = runNamedQuery_(sql, { outlet: outlet, location: location });
+    if (ready || summaryRows.length) return summaryRows;
+    return readStockLedgerBalanceRows_(outlet, location);
   } catch (error) {
     console.error('Ringkasan stok gagal digunakan; membaca stock_card sebagai cadangan. ' + error.message);
     return readStockLedgerBalanceRows_(outlet, location);
   }
 }
 
-/** Install as a time-driven trigger (every 5 minutes). */
+/** Refreshes compact balances in the background; install it every one minute. */
 function refreshDirtyStockBalances() {
   const properties = PropertiesService.getScriptProperties();
   const all = properties.getProperties();
@@ -5773,11 +5798,11 @@ function refreshDirtyStockBalances() {
 
 /** Run once manually after deployment to install the background balance refresh. */
 function installStockMaintenanceTrigger() {
-  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
+  ScriptApp.getProjectTriggers().filter(function (trigger) {
     return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
-  });
-  if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(5).create();
-  return { installed: true, alreadyExisted: exists, handler: 'refreshDirtyStockBalances', intervalMinutes: 5 };
+  }).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
+  ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(1).create();
+  return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 1 };
 }
 
 /** Run once after deploying delivery_date to preserve the original date on older pending transfers. */
@@ -6101,7 +6126,7 @@ function calculateFifoSnapshots_(history) {
     if (directionCompare) return directionCompare;
     return String(a.logicalId || a.recordId || a.transferId || '').localeCompare(String(b.logicalId || b.recordId || b.transferId || ''));
   });
-  const lots = [], snapshots = {};
+  const lots = [], uncoveredQueue = [], snapshots = {};
   function sortLots() {
     lots.sort(function (a, b) {
       return String(a.expiryDate || '9999-12-31').localeCompare(String(b.expiryDate || '9999-12-31')) ||
@@ -6118,6 +6143,7 @@ function calculateFifoSnapshots_(history) {
       try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
       if (override && Array.isArray(override.lots)) {
         lots.length = 0;
+        uncoveredQueue.length = 0;
         override.lots.forEach(function (lot) {
           const lotQty = Number(lot.qty || 0);
           if (lotQty > 0.0000001) lots.push({ qty: lotQty, productionDate: '', expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.arrivalDate || ''), showcaseDate: String(lot.stockInDate || '') });
@@ -6125,12 +6151,30 @@ function calculateFifoSnapshots_(history) {
         sortLots();
       }
     } else if (movement.direction === 'IN') {
-      lots.push({
-        qty: qty,
+      const incomingLot = {
         productionDate: String(movement.productionDate || ''),
         expiryDate: String(movement.expiryDate || ''),
         sourceDate: String(movement.sourceArrivalDate || movement.date || ''),
         showcaseDate: String(movement.date || '')
+      };
+      let incomingRemaining = qty;
+      while (incomingRemaining > 0.0000001 && uncoveredQueue.length) {
+        const debt = uncoveredQueue[0], covered = Math.min(incomingRemaining, debt.qty);
+        debt.movement.fifoUsageLots.push({
+          qty: covered, productionDate: incomingLot.productionDate, expiryDate: incomingLot.expiryDate,
+          sourceDate: incomingLot.sourceDate, showcaseDate: incomingLot.showcaseDate
+        });
+        debt.qty -= covered;
+        debt.movement.fifoUncovered = Math.max(0, Number(debt.movement.fifoUncovered || 0) - covered);
+        incomingRemaining -= covered;
+        if (debt.qty <= 0.0000001) uncoveredQueue.shift();
+      }
+      if (incomingRemaining > 0.0000001) lots.push({
+        qty: incomingRemaining,
+        productionDate: incomingLot.productionDate,
+        expiryDate: incomingLot.expiryDate,
+        sourceDate: incomingLot.sourceDate,
+        showcaseDate: incomingLot.showcaseDate
       });
       sortLots();
     } else if (movement.direction === 'OUT') {
@@ -6152,6 +6196,7 @@ function calculateFifoSnapshots_(history) {
         }
       }
       movement.fifoUncovered = Math.max(0, remaining);
+      if (remaining > 0.0000001) uncoveredQueue.push({ movement: movement, qty: remaining });
       for (let i = lots.length - 1; i >= 0; i--) {
         if (lots[i].qty <= 0.0000001) lots.splice(i, 1);
       }
