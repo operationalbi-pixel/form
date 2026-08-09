@@ -458,7 +458,7 @@ function getAdminPageVisibility(token) {
         checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
       });
     });
-    return { subpages: subpages, positions: positions, checked: checked };
+    return { matrixSource: 'APP_TASKS', subpages: subpages, positions: positions, checked: checked };
   });
 }
 
