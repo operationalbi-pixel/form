@@ -1887,6 +1887,8 @@ function uploadMissingExpiryExcel(token, payload) {
       outlet: context.outlet, location: context.location, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), preparedDriveId: '',
       status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3, processed: 0, total: 0, saved: 0, skipped: 0,
       retryCount: 0, error: '', createdAt: now, updatedAt: now });
+    try { ensureStockMaintenanceTrigger_(); }
+    catch (triggerError) { console.error('Trigger maintenance Expired Date belum tersedia: ' + triggerError.message); }
     scheduleMissingExpiryWorker_();
     return { jobId: jobId, status: 'QUEUED', progress: 3, stage: 'File diterima. Proses background disiapkan.' };
   });
@@ -1959,23 +1961,41 @@ function cleanupMissingExpiryJobFiles_(job) {
 }
 
 function processMissingExpiryJobChunk_(job) {
-  if (!job.preparedDriveId) job = prepareMissingExpiryJob_(job);
+  if (!job.preparedDriveId) {
+    prepareMissingExpiryJob_(job);
+    // Pisahkan fase parsing Excel dan penulisan BigQuery agar satu eksekusi
+    // tidak menghabiskan seluruh batas waktu Apps Script.
+    return job;
+  }
   const requests = JSON.parse(DriveApp.getFileById(job.preparedDriveId).getBlob().getDataAsString('UTF-8'));
   const context = { outlet: job.outlet, location: job.location, employee: { nik: job.ownerNik, name: job.ownerName } };
-  const started = Date.now(); let chunkCount = 0;
-  while (job.processed < requests.length && chunkCount < 3 && Date.now() - started < 45000) {
-    const request = requests[job.processed], item = findStockItemForLocation_(job.location, request.code);
-    job.status = 'PROCESSING'; job.stage = 'Menyimpan ' + request.code + ' · ' + request.name + ' (' + (job.processed + 1) + '/' + requests.length + ').';
-    job.progress = 20 + Math.round(job.processed / requests.length * 78); writeMissingExpiryJob_(job);
+  const batchSize = 20, startIndex = Number(job.processed || 0), batch = requests.slice(startIndex, startIndex + batchSize);
+  const items = batch.map(function (request) { return findStockItemForLocation_(job.location, request.code); });
+  job.status = 'PROCESSING';
+  job.stage = 'Membaca saldo lot item ' + (startIndex + 1) + '-' + (startIndex + batch.length) + ' dari ' + requests.length + '.';
+  job.progress = 20 + Math.round(startIndex / requests.length * 78);
+  writeMissingExpiryJob_(job);
+  const lotsByCode = readRemainingStockLotsBatch_(job.outlet, job.location, items), rows = [];
+  let batchSaved = 0, batchSkipped = 0;
+  batch.forEach(function (request, index) {
+    const item = items[index], code = String(item.code || '').trim().toUpperCase();
+    const completed = buildStockExpiryCompletionRow_(context, item, normalizeStockExpiryAllocations_(request.lots, item.code),
+      Date.now() / 1000 + index / 1000, 'Lengkapi Expired Date melalui upload Excel background', lotsByCode[code] || [], null,
+      { allowAlreadyComplete: true, requestId: request.requestId, sourceFile: job.sourceFileName });
+    if (completed.row) { rows.push(completed.row); batchSaved++; } else batchSkipped++;
+  });
+  job.stage = 'Menyimpan item ' + (startIndex + 1) + '-' + (startIndex + batch.length) + ' dari ' + requests.length + '.';
+  writeMissingExpiryJob_(job);
+  if (rows.length) {
     const lock = acquireStockWriteLock_();
-    try {
-      const completed = buildStockExpiryCompletionRow_(context, item, normalizeStockExpiryAllocations_(request.lots, item.code), Date.now() / 1000,
-        'Lengkapi Expired Date melalui upload Excel background', null, null,
-        { allowAlreadyComplete: true, requestId: request.requestId, sourceFile: job.sourceFileName });
-      if (completed.row) { insertStockCardRows_([completed.row]); job.saved++; } else job.skipped++;
-    } finally { lock.releaseLock(); }
-    job.processed++; job.retryCount = 0; chunkCount++; writeMissingExpiryJob_(job);
+    try { insertStockCardRows_(rows); }
+    finally { lock.releaseLock(); }
   }
+  job.processed = startIndex + batch.length;
+  job.saved = Number(job.saved || 0) + batchSaved;
+  job.skipped = Number(job.skipped || 0) + batchSkipped;
+  job.retryCount = 0;
+  writeMissingExpiryJob_(job);
   if (job.processed >= requests.length) {
     job.status = 'COMPLETE'; job.stage = 'Semua item berhasil diproses.'; job.progress = 100;
     cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
@@ -5616,10 +5636,14 @@ function readRemainingStockLotsBatch_(outlet, location, items) {
   const result = {};
   codes.forEach(function (code) { result[code] = []; });
   if (!codes.length) return result;
-  const sql = latestStockMovementCte_() + ' SELECT item_code, record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
+  // Filter partition dan item sebelum QUALIFY agar batch tidak memindai seluruh ledger.
+  const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' ' +
+    'AND outlet = @outlet AND location = @location AND item_code IN UNNEST(SPLIT(@itemCodes, \'|\')) ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
+    'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+    'SELECT item_code, record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location AND item_code IN UNNEST(SPLIT(@itemCodes, \'|\')) ' +
-    'ORDER BY item_code, event_date, created_at';
+    'FROM latest ORDER BY item_code, event_date, created_at';
   const historyByCode = {};
   runNamedQuery_(sql, { outlet: outlet, location: location, itemCodes: codes.join('|') }, { useQueryCache: false }).forEach(function (row) {
     const code = String(row.item_code || '').trim().toUpperCase();
@@ -5946,12 +5970,19 @@ function refreshDirtyStockBalances() {
   catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
 }
 
+function ensureStockMaintenanceTrigger_() {
+  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
+    return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
+  });
+  if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(1).create();
+}
+
 /** Run once manually after deployment to install the background balance refresh. */
 function installStockMaintenanceTrigger() {
   ScriptApp.getProjectTriggers().filter(function (trigger) {
     return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
   }).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
-  ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(1).create();
+  ensureStockMaintenanceTrigger_();
   return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 1 };
 }
 
