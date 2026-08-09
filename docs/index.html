@@ -163,7 +163,7 @@
     function readOutletProgressCache(){try{var data=JSON.parse(window.localStorage.getItem('bakerzin_outlet_progress_cache')||'null');return data&&Array.isArray(data.outlets)?data:null}catch(error){return null}}
     function saveOutletProgressCache(data){try{window.localStorage.setItem('bakerzin_outlet_progress_cache',JSON.stringify(data))}catch(error){}}
     function removeAppCache(){try{window.localStorage.removeItem('bakerzin_app_cache');window.localStorage.removeItem('bakerzin_outlet_progress_cache')}catch(error){}}
-    function requestedPage(){try{var value=new URLSearchParams(location.search).get('page');return ['DAILY','WEEKLY','MONTHLY','YEARLY'].indexOf(value)>-1?value:'dashboard'}catch(error){return 'dashboard'}}
+    function requestedPage(){try{var value=new URLSearchParams(location.search).get('page')||'';return ['DAILY','WEEKLY','MONTHLY','YEARLY'].indexOf(value)>-1||/^PAGE:[A-Za-z0-9_-]+$/.test(value)?value:'dashboard'}catch(error){return 'dashboard'}}
     var BAKERZIN_STATE={token:readStoredToken(),user:null,tasks:[],pages:[],completions:{},news:[],selectedNik:'',needsPassword:false,page:requestedPage(),newsIndex:0,newsImageSource:'DRIVE',appUrl:'',completionOutlet:'',outletProgress:readOutletProgressCache(),outletProgressView:'CURRENT',outletProgressLoading:false,outletProgressLoadedAt:0,adminPageVisibility:null};
     function bakerzinById(id){return document.getElementById(id)}
 
