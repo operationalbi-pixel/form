@@ -118,6 +118,7 @@ function apiActions_() {
     completeExpiry: completeStockExpiryLots,
     expiryTemplate: downloadMissingExpiryTemplate,
     expiryUpload: uploadMissingExpiryExcel,
+    expiryUploadStatus: getMissingExpiryUploadStatus,
     history: getStockHistory,
     verifyUsage: previewSalesUsageUpload,
     verifyGoodsReceipt: previewGoodsReceiptUpload,
@@ -1844,7 +1845,7 @@ function parseMissingExpiryExcel_(base64, fileName) {
   return { grouped: grouped, outlet: fileOutlet, location: fileLocation };
 }
 
-function uploadMissingExpiryExcel(token, payload) {
+function prepareMissingExpiryExcelLegacy_(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
@@ -1867,6 +1868,153 @@ function uploadMissingExpiryExcel(token, payload) {
     });
     return { prepared: true, itemCount: requests.length, sourceFile: cleanText_(payload.fileName, 180), items: requests };
   });
+}
+
+function uploadMissingExpiryExcel(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const fileName = cleanText_(payload.fileName, 180);
+    if (!/\.xlsx$/i.test(fileName)) throw new Error('Pilih file hasil Download List Excel dengan format .xlsx.');
+    let bytes;
+    try { bytes = Utilities.base64Decode(String(payload.base64 || '').replace(/^data:[^,]+,/, '')); }
+    catch (error) { throw new Error('File Excel tidak dapat dibaca. Download ulang daftar terbaru.'); }
+    if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error('Ukuran file harus lebih dari 0 dan maksimal 10 MB.');
+    if (bytes[0] !== 80 || bytes[1] !== 75) throw new Error('File bukan workbook Excel .xlsx yang valid.');
+    const sourceFile = DriveApp.createFile(Utilities.newBlob(bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'TEMP_EXPIRY_' + Utilities.getUuid() + '.xlsx'));
+    const jobId = Utilities.getUuid(), now = new Date().toISOString();
+    writeMissingExpiryJob_({ jobId: jobId, ownerNik: context.employee.nik, ownerName: context.employee.name,
+      outlet: context.outlet, location: context.location, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), preparedDriveId: '',
+      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3, processed: 0, total: 0, saved: 0, skipped: 0,
+      retryCount: 0, error: '', createdAt: now, updatedAt: now });
+    scheduleMissingExpiryWorker_();
+    return { jobId: jobId, status: 'QUEUED', progress: 3, stage: 'File diterima. Proses background disiapkan.' };
+  });
+}
+
+function missingExpiryJobKey_(jobId) { return 'expiry-upload-job-' + String(jobId || '').trim(); }
+
+function writeMissingExpiryJob_(job) {
+  job.updatedAt = new Date().toISOString();
+  PropertiesService.getScriptProperties().setProperty(missingExpiryJobKey_(job.jobId), JSON.stringify(job));
+  return job;
+}
+
+function readMissingExpiryJob_(jobId) {
+  const raw = PropertiesService.getScriptProperties().getProperty(missingExpiryJobKey_(jobId));
+  return raw ? JSON.parse(raw) : null;
+}
+
+function missingExpiryJobView_(job) {
+  const progress = job.status === 'COMPLETE' ? 100 : job.status === 'FAILED' ? Math.max(5, Number(job.progress || 0)) :
+    job.total ? Math.min(98, 20 + Math.round(Number(job.processed || 0) / job.total * 78)) : Number(job.progress || 5);
+  return { jobId: job.jobId, status: job.status, stage: job.stage, progress: progress, processed: Number(job.processed || 0),
+    total: Number(job.total || 0), saved: Number(job.saved || 0), skipped: Number(job.skipped || 0), error: String(job.error || '') };
+}
+
+function getMissingExpiryUploadStatus(token, jobId) {
+  return safe_(function () {
+    const session = requireSession_(token), job = readMissingExpiryJob_(cleanText_(jobId, 100));
+    if (!job || job.ownerNik !== session.nik) throw new Error('Job upload tidak ditemukan atau bukan milik akun ini.');
+    return missingExpiryJobView_(job);
+  });
+}
+
+function scheduleMissingExpiryWorker_() {
+  try {
+    const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processMissingExpiryUploadJobs'; });
+    if (!exists) ScriptApp.newTrigger('processMissingExpiryUploadJobs').timeBased().after(1000).create();
+  } catch (error) { console.error('Worker Expired Date menunggu trigger maintenance: ' + error.message); }
+}
+
+function prepareMissingExpiryJob_(job) {
+  job.status = 'PREPARING'; job.stage = 'Membaca dan memvalidasi workbook Excel.'; job.progress = 8; writeMissingExpiryJob_(job);
+  const source = DriveApp.getFileById(job.sourceDriveId), base64 = Utilities.base64Encode(source.getBlob().getBytes());
+  const parsed = parseMissingExpiryExcel_(base64, job.sourceFileName);
+  if (parsed.outlet !== String(job.outlet || '').trim().toUpperCase() || parsed.location.toLowerCase() !== String(job.location || '').trim().toLowerCase()) {
+    throw new Error('File ini dibuat untuk ' + parsed.outlet + ' · ' + parsed.location + ', bukan ' + job.outlet + ' · ' + job.location + '.');
+  }
+  const codes = Object.keys(parsed.grouped);
+  if (!codes.length) throw new Error('Tidak ada baris Expired Date yang dapat diproses.');
+  const excludedCategories = readStockNoExpiryCategoryMap_(), sourceHash = digest_(base64);
+  const requests = codes.map(function (code) {
+    const item = findStockItemForLocation_(job.location, code);
+    if (excludedCategories[normalizeStockCategory_(item.category)]) throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
+    return { code: item.code, name: item.name, unit: item.unit, lots: normalizeStockExpiryAllocations_(parsed.grouped[code], code),
+      requestId: digest_(sourceHash + '|' + job.outlet + '|' + job.location + '|' + item.code) };
+  });
+  const preparedFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(requests), 'application/json', 'TEMP_EXPIRY_JOB_' + job.jobId + '.json'));
+  job.preparedDriveId = preparedFile.getId(); job.total = requests.length; job.status = 'PROCESSING';
+  job.stage = 'Validasi selesai. Menyimpan item 1/' + requests.length + '.'; job.progress = 20;
+  try { source.setTrashed(true); } catch (cleanupError) {}
+  job.sourceDriveId = '';
+  return writeMissingExpiryJob_(job);
+}
+
+function cleanupMissingExpiryJobFiles_(job) {
+  [job.sourceDriveId, job.preparedDriveId].filter(Boolean).forEach(function (id) {
+    try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
+  });
+  job.sourceDriveId = ''; job.preparedDriveId = '';
+}
+
+function processMissingExpiryJobChunk_(job) {
+  if (!job.preparedDriveId) job = prepareMissingExpiryJob_(job);
+  const requests = JSON.parse(DriveApp.getFileById(job.preparedDriveId).getBlob().getDataAsString('UTF-8'));
+  const context = { outlet: job.outlet, location: job.location, employee: { nik: job.ownerNik, name: job.ownerName } };
+  const started = Date.now(); let chunkCount = 0;
+  while (job.processed < requests.length && chunkCount < 3 && Date.now() - started < 45000) {
+    const request = requests[job.processed], item = findStockItemForLocation_(job.location, request.code);
+    job.status = 'PROCESSING'; job.stage = 'Menyimpan ' + request.code + ' · ' + request.name + ' (' + (job.processed + 1) + '/' + requests.length + ').';
+    job.progress = 20 + Math.round(job.processed / requests.length * 78); writeMissingExpiryJob_(job);
+    const lock = acquireStockWriteLock_();
+    try {
+      const completed = buildStockExpiryCompletionRow_(context, item, normalizeStockExpiryAllocations_(request.lots, item.code), Date.now() / 1000,
+        'Lengkapi Expired Date melalui upload Excel background', null, null,
+        { allowAlreadyComplete: true, requestId: request.requestId, sourceFile: job.sourceFileName });
+      if (completed.row) { insertStockCardRows_([completed.row]); job.saved++; } else job.skipped++;
+    } finally { lock.releaseLock(); }
+    job.processed++; job.retryCount = 0; chunkCount++; writeMissingExpiryJob_(job);
+  }
+  if (job.processed >= requests.length) {
+    job.status = 'COMPLETE'; job.stage = 'Semua item berhasil diproses.'; job.progress = 100;
+    cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
+  }
+  return job;
+}
+
+function processMissingExpiryUploadJobs() {
+  try {
+    ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processMissingExpiryUploadJobs'; })
+      .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+    const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), jobs = [];
+    Object.keys(all).filter(function (key) { return key.indexOf('expiry-upload-job-') === 0; }).forEach(function (key) {
+      try {
+        const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
+        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 86400000) properties.deleteProperty(key);
+        else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
+      } catch (error) { properties.deleteProperty(key); }
+    });
+    jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
+    if (!jobs.length) return { processed: false };
+    let job = jobs[0];
+    try { job = processMissingExpiryJobChunk_(job); }
+    catch (error) {
+      job.retryCount = Number(job.retryCount || 0) + 1;
+      if (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu/i.test(String(error.message || error))) {
+        job.status = 'QUEUED'; job.stage = 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeMissingExpiryJob_(job);
+      } else {
+        job.status = 'FAILED'; job.stage = 'Proses berhenti pada item ' + (job.processed + 1) + '.'; job.error = String(error.message || error);
+        cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
+      }
+    }
+    const pending = PropertiesService.getScriptProperties().getProperties();
+    if (Object.keys(pending).some(function (key) { if (key.indexOf('expiry-upload-job-') !== 0) return false; try { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(JSON.parse(pending[key]).status) >= 0; } catch (error) { return false; } })) scheduleMissingExpiryWorker_();
+    return { processed: true, jobId: job.jobId, status: job.status };
+  } catch (error) {
+    console.error('Worker upload Expired Date gagal: ' + error.message);
+    return { processed: false, error: error.message };
+  }
 }
 
 /**
@@ -5794,6 +5942,8 @@ function refreshDirtyStockBalances() {
       console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message);
     }
   });
+  try { processMissingExpiryUploadJobs(); }
+  catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
 }
 
 /** Run once manually after deployment to install the background balance refresh. */
