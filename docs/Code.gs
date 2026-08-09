@@ -14,7 +14,7 @@ const CONFIG = Object.freeze({
   NEWS_SHEET: 'APP_NEWS',
   TASK_SHEET: 'APP_TASKS',
   PAGE_SHEET: 'APP_PAGES',
-  PAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
+  SUBPAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -298,7 +298,7 @@ function markTaskComplete(token, taskId, requestedOutlet) {
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
     const task = findTask_(taskId);
-    if (!task || !task.active || !taskApplies_(task, employee)) throw new Error('Task tidak ditemukan atau bukan untuk akun ini.');
+    if (!task || !task.active || !taskApplies_(task, employee) || !taskVisibleForEmployeePosition_(task, employee)) throw new Error('Task tidak ditemukan atau bukan untuk akun ini.');
 
     ensureBigQueryInfrastructure_();
     const allowedOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
@@ -450,41 +450,41 @@ function adminAddPage(token, payload) {
 function getAdminPageVisibility(token) {
   return safe_(function () {
     requireAdmin_(token);
-    const pages = readNavigationPages_(), positions = readEmployeePositions_(), state = readPageVisibilityState_();
+    const subpages = readAllActiveTasks_(), positions = readEmployeePositions_(), state = readSubpageVisibilityState_();
     const checked = {};
-    pages.forEach(function (page) {
-      checked[page.id] = {};
+    subpages.forEach(function (task) {
+      checked[task.id] = {};
       positions.forEach(function (entry) {
-        checked[page.id][entry.position] = !state.configured[page.id] || Boolean(state.allowed[page.id + '|' + entry.position]);
+        checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
       });
     });
-    return { pages: pages, positions: positions, checked: checked };
+    return { subpages: subpages, positions: positions, checked: checked };
   });
 }
 
 function saveAdminPageVisibility(token, payload) {
   return safe_(function () {
-    const employee = requireAdmin_(token), pages = readNavigationPages_(), positions = readEmployeePositions_();
+    const employee = requireAdmin_(token), subpages = readAllActiveTasks_(), positions = readEmployeePositions_();
     payload = payload || {};
     const selected = payload.selected && typeof payload.selected === 'object' ? payload.selected : {};
     const positionIds = {}; positions.forEach(function (entry) { positionIds[entry.position] = true; });
     const rows = [];
-    pages.forEach(function (page) {
-      const enabledPositions = Array.isArray(selected[page.id]) ? selected[page.id] : [];
+    subpages.forEach(function (task) {
+      const enabledPositions = Array.isArray(selected[task.id]) ? selected[task.id] : [];
       const enabledMap = {};
       enabledPositions.forEach(function (position) { position = normalizeEmployeePosition_(position); if (positionIds[position]) enabledMap[position] = true; });
       positions.forEach(function (entry) {
-        rows.push([page.id, entry.position, Boolean(enabledMap[entry.position]), new Date(), employee.nik]);
+        rows.push([task.id, entry.position, Boolean(enabledMap[entry.position]), new Date(), employee.nik]);
       });
     });
     const lock = acquireStockWriteLock_();
     try {
-      const sheet = ensurePageVisibilitySheet_();
+      const sheet = ensureSubpageVisibilitySheet_();
       if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
       if (rows.length) sheet.getRange(2, 1, rows.length, 5).setValues(rows);
       SpreadsheetApp.flush();
     } finally { lock.releaseLock(); }
-    return { saved: true, pageCount: pages.length, positionCount: positions.length };
+    return { saved: true, subpageCount: subpages.length, positionCount: positions.length };
   });
 }
 
@@ -495,7 +495,7 @@ function saveFormResponse(token, taskId, responseObject) {
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
     const task = findTask_(taskId);
-    if (!task || task.type !== 'FORM' || !taskApplies_(task, employee)) throw new Error('Form tidak valid untuk akun ini.');
+    if (!task || task.type !== 'FORM' || !taskApplies_(task, employee) || !taskVisibleForEmployeePosition_(task, employee)) throw new Error('Form tidak valid untuk akun ini.');
     const serialized = JSON.stringify(responseObject || {});
     if (serialized.length > 900000) throw new Error('Data form terlalu besar.');
 
@@ -7240,36 +7240,51 @@ function readEmployeePositions_() {
   });
 }
 
-function ensurePageVisibilitySheet_() {
-  return ensureSheet_(CONFIG.PAGE_VISIBILITY_SHEET, ['PAGE_ID', 'POSITION', 'ENABLED', 'UPDATED_AT', 'UPDATED_BY']);
+function ensureSubpageVisibilitySheet_() {
+  const headers = ['TASK_ID', 'POSITION', 'ENABLED', 'UPDATED_AT', 'UPDATED_BY'];
+  const sheet = ensureSheet_(CONFIG.SUBPAGE_VISIBILITY_SHEET, headers);
+  if (String(sheet.getRange(1, 1).getDisplayValue() || '').trim().toUpperCase() !== 'TASK_ID') {
+    // Hapus konfigurasi versi lama yang keliru memakai Navigation Page sebagai baris.
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  }
+  return sheet;
 }
 
-function readPageVisibilityState_() {
-  const sheet = ensurePageVisibilitySheet_(), state = { configured: {}, allowed: {} };
+function readSubpageVisibilityState_() {
+  const sheet = ensureSubpageVisibilitySheet_(), state = { configured: {}, allowed: {} };
   if (sheet.getLastRow() < 2) return state;
   sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getDisplayValues().forEach(function (row) {
-    const pageId = String(row[0] || '').trim(), position = normalizeEmployeePosition_(row[1]);
-    if (!pageId || !position) return;
-    state.configured[pageId] = true;
-    if (truthy_(row[2])) state.allowed[pageId + '|' + position] = true;
+    const taskId = String(row[0] || '').trim(), position = normalizeEmployeePosition_(row[1]);
+    if (!taskId || !position) return;
+    state.configured[taskId] = true;
+    if (truthy_(row[2])) state.allowed[taskId + '|' + position] = true;
   });
   return state;
 }
 
-function readPagesForEmployee_(employee) {
-  const pages = readNavigationPages_();
-  if (employee.outlet === 'BIHQ') return pages;
-  const state = readPageVisibilityState_(), position = normalizeEmployeePosition_(employee.position);
-  return pages.filter(function (page) {
-    return !state.configured[page.id] || Boolean(position && state.allowed[page.id + '|' + position]);
-  });
+function readPagesForEmployee_(employee) { return readNavigationPages_(); }
+
+function readAllActiveTasks_() {
+  const sheet = ensureTaskSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  const frequencyOrder = { DAILY: 1, WEEKLY: 2, MONTHLY: 3, YEARLY: 4 };
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues().map(taskFromRow_)
+    .filter(function (task) { return task.active; })
+    .sort(function (a, b) { return Number(frequencyOrder[a.frequency] || 99) - Number(frequencyOrder[b.frequency] || 99) || a.title.localeCompare(b.title); });
+}
+
+function taskVisibleForEmployeePosition_(task, employee, stateOverride) {
+  if (employee.outlet === 'BIHQ') return true;
+  const state = stateOverride || readSubpageVisibilityState_(), position = normalizeEmployeePosition_(employee.position);
+  return !state.configured[task.id] || Boolean(position && state.allowed[task.id + '|' + position]);
 }
 
 function readTasksForEmployee_(employee) {
-  const sheet = ensureTaskSheet_();
-  if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues().map(taskFromRow_)
-    .filter(function (task) { return task.active && taskApplies_(task, employee); });
+  const state = employee.outlet === 'BIHQ' ? null : readSubpageVisibilityState_();
+  return readAllActiveTasks_().filter(function (task) {
+    return taskApplies_(task, employee) && taskVisibleForEmployeePosition_(task, employee, state);
+  });
 }
 
 function taskFromRow_(r) {
