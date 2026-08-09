@@ -1189,8 +1189,20 @@ function getStockUnitConversions(token) {
 function getStockDefaultUnitOptions(token) {
   return safe_(function () {
     requireAdmin_(token);
+    const savedConversions = readStockUnitConversions_();
     const items = readStockMaster_(true).map(function (item) {
-      return { code: item.code, category: item.category, name: item.name, unit: normalizeUnit_(item.unit), active: item.active };
+      const currentUnit = normalizeUnit_(item.unit), available = {};
+      Object.keys(savedConversions).forEach(function (key) {
+        const conversion = savedConversions[key];
+        if (conversion.itemCode !== item.code) return;
+        if (conversion.fromUnit) available[conversion.fromUnit] = true;
+        if (conversion.toUnit) available[conversion.toUnit] = true;
+      });
+      delete available[currentUnit];
+      const unitOptions = Object.keys(available).sort().map(function (unit) {
+        return { unit: unit, factor: resolveUnitConversionFactor_(item.code, currentUnit, unit, {}, savedConversions) };
+      }).filter(function (option) { return isFinite(option.factor) && option.factor > 0; });
+      return { code: item.code, category: item.category, name: item.name, unit: currentUnit, unitOptions: unitOptions, active: item.active };
     });
     const units = {};
     ['PCS', 'GR', 'KG', 'ML', 'L', 'PORSI', 'PACK', 'BOX', 'BTL'].forEach(function (unit) { units[unit] = true; });
@@ -1220,7 +1232,8 @@ function changeStockItemDefaultUnit(token, payload) {
     const oldUnit = normalizeUnit_(masterRows[masterIndex][3]);
     if (!oldUnit) throw new Error(itemCode + ' · Unit Default lama masih kosong.');
     if (oldUnit === newUnit) throw new Error(itemCode + ' sudah menggunakan Unit Default ' + newUnit + '.');
-    const factor = defaultUnitConversionFactor_(oldUnit, newUnit) || Number(payload.factor);
+    const savedFactor = resolveUnitConversionFactor_(itemCode, oldUnit, newUnit, {}, readStockUnitConversions_());
+    const factor = defaultUnitConversionFactor_(oldUnit, newUnit) || savedFactor || Number(payload.factor);
     if (!isFinite(factor) || factor <= 0) throw new Error('Masukkan faktor: 1 ' + oldUnit + ' setara dengan berapa ' + newUnit + '.');
 
     ensureStockCardInfrastructure_();
