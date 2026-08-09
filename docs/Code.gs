@@ -1719,12 +1719,12 @@ function normalizeStockExpiryAllocations_(lots, itemCode) {
   return allocations;
 }
 
-function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, note) {
-  const excludedCategories = readStockNoExpiryCategoryMap_();
+function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, note, remainingLotsOverride, excludedCategoriesOverride) {
+  const excludedCategories = excludedCategoriesOverride || readStockNoExpiryCategoryMap_();
   if (excludedCategories[normalizeStockCategory_(item.category)]) {
     throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
   }
-  const remainingLots = readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
+  const remainingLots = remainingLotsOverride || readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
   const datedLots = remainingLots.filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
   const blankLots = remainingLots.filter(function (lot) { return !String(lot.expiryDate || '').slice(0, 10); });
   const missingQty = blankLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
@@ -1861,8 +1861,10 @@ function uploadMissingExpiryExcel(token, payload) {
     const lock = acquireStockWriteLock_();
     try {
       const baseCreatedAt = Date.now() / 1000, rows = [], completedItems = [];
+      const lotsByCode = readRemainingStockLotsBatch_(context.outlet, context.location, requests.map(function (request) { return request.item; }));
+      const excludedCategories = readStockNoExpiryCategoryMap_();
       requests.forEach(function (request, index) {
-        const completed = buildStockExpiryCompletionRow_(context, request.item, request.allocations, baseCreatedAt + index / 1000, 'Lengkapi Expired Date melalui upload Excel');
+        const completed = buildStockExpiryCompletionRow_(context, request.item, request.allocations, baseCreatedAt + index / 1000, 'Lengkapi Expired Date melalui upload Excel', lotsByCode[request.item.code] || [], excludedCategories);
         rows.push(completed.row);
         completedItems.push({ code: request.item.code, name: request.item.name, qty: completed.completedQty, unit: request.item.unit });
       });
@@ -5447,6 +5449,36 @@ function readRemainingStockLots_(outlet, location, itemCode, itemName) {
   });
   const snapshots = calculateFifoSnapshots_(history), dates = Object.keys(snapshots).sort();
   return dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
+}
+
+function readRemainingStockLotsBatch_(outlet, location, items) {
+  const codes = (items || []).map(function (item) { return String(item.code || '').trim().toUpperCase(); })
+    .filter(function (code, index, values) { return code && code.indexOf('|') < 0 && values.indexOf(code) === index; });
+  const result = {};
+  codes.forEach(function (code) { result[code] = []; });
+  if (!codes.length) return result;
+  const sql = latestStockMovementCte_() + ' SELECT item_code, record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, ' +
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location AND item_code IN UNNEST(SPLIT(@itemCodes, \'|\')) ' +
+    'ORDER BY item_code, event_date, created_at';
+  const historyByCode = {};
+  runNamedQuery_(sql, { outlet: outlet, location: location, itemCodes: codes.join('|') }, { useQueryCache: false }).forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    if (!result.hasOwnProperty(code)) return;
+    if (!historyByCode[code]) historyByCode[code] = [];
+    historyByCode[code].push({
+      recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
+      movementType: String(row.movement_type || ''), info: String(row.info || ''),
+      productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+      sourceArrivalDate: String(row.source_arrival_date || ''), createdAt: String(row.created_at || '')
+    });
+  });
+  codes.forEach(function (code) {
+    const snapshots = calculateFifoSnapshots_(historyByCode[code] || []), dates = Object.keys(snapshots).sort();
+    result[code] = dates.length ? snapshots[dates[dates.length - 1]].filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }) : [];
+  });
+  return result;
 }
 
 function readStockExpiryAlerts_(outlet, location) {
