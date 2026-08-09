@@ -412,11 +412,15 @@ function adminAddItem(token, payload) {
     }
 
     const icon = cleanTaskIcon_(payload.icon, type, target);
+    const pageId = cleanText_(payload.pageId, 100);
+    if (pageId && !readNavigationPages_().some(function (page) { return page.id === pageId; })) {
+      throw new Error('Halaman tujuan tidak ditemukan atau sudah tidak aktif.');
+    }
     const sheet = ensureTaskSheet_();
     sheet.appendRow([
       Utilities.getUuid(), title, cleanText_(payload.description, 500), type, target,
       frequency, cleanAudience_(payload.audience), cleanText_(payload.dueLabel, 80),
-      true, new Date(), employee.nik, icon
+      true, new Date(), employee.nik, icon, pageId
     ]);
     return { tasks: readTasksForEmployee_(employee) };
   });
@@ -428,14 +432,14 @@ function adminAddPage(token, payload) {
     const employee = requireAdmin_(token);
     payload = payload || {};
     const title = cleanText_(payload.title, 140);
-    const description = cleanText_(payload.description, 300);
-    const content = cleanText_(payload.content, 12000);
-    if (!title) throw new Error('Judul halaman wajib diisi.');
-    if (!content) throw new Error('Isi halaman wajib diisi.');
+    if (!title) throw new Error('Nama halaman wajib diisi.');
+    const existing = readNavigationPages_();
+    if (existing.some(function (page) { return page.title.toLowerCase() === title.toLowerCase(); })) {
+      throw new Error('Nama halaman sudah digunakan.');
+    }
     const icon = cleanTaskIcon_(payload.icon || 'description', 'PAGE', '');
     const sheet = ensurePageSheet_();
-    sheet.appendRow([Utilities.getUuid(), title, description, content, icon,
-      cleanAudience_(payload.audience), true, new Date(), employee.nik]);
+    sheet.appendRow([Utilities.getUuid(), title, icon, true, new Date(), employee.nik]);
     return { pages: readPagesForEmployee_(employee) };
   });
 }
@@ -866,7 +870,7 @@ function getShowcaseLogMonitoring(token, monthKey) {
 function findShowcaseLogTask_() {
   const sheet = ensureTaskSheet_();
   if (sheet.getLastRow() < 2) return null;
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues().map(taskFromRow_).filter(function (task) {
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues().map(taskFromRow_).filter(function (task) {
     if (!task.active) return false;
     return task.type === 'FORM' && String(task.target || '').toLowerCase() === 'showcaselog' && task.frequency === 'DAILY';
   })[0] || null;
@@ -3868,7 +3872,7 @@ function getOutletProgress(token) {
     const employee = requireAdmin_(token);
     const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
     const taskSheet = ensureTaskSheet_();
-    const tasks = taskSheet.getLastRow() < 2 ? [] : taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 12).getValues()
+    const tasks = taskSheet.getLastRow() < 2 ? [] : taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 13).getValues()
       .map(taskFromRow_).filter(function (task) { return task.active; });
     const assignees = readActiveAssigneesByOutlet_();
     const frequencies = ['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'];
@@ -7141,27 +7145,37 @@ function readNews_(publicOnly) {
 }
 
 function ensurePageSheet_() {
-  return ensureSheet_(CONFIG.PAGE_SHEET,
-    ['ID', 'TITLE', 'DESCRIPTION', 'CONTENT', 'ICON', 'AUDIENCE', 'ACTIVE', 'CREATED_AT', 'CREATED_BY']);
+  const headers = ['ID', 'TITLE', 'ICON', 'ACTIVE', 'CREATED_AT', 'CREATED_BY'];
+  const sheet = ensureSheet_(CONFIG.PAGE_SHEET, headers);
+  if (String(sheet.getRange(1, 3).getDisplayValue() || '').trim().toUpperCase() === 'DESCRIPTION') {
+    const oldRows = sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues();
+    const migrated = oldRows.filter(function (row) { return String(row[0] || '').trim() && String(row[1] || '').trim(); })
+      .map(function (row) { return [row[0], row[1], row[4] || 'description', row[6], row[7], row[8]]; });
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+    if (migrated.length) sheet.getRange(2, 1, migrated.length, headers.length).setValues(migrated);
+  }
+  return sheet;
 }
 
-function readPagesForEmployee_(employee) {
+function readNavigationPages_() {
   const sheet = ensurePageSheet_();
   if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues().map(function (row) {
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues().map(function (row) {
     return {
-      id: String(row[0]), title: String(row[1] || ''), description: String(row[2] || ''),
-      content: String(row[3] || ''), icon: cleanTaskIcon_(row[4], 'PAGE', ''),
-      audience: String(row[5] || 'ALL').toUpperCase(), active: truthy_(row[6]), createdAt: dateIso_(row[7])
+      id: String(row[0]), title: String(row[1] || ''), icon: cleanTaskIcon_(row[2], 'PAGE', ''),
+      active: truthy_(row[3]), createdAt: dateIso_(row[4])
     };
-  }).filter(function (page) { return page.active && page.title && (employee.outlet === 'BIHQ' || taskApplies_(page, employee)); })
+  }).filter(function (page) { return page.active && page.title; })
     .sort(function (a, b) { return a.title.localeCompare(b.title); });
 }
+
+function readPagesForEmployee_(employee) { return readNavigationPages_(); }
 
 function readTasksForEmployee_(employee) {
   const sheet = ensureTaskSheet_();
   if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues().map(taskFromRow_)
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues().map(taskFromRow_)
     .filter(function (task) { return task.active && taskApplies_(task, employee); });
 }
 
@@ -7172,16 +7186,20 @@ function taskFromRow_(r) {
   return {
     id: String(r[0]), title: String(r[1]), description: String(r[2] || ''), type: type,
     target: target, frequency: frequency, periodKey: currentPeriodKey_(frequency), audience: String(r[6] || 'ALL').toUpperCase(),
-    dueLabel: String(r[7] || ''), active: truthy_(r[8]), createdAt: dateIso_(r[9]), icon: cleanTaskIcon_(r[11], type, target)
+    dueLabel: String(r[7] || ''), active: truthy_(r[8]), createdAt: dateIso_(r[9]), icon: cleanTaskIcon_(r[11], type, target),
+    pageId: String(r[12] || '')
   };
 }
 
 function ensureTaskSheet_() {
-  const headers = ['ID', 'TITLE', 'DESCRIPTION', 'TYPE', 'TARGET', 'FREQUENCY', 'AUDIENCE', 'DUE_LABEL', 'ACTIVE', 'CREATED_AT', 'CREATED_BY', 'ICON'];
+  const headers = ['ID', 'TITLE', 'DESCRIPTION', 'TYPE', 'TARGET', 'FREQUENCY', 'AUDIENCE', 'DUE_LABEL', 'ACTIVE', 'CREATED_AT', 'CREATED_BY', 'ICON', 'PAGE_ID'];
   const sheet = ensureSheet_(CONFIG.TASK_SHEET, headers);
   const currentIconHeader = String(sheet.getRange(1, 12).getDisplayValue() || '').trim().toUpperCase();
   if (currentIconHeader !== 'ICON') {
     sheet.getRange(1, 12).setValue('ICON').setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  }
+  if (String(sheet.getRange(1, 13).getDisplayValue() || '').trim().toUpperCase() !== 'PAGE_ID') {
+    sheet.getRange(1, 13).setValue('PAGE_ID').setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
   }
   const existingTargets = sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 5, sheet.getLastRow() - 1, 1).getDisplayValues().map(function (row) {
     return String(row[0] || '').trim().toLowerCase();
@@ -7218,7 +7236,7 @@ function isRegisteredFormFile_(fileName) {
 function findTask_(taskId) {
   const sheet = ensureTaskSheet_();
   if (sheet.getLastRow() < 2) return null;
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues();
   for (let i = 0; i < rows.length; i++) if (String(rows[i][0]) === String(taskId)) return taskFromRow_(rows[i]);
   return null;
 }
