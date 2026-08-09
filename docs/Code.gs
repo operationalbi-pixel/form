@@ -14,6 +14,7 @@ const CONFIG = Object.freeze({
   NEWS_SHEET: 'APP_NEWS',
   TASK_SHEET: 'APP_TASKS',
   PAGE_SHEET: 'APP_PAGES',
+  PAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -105,6 +106,8 @@ function apiActions_() {
     adminDeleteNews: adminDeleteNews,
     adminAddItem: adminAddItem,
     adminAddPage: adminAddPage,
+    adminPageVisibility: getAdminPageVisibility,
+    adminSavePageVisibility: saveAdminPageVisibility,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
@@ -441,6 +444,47 @@ function adminAddPage(token, payload) {
     const sheet = ensurePageSheet_();
     sheet.appendRow([Utilities.getUuid(), title, icon, true, new Date(), employee.nik]);
     return { pages: readPagesForEmployee_(employee) };
+  });
+}
+
+function getAdminPageVisibility(token) {
+  return safe_(function () {
+    requireAdmin_(token);
+    const pages = readNavigationPages_(), positions = readEmployeePositions_(), state = readPageVisibilityState_();
+    const checked = {};
+    pages.forEach(function (page) {
+      checked[page.id] = {};
+      positions.forEach(function (entry) {
+        checked[page.id][entry.position] = !state.configured[page.id] || Boolean(state.allowed[page.id + '|' + entry.position]);
+      });
+    });
+    return { pages: pages, positions: positions, checked: checked };
+  });
+}
+
+function saveAdminPageVisibility(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token), pages = readNavigationPages_(), positions = readEmployeePositions_();
+    payload = payload || {};
+    const selected = payload.selected && typeof payload.selected === 'object' ? payload.selected : {};
+    const positionIds = {}; positions.forEach(function (entry) { positionIds[entry.position] = true; });
+    const rows = [];
+    pages.forEach(function (page) {
+      const enabledPositions = Array.isArray(selected[page.id]) ? selected[page.id] : [];
+      const enabledMap = {};
+      enabledPositions.forEach(function (position) { position = normalizeEmployeePosition_(position); if (positionIds[position]) enabledMap[position] = true; });
+      positions.forEach(function (entry) {
+        rows.push([page.id, entry.position, Boolean(enabledMap[entry.position]), new Date(), employee.nik]);
+      });
+    });
+    const lock = acquireStockWriteLock_();
+    try {
+      const sheet = ensurePageVisibilitySheet_();
+      if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
+      if (rows.length) sheet.getRange(2, 1, rows.length, 5).setValues(rows);
+      SpreadsheetApp.flush();
+    } finally { lock.releaseLock(); }
+    return { saved: true, pageCount: pages.length, positionCount: positions.length };
   });
 }
 
@@ -6932,6 +6976,8 @@ function findEmployee_(nik) {
         sheet: sheet, row: i + 2, nik: nik,
         name: String(values[i][1] || '').trim() || nik,
         outlet: String(values[i][2] || '').trim().toUpperCase(),
+        position: normalizeEmployeePosition_(values[i][4]),
+        grade: String(values[i][5] || '').trim().toUpperCase(),
         status: String(values[i][8] || '').trim().toLowerCase(),
         password: String(values[i][11] || '')
       };
@@ -7170,7 +7216,54 @@ function readNavigationPages_() {
     .sort(function (a, b) { return a.title.localeCompare(b.title); });
 }
 
-function readPagesForEmployee_(employee) { return readNavigationPages_(); }
+function normalizeEmployeePosition_(value) { return String(value || '').trim().replace(/\s+/g, ' ').toUpperCase(); }
+
+function employeeGradeSort_(value) {
+  const text = String(value || '').trim().toUpperCase(), match = text.match(/(\d+)\s*([A-Z]*)/);
+  return { number: match ? Number(match[1]) : -1, suffix: match ? match[2] : text, text: text };
+}
+
+function readEmployeePositions_() {
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET), map = {};
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().forEach(function (row) {
+    const position = normalizeEmployeePosition_(row[4]), grade = String(row[5] || '').trim().toUpperCase();
+    if (!position || String(row[8] || '').trim().toLowerCase() === 'resign') return;
+    const candidate = employeeGradeSort_(grade), current = map[position] && employeeGradeSort_(map[position].grade);
+    if (!map[position] || candidate.number > current.number || (candidate.number === current.number && candidate.suffix.localeCompare(current.suffix) < 0)) {
+      map[position] = { position: position, grade: grade };
+    }
+  });
+  return Object.keys(map).map(function (key) { return map[key]; }).sort(function (a, b) {
+    const left = employeeGradeSort_(a.grade), right = employeeGradeSort_(b.grade);
+    return right.number - left.number || left.suffix.localeCompare(right.suffix) || a.position.localeCompare(b.position);
+  });
+}
+
+function ensurePageVisibilitySheet_() {
+  return ensureSheet_(CONFIG.PAGE_VISIBILITY_SHEET, ['PAGE_ID', 'POSITION', 'ENABLED', 'UPDATED_AT', 'UPDATED_BY']);
+}
+
+function readPageVisibilityState_() {
+  const sheet = ensurePageVisibilitySheet_(), state = { configured: {}, allowed: {} };
+  if (sheet.getLastRow() < 2) return state;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getDisplayValues().forEach(function (row) {
+    const pageId = String(row[0] || '').trim(), position = normalizeEmployeePosition_(row[1]);
+    if (!pageId || !position) return;
+    state.configured[pageId] = true;
+    if (truthy_(row[2])) state.allowed[pageId + '|' + position] = true;
+  });
+  return state;
+}
+
+function readPagesForEmployee_(employee) {
+  const pages = readNavigationPages_();
+  if (employee.outlet === 'BIHQ') return pages;
+  const state = readPageVisibilityState_(), position = normalizeEmployeePosition_(employee.position);
+  return pages.filter(function (page) {
+    return !state.configured[page.id] || Boolean(position && state.allowed[page.id + '|' + position]);
+  });
+}
 
 function readTasksForEmployee_(employee) {
   const sheet = ensureTaskSheet_();
