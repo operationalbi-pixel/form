@@ -1699,9 +1699,12 @@ function completeStockExpiryLots(token, payload) {
 
     const lock = acquireStockWriteLock_();
     try {
-      const completed = buildStockExpiryCompletionRow_(context, item, allocations, Date.now() / 1000, 'Lengkapi Expired Date melalui notifikasi');
-      insertStockCardRows_([completed.row]);
-      return { saved: true, itemCode: item.code, itemName: item.name, completedQty: completed.completedQty };
+      const requestId = /^[a-f0-9]{32,64}$/i.test(String(payload.requestId || '')) ? String(payload.requestId).toLowerCase() : '';
+      const completed = buildStockExpiryCompletionRow_(context, item, allocations, Date.now() / 1000,
+        payload.sourceFile ? 'Lengkapi Expired Date melalui upload Excel' : 'Lengkapi Expired Date melalui notifikasi', null, null,
+        { allowAlreadyComplete: Boolean(payload.allowAlreadyComplete), requestId: requestId, sourceFile: cleanText_(payload.sourceFile, 180) });
+      if (completed.row) insertStockCardRows_([completed.row]);
+      return { saved: true, alreadyCompleted: Boolean(completed.alreadyCompleted), itemCode: item.code, itemName: item.name, completedQty: completed.completedQty };
     } finally {
       lock.releaseLock();
     }
@@ -1719,7 +1722,8 @@ function normalizeStockExpiryAllocations_(lots, itemCode) {
   return allocations;
 }
 
-function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, note, remainingLotsOverride, excludedCategoriesOverride) {
+function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, note, remainingLotsOverride, excludedCategoriesOverride, options) {
+  options = options || {};
   const excludedCategories = excludedCategoriesOverride || readStockNoExpiryCategoryMap_();
   if (excludedCategories[normalizeStockCategory_(item.category)]) {
     throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
@@ -1729,7 +1733,10 @@ function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, n
   const blankLots = remainingLots.filter(function (lot) { return !String(lot.expiryDate || '').slice(0, 10); });
   const missingQty = blankLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
   const allocationTotal = allocations.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
-  if (missingQty <= 0.0000001) throw new Error('Expired Date ' + item.code + ' sudah lengkap. Download ulang daftar terbaru.');
+  if (missingQty <= 0.0000001) {
+    if (options.allowAlreadyComplete) return { completedQty: 0, row: null, alreadyCompleted: true };
+    throw new Error('Expired Date ' + item.code + ' sudah lengkap. Download ulang daftar terbaru.');
+  }
   if (Math.abs(allocationTotal - missingQty) > 0.0000001) {
     throw new Error('Total QTY ' + item.code + ' harus ' + formatQty_(missingQty) + ' ' + item.unit + ', tetapi file berisi ' + formatQty_(allocationTotal) + '.');
   }
@@ -1750,14 +1757,15 @@ function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, n
       }
     }
   });
-  const recordId = Utilities.getUuid(), logicalId = Utilities.getUuid();
+  const recordId = options.requestId ? 'EXPIRY-' + options.requestId : Utilities.getUuid(), logicalId = recordId;
   const totalQty = completedLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
   return { completedQty: missingQty, row: { insertId: recordId, json: {
     record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
     outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
     item_name: item.name, unit: item.unit, direction: 'LOT', qty: totalQty,
     movement_type: 'Lot Balance Override', info: JSON.stringify({ note: note, lots: completedLots }), event_date: todayIso_(),
-    created_at: createdAt, created_by: context.employee.nik
+    created_at: createdAt, created_by: context.employee.nik, source_file: options.sourceFile || null,
+    source_hash: options.requestId || null, source_row: null
   }}};
 }
 
@@ -1855,24 +1863,17 @@ function uploadMissingExpiryExcel(token, payload) {
     const grouped = parsed.grouped;
     const codes = Object.keys(grouped);
     if (!codes.length) throw new Error('Tidak ada baris Expired Date yang dapat diproses.');
+    const excludedCategories = readStockNoExpiryCategoryMap_(), sourceHash = digest_(String(payload.base64 || ''));
     const requests = codes.map(function (code) {
-      return { item: findStockItemForLocation_(context.location, code), allocations: normalizeStockExpiryAllocations_(grouped[code], code) };
+      const item = findStockItemForLocation_(context.location, code);
+      if (excludedCategories[normalizeStockCategory_(item.category)]) throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
+      return {
+        code: item.code, name: item.name, unit: item.unit,
+        lots: normalizeStockExpiryAllocations_(grouped[code], code),
+        requestId: digest_(sourceHash + '|' + context.outlet + '|' + context.location + '|' + item.code)
+      };
     });
-    const lock = acquireStockWriteLock_();
-    try {
-      const baseCreatedAt = Date.now() / 1000, rows = [], completedItems = [];
-      const lotsByCode = readRemainingStockLotsBatch_(context.outlet, context.location, requests.map(function (request) { return request.item; }));
-      const excludedCategories = readStockNoExpiryCategoryMap_();
-      requests.forEach(function (request, index) {
-        const completed = buildStockExpiryCompletionRow_(context, request.item, request.allocations, baseCreatedAt + index / 1000, 'Lengkapi Expired Date melalui upload Excel', lotsByCode[request.item.code] || [], excludedCategories);
-        rows.push(completed.row);
-        completedItems.push({ code: request.item.code, name: request.item.name, qty: completed.completedQty, unit: request.item.unit });
-      });
-      insertStockCardRows_(rows);
-      return { saved: true, itemCount: completedItems.length, items: completedItems };
-    } finally {
-      lock.releaseLock();
-    }
+    return { prepared: true, itemCount: requests.length, sourceFile: cleanText_(payload.fileName, 180), items: requests };
   });
 }
 
