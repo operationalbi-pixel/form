@@ -413,6 +413,10 @@ textarea {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.stock-page .head-controls:has(#changeDefaultUnitButton:not(.hidden)) {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
 .stock-page .head-controls > .btn,
 .stock-page .head-controls > .action-menu,
 .stock-page .head-controls > .action-menu > .btn {
@@ -458,6 +462,13 @@ textarea {
   border-color: #98182e;
   background: linear-gradient(135deg, #a81731, #cf3150);
   box-shadow: 0 10px 22px rgba(168, 23, 49, .24);
+}
+
+.stock-page #changeDefaultUnitButton {
+  color: #fff;
+  border-color: #263d78;
+  background: linear-gradient(135deg, #405caa, #263d78);
+  box-shadow: 0 10px 22px rgba(38, 61, 120, .24);
 }
 
 .stock-page.bihq-awaiting-outlet #outletControl {
@@ -547,7 +558,8 @@ textarea {
 }
 
 @media (max-width: 980px) {
-  .stock-page .head-controls {
+  .stock-page .head-controls,
+  .stock-page .head-controls:has(#changeDefaultUnitButton:not(.hidden)) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -657,7 +669,8 @@ textarea {
 }
 
 @media (max-width: 520px) {
-  .stock-page .head-controls {
+  .stock-page .head-controls,
+  .stock-page .head-controls:has(#changeDefaultUnitButton:not(.hidden)) {
     grid-template-columns: minmax(0, 1fr);
   }
 
