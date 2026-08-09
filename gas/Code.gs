@@ -15,6 +15,7 @@ const CONFIG = Object.freeze({
   TASK_SHEET: 'APP_TASKS',
   PAGE_SHEET: 'APP_PAGES',
   SUBPAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
+  SESSION_SHEET: 'APP_SESSIONS',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -27,7 +28,7 @@ const CONFIG = Object.freeze({
   BQ_PROJECT_ID: 'berita-acara-digital',
   BQ_DATASET_ID: 'bakerzin_internal',
   BQ_LOCATION: 'asia-southeast2',
-  SESSION_TTL_SECONDS: 10800,
+  SESSION_TTL_SECONDS: 21600,
   PASSWORD_MIN_LENGTH: 8,
   APP_TITLE: 'Bakerzin Internal Hub'
 });
@@ -263,7 +264,10 @@ function resumeSession(token) {
 
 function logout(token) {
   return safe_(function () {
-    if (token) CacheService.getScriptCache().remove(sessionKey_(token));
+    if (token) {
+      deactivatePersistentSession_(token);
+      CacheService.getScriptCache().remove(sessionKey_(token));
+    }
     return { loggedOut: true };
   });
 }
@@ -7028,13 +7032,14 @@ function constantTimeEqual_(a, b) {
 
 function createSession_(employee) {
   const token = Utilities.getUuid() + Utilities.getUuid();
-  const session = { nik: employee.nik, issuedAt: Date.now() };
+  const session = { nik: employee.nik, issuedAt: Date.now(), persistent: true };
+  persistSession_(token, session);
   CacheService.getScriptCache().put(sessionKey_(token), JSON.stringify(session), CONFIG.SESSION_TTL_SECONDS);
   return sessionPayload_(employee, token);
 }
 
 function sessionPayload_(employee, token) {
-  return { token: token, expiresIn: CONFIG.SESSION_TTL_SECONDS, user: userView_(employee) };
+  return { token: token, expiresIn: null, persistent: true, user: userView_(employee) };
 }
 
 function userView_(employee) {
@@ -7042,10 +7047,18 @@ function userView_(employee) {
 }
 
 function requireSession_(token) {
-  const raw = token && CacheService.getScriptCache().get(sessionKey_(token));
-  if (!raw) throw new Error('Sesi berakhir. Silakan login kembali.');
+  if (!token) throw new Error('Sesi tidak ditemukan. Silakan login kembali.');
+  let raw = CacheService.getScriptCache().get(sessionKey_(token)), session = raw ? JSON.parse(raw) : null;
+  if (!session) session = readPersistentSession_(token);
+  if (!session) throw new Error('Sesi tidak aktif. Silakan login kembali.');
+  // Migrasi otomatis bagi pengguna yang sudah login sebelum sesi persisten dipasang.
+  if (!session.persistent) {
+    session.persistent = true;
+    persistSession_(token, session);
+  }
+  raw = JSON.stringify(session);
   CacheService.getScriptCache().put(sessionKey_(token), raw, CONFIG.SESSION_TTL_SECONDS);
-  return JSON.parse(raw);
+  return session;
 }
 
 function requireAdmin_(token) {
@@ -7057,6 +7070,40 @@ function requireAdmin_(token) {
 }
 
 function sessionKey_(token) { return 'session:' + String(token); }
+
+function ensureSessionSheet_() {
+  return ensureSheet_(CONFIG.SESSION_SHEET, ['TOKEN_HASH', 'NIK', 'CREATED_AT', 'ACTIVE', 'LOGGED_OUT_AT']);
+}
+
+function persistentSessionHash_(token) { return digest_('persistent-session|' + String(token || '')); }
+
+function findPersistentSessionRows_(sheet, tokenHash) {
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).createTextFinder(tokenHash).matchEntireCell(true).findAll();
+}
+
+function persistSession_(token, session) {
+  const sheet = ensureSessionSheet_(), tokenHash = persistentSessionHash_(token), matches = findPersistentSessionRows_(sheet, tokenHash);
+  const activeExists = matches.some(function (cell) { return truthy_(sheet.getRange(cell.getRow(), 4).getDisplayValue()); });
+  if (!activeExists) sheet.appendRow([tokenHash, normalizeNik_(session.nik), new Date(Number(session.issuedAt || Date.now())), true, '']);
+}
+
+function readPersistentSession_(token) {
+  const sheet = ensureSessionSheet_(), matches = findPersistentSessionRows_(sheet, persistentSessionHash_(token));
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const row = matches[i].getRow(), values = sheet.getRange(row, 2, 1, 3).getDisplayValues()[0];
+    if (truthy_(values[2])) return { nik: normalizeNik_(values[0]), issuedAt: new Date(values[1] || 0).getTime() || Date.now(), persistent: true };
+  }
+  return null;
+}
+
+function deactivatePersistentSession_(token) {
+  const sheet = ensureSessionSheet_(), matches = findPersistentSessionRows_(sheet, persistentSessionHash_(token));
+  matches.forEach(function (cell) {
+    const row = cell.getRow();
+    if (truthy_(sheet.getRange(row, 4).getDisplayValue())) sheet.getRange(row, 4, 1, 2).setValues([[false, new Date()]]);
+  });
+}
 
 function assertNotRateLimited_(nik) {
   const attempts = Number(CacheService.getScriptCache().get('loginfail:' + nik) || 0);
