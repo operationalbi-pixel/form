@@ -13,6 +13,7 @@ const CONFIG = Object.freeze({
   EMP_SHEET: 'EMP_LIST',
   NEWS_SHEET: 'APP_NEWS',
   TASK_SHEET: 'APP_TASKS',
+  PAGE_SHEET: 'APP_PAGES',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -103,6 +104,7 @@ function apiActions_() {
     adminUpdateNews: adminUpdateNews,
     adminDeleteNews: adminDeleteNews,
     adminAddItem: adminAddItem,
+    adminAddPage: adminAddPage,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
@@ -278,6 +280,7 @@ function getAppData(token, requestedOutlet) {
     return {
       user: userView_(employee),
       tasks: tasks,
+      pages: readPagesForEmployee_(employee),
       completions: completions,
       completionOutlet: completionOutlet,
       news: readNews_(false),
@@ -416,6 +419,24 @@ function adminAddItem(token, payload) {
       true, new Date(), employee.nik, icon
     ]);
     return { tasks: readTasksForEmployee_(employee) };
+  });
+}
+
+/** Admin: creates an informational page rendered directly inside the app. */
+function adminAddPage(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const title = cleanText_(payload.title, 140);
+    const description = cleanText_(payload.description, 300);
+    const content = cleanText_(payload.content, 12000);
+    if (!title) throw new Error('Judul halaman wajib diisi.');
+    if (!content) throw new Error('Isi halaman wajib diisi.');
+    const icon = cleanTaskIcon_(payload.icon || 'description', 'PAGE', '');
+    const sheet = ensurePageSheet_();
+    sheet.appendRow([Utilities.getUuid(), title, description, content, icon,
+      cleanAudience_(payload.audience), true, new Date(), employee.nik]);
+    return { pages: readPagesForEmployee_(employee) };
   });
 }
 
@@ -7117,6 +7138,24 @@ function readNews_(publicOnly) {
       if (!publicOnly) item.createdBy = String(r[7] || '');
       return item;
     }).sort(function (a, b) { return b.publishedAt.localeCompare(a.publishedAt); }).slice(0, publicOnly ? 20 : 100);
+}
+
+function ensurePageSheet_() {
+  return ensureSheet_(CONFIG.PAGE_SHEET,
+    ['ID', 'TITLE', 'DESCRIPTION', 'CONTENT', 'ICON', 'AUDIENCE', 'ACTIVE', 'CREATED_AT', 'CREATED_BY']);
+}
+
+function readPagesForEmployee_(employee) {
+  const sheet = ensurePageSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues().map(function (row) {
+    return {
+      id: String(row[0]), title: String(row[1] || ''), description: String(row[2] || ''),
+      content: String(row[3] || ''), icon: cleanTaskIcon_(row[4], 'PAGE', ''),
+      audience: String(row[5] || 'ALL').toUpperCase(), active: truthy_(row[6]), createdAt: dateIso_(row[7])
+    };
+  }).filter(function (page) { return page.active && page.title && (employee.outlet === 'BIHQ' || taskApplies_(page, employee)); })
+    .sort(function (a, b) { return a.title.localeCompare(b.title); });
 }
 
 function readTasksForEmployee_(employee) {
