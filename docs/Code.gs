@@ -116,6 +116,8 @@ function apiActions_() {
     edit: updateStockMovement,
     adjust: adjustStockBalance,
     completeExpiry: completeStockExpiryLots,
+    expiryTemplate: downloadMissingExpiryTemplate,
+    expiryUpload: uploadMissingExpiryExcel,
     history: getStockHistory,
     verifyUsage: previewSalesUsageUpload,
     verifyGoodsReceipt: previewGoodsReceiptUpload,
@@ -1693,63 +1695,179 @@ function completeStockExpiryLots(token, payload) {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
     const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
-    const excludedCategories = readStockNoExpiryCategoryMap_();
-    if (excludedCategories[normalizeStockCategory_(item.category)]) {
-      throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
-    }
-    const allocations = (Array.isArray(payload.lots) ? payload.lots : []).map(function (raw, index) {
-      const qty = Number(raw.qty), expiryDate = normalizeDate_(raw.expiryDate, true);
-      if (!isFinite(qty) || qty <= 0) throw new Error('QTY baris ' + (index + 1) + ' wajib lebih besar dari 0.');
-      return { qty: qty, expiryDate: expiryDate };
-    });
-    if (!allocations.length) throw new Error('Isi minimal satu pembagian QTY dan Expired Date.');
+    const allocations = normalizeStockExpiryAllocations_(payload.lots, item.code);
 
     const lock = acquireStockWriteLock_();
     try {
-      const remainingLots = readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
-      const datedLots = remainingLots.filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
-      const blankLots = remainingLots.filter(function (lot) { return !String(lot.expiryDate || '').slice(0, 10); });
-      const missingQty = blankLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
-      const allocationTotal = allocations.reduce(function (sum, lot) { return sum + lot.qty; }, 0);
-      if (missingQty <= 0.0000001) throw new Error('Expired Date item ini sudah lengkap. Muat ulang daftar.');
-      if (Math.abs(allocationTotal - missingQty) > 0.0000001) {
-        throw new Error('Total QTY yang dilengkapi harus ' + formatQty_(missingQty) + ' ' + item.unit + '.');
+      const completed = buildStockExpiryCompletionRow_(context, item, allocations, Date.now() / 1000, 'Lengkapi Expired Date melalui notifikasi');
+      insertStockCardRows_([completed.row]);
+      return { saved: true, itemCode: item.code, itemName: item.name, completedQty: completed.completedQty };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function normalizeStockExpiryAllocations_(lots, itemCode) {
+  const label = itemCode ? ' untuk ' + itemCode : '';
+  const allocations = (Array.isArray(lots) ? lots : []).map(function (raw, index) {
+    const qty = Number(raw.qty), expiryDate = normalizeDate_(raw.expiryDate, true);
+    if (!isFinite(qty) || qty <= 0) throw new Error('QTY baris ' + (index + 1) + label + ' wajib lebih besar dari 0.');
+    return { qty: qty, expiryDate: expiryDate };
+  });
+  if (!allocations.length) throw new Error('Isi minimal satu pembagian QTY dan Expired Date' + label + '.');
+  return allocations;
+}
+
+function buildStockExpiryCompletionRow_(context, item, allocations, createdAt, note) {
+  const excludedCategories = readStockNoExpiryCategoryMap_();
+  if (excludedCategories[normalizeStockCategory_(item.category)]) {
+    throw new Error('Category ' + item.category + ' tidak memerlukan Expired Date.');
+  }
+  const remainingLots = readRemainingStockLots_(context.outlet, context.location, item.code, item.name);
+  const datedLots = remainingLots.filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
+  const blankLots = remainingLots.filter(function (lot) { return !String(lot.expiryDate || '').slice(0, 10); });
+  const missingQty = blankLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+  const allocationTotal = allocations.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+  if (missingQty <= 0.0000001) throw new Error('Expired Date ' + item.code + ' sudah lengkap. Download ulang daftar terbaru.');
+  if (Math.abs(allocationTotal - missingQty) > 0.0000001) {
+    throw new Error('Total QTY ' + item.code + ' harus ' + formatQty_(missingQty) + ' ' + item.unit + ', tetapi file berisi ' + formatQty_(allocationTotal) + '.');
+  }
+  const completedLots = datedLots.map(function (lot) {
+    return { qty: Number(lot.qty), arrivalDate: lot.sourceDate || todayIso_(), stockInDate: lot.showcaseDate || lot.sourceDate || todayIso_(), expiryDate: String(lot.expiryDate).slice(0, 10) };
+  });
+  let allocationIndex = 0, allocationRemaining = allocations[0].qty;
+  blankLots.forEach(function (source) {
+    let sourceRemaining = Number(source.qty || 0);
+    while (sourceRemaining > 0.0000001 && allocationIndex < allocations.length) {
+      const used = Math.min(sourceRemaining, allocationRemaining);
+      completedLots.push({ qty: used, arrivalDate: source.sourceDate || todayIso_(), stockInDate: source.showcaseDate || source.sourceDate || todayIso_(), expiryDate: allocations[allocationIndex].expiryDate });
+      sourceRemaining -= used;
+      allocationRemaining -= used;
+      if (allocationRemaining <= 0.0000001) {
+        allocationIndex++;
+        allocationRemaining = allocationIndex < allocations.length ? allocations[allocationIndex].qty : 0;
       }
+    }
+  });
+  const recordId = Utilities.getUuid(), logicalId = Utilities.getUuid();
+  const totalQty = completedLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+  return { completedQty: missingQty, row: { insertId: recordId, json: {
+    record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
+    outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
+    item_name: item.name, unit: item.unit, direction: 'LOT', qty: totalQty,
+    movement_type: 'Lot Balance Override', info: JSON.stringify({ note: note, lots: completedLots }), event_date: todayIso_(),
+    created_at: createdAt, created_by: context.employee.nik
+  }}};
+}
 
-      const completedLots = datedLots.map(function (lot) {
-        return { qty: Number(lot.qty), arrivalDate: lot.sourceDate || todayIso_(), stockInDate: lot.showcaseDate || lot.sourceDate || todayIso_(), expiryDate: String(lot.expiryDate).slice(0, 10) };
+function downloadMissingExpiryTemplate(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const missing = readStockExpiryAlerts_(context.outlet, context.location).missingExpiry || [];
+    if (!missing.length) throw new Error('Semua item sudah memiliki Expired Date. Tidak ada daftar yang perlu di-download.');
+    let workbook = null;
+    try {
+      workbook = SpreadsheetApp.create('TEMP_MISSING_EXPIRY_' + Utilities.getUuid());
+      const sheet = workbook.getSheets()[0];
+      sheet.setName('Expired Date');
+      sheet.getRange('A1:F1').merge().setValue('ITEM TANPA EXPIRED DATE').setBackground('#7f1d32').setFontColor('#ffffff').setFontWeight('bold').setFontSize(15);
+      sheet.getRange('A2').setValue('OUTLET').setFontWeight('bold');
+      sheet.getRange('B2').setValue(context.outlet);
+      sheet.getRange('C2').setValue('LOKASI').setFontWeight('bold');
+      sheet.getRange('D2').setValue(context.location);
+      sheet.getRange('E2').setValue('DIBUAT').setFontWeight('bold');
+      sheet.getRange('F2').setValue(new Date()).setNumberFormat('dd/mm/yyyy hh:mm');
+      sheet.getRange('A3:F3').merge().setValue('Isi hanya kolom kuning QTY dan EXPIRED DATE. Untuk beberapa tanggal pada satu item, salin baris item lalu bagi QTY. Total QTY per item harus sama dengan QTY TANPA EXPIRED.');
+      sheet.getRange('A4:F4').merge().setValue('Kolom EXPIRED DATE wajib bertipe Date. Jangan mengubah nama kolom, kode item, unit, outlet, atau lokasi.');
+      const headers = ['ITEM CODE', 'ITEM NAME', 'UNIT', 'QTY TANPA EXPIRED', 'QTY', 'EXPIRED DATE'];
+      sheet.getRange(5, 1, 1, headers.length).setValues([headers]).setBackground('#9f172b').setFontColor('#ffffff').setFontWeight('bold');
+      const values = missing.map(function (item) { return [item.code, item.name, item.unit, Number(item.qty || 0), Number(item.qty || 0), '']; });
+      sheet.getRange(6, 1, values.length, headers.length).setValues(values).setVerticalAlignment('middle');
+      sheet.getRange(6, 1, values.length, 4).setBackground('#f3f1f2');
+      sheet.getRange(6, 5, values.length, 2).setBackground('#fff4bf');
+      sheet.getRange(6, 4, values.length, 2).setNumberFormat('#,##0.00');
+      sheet.getRange(6, 6, values.length, 1).setNumberFormat('dd/mm/yyyy');
+      sheet.getRange(6, 5, values.length, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireNumberGreaterThan(0).setAllowInvalid(false).setHelpText('QTY wajib berupa angka lebih besar dari 0.').build());
+      sheet.getRange(6, 6, values.length, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireDate().setAllowInvalid(false).setHelpText('Expired Date wajib berupa tanggal yang valid.').build());
+      sheet.setFrozenRows(5);
+      sheet.setColumnWidth(1, 125); sheet.setColumnWidth(2, 300); sheet.setColumnWidth(3, 90);
+      sheet.setColumnWidth(4, 150); sheet.setColumnWidth(5, 110); sheet.setColumnWidth(6, 145);
+      sheet.getRange(1, 1, values.length + 5, 6).setWrap(true);
+      SpreadsheetApp.flush();
+      const response = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + workbook.getId() + '/export?format=xlsx', {
+        method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
       });
-      let allocationIndex = 0, allocationRemaining = allocations[0].qty;
-      blankLots.forEach(function (source) {
-        let sourceRemaining = Number(source.qty || 0);
-        while (sourceRemaining > 0.0000001 && allocationIndex < allocations.length) {
-          const used = Math.min(sourceRemaining, allocationRemaining);
-          completedLots.push({
-            qty: used,
-            arrivalDate: source.sourceDate || todayIso_(),
-            stockInDate: source.showcaseDate || source.sourceDate || todayIso_(),
-            expiryDate: allocations[allocationIndex].expiryDate
-          });
-          sourceRemaining -= used;
-          allocationRemaining -= used;
-          if (allocationRemaining <= 0.0000001) {
-            allocationIndex++;
-            allocationRemaining = allocationIndex < allocations.length ? allocations[allocationIndex].qty : 0;
-          }
-        }
-      });
+      if (response.getResponseCode() !== 200) throw new Error('Export daftar merespons HTTP ' + response.getResponseCode() + '.');
+      const safeOutlet = String(context.outlet || 'Outlet').replace(/[^A-Za-z0-9_-]+/g, '_');
+      const blob = response.getBlob().setContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .setName('Item_Tanpa_Expired_' + safeOutlet + '_' + todayIso_() + '.xlsx');
+      const bytes = blob.getBytes();
+      if (bytes.length < 4 || bytes[0] !== 80 || bytes[1] !== 75) throw new Error('Hasil download bukan file XLSX yang valid.');
+      return { fileName: blob.getName(), mimeType: blob.getContentType(), data: Utilities.base64Encode(bytes), itemCount: missing.length };
+    } finally {
+      if (workbook) {
+        try { DriveApp.getFileById(workbook.getId()).setTrashed(true); } catch (cleanupError) {}
+      }
+    }
+  });
+}
 
-      const now = new Date(), recordId = Utilities.getUuid(), logicalId = Utilities.getUuid();
-      const totalQty = completedLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
-      const info = JSON.stringify({ note: 'Lengkapi Expired Date melalui notifikasi', lots: completedLots });
-      insertStockCardRows_([{ insertId: recordId, json: {
-        record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
-        outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
-        item_name: item.name, unit: item.unit, direction: 'LOT', qty: totalQty,
-        movement_type: 'Lot Balance Override', info: info, event_date: todayIso_(),
-        created_at: now.getTime() / 1000, created_by: context.employee.nik
-      }}]);
-      return { saved: true, itemCode: item.code, itemName: item.name, completedQty: missingQty };
+function parseMissingExpiryExcel_(base64, fileName) {
+  const cells = extractReportCells_(base64, fileName, 'Expired Date');
+  const header = findReportHeader_(cells, ['ITEM CODE', 'ITEM NAME', 'UNIT', 'QTY TANPA EXPIRED', 'QTY', 'EXPIRED DATE']);
+  const fileOutlet = cleanText_(cells.B2, 100).trim().toUpperCase();
+  const fileLocation = cleanText_(cells.D2, 100).trim();
+  if (!fileOutlet || !fileLocation) throw new Error('Identitas OUTLET atau LOKASI pada template tidak ditemukan. Download ulang daftar terbaru.');
+  const grouped = {}, errors = [];
+  const rows = reportDataRows_(cells, header, 'ITEM CODE');
+  if (!rows.length) throw new Error('File tidak memuat item untuk diproses. Download ulang daftar terbaru.');
+  if (rows.length > 1000) throw new Error('File memuat lebih dari 1.000 baris. Pecah upload menjadi beberapa file.');
+  rows.forEach(function (rowNumber) {
+    const code = cleanText_(reportCell_(cells, header, 'ITEM CODE', rowNumber), 100).trim().toUpperCase();
+    const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber));
+    const rawDate = reportCell_(cells, header, 'EXPIRED DATE', rowNumber);
+    try {
+      if (!code) throw new Error('ITEM CODE kosong.');
+      if (!isFinite(qty) || qty <= 0) throw new Error('QTY wajib berupa angka lebih besar dari 0.');
+      const dateText = String(rawDate === null || rawDate === undefined ? '' : rawDate).trim();
+      if (!/^\d+(?:\.\d+)?$/.test(dateText)) throw new Error('EXPIRED DATE wajib diisi sebagai cell Date, bukan teks.');
+      const expiryDate = parseReportDate_(dateText, 'TRANSACTION', rowNumber, 'Expired Date');
+      if (!grouped[code]) grouped[code] = [];
+      grouped[code].push({ qty: qty, expiryDate: expiryDate });
+    } catch (error) {
+      errors.push('Baris ' + rowNumber + ' (' + (code || 'tanpa kode') + '): ' + error.message);
+    }
+  });
+  if (errors.length) throw new Error(errors.slice(0, 10).join('\n') + (errors.length > 10 ? '\n...dan ' + (errors.length - 10) + ' error lainnya.' : ''));
+  return { grouped: grouped, outlet: fileOutlet, location: fileLocation };
+}
+
+function uploadMissingExpiryExcel(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const parsed = parseMissingExpiryExcel_(payload.base64, payload.fileName);
+    if (parsed.outlet !== String(context.outlet || '').trim().toUpperCase() || parsed.location.toLowerCase() !== String(context.location || '').trim().toLowerCase()) {
+      throw new Error('File ini dibuat untuk ' + parsed.outlet + ' · ' + parsed.location + ', bukan ' + context.outlet + ' · ' + context.location + '. Download daftar dari outlet dan lokasi yang sedang dipilih.');
+    }
+    const grouped = parsed.grouped;
+    const codes = Object.keys(grouped);
+    if (!codes.length) throw new Error('Tidak ada baris Expired Date yang dapat diproses.');
+    const requests = codes.map(function (code) {
+      return { item: findStockItemForLocation_(context.location, code), allocations: normalizeStockExpiryAllocations_(grouped[code], code) };
+    });
+    const lock = acquireStockWriteLock_();
+    try {
+      const baseCreatedAt = Date.now() / 1000, rows = [], completedItems = [];
+      requests.forEach(function (request, index) {
+        const completed = buildStockExpiryCompletionRow_(context, request.item, request.allocations, baseCreatedAt + index / 1000, 'Lengkapi Expired Date melalui upload Excel');
+        rows.push(completed.row);
+        completedItems.push({ code: request.item.code, name: request.item.name, qty: completed.completedQty, unit: request.item.unit });
+      });
+      insertStockCardRows_(rows);
+      return { saved: true, itemCount: completedItems.length, items: completedItems };
     } finally {
       lock.releaseLock();
     }
