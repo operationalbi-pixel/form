@@ -711,6 +711,8 @@ html {
   min-height: 100%;
   min-height: 100dvh;
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -725,7 +727,8 @@ body,
 
 body {
   overflow-x: hidden;
-  overscroll-behavior-y: none;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
 }
 
 .app-header {
@@ -829,7 +832,8 @@ body {
 
   .showcase-page .table-wrap,
   .stock-page .workspace-card > .table-wrap {
-    max-height: calc(100dvh - 222px - var(--safe-top) - var(--safe-bottom));
+    max-height: none;
+    overscroll-behavior-y: auto;
   }
 
   .stock-page .drawer {
