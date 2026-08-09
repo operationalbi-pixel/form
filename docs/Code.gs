@@ -555,6 +555,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
       taskId: stockTask ? stockTask.id : '',
       taskCompleted: false,
       navigationTasks: navigationTasks,
+      navigationPages: readPagesForEmployee_(employee),
       completions: {},
       uploadProgress: null,
       supplementaryPending: true
@@ -638,7 +639,7 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     return {
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
       items: items, progress: readShowcaseLogProgress_(outlet, eventDate), taskId: task ? task.id : '',
-      tasks: tasks, completions: completions,
+      tasks: tasks, pages: readPagesForEmployee_(employee), completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
   });
