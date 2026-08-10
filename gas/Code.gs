@@ -626,7 +626,7 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const items = readShowcaseItems_().map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
       return {
-        code: item.code, category: item.category, name: item.name, unit: item.unit,
+        code: item.code, displayCode: item.sourceCode || item.code, category: item.category, name: item.name, unit: item.unit,
         previousBalance: Number(day.previousBalance || 0), balance: Number(day.balance || 0),
         totalIn: Number(day.totalIn || 0), totalSold: Number(day.totalSold || 0), totalWaste: Number(day.totalWaste || 0),
         inUsers: day.inUsers || '', soldUsers: day.soldUsers || '', wasteUsers: day.wasteUsers || ''
@@ -727,7 +727,7 @@ function saveShowcaseLog(token, payload) {
           const transferId = Utilities.getUuid();
           let assignedMenuQty = 0;
           productLots.forEach(function (lot, lotIndex) {
-            const storeInfo = 'Transfer To Showcase · Dari Store · Keluar utk Produk: ' + entry.item.name + ' · ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
+            const storeInfo = 'Transfer To Showcase untuk Produk ' + entry.item.name + ' · Dari Store · QTY Showcase ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
             const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
             storeRow.json.source_file = 'SHOWCASE_LOG';
             storeRow.json.source_row = entryIndex + 1;
@@ -5561,20 +5561,30 @@ function showcaseUnitForCategory_(category) {
 function readShowcaseItems_() {
   const sheet = ensureShowcaseSheet_();
   if (sheet.getLastRow() < 2) return [];
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues();
+  const configuredCodeCounts = {};
+  values.forEach(function (row) {
+    const name = cleanText_(row[0], 180), configuredCode = cleanText_(row[8], 80).toUpperCase();
+    if (!name || !configuredCode) return;
+    configuredCodeCounts[configuredCode] = Number(configuredCodeCounts[configuredCode] || 0) + 1;
+  });
   const seenCodes = {}, seenNames = {};
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues().map(function (row, index) {
+  return values.map(function (row, index) {
     const name = cleanText_(row[0], 180);
     const productQty = Number(row[7]);
     if (!name || !cleanText_(row[3], 180) || !isFinite(productQty) || productQty <= 0) return null;
-    const code = cleanText_(row[8], 80).toUpperCase() || showcaseItemCode_(name);
+    const configuredCode = cleanText_(row[8], 80).toUpperCase();
+    // Satu kode sumber/bahan boleh dipakai oleh beberapa menu. Dalam kondisi itu,
+    // gunakan identitas internal berbasis nama menu agar saldo tiap menu tidak tercampur.
+    const code = configuredCode && configuredCodeCounts[configuredCode] === 1 ? configuredCode : showcaseItemCode_(name);
     const nameKey = name.toLowerCase();
     if (seenNames[nameKey]) throw new Error('Nama Menu Showcase "' + name + '" digunakan lebih dari sekali pada baris ' + seenNames[nameKey] + ' dan ' + (index + 2) + '.');
-    if (seenCodes[code]) throw new Error('Kode Item Showcase "' + code + '" digunakan lebih dari sekali pada baris ' + seenCodes[code] + ' dan ' + (index + 2) + '.');
+    if (seenCodes[code]) throw new Error('Identitas internal Menu Showcase bertabrakan pada baris ' + seenCodes[code] + ' dan ' + (index + 2) + '. Ubah nama menu agar unik.');
     seenNames[nameKey] = index + 2;
     seenCodes[code] = index + 2;
     const categoryColumnC = cleanText_(row[2], 100);
     return {
-      code: code, category: categoryColumnC || cleanText_(row[1], 100) || 'SHOWCASE',
+      code: code, sourceCode: configuredCode, category: categoryColumnC || cleanText_(row[1], 100) || 'SHOWCASE',
       name: name, unit: showcaseUnitForCategory_(categoryColumnC), active: true, showcase: true, sourceRow: index + 2,
       menuCategory: cleanText_(row[1], 100), productName: cleanText_(row[3], 180),
       productCategory: cleanText_(row[4], 100), productSubCategory: cleanText_(row[5], 100),
@@ -5833,14 +5843,14 @@ function saveShowcaseInboundMovement_(outlet, showcaseItem, menuQty, payload, em
   const lock = acquireStockWriteLock_();
   try {
     const showcaseCurrent = getCurrentStock_(outlet, 'Showcase', showcaseItem.code, showcaseItem.name).qty;
-    const detail = showcaseItem.name + ' ' + formatQty_(menuQty) + ' PCS · Product ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit;
+    const detail = showcaseItem.name + ' ' + formatQty_(menuQty) + ' ' + showcaseItem.unit + ' · Product ' + product.name + ' ' + formatQty_(productQty) + ' ' + product.unit;
     const rows = [], showcaseRows = [];
     const productPerMenu = Number(showcaseItem.productQty) * factor;
     const allocatedLots = allocateTransferLots_(outlet, 'Store', product, productQty);
     let assignedMenuQty = 0;
     allocatedLots.forEach(function (lot, lotIndex) {
       rows.push(stockTransferMovementRow_(transferId, outlet, 'Store', product, 'OUT', lot.qty, 'Transfer Out',
-        'Transfer To Showcase · Dari Store · Keluar utk Produk: ' + showcaseItem.name + ' · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
+        'Transfer To Showcase untuk Produk ' + showcaseItem.name + ' · Dari Store · ' + detail + (note ? ' · ' + note : ''), lot.expiryDate, employee, now, eventDate, lot.productionDate));
       const isLast = lotIndex === allocatedLots.length - 1;
       const remainingMenuQty = Math.max(0, Number(menuQty) - assignedMenuQty);
       const menuLotQty = isLast
