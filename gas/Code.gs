@@ -5547,6 +5547,17 @@ function showcaseItemCode_(menuName) {
   return 'SC-' + digest_(normalizeStoreName_(menuName)).slice(0, 10).toUpperCase();
 }
 
+function showcaseUnitForCategory_(category) {
+  const units = {
+    'MACARON': 'PCS',
+    'PASTRY': 'PCS',
+    'SLICE CAKE': 'SLICE',
+    'WHOLE CAKE': 'WHOLE',
+    'BUTTER TTEOK': 'PCS'
+  };
+  return units[normalizeStockCategory_(category)] || 'PCS';
+}
+
 function readShowcaseItems_() {
   const sheet = ensureShowcaseSheet_();
   if (sheet.getLastRow() < 2) return [];
@@ -5561,9 +5572,10 @@ function readShowcaseItems_() {
     if (seenCodes[code]) throw new Error('Kode Item Showcase "' + code + '" digunakan lebih dari sekali pada baris ' + seenCodes[code] + ' dan ' + (index + 2) + '.');
     seenNames[nameKey] = index + 2;
     seenCodes[code] = index + 2;
+    const categoryColumnC = cleanText_(row[2], 100);
     return {
-      code: code, category: cleanText_(row[2], 100) || cleanText_(row[1], 100) || 'SHOWCASE',
-      name: name, unit: 'PCS', active: true, showcase: true, sourceRow: index + 2,
+      code: code, category: categoryColumnC || cleanText_(row[1], 100) || 'SHOWCASE',
+      name: name, unit: showcaseUnitForCategory_(categoryColumnC), active: true, showcase: true, sourceRow: index + 2,
       menuCategory: cleanText_(row[1], 100), productName: cleanText_(row[3], 180),
       productCategory: cleanText_(row[4], 100), productSubCategory: cleanText_(row[5], 100),
       productUnit: cleanText_(row[6], 40), productQty: productQty
