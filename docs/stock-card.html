@@ -349,7 +349,7 @@
         var qty=Number(row.qty||0);row.fifoUsageLots=[];row.fifoUncovered=0;
         if(row.direction==='LOT'&&row.movementType==='Lot Balance Override'){
           var override=null;try{override=JSON.parse(String(row.info||''))}catch(error){}
-          if(override&&override.recalculation&&activeRecalc&&row!==activeRecalc&&String(row.date||'').slice(0,10)>=activeRecalcBaseline)return;
+          if(override&&activeRecalc&&row!==activeRecalc&&String(row.date||'').slice(0,10)>=activeRecalcBaseline){var overrideNumeric=Number(row.createdAt),overrideTime=isFinite(overrideNumeric)&&overrideNumeric>0?(overrideNumeric>100000000000?overrideNumeric:overrideNumeric*1000):new Date(row.createdAt||0).getTime();if(!isFinite(overrideTime))overrideTime=0;if(overrideTime<=activeRecalcTime&&(override.recalculation||/Lengkapi Expired Date/i.test(String(override.note||''))))return}
           if(override&&Array.isArray(override.lots)){
             lots=override.lots.filter(function(lot){return Number(lot.qty)>0.0000001}).map(function(lot){return{qty:Number(lot.qty),productionDate:'',expiryDate:String(lot.expiryDate||''),sourceDate:String(lot.arrivalDate||''),showcaseDate:String(lot.stockInDate||'')}});debts=[];
             var uncovered=Math.max(0,Number(override.uncoveredQty||0));if(uncovered>0.0000001)debts.push({row:{fifoUsageLots:[],fifoUncovered:uncovered},qty:uncovered});sortLots();

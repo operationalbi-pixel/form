@@ -6724,8 +6724,11 @@ function calculateFifoSnapshots_(history) {
     if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
       let override = null;
       try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
-      if (override && override.recalculation && activeRecalculation && movement !== activeRecalculation &&
-          String(movement.date || '').slice(0, 10) >= activeRecalculationBaseline) return;
+      const supersededFlowOverride = override && activeRecalculation && movement !== activeRecalculation &&
+        String(movement.date || '').slice(0, 10) >= activeRecalculationBaseline &&
+        stockMovementCreatedMillis_(movement) <= activeRecalculationCreated &&
+        (override.recalculation || /Lengkapi Expired Date/i.test(String(override.note || '')));
+      if (supersededFlowOverride) return;
       if (override && Array.isArray(override.lots)) {
         lots.length = 0;
         uncoveredQueue.length = 0;

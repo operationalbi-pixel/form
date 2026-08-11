@@ -103,6 +103,24 @@ try {
   const newRemaining = screenshotRemaining.find(lot => lot.sourceDate === '2026-08-04');
   if (screenshotUsage.length !== 1 || screenshotUsage[0].sourceDate !== '2026-07-31' || Math.abs(Number(screenshotUsage[0].qty) - 1.49) > 0.0000001) failures.push('Lot lama tanpa expiry belum dipakai secara FIFO sebelum kedatangan baru');
   if (!oldRemaining || Math.abs(Number(oldRemaining.qty) - 6.98) > 0.0000001 || !newRemaining || Math.abs(Number(newRemaining.qty) - 100) > 0.0000001) failures.push('Balance lot setelah rekalkulasi belum menyisakan 6,98 lot lama dan 100 lot baru');
+  const dayEightOut = { recordId: 'OUT-DAY-8', logicalId: 'OUT-DAY-8', date: '2026-08-08', createdAt: '2026-08-08T12:00:00Z', direction: 'OUT', qty: 1.8, movementType: 'WIP Material Usage' };
+  const dayNineOut = { recordId: 'OUT-DAY-9', logicalId: 'OUT-DAY-9', date: '2026-08-09', createdAt: '2026-08-09T12:00:00Z', direction: 'OUT', qty: 2.09, movementType: 'WIP Material Usage' };
+  const reappearanceSnapshots = backendContext.calculateFifoSnapshots_([
+    { recordId: 'ACTIVE-RECALC', logicalId: 'ACTIVE-RECALC', date: '2026-08-03', createdAt: '2026-08-11T10:00:00Z', direction: 'LOT', qty: 1.76, movementType: 'Lot Balance Override', info: JSON.stringify({ recalculation: { days: 7 }, lots: [
+      { qty: 1.76, arrivalDate: '2026-07-31', stockInDate: '2026-07-31', expiryDate: '' }
+    ] }) },
+    { recordId: 'IN-100', logicalId: 'IN-100', date: '2026-08-04', createdAt: '2026-08-04T10:00:00Z', direction: 'IN', qty: 100, movementType: 'Goods Receipt', expiryDate: '2027-07-29', sourceArrivalDate: '2026-08-04' },
+    dayEightOut,
+    { recordId: 'STALE-EXPIRY-OVERRIDE', logicalId: 'STALE-EXPIRY-OVERRIDE', date: '2026-08-09', createdAt: '2026-08-09T10:00:00Z', direction: 'LOT', qty: 99.96, movementType: 'Lot Balance Override', info: JSON.stringify({ note: 'Lengkapi Expired Date melalui notifikasi', lots: [
+      { qty: 8.47, arrivalDate: '2026-07-31', stockInDate: '2026-07-31', expiryDate: '2027-06-11' },
+      { qty: 91.49, arrivalDate: '2026-08-04', stockInDate: '2026-08-04', expiryDate: '2027-07-29' }
+    ] }) },
+    dayNineOut
+  ]);
+  const dayEightLots = reappearanceSnapshots['2026-08-08'] || [];
+  const dayNineLots = reappearanceSnapshots['2026-08-09'] || [];
+  if (dayEightLots.some(lot => lot.sourceDate === '2026-07-31') || Math.abs(dayEightLots.reduce((sum, lot) => sum + Number(lot.qty || 0), 0) - 99.96) > 0.0000001) failures.push('Lot lama belum habis pada snapshot tanggal 08/08');
+  if (dayNineLots.some(lot => lot.sourceDate === '2026-07-31') || Math.abs(dayNineLots.reduce((sum, lot) => sum + Number(lot.qty || 0), 0) - 97.87) > 0.0000001) failures.push('Lot yang sudah habis muncul kembali pada tanggal 09/08');
   const enriched = backendContext.applyKnownExpiryToBaselineLots_([
     { qty: 10, expiryDate: '', sourceDate: '2026-07-31', showcaseDate: '2026-07-31' }
   ], [
