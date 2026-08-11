@@ -1,0 +1,1865 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"></meta>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"></meta>
+<title>Absensi Break — BI-Space</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"></link>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin></link>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"></link>
+<style>
+  :root {
+    --bg: #F7F8FA; --card: #FFFFFF; --ink: #202124; --muted: #70757D;
+    --hair: #E7E9ED; --accent: #B20D2E; --accent-dark: #8D0A25;
+    --ok: #16805A; --warn: #B7791F; --late: #C62828; --no-scan: #6D3FB5;
+    --serif: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); }
+  body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+
+  /* ── layout terpusat ── */
+  .screen { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 18px; gap: 22px; }
+  .screen.top {
+    justify-content: flex-start;
+    padding-top: max(28px, calc(env(safe-area-inset-top, 0px) + 16px));
+    padding-bottom: max(48px, calc(env(safe-area-inset-bottom, 0px) + 28px));
+  }
+  .col { width: 100%; max-width: 430px; display: flex; flex-direction: column; gap: 14px; }
+  .col.wide { max-width: 560px; }
+
+  .wordmark { text-align: center; }
+  .wordmark .b { font-family: var(--serif); font-weight: 700; font-size: 30px; letter-spacing: 0.01em; }
+  .wordmark .s { font-size: 11px; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+
+  .card { background: rgba(255,255,255,.98); border: 1px solid var(--hair); border-radius: 18px; padding: 24px;
+          box-shadow: 0 1px 2px rgba(24,28,35,.03), 0 10px 30px rgba(24,28,35,.055); }
+  .card.tight { padding: 16px 18px; }
+  .label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); }
+
+  .btn { width: 100%; min-height: 48px; padding: 14px 16px; border: none; border-radius: 12px; background: var(--ink); color: #fff;
+         font-family: var(--sans); font-weight: 700; font-size: 14.5px; letter-spacing: 0.01em; cursor: pointer;
+         box-shadow: 0 5px 14px rgba(32,33,36,.12); transition: transform .15s ease, box-shadow .15s ease, background .15s ease; }
+  .btn.accent { background: linear-gradient(135deg, var(--accent), var(--accent-dark)); box-shadow: 0 7px 18px rgba(178,13,46,.22); }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+  .report-btn { display: grid; grid-template-columns: 36px 1fr; grid-template-rows: auto auto; column-gap: 11px;
+                align-items: center; text-align: left; background: #fff !important; border-color: var(--hair) !important;
+                color: var(--ink) !important; box-shadow: 0 5px 18px rgba(24,28,35,.055); }
+  .report-btn > span:first-child { grid-row: 1 / 3; width: 36px; height: 36px; border-radius: 10px;
+                                   display: flex; align-items: center; justify-content: center;
+                                   background: rgba(178,13,46,.09); color: var(--accent); font-size: 21px; }
+  .report-btn > span:nth-child(2) { align-self: end; font-size: 14px; }
+  .report-btn small { align-self: start; color: var(--muted); font: 600 11px/1.4 var(--sans); letter-spacing: 0; }
+  .report-btn:hover { border-color: rgba(178,13,46,.35) !important; box-shadow: 0 8px 22px rgba(178,13,46,.09); }
+  .btn:disabled { opacity: 0.45; }
+  .btn:active { transform: translateY(1px); }
+
+  input.nik { width: 100%; padding: 15px; font-size: 19px; font-family: var(--mono); font-weight: 700;
+              border: 1px solid var(--hair); border-radius: 12px; text-align: center; letter-spacing: 0.1em; background: #FAFBFC; transition: .18s; }
+  input.nik:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(178,13,46,.09); background:#fff; }
+  .err { color: var(--late); font-size: 13px; font-weight: 700; text-align: center; min-height: 18px; }
+  .muted { color: var(--muted); font-size: 13px; line-height: 1.55; }
+  .center { text-align: center; }
+  .hidden { display: none !important; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--hair); font-size: 14px; }
+  .row:last-child { border-bottom: none; padding-bottom: 0; }
+  .row:first-of-type { padding-top: 0; }
+  .row .v { font-family: var(--mono); font-weight: 700; }
+
+  .pill { display: inline-block; padding: 3px 11px; border-radius: 999px; font-weight: 700; font-size: 11px;
+          letter-spacing: 0.06em; text-transform: uppercase; color: #fff; background: var(--ink); }
+  .pill.ok { background: var(--ok); } .pill.late { background: var(--late); }
+  .pill.no-scan { background: var(--no-scan); }
+  .pill.line { background: transparent; color: var(--muted); border: 1px solid var(--hair); }
+
+  .profile { display: flex; align-items: center; gap: 14px; }
+  .ava { width: 52px; height: 52px; border-radius: 50%; background: var(--ink); color: #fff; overflow: hidden;
+         display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; flex-shrink: 0; }
+  .ava img { width: 100%; height: 100%; object-fit: cover; }
+  .mini-btn { min-height: 32px; padding: 5px 12px; border: 1px solid var(--hair); border-radius: 999px; background: #fff;
+              font-family: var(--sans); font-weight: 700; font-size: 12px; cursor: pointer; color: var(--muted); }
+  .mini-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .ring { width: 210px; height: 210px; border-radius: 50%; margin: 6px auto; display: flex; align-items: center; justify-content: center; }
+  .ring .inner { width: 182px; height: 182px; border-radius: 50%; background: var(--card);
+                 display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+  .timer { font-family: var(--mono); font-weight: 700; font-size: 40px; letter-spacing: -0.02em; }
+  .alertbox { background: var(--late); color: #fff; border-radius: 12px; padding: 11px 14px; font-size: 13px; font-weight: 700; text-align: center; }
+
+  .section { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; }
+  .section .t { font-family: var(--serif); font-weight: 700; font-size: 19px; }
+  .section .t::after { content: ''; display: block; width: 28px; height: 2px; background: var(--accent); margin-top: 4px; border-radius: 1px; }
+
+  /* chips & segmented */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--hair); background: #fff;
+          font-family: var(--sans); font-weight: 700; font-size: 12.5px; cursor: pointer; color: var(--muted); }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .seg { display: flex; border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; background: #fff; }
+  .seg button { flex: 1; padding: 9px 0; border: none; background: transparent; font-family: var(--sans);
+                font-weight: 700; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .seg button.on { background: var(--ink); color: #fff; }
+
+  /* list rows */
+  .item { background: var(--card); border: 1px solid var(--hair); border-radius: 15px; padding: 14px 16px;
+          display: flex; align-items: center; gap: 12px; cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
+  .item:hover { border-color: #C9CDD4; transform: translateY(-1px); box-shadow:0 7px 18px rgba(24,28,35,.06); }
+  .item.late { border-color: var(--late); }
+  .item.no-scan { border-color: var(--no-scan); background: #FAF8FF; }
+  .item .nm { font-weight: 700; font-size: 14.5px; }
+  .item .sb { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .item .rt { text-align: right; flex-shrink: 0; }
+  .bar { height: 5px; border-radius: 3px; background: var(--hair); overflow: hidden; margin-top: 7px; }
+  .bar > div { height: 100%; border-radius: 3px; background: var(--ok); transition: width 1s linear; }
+  .rank { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--hair); flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-weight: 700; font-size: 12px; color: var(--muted); }
+  .rank.top { background: var(--ink); border-color: var(--ink); color: #fff; }
+  .empty { background: transparent; border: 1px dashed var(--hair); border-radius: 14px; padding: 22px;
+           text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* scanner */
+  #scan-overlay { position: fixed; inset: 0; background: #000; z-index: 60; display: flex; flex-direction: column; }
+  #reader { flex: 1; overflow: hidden; border: none !important; }
+  #reader video { width: 100% !important; height: 100% !important; object-fit: cover; display: block !important; }
+  #native-video { width: 100% !important; height: 100% !important; object-fit: cover; background: #000; display: block !important; }
+
+  /* GitHub Pages camera stability: force html5-qrcode video layer to fill the overlay */
+  #reader, #reader > div, #reader__scan_region { width: 100% !important; height: 100% !important; border: 0 !important; }
+  #reader__scan_region { display: flex !important; align-items: center !important; justify-content: center !important; }
+  #reader__dashboard, #reader__status_span, #reader__header_message { display: none !important; }
+  #reader canvas { display: none !important; }
+  /* GitHub Pages friendly: sembunyikan UI/frame bawaan html5-qrcode agar hanya custom frame yang tampil */
+  #reader__dashboard,
+  #reader__dashboard_section,
+  #reader__header_message,
+  #qr-shaded-region,
+  div[id$="__dashboard"],
+  div[id$="__dashboard_section"],
+  div[id$="__header_message"] { display: none !important; }
+  #reader__scan_region { width: 100% !important; height: 100% !important; background: #000 !important; }
+  #reader__scan_region video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
+  #scan-top { position: absolute; top: 0; left: 0; right: 0; padding: 20px; text-align: center; color: #fff; z-index: 2;
+              background: linear-gradient(rgba(0,0,0,0.6), transparent); }
+  #scan-top .t { font-weight: 700; font-size: 17px; }
+  #scan-top .s { font-size: 12.5px; opacity: 0.8; margin-top: 2px; }
+  #scan-frame { position: absolute; top: 50%; left: 50%; width: min(78vw, 340px); aspect-ratio: 1;
+                transform: translate(-50%, -56%); z-index: 2; pointer-events: none; }
+  #scan-frame::before, #scan-frame::after, #scan-frame .c::before, #scan-frame .c::after {
+    content: ''; position: absolute; width: 32px; height: 32px; border: 3px solid #fff; border-radius: 2px; }
+  #scan-frame::before { top: 0; left: 0; border-right: none; border-bottom: none; }
+  #scan-frame::after { top: 0; right: 0; border-left: none; border-bottom: none; }
+  #scan-frame .c::before { bottom: 0; left: 0; border-right: none; border-top: none; }
+  #scan-frame .c::after { bottom: 0; right: 0; border-left: none; border-top: none; }
+  #scan-bottom { position: absolute; bottom: 0; left: 0; right: 0; padding: 18px 18px 32px; z-index: 2; text-align: center;
+                 background: linear-gradient(transparent, rgba(0,0,0,0.65)); display: flex; flex-direction: column; gap: 10px; align-items: center; }
+  #scan-msg { color: #fff; font-size: 13px; min-height: 18px; font-weight: 700; }
+  #scan-flash { position: absolute; inset: 0; background: #fff; opacity: 0; z-index: 3; pointer-events: none; transition: opacity 0.3s; }
+
+  /* konfirmasi penyimpanan scan */
+  #save-overlay { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+                  padding: max(24px, env(safe-area-inset-top)) 22px max(24px, env(safe-area-inset-bottom));
+                  background: rgba(247,248,250,.72); backdrop-filter: blur(6px); }
+  .save-card { width: 100%; max-width: 390px; background: rgba(255,255,255,.90); border: 1px solid rgba(231,233,237,.88); border-radius: 24px;
+               padding: 26px 22px 22px; box-shadow: 0 22px 60px rgba(28,31,38,.12); text-align: center; }
+  .save-title { font-size: 21px; font-weight: 800; letter-spacing: -.02em; }
+  .save-sub { color: var(--muted); font-size: 13px; line-height: 1.55; min-height: 40px; margin: 7px auto 18px; max-width: 310px; }
+  .save-flow { width: min(100%, 248px); margin: 0 auto 18px; }
+  .save-flow-row { display: flex; align-items: center; gap: 16px; text-align: left; }
+  .save-node { width: 62px; height: 62px; flex: 0 0 62px; position: relative; border-radius: 50%;
+               display: grid; place-items: center; background: rgba(255,255,255,.70); border: 3px solid #DDE1E7;
+               color: #9AA0A6; font-size: 21px; font-weight: 900; }
+  .save-node::before { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 3px solid transparent; }
+  .save-node.active { border-color: transparent; color: var(--accent); background: rgba(255,255,255,.82); }
+  .save-node.active::before { border-top-color: var(--accent); border-right-color: rgba(178,13,46,.28);
+                              border-bottom-color: rgba(178,13,46,.10); animation: saveSpin .8s linear infinite; }
+  /* Hijau hanya berada di dalam lingkaran, dengan opacity 50%. */
+  .save-node.done { background: rgba(22,128,90,.50); border-color: rgba(22,128,90,.68); color: #fff;
+                    box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
+  .save-node.failed { background: rgba(198,40,40,.16); border-color: rgba(198,40,40,.65); color: var(--late); }
+  .save-flow-copy { min-width: 0; }
+  .save-flow-copy b { display: block; font-size: 14px; color: var(--ink); }
+  .save-flow-copy span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+  .save-link { width: 2px; height: 18px; margin: 3px 0 3px 30px; background: #DDE1E7; border-radius: 2px; }
+  .save-note { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--muted); font-size: 11px; min-height: 17px; }
+  .save-note b { color: var(--ink); }
+  .save-actions { display: flex; gap: 8px; margin-top: 14px; }
+  @keyframes saveSpin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .save-node.active::before { animation-duration: 2.2s; }
+  }
+
+  .live-badge { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 999px;
+                background: rgba(22,128,90,.09); color: var(--ok); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+  .live-badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+                        box-shadow: 0 0 0 4px rgba(22,128,90,.10); }
+
+  /* modal riwayat staff / laporan */
+  #modal, #modal-report { position: fixed; inset: 0; background: rgba(28,25,22,0.5); z-index: 70;
+           display: flex; align-items: center; justify-content: center; padding: 20px; }
+  #modal .box, #modal-report .box { background: var(--card); border-radius: 20px; width: 100%; max-width: 420px; max-height: 82dvh;
+                display: flex; flex-direction: column; overflow: hidden; }
+  #modal .head, #modal-report .head { padding: 20px 22px 14px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; gap: 13px; }
+  #modal .body, #modal-report .body { padding: 16px 22px 22px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4);
+          border-top-color: #fff; border-radius: 50%; animation: sp 0.7s linear infinite; vertical-align: -2px; }
+  .spin.dark { width: 24px; height: 24px; border-color: var(--hair); border-top-color: var(--accent); }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  @media (max-width: 480px) {
+    /* Jaga kartu profil tetap di bawah notch / Dynamic Island / status bar. */
+    .screen.top { padding-top: max(44px, calc(env(safe-area-inset-top, 0px) + 14px)); }
+    .card { padding: 20px; }
+    .card.tight { padding: 14px 16px; }
+    .ring { width: 198px; height: 198px; }
+    .ring .inner { width: 170px; height: 170px; }
+  }
+</style>
+<style>
+  /* Tema BI-Space. Login Absensi Break lama tetap ada sebagai fallback teknis,
+     tetapi tidak pernah ditampilkan kepada pengguna Dashboard. */
+  :root {
+    --bg: #f8f6f6; --card: #fff; --ink: #30292b; --muted: #756d70;
+    --hair: #e9e4e5; --accent: #9f172b; --accent-dark: #741c2c;
+    --serif: "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif;
+    --sans: "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif;
+  }
+  html, body { min-height: 100%; background: radial-gradient(circle at 100% 0, #fbf2f4 0, transparent 30%), var(--bg); }
+  body.absensi-break-page #scr-login { display: none !important; }
+  body.absensi-break-page .screen.top { padding-top: max(24px, calc(env(safe-area-inset-top, 0px) + 16px)); }
+  body.absensi-break-page .col { max-width: 560px; }
+  body.absensi-break-page .card { border-color: var(--hair); box-shadow: 0 10px 34px rgba(54,35,40,.07); }
+  body.absensi-break-page .btn.accent { background: linear-gradient(135deg, #9f172b, #c72a43); box-shadow: 0 10px 24px rgba(159,23,43,.22); }
+  body.absensi-break-page .profile { gap: 13px; }
+  body.absensi-break-page #home-col > .card:first-child { border-top: 4px solid var(--accent); }
+  .dashboard-auth-screen { position: fixed; inset: 0; z-index: 3000; display: grid; place-items: center; padding: 24px; background: var(--bg); }
+  .dashboard-auth-card { width: min(100%, 420px); padding: 30px 26px; border: 1px solid var(--hair); border-radius: 22px; background: #fff; box-shadow: 0 22px 60px rgba(54,35,40,.13); text-align: center; }
+  .dashboard-auth-mark { width: 52px; height: 52px; display: grid; place-items: center; margin: 0 auto 16px; border-radius: 15px; color: #fff; background: linear-gradient(145deg,#c72a43,#9f172b); font-weight: 800; }
+  .dashboard-auth-card h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -.03em; }
+  .dashboard-auth-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+  .dashboard-auth-card .mini-btn { margin-top: 18px; }
+  @media (max-width: 600px) {
+    body.absensi-break-page .screen.top { padding-left: 12px; padding-right: 12px; }
+    body.absensi-break-page .card { border-radius: 16px; }
+  }
+</style>
+</head>
+<body class="absensi-break-page">
+
+<div id="scr-auth" class="dashboard-auth-screen">
+  <div class="dashboard-auth-card">
+    <div class="dashboard-auth-mark">BI</div>
+    <h1>Absensi Break</h1>
+    <p id="auth-message">Menghubungkan sesi BI-Space dan menyiapkan data Anda…</p>
+    <button id="btn-auth-retry" class="mini-btn hidden" type="button">Coba Lagi</button>
+  </div>
+</div>
+
+<!-- LOGIN: terpusat penuh -->
+<div id="scr-login" class="screen hidden">
+  <div class="col" style="max-width: 360px;">
+    <div class="wordmark" style="margin-bottom: 8px;">
+      <img id="logo-img" src="data:image/png;base64,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…1994 tokens truncated…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" alt="Bakerzin" style="width: 230px; max-width: 78%; margin: 0 auto 12px; display: block; object-fit: contain;" onerror="this.style.display='none';"></img>
+      <div class="s">Absensi Break</div>
+    </div>
+    <div class="card">
+      <div class="label center" style="display: block;">Masuk dengan NIK</div>
+      <div style="height: 14px;"></div>
+      <input id="inp-nik" class="nik" type="text" autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" placeholder="BG0006562"></input>
+      <div style="height: 10px;"></div>
+      <div id="login-err" class="err"></div>
+      <button id="btn-login" class="btn">Masuk</button>
+    </div>
+    <div class="muted center">Crafted By Day & Nite Promise</div>
+  </div>
+  <div id="api-warn" class="col hidden" style="max-width: 360px;">
+    <div class="card tight" style="border-color: var(--late);">
+      <div class="err">API_URL belum diisi — edit index.html.</div>
+    </div>
+  </div>
+</div>
+
+<!-- HOME -->
+<div id="scr-home" class="screen top hidden">
+  <div class="col" id="home-col">
+    <div class="card tight">
+      <div class="profile">
+        <div class="ava" id="p-ava"></div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-weight: 700; font-size: 16px;" id="p-name"></div>
+          <div class="muted" style="font-size: 12px;" id="p-sub"></div>
+        </div>
+        <button class="mini-btn" id="btn-logout">Dashboard</button>
+      </div>
+    </div>
+
+    <!-- Akses laporan selalu di depan untuk BIHQ / Grade 3+, tidak bergantung status break -->
+    <div id="box-report-action" class="hidden">
+      <button class="btn ghost report-btn" id="btn-break-report">
+        <span aria-hidden="true">↓</span>
+        <span>Download Laporan Break Staff</span>
+        <small>PDF · pilih outlet dan periode</small>
+      </button>
+    </div>
+
+    <!-- Ditampilkan saat login ulang sambil memulihkan break aktif dari Break_log -->
+    <div id="box-sync-state" class="card center hidden">
+      <div class="spin dark"></div>
+      <div style="font-weight:700; margin-top:10px;" id="sync-state-title">Memeriksa break aktif…</div>
+      <div class="muted" style="margin-top:5px;">Timer sebelumnya akan dilanjutkan otomatis.</div>
+      <button class="mini-btn hidden" id="btn-sync-retry" style="margin-top:12px;">Coba lagi</button>
+    </div>
+
+    <!-- mulai break -->
+    <div id="box-start" class="stack hidden">
+      <div class="card">
+        <div class="label">Break berikutnya</div>
+        <div style="height: 12px;"></div>
+        <div class="row"><span>Kuota hari ini</span><span class="v" id="st-quota"></span></div>
+        <div class="row"><span>Maksimal sesi ini</span><span class="v" id="st-limit"></span></div>
+        <div class="row"><span>Keluar sekarang</span><span class="v" id="st-now"></span></div>
+        <div class="row"><span>Harus kembali</span><span class="v" id="st-backat" style="color: var(--accent);"></span></div>
+      </div>
+      <button id="btn-scan-out" class="btn accent">Scan QR — Mulai Break</button>
+    </div>
+
+    <!-- countdown -->
+    <div id="box-active" class="stack hidden">
+      <div class="card center">
+        <div class="live-badge" id="break-live-badge">BREAK AKTIF · TERSIMPAN</div>
+        <div id="ring" class="ring">
+          <div class="inner">
+            <div class="label" id="cd-label">Sisa waktu</div>
+            <div class="timer" id="cd-timer">60:00</div>
+            <div class="muted" style="font-size: 12px;">kembali sebelum <strong id="cd-backat" style="font-family: var(--mono); color: var(--ink);"></strong></div>
+          </div>
+        </div>
+        <div id="cd-alert" class="alertbox hidden">Terlambat — segera kembali ke outlet</div>
+      </div>
+      <button id="btn-scan-in" class="btn">Scan QR — Saya Masuk</button>
+      <div class="muted center">Hitungan hanya berhenti dengan scan QR di pintu.</div>
+    </div>
+
+    <!-- jatah habis -->
+    <div id="box-blocked" class="card center hidden">
+      <div style="font-family: var(--serif); font-weight: 700; font-size: 19px;">Kuota break hari ini sudah habis</div>
+      <div class="muted" style="margin-top: 8px;">Total kuota break adalah 60 menit dan boleh dibagi menjadi beberapa sesi.</div>
+    </div>
+
+    <!-- hasil -->
+    <div id="box-result" class="stack hidden">
+      <div class="card center">
+        <div style="font-family: var(--serif); font-weight: 700; font-size: 21px;">Break selesai</div>
+        <div style="height: 10px;"></div>
+        <span id="res-pill" class="pill"></span>
+        <div style="height: 14px;"></div>
+        <div class="row"><span>Keluar</span><span class="v" id="res-out"></span></div>
+        <div class="row"><span>Kembali</span><span class="v" id="res-in"></span></div>
+        <div class="row"><span>Durasi</span><span class="v" id="res-dur"></span></div>
+      </div>
+    </div>
+
+    <!-- supervisor: live outlet sendiri -->
+    <div id="box-monitor" class="stack hidden">
+      <div class="section">
+        <span class="t">Sedang break · <span id="mon-outlet"></span></span>
+        <button class="mini-btn" id="btn-mon-refresh">Muat ulang</button>
+      </div>
+      <div id="mon-live" class="stack"></div>
+    </div>
+
+    <!-- HQ dashboard -->
+    <div id="box-hq" class="stack hidden">
+      <div class="section"><span class="t" id="hq-title">Semua Outlet</span><span id="hq-updated" class="muted" style="font-size:11px;float:right;margin-top:3px;"></span></div>
+      <div class="chips" id="hq-chips"></div>
+      <div class="seg" id="hq-tabs">
+        <button data-tab="live" class="on">Sedang Break</button>
+        <button data-tab="good">Disiplin</button>
+        <button data-tab="bad">Sering Telat</button>
+      </div>
+      <div class="seg hidden" id="hq-days">
+        <button data-days="1" class="on">Hari ini</button>
+        <button data-days="7">7 Hari</button>
+        <button data-days="30">30 Hari</button>
+      </div>
+      <div id="hq-list" class="stack"></div>
+    </div>
+
+    <!-- riwayat pribadi -->
+    <div class="section">
+      <span class="t">Riwayat saya</span>
+      <button class="mini-btn" id="btn-hist">Tampilkan</button>
+    </div>
+    <div id="box-hist" class="stack hidden"></div>
+  </div>
+</div>
+
+<!-- SCANNER -->
+<div id="scan-overlay" class="hidden">
+  <div id="scan-top">
+    <div class="t">Scan QR di pintu</div>
+    <div class="s">Arahkan ke sticker — terbaca otomatis</div>
+  </div>
+  <div id="reader"></div>
+  <div id="scan-frame"><div class="c"></div></div>
+  <div id="scan-flash"></div>
+  <div id="scan-bottom">
+    <div id="scan-msg"></div>
+    <button class="btn ghost" style="width: auto; padding: 11px 32px; color: #fff; border-color: #fff;" id="btn-scan-cancel">Batal</button>
+  </div>
+</div>
+
+<!-- KONFIRMASI SIMPAN SCAN -->
+<div id="save-overlay" class="hidden" role="dialog" aria-modal="true" aria-live="polite">
+  <div class="save-card" id="save-card">
+    <div class="save-title" id="save-title">Mengamankan data scan</div>
+    <div class="save-sub" id="save-sub">Tetap di halaman ini sebentar agar data tercatat dengan aman.</div>
+    <div class="save-flow">
+      <div class="save-flow-row">
+        <div class="save-node done" id="save-step-qr"><span id="save-icon-qr">✓</span></div>
+        <div class="save-flow-copy"><b>Scan Terbaca</b><span>QR berhasil dikenali</span></div>
+      </div>
+      <div class="save-link"></div>
+      <div class="save-flow-row">
+        <div class="save-node active" id="save-step-send"><span id="save-icon-send">↑</span></div>
+        <div class="save-flow-copy"><b>Mengirim Data</b><span>Menunggu konfirmasi server</span></div>
+      </div>
+      <div class="save-link"></div>
+      <div class="save-flow-row">
+        <div class="save-node" id="save-step-done"><span id="save-icon-done">3</span></div>
+        <div class="save-flow-copy"><b>Berhasil</b><span>Data aman di database</span></div>
+      </div>
+    </div>
+    <div class="save-note" id="save-note"><b>Mohon jangan tutup aplikasi</b></div>
+    <div class="save-actions hidden" id="save-actions">
+      <button class="btn secondary" id="btn-save-retry" style="flex:1;">Kirim ulang sekarang</button>
+      <button class="btn hidden" id="btn-save-close" style="flex:1;">Kembali</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL riwayat staff -->
+<div id="modal" class="hidden">
+  <div class="box">
+    <div class="head">
+      <div class="ava" id="md-ava" style="width: 46px; height: 46px;"></div>
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-weight: 700; font-size: 15.5px;" id="md-name"></div>
+        <div class="muted" style="font-size: 12px;" id="md-sub"></div>
+      </div>
+      <button class="mini-btn" id="md-close">Tutup</button>
+    </div>
+    <div class="body" id="md-body"></div>
+  </div>
+</div>
+
+<!-- MODAL laporan break staff (PDF) -->
+<div id="modal-report" class="hidden">
+  <div class="box" style="max-width: 380px;">
+    <div class="head">
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-weight: 700; font-size: 15.5px;">Laporan Break Staff</div>
+        <div class="muted" style="font-size: 12px;">PDF · pilih periode tanggal</div>
+      </div>
+      <button class="mini-btn" id="rp-close">Tutup</button>
+    </div>
+    <div class="body">
+      <div id="rp-outlet-wrap" class="hidden">
+        <div class="label" style="margin-bottom:6px;">Outlet</div>
+        <select id="rp-outlet" style="width:100%; padding:11px; border-radius:12px; border:1px solid var(--hair);
+                font-family:var(--sans); font-size:14px; background:#fff; color:var(--ink);"></select>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <div class="label" style="margin-bottom:6px;">Dari tanggal</div>
+          <input type="date" id="rp-from" style="width:100%; padding:10px; border-radius:12px; border:1px solid var(--hair);
+                 font-family:var(--sans); font-size:13px; color:var(--ink);">
+        </div>
+        <div style="flex:1;">
+          <div class="label" style="margin-bottom:6px;">Sampai tanggal</div>
+          <input type="date" id="rp-to" style="width:100%; padding:10px; border-radius:12px; border:1px solid var(--hair);
+                 font-family:var(--sans); font-size:13px; color:var(--ink);">
+        </div>
+      </div>
+      <div id="rp-err" class="err" style="min-height:auto;"></div>
+      <button class="btn" id="rp-generate" style="width:100%; margin-top:2px;">Buat PDF</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script>
+  // ════════════════════════════════════════════════════════════
+  // GITHUB PAGES v23 — write-only scan request + deferred data reads
+  // Upload file ini sebagai index.html di root repository GitHub Pages.
+  // Backend tetap Google Apps Script Web App URL (diakhiri /exec).
+  // Session tahan 30 hari di browser, jadi tidak perlu login ulang setiap hari.
+  var API_URL = 'https://script.google.com/macros/s/AKfycbw_KKIyLwdvGWxGtP79-Rj9bc1crEH6Or4QkPnTYknfhUCxC8cXwHNa-SZ3y_B37ybpFw/exec';
+  // ════════════════════════════════════════════════════════════
+
+  var APP = { emp: null, state: null, session: null, offset: 0, timer: null, monTimer: null, monTick: null,
+              lastMon: null, hq: { outlet: 'ALL', days: 1, tab: 'live', data: null, timer: null, tick: null, lastLoadAt: 0 },
+              _syncDone: false, scanPending: false, pendingAction: '', syncSeq: 0, resultTimer: null,
+              scanSendSeq: 0, scanRetryTimer: null, saveUiTimer: null, saveElapsedTimer: null, activeScanJob: null,
+              deferDataReadsUntil: 0 };
+
+  function $(id) { return document.getElementById(id); }
+  function show(id, on) { $(id).classList.toggle('hidden', !on); }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function nowSrv() { return Date.now() + APP.offset; }
+  function fmtMMSS(ms) { var t = Math.abs(ms); return pad(Math.floor(t / 60000)) + ':' + pad(Math.floor((t % 60000) / 1000)); }
+  function fmtClock(ts) {
+    return new Date(ts).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' }).replace('.', ':');
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function initials(name) { return name.split(' ').map(function (w) { return w[0]; }).slice(0, 2).join('').toUpperCase(); }
+  function avaHtml(foto, name, size) {
+    var inner = (foto && foto.indexOf('data:image') === 0) ? '<img src="' + foto + '" alt=""></img>' : esc(initials(name));
+    return '<div class="ava" style="width: ' + size + 'px; height: ' + size + 'px; font-size: ' + Math.round(size * 0.3) + 'px;">' + inner + '</div>';
+  }
+
+  function parseJsonSafe(s, fb) {
+    try { return s ? JSON.parse(s) : fb; } catch (e) { return fb; }
+  }
+
+  function activeCacheKey(nik) { return 'ab_active_break_' + String(nik || '').trim().toUpperCase(); }
+  function loadActiveBreakCache(nik) {
+    var b = parseJsonSafe(localStorage.getItem(activeCacheKey(nik)), null);
+    if (!b || !Number(b.tsOut) || Number(b.tsIn || 0)) return null;
+    // Cache hanya untuk pemulihan cepat; Break_log tetap menjadi sumber data final.
+    if (Date.now() - Number(b.tsOut) > 24 * 60 * 60 * 1000) return null;
+    return b;
+  }
+  function saveActiveBreakCache(nik, b) {
+    if (!nik || !b || !Number(b.tsOut)) return;
+    try { localStorage.setItem(activeCacheKey(nik), JSON.stringify(b)); } catch (e) {}
+  }
+  function clearActiveBreakCache(nik) {
+    try { localStorage.removeItem(activeCacheKey(nik)); } catch (e) {}
+  }
+
+  function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+  function debounce(fn, ms) { var t; return function () { var a = arguments, c = this; clearTimeout(t); t = setTimeout(function () { fn.apply(c, a); }, ms); }; }
+
+  function clearSavedSession() {
+    localStorage.removeItem('ab_nik');
+    localStorage.removeItem('ab_session');
+    localStorage.removeItem('ab_emp');
+    localStorage.removeItem('ab_state');
+    localStorage.removeItem('ab_login_at');
+  }
+
+  function dashboardIdentity() {
+    var dashboardToken = '';
+    var cache = null;
+    try {
+      dashboardToken = localStorage.getItem('bakerzin_session') || '';
+      cache = parseJsonSafe(localStorage.getItem('bakerzin_app_cache'), null);
+    } catch (e) {}
+    if (!dashboardToken || !cache || !cache.user || !cache.user.nik) return null;
+    return cache.user;
+  }
+
+  function dashboardUrl() {
+    return new URL('index.html', window.location.href).href;
+  }
+
+  function showAuthMessage(message, canRetry) {
+    $('auth-message').textContent = message;
+    show('btn-auth-retry', !!canRetry);
+    show('scr-auth', true);
+  }
+
+  function loginFromDashboard(force) {
+    var user = dashboardIdentity();
+    if (!user) {
+      window.location.replace(dashboardUrl());
+      return;
+    }
+    showAuthMessage('Menghubungkan akun ' + (user.name || user.nik) + ' ke Absensi Break…', false);
+    if (!force && restoreCachedSession(user.nik)) {
+      show('scr-auth', false);
+      return;
+    }
+    doLogin(String(user.nik).trim(), true);
+  }
+
+  function handleSessionExpired() {
+    if (APP.resultTimer) { clearTimeout(APP.resultTimer); APP.resultTimer = null; }
+    if (APP.scanRetryTimer) { clearTimeout(APP.scanRetryTimer); APP.scanRetryTimer = null; }
+    APP.scanSendSeq++;
+    closeSaveOverlay();
+    clearSavedSession();
+    APP.emp = null;
+    APP.state = null;
+    APP.session = null;
+    APP.scanPending = false;
+    APP.pendingAction = '';
+    APP.syncSeq++;
+    stopCountdown(); stopMonitorPoll(); stopHqPoll();
+    closeScanner();
+    show('scr-home', false);
+    showAuthMessage('Sesi Absensi Break diperbarui otomatis…', false);
+    window.setTimeout(function () { loginFromDashboard(true); }, 250);
+  }
+
+  function api(body, opt) {
+    opt = opt || {};
+    body = Object.assign({}, body || {});
+    if (APP.session && !body.session) body.session = APP.session;
+    if (APP.emp && APP.emp.nik && !body.nik) body.nik = APP.emp.nik;
+
+    var retries = opt.retries == null ? 1 : Number(opt.retries);
+    var timeoutMs = opt.timeoutMs || 22000;
+
+    function attempt(n) {
+      var controller = window.AbortController ? new AbortController() : null;
+      var timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs) : null;
+      return fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+        signal: controller ? controller.signal : undefined
+      }).then(function (r) {
+        if (timer) clearTimeout(timer);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (res) {
+        if (res && res.code === 'SESSION_EXPIRED') {
+          handleSessionExpired();
+          throw new Error(res.error || 'Sesi habis.');
+        }
+        return res;
+      }).catch(function (err) {
+        if (timer) clearTimeout(timer);
+        if (n < retries) return sleep(450 + n * 700).then(function () { return attempt(n + 1); });
+        throw err;
+      });
+    }
+
+    return attempt(0);
+  }
+  function busy(btn, on, label) {
+    btn.disabled = on;
+    if (on) { btn.dataset.label = btn.textContent; btn.innerHTML = '<span class="spin"></span> ' + (label || 'Memproses…'); }
+    else if (btn.dataset.label) { btn.textContent = btn.dataset.label; }
+  }
+  function cloneState(state) {
+    try { return JSON.parse(JSON.stringify(state || {})); } catch (e) { return state || {}; }
+  }
+  function pendingActiveBreak() {
+    var ts = nowSrv();
+    var limit = Number(APP.state.remainingMin || APP.state.limitMin || 60);
+    return {
+      id: 'PENDING-' + ts, nik: APP.emp.nik, name: APP.emp.name, outlet: APP.emp.outlet,
+      timeOut: new Date(ts).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }),
+      timeIn: '', tsOut: ts, tsIn: 0, limitMin: limit, durMin: null, lateMin: null,
+      mustBackTs: ts + limit * 60000, mustBackAt: fmtClock(ts + limit * 60000), status: 'MENYIMPAN'
+    };
+  }
+  function localBreakResult(active) {
+    var now = nowSrv();
+    var limit = Number(active.limitMin || 60);
+    var dur = Math.max(0, Math.round(((now - Number(active.tsOut)) / 60000) * 10) / 10);
+    var late = Math.max(0, Math.ceil((now - Number(active.tsOut) - limit * 60000) / 60000));
+    return {
+      timeOut: active.timeOut || fmtClock(active.tsOut) + ':00',
+      timeIn: new Date(now).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }).replace(/\./g, ':'),
+      durMin: dur, lateMin: late, status: late > 0 ? 'TERLAMBAT' : 'TEPAT WAKTU', limitMin: limit
+    };
+  }
+  function applyLocalBreakIn(result) {
+    var s = cloneState(APP.state);
+    var used = Math.round((Number(s.usedMin || 0) + Number(result.durMin || 0)) * 10) / 10;
+    var quota = Number(s.totalQuotaMin || 60);
+    s.activeBreak = null;
+    s.usedMin = used;
+    s.remainingMin = Math.max(0, Math.round((quota - used) * 10) / 10);
+    s.limitMin = s.remainingMin;
+    s.sessionsToday = Number(s.sessionsToday || s.usedToday || 0) + 1;
+    s.usedToday = s.sessionsToday;
+    s.serverNow = nowSrv();
+    s.pendingSync = false;
+    APP.state = s;
+    saveStateLocal();
+  }
+
+  function clearSaveUiTimers() {
+    if (APP.saveUiTimer) { clearTimeout(APP.saveUiTimer); APP.saveUiTimer = null; }
+    if (APP.saveElapsedTimer) { clearInterval(APP.saveElapsedTimer); APP.saveElapsedTimer = null; }
+  }
+  function closeSaveOverlay() {
+    clearSaveUiTimers();
+    show('save-overlay', false);
+    APP.activeScanJob = null;
+  }
+  function paintSavePending(job) {
+    clearSaveUiTimers();
+    APP.activeScanJob = job;
+    if (!job.uiStartedAt) job.uiStartedAt = Date.now();
+    $('save-card').className = 'save-card';
+    $('save-title').textContent = job.action === 'IN' ? 'Menyimpan scan masuk' : 'Menyimpan scan keluar';
+    $('save-sub').textContent = job.action === 'IN'
+      ? 'Timer sudah dihentikan. Tunggu sampai data masuk terkonfirmasi.'
+      : 'Timer sudah berjalan. Tunggu sampai data keluar terkonfirmasi.';
+    $('save-step-qr').className = 'save-node done';
+    $('save-icon-qr').textContent = '✓';
+    $('save-step-send').className = 'save-node active';
+    $('save-icon-send').textContent = '↑';
+    $('save-step-done').className = 'save-node';
+    $('save-icon-done').textContent = '3';
+    $('save-note').innerHTML = '<b>Mohon jangan tutup aplikasi</b>';
+    show('save-actions', false);
+    show('btn-save-retry', true);
+    show('btn-save-close', false);
+    show('save-overlay', true);
+
+    function updateWaitCopy() {
+      var sec = Math.max(0, Math.floor((Date.now() - Number(job.uiStartedAt || Date.now())) / 1000));
+      if (sec < 3) {
+        $('save-note').innerHTML = '<b>Menghubungkan ke database…</b>';
+      } else if (sec < 8) {
+        $('save-note').innerHTML = 'Koneksi lebih lambat dari biasanya · <b>' + sec + ' detik</b>';
+      } else {
+        $('save-note').innerHTML = 'Masih mencoba otomatis · <b>' + sec + ' detik</b>';
+        show('save-actions', true);
+      }
+    }
+    updateWaitCopy();
+    APP.saveElapsedTimer = setInterval(updateWaitCopy, 1000);
+  }
+  function paintSaveSuccess(job, res) {
+    clearSaveUiTimers();
+    $('save-card').className = 'save-card success';
+    $('save-title').textContent = job.action === 'IN' ? 'Scan masuk tersimpan' : 'Scan keluar tersimpan';
+    $('save-sub').textContent = job.action === 'IN'
+      ? 'Break selesai dan data sudah aman di database.'
+      : 'Break dimulai dan data sudah aman di database.';
+    $('save-step-qr').className = 'save-node done';
+    $('save-icon-qr').textContent = '✓';
+    $('save-step-send').className = 'save-node done';
+    $('save-icon-send').textContent = '✓';
+    $('save-step-done').className = 'save-node done';
+    $('save-icon-done').textContent = '✓';
+    $('save-note').innerHTML = '<b>Data terkonfirmasi</b> · halaman kembali otomatis';
+    show('save-actions', false);
+    if (navigator.vibrate) navigator.vibrate([45, 35, 70]);
+    var elapsed = Date.now() - Number(job.uiStartedAt || Date.now());
+    // Respons normal selesai bersama animasi sukses dalam jendela sekitar tiga detik.
+    var successHoldMs = Math.max(180, Math.min(500, 3000 - elapsed));
+    APP.saveUiTimer = setTimeout(function () {
+      closeSaveOverlay();
+      var finalResult = (res && res.result) || job.localResult;
+      if (APP.emp && APP.state) renderHome();
+      if (job.action === 'IN' && finalResult && APP.emp && APP.state) showResult(finalResult);
+      setTimeout(function () {
+        if (APP.emp && APP.session && !APP.scanPending) syncStateInBackground();
+      }, 2600);
+    }, successHoldMs);
+  }
+  function paintSaveFailure(message) {
+    clearSaveUiTimers();
+    $('save-card').className = 'save-card failed';
+    $('save-title').textContent = 'Data belum tersimpan';
+    $('save-sub').textContent = message || 'Data ditolak oleh server. Periksa status lalu coba kembali.';
+    $('save-step-qr').className = 'save-node done';
+    $('save-icon-qr').textContent = '✓';
+    $('save-step-send').className = 'save-node failed';
+    $('save-icon-send').textContent = '!';
+    $('save-step-done').className = 'save-node';
+    $('save-icon-done').textContent = '3';
+    $('save-note').innerHTML = '<b>Scan tidak dicatat</b>';
+    show('save-actions', true);
+    show('btn-save-retry', false);
+    show('btn-save-close', true);
+  }
+
+  function pendingScanKey() { return 'ab_pending_scan_v15'; }
+  function savePendingScan(job) {
+    try { localStorage.setItem(pendingScanKey(), JSON.stringify(job)); } catch (e) {}
+  }
+  function clearPendingScan(requestId) {
+    var job = parseJsonSafe(localStorage.getItem(pendingScanKey()), null);
+    if (!requestId || !job || job.requestId === requestId) localStorage.removeItem(pendingScanKey());
+  }
+  function finishSilentScan(job, res) {
+    if (APP.scanRetryTimer) { clearTimeout(APP.scanRetryTimer); APP.scanRetryTimer = null; }
+    clearPendingScan(job.requestId);
+    APP.scanSendSeq++;
+    if (!APP.emp || String(APP.emp.nik) !== String(job.nik)) return;
+    if (res && res.state) applyState(res);
+    else if (res && res.activeBreak && APP.state) {
+      APP.state = cloneState(APP.state);
+      APP.state.activeBreak = res.activeBreak;
+      APP.state.serverNow = Number(res.serverNow || Date.now());
+      saveActiveBreakCache(job.nik, res.activeBreak);
+      saveStateLocal();
+    }
+    if (res && res.serverNow) APP.offset = Number(res.serverNow) - Date.now();
+    APP.scanPending = false;
+    APP.pendingAction = '';
+    // Jangan mulai query state/dashboard bersamaan dengan animasi konfirmasi write.
+    APP.deferDataReadsUntil = Date.now() + 2400;
+    paintSaveSuccess(job, res);
+  }
+  function finishScanFailure(job, res) {
+    if (APP.scanRetryTimer) { clearTimeout(APP.scanRetryTimer); APP.scanRetryTimer = null; }
+    clearPendingScan(job.requestId);
+    APP.scanPending = false;
+    APP.pendingAction = '';
+    APP.scanSendSeq++;
+    if (res && res.state) applyState(res);
+    else if (job.previousState) {
+      APP.state = cloneState(job.previousState);
+      saveStateLocal();
+      if (APP.state.activeBreak) saveActiveBreakCache(job.nik, APP.state.activeBreak);
+      else clearActiveBreakCache(job.nik);
+    }
+    if (APP.emp && APP.state) renderHome();
+    paintSaveFailure((res && res.error) || 'Data scan tidak dapat disimpan.');
+  }
+  function scheduleScanRetry(job, attempt, seq) {
+    if (seq !== APP.scanSendSeq || !APP.emp || !APP.session) return;
+    var wait = Math.min(15000, 1500 * Math.pow(1.7, Math.min(attempt, 5)));
+    if (attempt >= 1) show('save-actions', true);
+    if (APP.scanRetryTimer) clearTimeout(APP.scanRetryTimer);
+    APP.scanRetryTimer = setTimeout(function () {
+      APP.scanRetryTimer = null;
+      sendScanSilently(job, attempt + 1, seq);
+    }, wait);
+  }
+  function sendScanSilently(job, attempt, seq) {
+    attempt = Number(attempt || 0);
+    seq = Number(seq || APP.scanSendSeq);
+    if (!APP.emp || !APP.session || seq !== APP.scanSendSeq) return;
+    savePendingScan(job);
+    api({
+      fn: 'scanwrite', nik: job.nik, qr: job.qr, action: job.action, requestId: job.requestId,
+      clientTs: job.clientTs, limitMin: job.limitMin, breakRef: job.breakRef,
+      usedMinBefore: job.usedMinBefore, sessionsBefore: job.sessionsBefore
+    },
+        { retries: 0, timeoutMs: 6500 }).then(function (res) {
+      if (seq !== APP.scanSendSeq) return;
+      if (res && (res.ok || (job.action === 'IN' && res.code === 'NO_ACTIVE_BREAK'))) {
+        finishSilentScan(job, res);
+        return;
+      }
+      // Penolakan aturan bisnis tidak boleh terlihat seolah-olah berhasil.
+      if (res && !res.retryable && (/kuota|tidak dikenal|tidak valid|belum tersedia/i.test(res.error || ''))) {
+        finishScanFailure(job, res);
+        return;
+      }
+      scheduleScanRetry(job, attempt, seq);
+    }).catch(function () {
+      scheduleScanRetry(job, attempt, seq);
+    });
+  }
+  function startScanDelivery(job) {
+    if (APP.scanRetryTimer) { clearTimeout(APP.scanRetryTimer); APP.scanRetryTimer = null; }
+    APP.scanPending = true;
+    APP.pendingAction = job.action || '';
+    var seq = ++APP.scanSendSeq;
+    paintSavePending(job);
+    savePendingScan(job);
+    sendScanSilently(job, 0, seq);
+  }
+  function resumePendingScan() {
+    var job = parseJsonSafe(localStorage.getItem(pendingScanKey()), null);
+    if (!job || !APP.emp || String(job.nik) !== String(APP.emp.nik)) return;
+    if (APP.scanPending && APP.activeScanJob && APP.activeScanJob.requestId === job.requestId) return;
+    startScanDelivery(job);
+  }
+  function applyState(res) {
+    if (res.state) {
+      var stateNik = String((res.emp && res.emp.nik) || (APP.emp && APP.emp.nik) || '');
+      // State login cepat belum membaca sheet. Pakai cache timer agar countdown langsung lanjut.
+      if (res.state.pendingSync && !res.state.activeBreak) {
+        var cachedActive = loadActiveBreakCache(stateNik);
+        if (cachedActive) {
+          res.state.activeBreak = cachedActive;
+          res.state.cacheReady = true;
+        }
+      }
+      APP.state = res.state;
+      try { localStorage.setItem('ab_state', JSON.stringify(APP.state)); } catch (e) {}
+      if (!res.state.pendingSync) {
+        if (res.state.activeBreak) saveActiveBreakCache(stateNik, res.state.activeBreak);
+        else clearActiveBreakCache(stateNik);
+      }
+    }
+    if (res.emp) {
+      // Kalau session server durable sudah lewat cache cepat, foto bisa kosong.
+      // Pertahankan foto lokal supaya UI tetap bagus tanpa perlu baca Spreadsheet lagi.
+      if (!res.emp.foto && APP.emp && APP.emp.foto) res.emp.foto = APP.emp.foto;
+      APP.emp = res.emp;
+      try { localStorage.setItem('ab_emp', JSON.stringify(APP.emp)); } catch (e) {}
+    }
+    if (res.session) {
+      APP.session = res.session;
+      localStorage.setItem('ab_session', res.session);
+      localStorage.setItem('ab_login_at', String(Date.now()));
+    }
+    if (res.state && res.state.serverNow) APP.offset = res.state.serverNow - Date.now();
+    try { localStorage.setItem('ab_last_active', String(Date.now())); } catch (e) {}
+  }
+
+  // ── LOGIN ─────────────────────────────────────────────
+  function syncStateInBackground() {
+    var seq = ++APP.syncSeq;
+    $('sync-state-title').textContent = 'Memeriksa break aktif…';
+    show('btn-sync-retry', false);
+    api({ fn: 'state' }, { retries: 1, timeoutMs: 20000 }).then(function (res) {
+      if (APP.scanPending || seq !== APP.syncSeq) return;
+      if (!res.ok) throw new Error(res.error || 'Gagal membaca status break.');
+      applyState(res);
+      renderHome();
+    }).catch(function () {
+      if (APP.scanPending || seq !== APP.syncSeq) return;
+      $('sync-state-title').textContent = 'Status break belum berhasil dimuat';
+      show('btn-sync-retry', true);
+    });
+  }
+
+  function doLogin(nik, silent) {
+    var btn = $('btn-login');
+    if (!silent) busy(btn, true, 'Masuk…');
+
+    // Target login cepat: state/history Break_log disinkron di background.
+    api({ fn: 'login', nik: nik, fast: true }, { retries: 0, timeoutMs: 15000 }).then(function (res) {
+      busy(btn, false);
+      if (!res.ok) {
+        $('login-err').textContent = res.error;
+        showAuthMessage(res.error || 'Akun tidak dapat dibuka di Absensi Break.', true);
+        return;
+      }
+      APP.emp = res.emp;
+      APP.session = res.session || null;
+      applyState(res);
+      // Login hanya mengembalikan state cepat; Break_log tetap wajib disinkronkan.
+      APP._syncDone = true;
+      localStorage.setItem('ab_nik', res.emp.nik);
+      try { localStorage.setItem('ab_emp', JSON.stringify(res.emp)); } catch (e) {}
+      $('login-err').textContent = '';
+      show('scr-auth', false);
+      renderHome();
+      resumePendingScan();
+      if (!APP.scanPending) syncStateInBackground();
+    }).catch(function (e) {
+      busy(btn, false);
+      // Kalau user pernah login di HP ini, tetap masuk dari session lokal walaupun request login lambat.
+      if (restoreCachedSession(nik)) return;
+      $('login-err').textContent = 'Koneksi ke Absensi Break melewati batas waktu.';
+      showAuthMessage('Server Absensi Break belum merespons. Tekan Coba Lagi tanpa perlu login ulang.', true);
+    });
+  }
+
+  function restoreCachedSession(onlyNik) {
+    var savedSession = localStorage.getItem('ab_session');
+    var savedEmp = parseJsonSafe(localStorage.getItem('ab_emp'), null);
+    var savedState = parseJsonSafe(localStorage.getItem('ab_state'), null);
+    var loginAt = Number(localStorage.getItem('ab_login_at') || 0);
+    var maxAge = 30 * 24 * 60 * 60 * 1000; // session tahan 30 hari selama tidak logout / data browser tidak dihapus
+
+    if (!savedSession || !savedEmp || !savedState || !loginAt || Date.now() - loginAt > maxAge) return false;
+    if (onlyNik && String(savedEmp.nik || '').toUpperCase() !== String(onlyNik || '').toUpperCase()) return false;
+
+    APP.session = savedSession;
+    APP.emp = savedEmp;
+    APP.state = savedState;
+    // Jangan memakai serverNow lama dari cache; itu membuat timer kembali ke waktu sebelumnya.
+    APP.offset = 0;
+
+    // Cache dari tanggal kemarin tidak boleh menahan timer atau sisa kuota hari sebelumnya.
+    var cachedDayTs = Number(savedState.serverNow || loginAt || 0);
+    if (!cachedDayTs || jakartaDayStart(cachedDayTs) !== jakartaDayStart(Date.now())) {
+      APP.state.activeBreak = null;
+      APP.state.usedToday = 0;
+      APP.state.sessionsToday = 0;
+      APP.state.usedMin = 0;
+      APP.state.remainingMin = Number(APP.state.totalQuotaMin || 60);
+      APP.state.limitMin = APP.state.remainingMin;
+      APP.state.serverNow = Date.now();
+      APP.state.pendingSync = false;
+      saveStateLocal();
+    }
+
+    renderHome();
+    resumePendingScan();
+
+    // Hanya sinkron dari server sekali per sesi agar pembacaan sheet tetap ringan.
+    if (!APP._syncDone && !APP.scanPending) {
+      APP._syncDone = true;
+      syncStateInBackground();
+    }
+
+    return true;
+  }
+
+
+  // ── HOME ──────────────────────────────────────────────
+  function renderHome() {
+    if (APP.resultTimer) { clearTimeout(APP.resultTimer); APP.resultTimer = null; }
+    show('scr-login', false);
+    show('scr-auth', false);
+    show('scr-home', true);
+    show('box-result', false);
+    var e = APP.emp, s = APP.state;
+    $('home-col').classList.toggle('wide', !!s.isHq);
+    $('p-name').textContent = e.name;
+    $('p-sub').textContent = [e.position, e.outlet].filter(Boolean).join(' · ');
+    $('p-ava').outerHTML = avaHtml(e.foto, e.name, 52).replace('class="ava"', 'class="ava" id="p-ava"');
+
+    var waitingWithoutCache = !!(s.pendingSync && !s.activeBreak && !s.cacheReady);
+    show('box-sync-state', waitingWithoutCache);
+    if (s.activeBreak) {
+      show('box-start', false); show('box-blocked', false); show('box-active', true);
+      $('break-live-badge').textContent = 'BREAK AKTIF';
+      $('btn-scan-in').disabled = APP.scanPending;
+      $('btn-scan-in').textContent = 'Scan QR — Saya Masuk';
+      startCountdown();
+    } else if (waitingWithoutCache) {
+      show('box-start', false); show('box-active', false); show('box-blocked', false);
+      stopCountdown();
+    } else if (Number(s.remainingMin || 0) <= 0) {
+      show('box-start', false); show('box-active', false); show('box-blocked', true);
+      stopCountdown();
+    } else {
+      show('box-active', false); show('box-blocked', false); show('box-start', true);
+      stopCountdown();
+      $('btn-scan-out').disabled = APP.scanPending;
+      $('btn-scan-out').textContent = 'Scan QR — Mulai Break';
+      $('st-quota').textContent = Number(s.remainingMin || s.limitMin || 0).toFixed(1).replace('.0', '') + ' menit tersisa';
+      $('st-limit').textContent = Number(s.remainingMin || s.limitMin || 0).toFixed(1).replace('.0', '') + ' menit';
+      $('st-now').textContent = fmtClock(nowSrv());
+      $('st-backat').textContent = fmtClock(nowSrv() + s.limitMin * 60000);
+    }
+
+    // panel sesuai peran
+    var canDashboard = !!(s.isHq || s.canMonitor);
+    // Tombol laporan langsung tersedia sejak home tampil, termasuk sebelum mulai break.
+    show('box-report-action', canDashboard);
+    // Saat login cepat, state awal belum membaca Break_log. Dashboard menunggu sinkron background.
+    if (s.pendingSync) canDashboard = false;
+    $('home-col').classList.toggle('wide', canDashboard);
+    show('box-hq', canDashboard);
+    show('box-monitor', false); // panel lama tetap ada, tetapi dashboard baru dipakai untuk BIHQ dan Grade 3+
+    if (canDashboard) {
+      stopMonitorPoll();
+      if (!s.isHq) APP.hq.outlet = e.outlet; // Grade 3+ non-HQ dikunci ke outlet sendiri
+      // Saat scan sedang disimpan, jangan kirim query dashboard tambahan yang bisa memperlambat request scan.
+      if (!APP.scanPending && Date.now() >= Number(APP.deferDataReadsUntil || 0)) loadHq(); else renderHq();
+      startHqPoll();
+    } else {
+      stopMonitorPoll();
+      stopHqPoll();
+    }
+  }
+
+  // ── COUNTDOWN ─────────────────────────────────────────
+  function jakartaDayStart(ts) {
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date(ts));
+    var map = {};
+    parts.forEach(function (p) { if (p.type !== 'literal') map[p.type] = p.value; });
+    return Date.parse(map.year + '-' + map.month + '-' + map.day + 'T00:00:00+07:00');
+  }
+  function noScanInCutoff(tsOut) {
+    return jakartaDayStart(tsOut) + 86400000;
+  }
+  function tickCountdown() {
+    var b = APP.state.activeBreak;
+    if (!b) return;
+    var currentTs = nowSrv();
+    if (currentTs >= noScanInCutoff(Number(b.tsOut))) {
+      stopCountdown();
+      APP.state.activeBreak = null;
+      APP.state.usedToday = 0;
+      APP.state.sessionsToday = 0;
+      APP.state.usedMin = 0;
+      APP.state.remainingMin = Number(APP.state.totalQuotaMin || 60);
+      APP.state.limitMin = APP.state.remainingMin;
+      APP.state.serverNow = currentTs;
+      saveStateLocal();
+      renderHome();
+      if (!APP.scanPending) syncStateInBackground();
+      return;
+    }
+    var limitMs = b.limitMin * 60000;
+    var elapsed = currentTs - b.tsOut;
+    var remain = limitMs - elapsed;
+    var late = remain < 0;
+    var frac = Math.min(1, elapsed / limitMs);
+    var color = late ? 'var(--late)' : (remain < 10 * 60000 ? 'var(--warn)' : 'var(--ok)');
+    $('cd-label').textContent = late ? 'Terlambat' : 'Sisa waktu';
+    $('cd-label').style.color = late ? 'var(--late)' : 'var(--muted)';
+    $('cd-timer').textContent = (late ? '+' : '') + fmtMMSS(remain);
+    $('cd-timer').style.color = late ? 'var(--late)' : 'var(--ink)';
+    $('cd-backat').textContent = b.mustBackAt;
+    $('ring').style.background = 'conic-gradient(' + color + ' ' + (late ? 360 : frac * 360) + 'deg, var(--hair) 0deg)';
+    show('cd-alert', late);
+  }
+  function startCountdown() { stopCountdown(); tickCountdown(); APP.timer = setInterval(tickCountdown, 1000); }
+  function stopCountdown() { if (APP.timer) { clearInterval(APP.timer); APP.timer = null; } }
+
+  // ── SCANNER ───────────────────────────────────────────
+  // Mode cepat: pakai native BarcodeDetector di Android Chrome kalau tersedia.
+  // Fallback ke html5-qrcode jika browser tidak mendukung native detector.
+  var scanner = null, scanBusy = false, scanStarting = false;
+  var nativeStream = null, nativeVideo = null, nativeDetector = null, nativeLoopTimer = null, nativeDetecting = false;
+
+  function scanConfig() {
+    // Area scan dibuat lebih besar + FPS tinggi supaya QR cepat terbaca.
+    var box = Math.round(Math.min(window.innerWidth * 0.82, 360));
+    return {
+      fps: 30,
+      qrbox: { width: box, height: box },
+      aspectRatio: 1.7777778,
+      disableFlip: true,
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+    };
+  }
+
+  function setScanMessage(msg) {
+    $('scan-msg').textContent = msg || '';
+  }
+
+  function saveStateLocal() {
+    try { localStorage.setItem('ab_state', JSON.stringify(APP.state)); } catch (e) {}
+    if (APP.emp && APP.emp.nik) {
+      if (APP.state && APP.state.activeBreak) saveActiveBreakCache(APP.emp.nik, APP.state.activeBreak);
+      else clearActiveBreakCache(APP.emp.nik);
+    }
+  }
+
+  function normalizeCamLabel(label) {
+    return String(label || '').toLowerCase();
+  }
+
+  function pickBackCamera(cameras) {
+    cameras = cameras || [];
+    if (!cameras.length) return null;
+    var back = cameras.filter(function (c) {
+      var l = normalizeCamLabel(c.label);
+      return l.indexOf('back') >= 0 || l.indexOf('rear') >= 0 || l.indexOf('environment') >= 0 || l.indexOf('belakang') >= 0 || l.indexOf('kamera 0') >= 0;
+    });
+    return (back[0] || cameras[cameras.length - 1] || cameras[0]);
+  }
+
+  function markVideoReady() {
+    setTimeout(function () {
+      var v = $('reader').querySelector('video');
+      if (v) {
+        v.setAttribute('playsinline', 'true');
+        v.setAttribute('muted', 'true');
+        try { v.play && v.play(); } catch (e) {}
+      }
+    }, 120);
+  }
+
+  function stopNativeScanner() {
+    if (nativeLoopTimer) { clearTimeout(nativeLoopTimer); nativeLoopTimer = null; }
+    nativeDetecting = false;
+    nativeDetector = null;
+    nativeVideo = null;
+    if (nativeStream) {
+      try { nativeStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    }
+    nativeStream = null;
+  }
+
+  function clearScannerOnly() {
+    stopNativeScanner();
+    if (scanner) {
+      try { scanner.clear(); } catch (e) {}
+    }
+    scanner = null;
+  }
+
+  function startNativeFastScanner() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.BarcodeDetector) {
+      return Promise.reject(new Error('NO_NATIVE_BARCODE'));
+    }
+
+    function beginNative() {
+      setScanMessage('Membuka kamera cepat…');
+      return navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30, max: 30 }
+        }
+      }).then(function (stream) {
+        nativeStream = stream;
+        $('reader').innerHTML = '';
+        var video = document.createElement('video');
+        video.id = 'native-video';
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('muted', 'true');
+        video.autoplay = true;
+        video.muted = true;
+        video.srcObject = stream;
+        $('reader').appendChild(video);
+        nativeVideo = video;
+
+        // Bantu HP fokus ke QR, kalau browser mendukung.
+        try {
+          var track = stream.getVideoTracks()[0];
+          var caps = track && track.getCapabilities ? track.getCapabilities() : null;
+          var adv = [];
+          if (caps && caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) adv.push({ focusMode: 'continuous' });
+          if (caps && caps.exposureMode && caps.exposureMode.indexOf('continuous') >= 0) adv.push({ exposureMode: 'continuous' });
+          if (caps && caps.whiteBalanceMode && caps.whiteBalanceMode.indexOf('continuous') >= 0) adv.push({ whiteBalanceMode: 'continuous' });
+          if (caps && caps.zoom) {
+            var z = Math.min(caps.zoom.max || 1, Math.max(caps.zoom.min || 1, 1.2));
+            adv.push({ zoom: z });
+          }
+          if (adv.length && track.applyConstraints) track.applyConstraints({ advanced: adv }).catch(function () {});
+        } catch (e) {}
+
+        nativeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+        return video.play().catch(function () {}).then(function () {
+          setScanMessage('Arahkan QR ke frame. Begitu terbaca, proses langsung jalan.');
+          nativeScanLoop();
+        });
+      });
+    }
+
+    if (BarcodeDetector.getSupportedFormats) {
+      return BarcodeDetector.getSupportedFormats().then(function (formats) {
+        if (formats && formats.indexOf('qr_code') < 0) throw new Error('QR_NOT_SUPPORTED');
+        return beginNative();
+      });
+    }
+    return beginNative();
+  }
+
+  function nativeScanLoop() {
+    if (!nativeVideo || !nativeDetector || scanBusy) return;
+    if (nativeDetecting) {
+      nativeLoopTimer = setTimeout(nativeScanLoop, 25);
+      return;
+    }
+    if (nativeVideo.readyState < 2) {
+      nativeLoopTimer = setTimeout(nativeScanLoop, 25);
+      return;
+    }
+
+    nativeDetecting = true;
+    nativeDetector.detect(nativeVideo).then(function (codes) {
+      nativeDetecting = false;
+      if (scanBusy || !nativeVideo) return;
+      if (codes && codes.length) {
+        var raw = codes[0].rawValue || codes[0].rawData || '';
+        if (raw) { onScanSuccess(raw); return; }
+      }
+      // Loop sangat cepat: target terbaca <1 detik saat QR sudah masuk frame.
+      if (window.requestAnimationFrame) requestAnimationFrame(nativeScanLoop);
+      else nativeLoopTimer = setTimeout(nativeScanLoop, 30);
+    }).catch(function () {
+      nativeDetecting = false;
+      nativeLoopTimer = setTimeout(nativeScanLoop, 80);
+    });
+  }
+
+  function startHtml5ScannerWithFallback() {
+    var cfg = scanConfig();
+
+    function startByCameraId() {
+      return Html5Qrcode.getCameras().then(function (cameras) {
+        var cam = pickBackCamera(cameras);
+        if (!cam || !cam.id) throw new Error('NO_CAMERA_ID');
+        setScanMessage('Membuka kamera belakang…');
+        return scanner.start(String(cam.id), cfg, onScanSuccess, function () {});
+      });
+    }
+
+    function startByEnvironment() {
+      setScanMessage('Membuka kamera…');
+      return scanner.start({ facingMode: 'environment' }, cfg, onScanSuccess, function () {});
+    }
+
+    function startByAnyCamera() {
+      setScanMessage('Mencoba kamera yang tersedia…');
+      return scanner.start({ facingMode: { ideal: 'environment' } }, cfg, onScanSuccess, function () {});
+    }
+
+    return startByCameraId().catch(function () {
+      return startByEnvironment();
+    }).catch(function () {
+      return startByAnyCamera();
+    });
+  }
+
+  function startScannerEngine() {
+    // Prioritaskan native BarcodeDetector karena biasanya lebih cepat membaca QR di Chrome Android.
+    return startNativeFastScanner().catch(function () {
+      scanner = new Html5Qrcode('reader', {
+        useBarCodeDetectorIfSupported: true,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE]
+      });
+      return startHtml5ScannerWithFallback().then(markVideoReady);
+    });
+  }
+
+  function openScanner() {
+    if (scanStarting || scanner || nativeStream) return;
+
+    show('scan-overlay', true);
+    setScanMessage('Membuka kamera…');
+    scanBusy = false;
+    scanStarting = true;
+    $('reader').innerHTML = '';
+
+    startScannerEngine().then(function () {
+      scanStarting = false;
+      setScanMessage($('scan-msg').textContent || 'Arahkan QR ke dalam frame.');
+    }).catch(function (err) {
+      scanStarting = false;
+      var code = (err && (err.name || err.message)) ? String(err.name || err.message) : '';
+      clearScannerOnly();
+      if (code.indexOf('NotReadable') >= 0 || code.indexOf('TrackStart') >= 0) {
+        setScanMessage('Kamera sudah diizinkan, tapi sedang dipakai/terkunci. Tutup Camera/WhatsApp/Instagram, lalu refresh dan coba lagi.');
+      } else if (code.indexOf('NotAllowed') >= 0 || code.indexOf('Permission') >= 0) {
+        setScanMessage('Izin kamera belum aktif. Klik ikon gembok di address bar → Camera → Allow, lalu refresh.');
+      } else if (code.indexOf('NotFound') >= 0 || code.indexOf('NO_CAMERA') >= 0) {
+        setScanMessage('Kamera tidak ditemukan oleh browser. Coba tutup tab lain, refresh, lalu scan lagi.');
+      } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+        setScanMessage('Kamera hanya bisa dibuka lewat HTTPS. Gunakan link github.io.');
+      } else {
+        setScanMessage('Kamera belum bisa dibuka. Pastikan Chrome Camera = Allow, tutup aplikasi lain yang memakai kamera, lalu refresh.');
+      }
+    });
+  }
+
+  function closeScanner() {
+    show('scan-overlay', false);
+    scanBusy = false;
+    scanStarting = false;
+    stopNativeScanner();
+    if (scanner) {
+      var s = scanner;
+      scanner = null;
+      s.stop().then(function () { s.clear(); }).catch(function () {
+        try { s.clear(); } catch (e) {}
+      });
+    }
+  }
+
+  function onScanSuccess(text) {
+    if (scanBusy) return;
+    var token = (APP.state && APP.state.qrToken) || 'BAKERZIN-BREAK';
+    text = String(text).trim();
+    if (text.indexOf(token) !== 0) {
+      $('scan-msg').textContent = 'QR tidak dikenal — arahkan ke sticker QR Absensi Break.';
+      return;
+    }
+
+    scanBusy = true;
+    APP.scanPending = true;
+    APP.syncSeq++; // batalkan respons sync lama agar tidak menimpa hasil scan
+    var wasInBreak = !!(APP.state && APP.state.activeBreak);
+    var action = wasInBreak ? 'IN' : 'OUT';
+    var stateBeforeScan = cloneState(APP.state);
+    var breakRef = wasInBreak ? cloneState(APP.state.activeBreak) : null;
+    APP.pendingAction = action;
+    var requestId = 'S' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+
+    if (navigator.vibrate) navigator.vibrate(80);
+    $('scan-flash').style.opacity = '0.85';
+    setTimeout(function () { $('scan-flash').style.opacity = '0'; }, 90);
+    closeScanner();
+
+    // Timer merespons langsung, tetapi konfirmasi baru selesai setelah database menjawab sukses.
+    var instantResult = null;
+    if (action === 'OUT') {
+      APP.state = cloneState(APP.state);
+      APP.state.activeBreak = pendingActiveBreak();
+      saveStateLocal();
+      renderHome();
+    } else {
+      instantResult = localBreakResult(APP.state.activeBreak);
+      applyLocalBreakIn(instantResult);
+      renderHome();
+    }
+    var job = {
+      requestId: requestId, nik: APP.emp.nik, qr: text, action: action,
+      createdAt: Date.now(), uiStartedAt: Date.now(), localResult: instantResult,
+      clientTs: action === 'OUT' && APP.state.activeBreak ? Number(APP.state.activeBreak.tsOut) : Date.now(),
+      limitMin: Number(stateBeforeScan.remainingMin || stateBeforeScan.limitMin || 60),
+      usedMinBefore: Number(stateBeforeScan.usedMin || 0),
+      sessionsBefore: Number(stateBeforeScan.sessionsToday || stateBeforeScan.usedToday || 0),
+      breakRef: breakRef, previousState: stateBeforeScan
+    };
+    startScanDelivery(job);
+  }
+
+  function showResult(r) {
+    if (APP.resultTimer) { clearTimeout(APP.resultTimer); }
+    stopCountdown();
+    show('box-active', false); show('box-start', false); show('box-blocked', false);
+    $('res-pill').textContent = r.status === 'TERLAMBAT' ? 'TERLAMBAT +' + r.lateMin + ' MNT' : 'TEPAT WAKTU';
+    $('res-pill').className = 'pill ' + (r.status === 'TERLAMBAT' ? 'late' : 'ok');
+    $('res-out').textContent = r.timeOut.slice(0, 5);
+    $('res-in').textContent = r.timeIn.slice(0, 5);
+    $('res-dur').textContent = r.durMin + ' menit (batas ' + r.limitMin + ')';
+    show('box-result', true);
+    APP.resultTimer = setTimeout(function () {
+      APP.resultTimer = null;
+      if (APP.emp && APP.state) renderHome();
+    }, 1800);
+  }
+
+  // ── ITEM HTML (dipakai monitor, HQ, modal) ───────────
+  function liveItemHtml(b, clickable) {
+    var t = nowSrv();
+    var limitMs = b.limitMin * 60000;
+    var late = t - b.tsOut > limitMs;
+    var frac = Math.min(1, (t - b.tsOut) / limitMs);
+    return '<div class="item' + (late ? ' late' : '') + '"' + (clickable ? ' data-nik="' + esc(b.nik) + '" data-name="' + esc(b.name) + '"' : '') + '>' +
+      avaHtml(b.foto, b.name, 42) +
+      '<div style="flex: 1; min-width: 0;">' +
+        '<div class="nm">' + esc(b.name) + '</div>' +
+        '<div class="sb">' + esc([b.position, b.outlet].filter(Boolean).join(' · ')) +
+          ' · keluar <span style="font-family: var(--mono);">' + b.timeOut.slice(0, 5) + '</span>' +
+          ' · kembali ≤ <span style="font-family: var(--mono);">' + b.mustBackAt + '</span></div>' +
+        '<div class="bar"><div style="width: ' + (frac * 100) + '%; background: ' + (late ? 'var(--late)' : frac > 0.83 ? 'var(--warn)' : 'var(--ok)') + ';"></div></div>' +
+      '</div>' +
+      '<div class="rt" style="font-family: var(--mono); font-weight: 700; font-size: 15px; color: ' + (late ? 'var(--late)' : 'var(--ink)') + ';">' + (late ? '+' : '') + fmtMMSS(limitMs - (t - b.tsOut)) + '</div>' +
+    '</div>';
+  }
+
+  function histItemHtml(b) {
+    var late = b.status === 'TERLAMBAT';
+    var noScan = b.status === 'NO SCAN IN';
+    var dateStr = b.tsOut ? new Date(b.tsOut).toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', weekday: 'long', day: 'numeric', month: 'short' }) : '';
+    return '<div class="item' + (noScan ? ' no-scan' : '') + '" style="cursor: default;"><div style="flex: 1;">' +
+      '<div class="sb">' + esc(dateStr) + (b.outlet ? ' · ' + esc(b.outlet) : '') + '</div>' +
+      '<div style="font-family: var(--mono); font-weight: 700; margin-top: 2px;">' + b.timeOut.slice(0, 5) + ' → ' + (noScan ? 'TIDAK SCAN' : (b.timeIn ? b.timeIn.slice(0, 5) : '…')) + '</div>' +
+      (b.durMin != null ? '<div class="sb">' + b.durMin + ' mnt</div>' : '') +
+      '</div><span class="pill ' + (noScan ? 'no-scan' : (b.tsIn ? (late ? 'late' : 'ok') : '')) + '">' + esc(b.status) + '</span></div>';
+  }
+
+  // ── SUPERVISOR: live outlet sendiri ───────────────────
+  function loadMonitor() {
+    if (APP.scanPending || Date.now() < Number(APP.deferDataReadsUntil || 0)) return;
+    api({ fn: 'live', nik: APP.emp.nik }).then(function (res) {
+      if (!res.ok) { $('mon-live').innerHTML = '<div class="empty">' + esc(res.error) + '</div>'; return; }
+      APP.offset = res.serverNow - Date.now();
+      APP.lastMon = res;
+      renderMonitor();
+    }).catch(function () {});
+  }
+  function renderMonitor() {
+    var res = APP.lastMon;
+    if (!res) return;
+    $('mon-live').innerHTML = res.live.length
+      ? res.live.map(function (b) { return liveItemHtml(b, true); }).join('')
+      : '<div class="empty">Tidak ada yang sedang break.</div>';
+    bindStaffClicks($('mon-live'));
+  }
+  function startMonitorPoll() {
+    stopMonitorPoll();
+    APP.monTimer = setInterval(loadMonitor, 90000);
+    APP.monTick = setInterval(renderMonitor, 1000);
+  }
+  function stopMonitorPoll() {
+    if (APP.monTimer) { clearInterval(APP.monTimer); APP.monTimer = null; }
+    if (APP.monTick) { clearInterval(APP.monTick); APP.monTick = null; }
+  }
+
+  // ── HQ (BIHQ) ─────────────────────────────────────────
+  function loadHq() {
+    if (APP.scanPending || Date.now() < Number(APP.deferDataReadsUntil || 0)) return;
+    var outletReq = (APP.state && APP.state.isHq) ? APP.hq.outlet : APP.emp.outlet;
+    api({ fn: 'hq', nik: APP.emp.nik, outlet: outletReq, days: APP.hq.days }).then(function (res) {
+      if (!res.ok) { $('hq-list').innerHTML = '<div class="empty">' + esc(res.error) + '</div>'; return; }
+      APP.offset = res.serverNow - Date.now();
+      APP.hq.data = res;
+      APP.hq.outlet = res.outletFilter || outletReq;
+      APP.hq.lastLoadAt = Date.now();
+      $('hq-updated').textContent = 'Diperbarui ' + fmtClock(Date.now());
+      renderHqChips(res.outlets);
+      renderHq();
+    }).catch(function (e) {
+      $('hq-list').innerHTML = '<div class="empty">Gagal memuat: ' + esc(e.message) + '</div>';
+    });
+  }
+  function renderHqChips(outlets) {
+    var isHq = !!(APP.state && APP.state.isHq);
+    $('hq-title').textContent = isHq ? 'Semua Outlet' : 'Outlet ' + APP.emp.outlet;
+    show('hq-chips', isHq);
+    if (!isHq) { $('hq-chips').innerHTML = ''; return; }
+
+    var html = '<button class="chip' + (APP.hq.outlet === 'ALL' ? ' on' : '') + '" data-outlet="ALL">Semua</button>';
+    outlets.forEach(function (o) {
+      html += '<button class="chip' + (APP.hq.outlet === o ? ' on' : '') + '" data-outlet="' + esc(o) + '">' + esc(o) + '</button>';
+    });
+    $('hq-chips').innerHTML = html;
+    var debouncedLoadHq = debounce(loadHq, 1500);
+    Array.prototype.forEach.call($('hq-chips').querySelectorAll('.chip'), function (c) {
+      c.addEventListener('click', function () { APP.hq.outlet = this.dataset.outlet; debouncedLoadHq(); });
+    });
+  }
+  function renderHq() {
+    var d = APP.hq.data;
+    if (!d) return;
+    var tab = APP.hq.tab;
+    show('hq-days', tab !== 'live');
+
+    if (tab === 'live') {
+      $('hq-list').innerHTML = d.live.length
+        ? d.live.map(function (b) { return liveItemHtml(b, true); }).join('')
+        : '<div class="empty">Tidak ada yang sedang break' + (APP.hq.outlet !== 'ALL' ? ' di ' + esc(APP.hq.outlet) : '') + '.</div>';
+    } else {
+      var rep = d.report.slice();
+      if (tab === 'good') {
+        rep = rep.filter(function (a) { return a.breaks > 0; })
+          .sort(function (a, b) { return (a.late - b.late) || (b.onTime - a.onTime) || (a.totalLateMin - b.totalLateMin) || (a.avgDurMin - b.avgDurMin); });
+      } else {
+        rep = rep.filter(function (a) { return a.late > 0; })
+          .sort(function (a, b) { return (b.late - a.late) || (b.totalLateMin - a.totalLateMin); });
+      }
+      $('hq-list').innerHTML = rep.length
+        ? rep.map(function (a, i) { return reportItemHtml(a, i, tab); }).join('')
+        : '<div class="empty">' + (tab === 'good' ? 'Belum ada data break pada periode ini.' : 'Tidak ada yang terlambat pada periode ini.') + '</div>';
+    }
+    bindStaffClicks($('hq-list'));
+  }
+  function reportItemHtml(a, i, tab) {
+    var good = tab === 'good';
+    var stat = good
+      ? '<div class="rt"><div style="font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--ok);">' + a.onTime + '/' + a.breaks + '</div><div class="sb">tepat waktu</div></div>'
+      : '<div class="rt"><div style="font-family: var(--mono); font-weight: 700; font-size: 15px; color: var(--late);">' + a.late + '×</div><div class="sb">+' + a.totalLateMin + ' mnt</div></div>';
+    return '<div class="item" data-nik="' + esc(a.nik) + '" data-name="' + esc(a.name) + '">' +
+      '<div class="rank' + (i < 3 ? ' top' : '') + '">' + (i + 1) + '</div>' +
+      avaHtml(a.foto, a.name, 42) +
+      '<div style="flex: 1; min-width: 0;">' +
+        '<div class="nm">' + esc(a.name) + '</div>' +
+        '<div class="sb">' + esc([a.position, a.outlet].filter(Boolean).join(' · ')) + ' · rata-rata ' + a.avgDurMin + ' mnt</div>' +
+      '</div>' + stat + '</div>';
+  }
+  function startHqPoll() {
+    stopHqPoll();
+    APP.hq.timer = setInterval(loadHq, 90000);
+    APP.hq.tick = setInterval(function () { if (APP.hq.tab === 'live') renderHq(); }, 1000);
+  }
+  function stopHqPoll() {
+    if (APP.hq.timer) { clearInterval(APP.hq.timer); APP.hq.timer = null; }
+    if (APP.hq.tick) { clearInterval(APP.hq.tick); APP.hq.tick = null; }
+  }
+  Array.prototype.forEach.call($('hq-tabs').querySelectorAll('button'), function (b) {
+    b.addEventListener('click', function () {
+      APP.hq.tab = this.dataset.tab;
+      Array.prototype.forEach.call($('hq-tabs').querySelectorAll('button'), function (x) { x.classList.toggle('on', x === b); });
+      renderHq();
+    });
+  });
+  var debouncedDaysHq = debounce(loadHq, 1500);
+  Array.prototype.forEach.call($('hq-days').querySelectorAll('button'), function (b) {
+    b.addEventListener('click', function () {
+      APP.hq.days = Number(this.dataset.days);
+      Array.prototype.forEach.call($('hq-days').querySelectorAll('button'), function (x) { x.classList.toggle('on', x === b); });
+      debouncedDaysHq();
+    });
+  });
+
+  // ── LAPORAN BREAK STAFF (PDF) ──────────────────────────
+  var ID_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'];
+  function fmtDateShort(d) { var p = d.split('-'); return p[2] + '/' + p[1]; }
+  function fmtDateID(d) { var p = d.split('-').map(Number); return p[2] + ' ' + ID_MONTHS[p[1] - 1] + ' ' + p[0]; }
+  function todayStr() {
+    var d = new Date(nowSrv());
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function openReportModal() {
+    var isHq = !!(APP.state && APP.state.isHq);
+    show('rp-outlet-wrap', isHq);
+    if (isHq) {
+      var outlets = (APP.hq.data && APP.hq.data.outlets) || [];
+      var html = '<option value="ALL">Semua Outlet</option>';
+      outlets.forEach(function (o) { html += '<option value="' + esc(o) + '">' + esc(o) + '</option>'; });
+      $('rp-outlet').innerHTML = html;
+      $('rp-outlet').value = (APP.hq.outlet && APP.hq.outlet !== 'ALL' && outlets.indexOf(APP.hq.outlet) !== -1) ? APP.hq.outlet : 'ALL';
+    }
+    var t = todayStr();
+    $('rp-from').value = t;
+    $('rp-to').value = t;
+    $('rp-err').textContent = '';
+    show('modal-report', true);
+  }
+
+  // Font bawaan jsPDF (helvetica) tidak punya glyph ✓ / ● — makanya sebelumnya
+  // muncul karakter aneh di PDF. Jadi ikon digambar manual pakai vector (garis & lingkaran).
+  function _pdfDrawCheck(doc, cx, cy, r, color) {
+    doc.setDrawColor(color[0], color[1], color[2]);
+    doc.setLineWidth(Math.max(1, r * 0.34));
+    if (doc.setLineCap) doc.setLineCap('round');
+    if (doc.setLineJoin) doc.setLineJoin('round');
+    doc.line(cx - r * 0.75, cy + r * 0.05, cx - r * 0.15, cy + r * 0.6);
+    doc.line(cx - r * 0.15, cy + r * 0.6, cx + r * 0.8, cy - r * 0.55);
+  }
+  function _pdfDrawDot(doc, cx, cy, r, color) {
+    doc.setFillColor(color[0], color[1], color[2]);
+    doc.circle(cx, cy, r, 'F');
+  }
+
+  function generateBreakReportPdf(data) {
+    var jsPDFLib = window.jspdf && window.jspdf.jsPDF;
+    if (!jsPDFLib) { $('rp-err').textContent = 'Gagal memuat modul PDF. Cek koneksi internet lalu coba lagi.'; return; }
+
+    var COL_OK = [42, 138, 88];      // hijau
+    var COL_NONE = [242, 170, 30];   // kuning/oranye — titik besar
+    var COL_LATE = [190, 40, 45];    // merah
+    var COL_OPEN = [176, 123, 30];   // amber (sedang berjalan)
+    var COL_NO_SCAN = [109, 63, 181]; // ungu (tidak scan masuk)
+    var COL_INK = [28, 25, 22];
+    var COL_ACCENT = [168, 19, 37];  // merah maroon Bakerzin
+
+    var doc = new jsPDFLib({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    var pageW = doc.internal.pageSize.getWidth();
+    var outletLabel = data.outletFilter === 'ALL' ? 'Semua Outlet' : data.outletFilter;
+
+    // ── Header ──
+    doc.setFillColor(COL_ACCENT[0], COL_ACCENT[1], COL_ACCENT[2]);
+    doc.rect(0, 0, pageW, 6, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.setTextColor(COL_INK[0], COL_INK[1], COL_INK[2]);
+    doc.text('LAPORAN BREAK STAFF', 40, 34);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(120, 114, 104);
+    doc.text('BAKERZIN CAFE', 40, 48);
+
+    doc.setFontSize(9.5);
+    doc.setTextColor(COL_INK[0], COL_INK[1], COL_INK[2]);
+    doc.text('Outlet', 40, 68); doc.setFont('helvetica', 'bold'); doc.text(outletLabel, 78, 68); doc.setFont('helvetica', 'normal');
+    doc.text('Periode', 40, 81); doc.setFont('helvetica', 'bold');
+    doc.text(fmtDateID(data.dateFrom) + '  —  ' + fmtDateID(data.dateTo), 78, 81);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(140, 134, 124);
+    doc.text('Dicetak ' + new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }), pageW - 40, 34, { align: 'right' });
+
+    // ── Legenda (ikon digambar, bukan teks unicode) ──
+    var ly = 100;
+    _pdfDrawCheck(doc, 46, ly - 3, 4.6, COL_OK);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(COL_INK[0], COL_INK[1], COL_INK[2]);
+    doc.text('Tepat waktu', 58, ly);
+
+    _pdfDrawDot(doc, 160, ly - 3, 4.2, COL_NONE);
+    doc.text('Tidak ada absensi break', 172, ly);
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(COL_LATE[0], COL_LATE[1], COL_LATE[2]);
+    doc.text('+15m', 330, ly);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(COL_INK[0], COL_INK[1], COL_INK[2]);
+    doc.text('Telat masuk (menit)', 362, ly);
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(COL_NO_SCAN[0], COL_NO_SCAN[1], COL_NO_SCAN[2]);
+    doc.text('NSI', 490, ly);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(COL_INK[0], COL_INK[1], COL_INK[2]);
+    doc.text('No Scan In', 512, ly);
+
+    // ── Tabel ──
+    var head = [['Nama', 'Posisi'].concat(data.dates.map(fmtDateShort))];
+    var kindGrid = data.staff.map(function (s) { return s.days; });
+    var body = data.staff.map(function (s) {
+      return [s.name, s.position || '-'].concat(s.days.map(function (day) {
+        if (day.kind === 'LATE') return '+' + day.lateMin + 'm';
+        if (day.kind === 'OPEN') return 'Berjalan';
+        if (day.kind === 'NO_SCAN') return 'NSI';
+        return ''; // OK & NONE digambar sebagai ikon lewat didDrawCell
+      }));
+    });
+
+    doc.autoTable({
+      head: head,
+      body: body,
+      startY: 114,
+      theme: 'grid',
+      styles: { font: 'helvetica', fontSize: 7.5, halign: 'center', valign: 'middle', cellPadding: 4,
+                lineColor: [232, 228, 220], lineWidth: 0.5, textColor: COL_INK, minCellHeight: 17 },
+      headStyles: { fillColor: COL_INK, textColor: 255, fontStyle: 'bold', halign: 'center', fontSize: 7.5, cellPadding: 5 },
+      alternateRowStyles: { fillColor: [250, 249, 246] },
+      columnStyles: { 0: { halign: 'left', cellWidth: 96, fontStyle: 'bold' }, 1: { halign: 'left', cellWidth: 80 } },
+      horizontalPageBreak: true,
+      horizontalPageBreakRepeat: [0, 1],
+      didParseCell: function (hd) {
+        if (hd.section !== 'body' || hd.column.index < 2) return;
+        var day = kindGrid[hd.row.index] && kindGrid[hd.row.index][hd.column.index - 2];
+        if (!day) return;
+        if (day.kind === 'LATE') { hd.cell.styles.textColor = COL_LATE; hd.cell.styles.fontStyle = 'bold'; }
+        else if (day.kind === 'OPEN') { hd.cell.styles.textColor = COL_OPEN; hd.cell.styles.fontStyle = 'bold'; }
+        else if (day.kind === 'NO_SCAN') { hd.cell.styles.textColor = COL_NO_SCAN; hd.cell.styles.fontStyle = 'bold'; hd.cell.styles.fillColor = [246, 241, 253]; }
+      },
+      didDrawCell: function (hd) {
+        if (hd.section !== 'body' || hd.column.index < 2) return;
+        var day = kindGrid[hd.row.index] && kindGrid[hd.row.index][hd.column.index - 2];
+        if (!day) return;
+        var cx = hd.cell.x + hd.cell.width / 2;
+        var cy = hd.cell.y + hd.cell.height / 2;
+        if (day.kind === 'OK') _pdfDrawCheck(doc, cx, cy, Math.min(4.6, hd.cell.height * 0.34), COL_OK);
+        else if (day.kind === 'NONE') _pdfDrawDot(doc, cx, cy, Math.min(4.2, hd.cell.height * 0.3), COL_NONE);
+      }
+    });
+
+    var fname = 'Laporan-Break-' + outletLabel.replace(/\s+/g, '') + '-' + data.dateFrom + '_' + data.dateTo + '.pdf';
+    doc.save(fname);
+  }
+
+  $('btn-break-report').addEventListener('click', openReportModal);
+  $('rp-close').addEventListener('click', function () { show('modal-report', false); });
+  $('modal-report').addEventListener('click', function (ev) { if (ev.target === this) show('modal-report', false); });
+
+  $('rp-generate').addEventListener('click', function () {
+    var btn = this;
+    var dateFrom = $('rp-from').value;
+    var dateTo = $('rp-to').value;
+    var isHq = !!(APP.state && APP.state.isHq);
+    var outlet = isHq ? ($('rp-outlet').value || 'ALL') : APP.emp.outlet;
+
+    $('rp-err').textContent = '';
+    if (!dateFrom || !dateTo) { $('rp-err').textContent = 'Pilih tanggal dari dan sampai.'; return; }
+    if (dateTo < dateFrom) { $('rp-err').textContent = 'Tanggal sampai harus setelah tanggal dari.'; return; }
+
+    busy(btn, true, 'Menyiapkan…');
+    api({ fn: 'breakreport', outlet: outlet, dateFrom: dateFrom, dateTo: dateTo }, { retries: 1, timeoutMs: 28000 })
+      .then(function (res) {
+        busy(btn, false);
+        if (!res.ok) { $('rp-err').textContent = res.error || 'Gagal memuat laporan.'; return; }
+        if (!res.staff || !res.staff.length) { $('rp-err').textContent = 'Tidak ada data staff pada outlet ini.'; return; }
+        generateBreakReportPdf(res);
+        show('modal-report', false);
+      })
+      .catch(function (e) {
+        busy(btn, false);
+        $('rp-err').textContent = 'Gagal memuat laporan: ' + e.message;
+      });
+  });
+
+  // ── MODAL riwayat staff (klik nama) ───────────────────
+  function bindStaffClicks(root) {
+    Array.prototype.forEach.call(root.querySelectorAll('.item[data-nik]'), function (el) {
+      el.addEventListener('click', function () { openStaffModal(this.dataset.nik, this.dataset.name); });
+    });
+  }
+  function openStaffModal(nik, name) {
+    show('modal', true);
+    $('md-name').textContent = name;
+    $('md-sub').textContent = '';
+    $('md-ava').textContent = initials(name);
+    $('md-body').innerHTML = '<div class="empty">Memuat riwayat…</div>';
+    api({ fn: 'staffhist', nik: APP.emp.nik, target: nik }).then(function (res) {
+      if (!res.ok) { $('md-body').innerHTML = '<div class="empty">' + esc(res.error) + '</div>'; return; }
+      if (res.target) {
+        $('md-sub').textContent = [res.target.position, res.target.outlet, res.target.grade ? 'Grade ' + res.target.grade : ''].filter(Boolean).join(' · ');
+        $('md-ava').outerHTML = avaHtml(res.target.foto, res.target.name, 46).replace('class="ava"', 'class="ava" id="md-ava"');
+      }
+      var hist = res.history || [];
+      var noScan = hist.filter(function (b) { return b.status === 'NO SCAN IN'; }).length;
+      var onTime = hist.filter(function (b) { return b.tsIn && b.status !== 'TERLAMBAT' && b.status !== 'NO SCAN IN'; }).length;
+      var late = hist.filter(function (b) { return b.status === 'TERLAMBAT' && b.tsIn; }).length;
+      var summary = '<div class="card tight" style="display: flex; gap: 0; text-align: center; padding: 12px;">' +
+        '<div style="flex: 1;"><div style="font-family: var(--mono); font-weight: 700; font-size: 19px;">' + hist.length + '</div><div class="sb" style="color: var(--muted); font-size: 11px;">BREAK</div></div>' +
+        '<div style="flex: 1; border-left: 1px solid var(--hair);"><div style="font-family: var(--mono); font-weight: 700; font-size: 19px; color: var(--ok);">' + onTime + '</div><div class="sb" style="color: var(--muted); font-size: 11px;">TEPAT</div></div>' +
+        '<div style="flex: 1; border-left: 1px solid var(--hair);"><div style="font-family: var(--mono); font-weight: 700; font-size: 19px; color: var(--late);">' + late + '</div><div class="sb" style="color: var(--muted); font-size: 11px;">TELAT</div></div>' +
+        '<div style="flex: 1; border-left: 1px solid var(--hair);"><div style="font-family: var(--mono); font-weight: 700; font-size: 19px; color: var(--no-scan);">' + noScan + '</div><div class="sb" style="color: var(--muted); font-size: 11px;">NO SCAN</div></div>' +
+      '</div>';
+      $('md-body').innerHTML = hist.length
+        ? summary + hist.map(histItemHtml).join('')
+        : '<div class="empty">Belum ada catatan break.</div>';
+    }).catch(function (e) {
+      $('md-body').innerHTML = '<div class="empty">Gagal memuat: ' + esc(e.message) + '</div>';
+    });
+  }
+  $('md-close').addEventListener('click', function () { show('modal', false); });
+  $('modal').addEventListener('click', function (ev) { if (ev.target === this) show('modal', false); });
+
+  // ── RIWAYAT pribadi ───────────────────────────────────
+  function loadHistory() {
+    $('box-hist').innerHTML = '<div class="empty">Memuat…</div>';
+    api({ fn: 'history', nik: APP.emp.nik }).then(function (res) {
+      if (!res.ok) { $('box-hist').innerHTML = '<div class="empty">' + esc(res.error) + '</div>'; return; }
+      $('box-hist').innerHTML = res.history.length
+        ? res.history.map(histItemHtml).join('')
+        : '<div class="empty">Belum ada catatan break.</div>';
+    }).catch(function (e) { $('box-hist').innerHTML = '<div class="empty">Gagal memuat: ' + esc(e.message) + '</div>'; });
+  }
+
+  // ── EVENTS ────────────────────────────────────────────
+  $('btn-login').addEventListener('click', function () {
+    var nik = $('inp-nik').value.trim();
+    if (!nik) { $('login-err').textContent = 'Masukkan NIK.'; return; }
+    $('login-err').textContent = '';
+    doLogin(nik);
+  });
+  $('inp-nik').addEventListener('keydown', function (ev) { if (ev.key === 'Enter') $('btn-login').click(); });
+  $('btn-logout').addEventListener('click', function () {
+    if (APP.scanPending) {
+      var pendingJob = APP.activeScanJob || parseJsonSafe(localStorage.getItem(pendingScanKey()), null);
+      if (pendingJob) paintSavePending(pendingJob);
+      return;
+    }
+    window.location.href = dashboardUrl();
+  });
+  $('btn-auth-retry').addEventListener('click', function () { loginFromDashboard(true); });
+  $('btn-scan-out').addEventListener('click', openScanner);
+  $('btn-scan-in').addEventListener('click', openScanner);
+  $('btn-scan-cancel').addEventListener('click', closeScanner);
+  $('btn-mon-refresh').addEventListener('click', loadMonitor);
+  $('btn-sync-retry').addEventListener('click', function () {
+    show('btn-sync-retry', false);
+    syncStateInBackground();
+  });
+  $('btn-save-retry').addEventListener('click', function () {
+    var job = APP.activeScanJob || parseJsonSafe(localStorage.getItem(pendingScanKey()), null);
+    if (job && APP.emp && APP.session) startScanDelivery(job);
+  });
+  $('btn-save-close').addEventListener('click', function () {
+    if (!APP.scanPending) closeSaveOverlay();
+  });
+
+  // Browser dapat mengabaikan dialog ini di beberapa HP, sehingga requestId juga tetap disimpan
+  // dan akan dilanjutkan otomatis ketika aplikasi dibuka kembali.
+  window.addEventListener('beforeunload', function (ev) {
+    if (!APP.scanPending) return;
+    ev.preventDefault();
+    ev.returnValue = '';
+  });
+  window.addEventListener('online', function () {
+    var job = parseJsonSafe(localStorage.getItem(pendingScanKey()), null);
+    if (job && APP.emp && APP.session) startScanDelivery(job);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) setTimeout(resumePendingScan, 250);
+  });
+
+  var histShown = false;
+  $('btn-hist').addEventListener('click', function () {
+    histShown = !histShown;
+    this.textContent = histShown ? 'Sembunyikan' : 'Tampilkan';
+    show('box-hist', histShown);
+    if (histShown) loadHistory();
+  });
+
+  // ── INIT ──────────────────────────────────────────────
+  (function init() {
+    if (API_URL.indexOf('http') !== 0) {
+      showAuthMessage('Endpoint Apps Script Absensi Break belum dikonfigurasi.', false);
+      return;
+    }
+    loginFromDashboard(false);
+  })();
+</script>
+</body>
+</html>

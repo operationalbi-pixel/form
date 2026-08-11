@@ -67,6 +67,28 @@ const transferAuditRequirements = [
 for (const [ok, message] of transferAuditRequirements) {
   if (!ok) failures.push(message);
 }
+
+{
+  const path = 'docs/absensibreak.html';
+  const html = await text(path);
+  if (!html.includes('name="viewport"')) failures.push(`${path} tidak memiliki viewport responsif`);
+  if (!html.includes("localStorage.getItem('bakerzin_session')")) failures.push(`${path} belum memakai sesi Dashboard utama`);
+  if (!html.includes("localStorage.getItem('bakerzin_app_cache')")) failures.push(`${path} belum membaca identitas pengguna Dashboard`);
+  if (!html.includes('AKfycbw_KKIyLwdvGWxGtP79-Rj9bc1crEH6Or4QkPnTYknfhUCxC8cXwHNa-SZ3y_B37ybpFw')) failures.push(`${path} tidak memakai endpoint Absensi Break yang disepakati`);
+  const staticHtml = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  const ids = [...staticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
+  const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+  if (duplicateIds.length) failures.push(`${path} memiliki ID duplikat: ${duplicateIds.join(', ')}`);
+  let inlineIndex = 0;
+  for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    inlineIndex += 1;
+    try {
+      new vm.Script(match[1], { filename: `${path}#inline-${inlineIndex}` });
+    } catch (error) {
+      failures.push(`${path} inline script ${inlineIndex}: ${error.message}`);
+    }
+  }
+}
 if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
   failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');
 }
