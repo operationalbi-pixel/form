@@ -1,0 +1,777 @@
+<!-- SYSTEM LOADER: Centralized PDF Logic (Fixed & Robust) -->
+<!-- Visual Theme: Source A (Bakerzin Maroon) -->
+<!-- Update: Add Invoice Payment Details & Fix Loading/Image Issues -->
+
+<script>
+    // Flag global untuk status library
+    window.pdfLibsLoaded = false;
+
+    // Fungsi helper untuk load script eksternal
+    function loadScript(url, callback) {
+        var script = document.createElement('script'); 
+        script.src = url; 
+        script.onload = callback; 
+        script.onerror = function() { console.error('Gagal memuat script:', url); };
+        document.head.appendChild(script);
+    }
+
+    // Memastikan jspdf dan autotable dimuat berurutan
+    function startLoadingPDFLibs() {
+        if (window.pdfLibsLoaded) return;
+        
+        console.log("Memulai proses download library PDF...");
+        
+        loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', function() {
+            if (window.jspdf && window.jspdf.jsPDF) window.jsPDF = window.jspdf.jsPDF;
+            console.log('jsPDF berhasil dimuat.');
+            
+            loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js', function() { 
+                window.pdfLibsLoaded = true; 
+                console.log('jsPDF AutoTable berhasil dimuat. PDF Generator SIAP.');
+            });
+        });
+    }
+
+    // Jalankan loader segera
+    startLoadingPDFLibs(); 
+
+    // Helper Functions
+    window.parseRupiah = (str) => parseFloat(String(str).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+    const safeStr = (val) => String(val || '-');
+    const fmtRupiah = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(window.parseRupiah(val || '0'));
+    
+    const fmtDate = (dStr, includeTime = true) => {
+        if(!dStr) return '-';
+        let date = new Date(dStr);
+        if (isNaN(date.getTime())) { 
+            const parts = dStr.split('-');
+            if (parts.length === 3) date = new Date(parts[0], parts[1] - 1, parts[2]);
+            else return dStr; 
+        }
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+        return `${String(date.getDate()).padStart(2, '0')} ${months[date.getMonth()]} ${date.getFullYear()}`;
+    };
+
+    // --- FUNGSI UTAMA GENERATE PDF ---
+    // Didefinisikan di window agar global accessible
+    window.generatePDF = async function(item, jsonData, retryCount = 0) {
+        // Cek kesiapan library
+        if (!window.pdfLibsLoaded || !window.jsPDF) {
+             if (retryCount >= 5) {
+                 alert("Gagal membuat PDF. Library PDF tidak dapat dimuat (Cek koneksi internet).");
+                 return;
+             }
+             console.warn(`Library PDF belum siap. Mencoba lagi... (${retryCount+1}/5)`);
+             await new Promise(resolve => setTimeout(resolve, 1000));
+             window.generatePDF(item, jsonData, retryCount + 1);
+             return;
+        }
+        
+        // Parsing data JSON jika masih string
+        if (typeof jsonData === 'string') { try { jsonData = JSON.parse(jsonData); } catch(e) {} }
+        item.data = { ...item.data, ...jsonData };
+        let docName = `DRAFT_${safeStr(item.type)}.pdf`; 
+
+        try {
+            const doc = new window.jsPDF();
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const pageHeight = doc.internal.pageSize.getHeight();
+            const MARGIN = 15;
+
+            const isRejected = item.currentStatus === 'Rejected';
+            const isApproved = item.currentStatus === 'Approved';
+
+            // ============================================================
+            // TIPE 1: QUOTATION & INVOICE (LAYOUT GELOMBANG)
+            // ============================================================
+            let isQtnInv = (item.type === 'Quotation' || item.type === 'Invoice');
+            
+            if (isQtnInv) {
+                const mode = item.type.toUpperCase();
+                let tempDocNo = item.Submission_ID || (mode === 'QUOTATION' ? 'QTN-GEN-AUTO' : 'INV-GEN-AUTO');
+                docName = `${item.type}_${tempDocNo.replace(/\//g, '-')}.pdf`;
+                
+                const COLOR_MAROON = [127, 29, 29]; 
+                const COLOR_DARK_MAROON = [100, 20, 20];
+                const COLOR_LIGHT_MAROON = [163, 63, 63]; 
+                
+                let y = 0;
+                const waveHeight = 70;
+                
+                // Background Header Gelombang
+                doc.setFillColor(COLOR_DARK_MAROON[0], COLOR_DARK_MAROON[1], COLOR_DARK_MAROON[2]);
+                doc.rect(0, 0, pageWidth, waveHeight, 'F'); 
+                doc.setFillColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                doc.lines([[pageWidth, 0], [pageWidth, waveHeight * 0.9], [pageWidth * 0.75, waveHeight * 0.7], [0, waveHeight * 0.6], [0, 0]], 0, 0, [1, 1], 'F', true); 
+                doc.setFillColor(COLOR_LIGHT_MAROON[0], COLOR_LIGHT_MAROON[1], COLOR_LIGHT_MAROON[2]);
+                doc.lines([[pageWidth, 0], [pageWidth, waveHeight * 0.75], [pageWidth * 0.85, waveHeight * 0.55], [0, waveHeight * 0.45], [0, 0]], 0, 0, [1, 1], 'F', true); 
+                
+                const titleText = mode === 'QUOTATION' ? 'E-QUOTATION' : (mode === 'INVOICE' ? 'E-INVOICE' : mode);
+                doc.setFont("helvetica", "bold"); doc.setTextColor(255, 255, 255); doc.setFontSize(70);
+                doc.text(titleText, MARGIN, waveHeight * 0.9 - 1);
+
+                doc.setFontSize(8); doc.setFont("helvetica", "bold");
+                const addressLine1 = "BAKERZIN | MEMBER OF BOGA GROUP";
+                const addressLine2 = "Rukan CBD Blok J001-J006 & J008, Jl. Green Lake City Boulevard, Phone (021) 29725559.";
+                const addressX = pageWidth - MARGIN;
+                let addressY = 15;
+                doc.text(addressLine1, addressX, addressY, { align: 'right' });
+                addressY += 4;
+                doc.setFontSize(7); doc.setFont("helvetica", "normal");
+                const addressLines = doc.splitTextToSize(addressLine2, 70);
+                doc.text(addressLines, addressX, addressY, { align: 'right' });
+
+                y = waveHeight + 8; 
+                
+                doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                doc.text(mode === 'QUOTATION' ? "NO. E-QUOTATION:" : "NO. E-INVOICE:", MARGIN, y);
+                doc.setFontSize(12); doc.text(tempDocNo, MARGIN, y + 5); 
+                y += 12;
+
+                const createdDate = item.Timestamp ? fmtDate(item.Timestamp, false) : fmtDate(new Date().toISOString(), false);
+                doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(100);
+                doc.text("TANGGAL DIBUAT:", MARGIN, y);
+                doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30);
+                doc.text(createdDate, MARGIN, y + 4);
+                y += 8;
+                
+                const dueDate = jsonData.date || '-';
+                doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(100);
+                doc.text(mode === 'QUOTATION' ? "VALID UNTIL:" : "JATUH TEMPO:", MARGIN, y);
+                doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30);
+                doc.text(fmtDate(dueDate, false), MARGIN, y + 4);
+                y += 8;
+
+                const lineX = MARGIN + 60;
+                doc.setDrawColor(220, 220, 220); doc.setLineWidth(0.3);
+                doc.line(lineX, waveHeight + 8, lineX, y - 4);
+                
+                const billToX = lineX + 15;
+                doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                doc.text("TO", billToX, waveHeight + 8);
+
+                let billToY = waveHeight + 14;
+                doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(30);
+                doc.text(safeStr(jsonData.company), billToX, billToY); 
+                billToY += 5;
+                
+                doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(100);
+                doc.text(`Attn: ${safeStr(jsonData.person)}`, billToX, billToY);
+                billToY += 4;
+                doc.text(`Phone: ${safeStr(jsonData.phone)}`, billToX, billToY);
+                billToY += 4;
+                const custAddress = doc.splitTextToSize(safeStr(jsonData.address), pageWidth - billToX - MARGIN);
+                doc.text(custAddress, billToX, billToY);
+                billToY += custAddress.length * 4.2 + 6;
+                y = Math.max(y, billToY) + 8;
+
+                let items = typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : jsonData.items;
+                let head = [['#', 'Description', 'Unit', 'Qty', 'Price (@)', 'Total']];
+                let bodyData = Array.isArray(items) ? items.map((i, idx) => [
+                    idx + 1, safeStr(i.item), safeStr(i.unit), safeStr(i.qty), safeStr(i.price), safeStr(i.total)
+                ]) : [];
+
+                doc.autoTable({
+                    startY: y, head: head, body: bodyData, theme: 'plain', 
+                    headStyles: { fillColor: [255, 255, 255], textColor: 30, fontStyle: 'bold', fontSize: 9, cellPadding: 3 },
+                    styles: { fontSize: 9, cellPadding: 3 },
+                    columnStyles: { 
+                        0: { cellWidth: 10, halign: 'center' },
+                        1: { cellWidth: 70, halign: 'left', fontStyle: 'bold' },
+                        4: { halign: 'right' }, 5: { halign: 'right' }
+                    },
+                    margin: { left: MARGIN, right: MARGIN },
+                    didDrawCell: data => {
+                        if (data.section === 'body') {
+                             doc.setDrawColor(240); doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
+                        }
+                    }
+                });
+                y = doc.autoTable.previous ? doc.autoTable.previous.finalY : y + 40;
+
+                const math = jsonData.math || {};
+                const fees = jsonData.fees || {};
+                const calcBoxW = 75; 
+                const calcX = pageWidth - MARGIN - calcBoxW; 
+                let calcY = y + 10;
+                
+                const drawCalcRow = (label, value, isBold = false, isTotal = false) => {
+                     const numVal = window.parseRupiah(value || 0);
+                     if (numVal === 0 && !isTotal && label !== 'Sub Total') return; 
+                     
+                     if (isTotal) {
+                         doc.setFillColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                         doc.rect(calcX, calcY, calcBoxW, 10, 'F');
+                         doc.setTextColor(255, 255, 255);
+                     } else {
+                         doc.setTextColor(30, 30, 30);
+                     }
+                     
+                     doc.setFontSize(isTotal ? 12 : 9); 
+                     doc.setFont("helvetica", isBold || isTotal ? "bold" : "normal");
+                     doc.text(label, calcX + 3, calcY + (isTotal ? 7 : 5));
+                     doc.text(safeStr(value), calcX + calcBoxW - 3, calcY + (isTotal ? 7 : 5), {align: 'right'});
+                     calcY += (isTotal ? 12 : 7);
+                 };
+
+                drawCalcRow("Sub Total", math.subtotal);
+                if(math.discVal) drawCalcRow(`Discount (${math.discPct}%)`, math.discVal);
+                if(math.svcVal) drawCalcRow(`Service Chg (${math.svcPct}%)`, math.svcVal);
+                if(math.pb1Val) drawCalcRow(`PB1 (${math.pb1Pct}%)`, math.pb1Val);
+                if(fees.delivery) drawCalcRow("Delivery Fee", fees.delivery);
+                if(fees.handling) drawCalcRow("Handling Fee", fees.handling);
+                drawCalcRow("GRAND TOTAL", math.grandTotal, true, true);
+                
+                doc.setFontSize(8); doc.setFont("helvetica", "italic"); doc.setTextColor(100);
+                doc.text(` \nTerbilang:\n ${safeStr(math.terbilang)}`, calcX + calcBoxW, calcY, { align: 'right' });
+
+                // --- ADDED INVOICE PAYMENT DETAILS ---
+                if (mode === 'INVOICE') {
+                    const payY = y + 10;
+                    doc.setFontSize(9);
+                    doc.setFont("helvetica", "bold");
+                    doc.setTextColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                    doc.text("Payment Details", MARGIN, payY + 5); 
+
+                    doc.setFontSize(8);
+                    doc.setFont("helvetica", "normal"); 
+                    doc.setTextColor(30);
+                    
+                    const labelX = MARGIN;
+                    const sepX = MARGIN + 28;
+                    const valX = MARGIN + 31;
+                    let currentPayY = payY + 11;
+
+                    doc.text("Bank Name", labelX, currentPayY);
+                    doc.text(":", sepX, currentPayY);
+                    doc.text("BCA", valX, currentPayY);
+                    currentPayY += 4;
+
+                    doc.text("Account Name", labelX, currentPayY);
+                    doc.text(":", sepX, currentPayY);
+                    doc.text("PT Boga Makmur Mandiri", valX, currentPayY);
+                    currentPayY += 4;
+
+                    doc.text("Account Number", labelX, currentPayY);
+                    doc.text(":", sepX, currentPayY);
+                    doc.text("0700-777-898", valX, currentPayY);
+                }
+
+                const finalY = pageHeight - 15;
+                doc.setFillColor(COLOR_MAROON[0], COLOR_MAROON[1], COLOR_MAROON[2]);
+                doc.rect(0, finalY, pageWidth, 15, 'F');
+                doc.setFontSize(8); doc.setFont("helvetica", "bold"); doc.setTextColor(255, 255, 255);
+                doc.text("THIS IS AN ELECTRONICALLY GENERATED DOCUMENT", pageWidth / 2, finalY + 8, { align: 'center' });
+            } 
+            
+            // ============================================================
+            // TIPE 2: BERITA ACARA STANDARD (Semua Form Lain)
+            // ============================================================
+            else {
+                const isFnbFlow = (item.type === 'Waste Pcs To Pcs' || item.type === 'Revisi Stock Opname' || item.type === 'Penjualan & Dispose Asset' || item.type === 'Purchasing Non Supplier' || item.type === 'Test Food');
+                
+                docName = `BA_${safeStr(item.type)}_${safeStr(item.Submission_ID)}.pdf`; 
+
+                // Header Block
+                doc.setFillColor(127, 29, 29); doc.rect(0, 0, pageWidth, 30, 'F');
+                doc.setTextColor(255, 255, 255); doc.setFontSize(22); doc.setFont("helvetica", "bold");
+                doc.text("BERITA ACARA", 15, 18);
+                
+                let displayType = safeStr(item.type).toUpperCase();
+                // Map Display Names
+                if (displayType === 'WASTE PCS TO PCS') displayType = 'BA WASTE';
+                if (displayType === 'REVISI STOCK OPNAME') displayType = 'BA REVISI SO';
+                if (displayType === 'PENJUALAN & DISPOSE ASSET') displayType = 'BA ASSET';
+                if (displayType === 'KOMPLAIN CUSTOMER') displayType = 'BA KOMPLAIN';
+                if (displayType === 'REFUND CUSTOMER') displayType = 'BA REFUND';
+                if (displayType === 'TEST FOOD') displayType = 'BA TEST FOOD';
+                if (displayType === 'DISCOUNT KARYAWAN') displayType = 'BA DISC KARYAWAN';
+                if (displayType === 'CANCEL ONLINE') displayType = 'BA CANCEL ONLINE';
+                if (displayType === 'CUSTOMER ENTERTAIN') displayType = 'BA ENTERTAIN'; 
+                if (displayType === 'KONSUMSI GENERAL CLEANING') displayType = 'BA KONSUMSI GC'; 
+
+                doc.setFontSize(12); doc.setFont("helvetica", "normal");
+                doc.text(displayType, 15, 25);
+
+                doc.setFontSize(10); doc.text("No. Dokumen:", 150, 15);
+                doc.setFont("helvetica", "bold"); doc.text(safeStr(item.Submission_ID || 'DRAFT'), 150, 20);
+                doc.setFont("helvetica", "normal"); doc.text(safeStr(fmtDate(item.Timestamp, false)), 150, 25);
+
+                if (isRejected) {
+                    doc.setTextColor(200, 0, 0); doc.setFontSize(150); doc.setFont("helvetica", "bold");
+                    doc.saveGraphicsState(); doc.setGState(new doc.GState({opacity: 0.15}));
+                    doc.text("REJECTED", pageWidth / 2, pageHeight / 2, { align: 'center', angle: 45 });
+                    doc.restoreGraphicsState();
+                }
+
+                // Info Box
+                y = 45;
+                doc.setFillColor(254, 242, 242); doc.setDrawColor(200, 200, 200);
+                doc.rect(15, y, 180, 30, 'FD');
+                doc.setTextColor(80, 80, 80); doc.setFontSize(8); doc.setFont("helvetica", "bold");
+                doc.text("NAMA", 20, y + 6); doc.text("NIK", 110, y + 6);
+                doc.setFontSize(10); doc.setTextColor(0, 0, 0);
+                doc.text(safeStr(item.NAME), 20, y + 12); doc.text(safeStr(item.NIK), 110, y + 12);
+
+                y += 16;
+                doc.setFontSize(8); doc.setTextColor(80, 80, 80);
+                doc.text("OUTLET", 20, y + 6); doc.text("STATUS", 110, y + 6);
+                doc.setFontSize(10); doc.setTextColor(0, 0, 0);
+                doc.text(safeStr(item.Outlet), 20, y + 12);
+                
+                if(isApproved) { doc.setTextColor(0, 128, 0); doc.text("APPROVED", 110, y + 12); } 
+                else if (isRejected) { doc.setTextColor(200, 0, 0); doc.text("REJECTED", 110, y + 12); } 
+                else { doc.setTextColor(200, 100, 0); doc.text(safeStr(item.currentStatus).toUpperCase(), 110, y + 12); }
+
+                y = 85;
+                
+                if (isRejected) {
+                    const reason = item.AM_Reject_Reason || item.FNB_Reject_Reason || 'Tidak ada catatan.';
+                    doc.setFontSize(9); doc.setTextColor(200, 0, 0); doc.setFont("helvetica", "italic");
+                    doc.text(`Alasan Penolakan: "${reason}"`, 15, y - 5);
+                    y += 5;
+                }
+
+                doc.setTextColor(0, 0, 0); doc.setFontSize(10); doc.setFont("helvetica", "normal");
+                
+                const printField = (label, val, xL, xV) => {
+                    doc.setFont("helvetica", "bold"); doc.text(label, xL, y);
+                    doc.setFont("helvetica", "normal"); doc.text(safeStr(val), xV, y);
+                };
+                const printBlock = (label, text) => {
+                    doc.setFont("helvetica", "bold"); doc.text(label, 15, y); y += 6;
+                    doc.setFont("helvetica", "italic"); doc.setFillColor(249, 250, 251);
+                    doc.rect(15, y-4, 180, 12, 'F'); 
+                    doc.text(doc.splitTextToSize(safeStr(text), 175), 17, y); 
+                    y += 15;
+                };
+
+                // --- CONTENT MAPPING ---
+
+                if (item.type === 'Komplain Customer') {
+                    printField("Jenis:", jsonData.jenisKomplain, 15, 40);
+                    let sumberTxt = jsonData.sumberComplain;
+                    if (jsonData.noBillGCC) sumberTxt += ` (Bill: ${jsonData.noBillGCC})`;
+                    if (jsonData.sumberLainnya) sumberTxt += ` (${jsonData.sumberLainnya})`;
+                    printField("Sumber:", sumberTxt, 110, 130);
+                    y += 6;
+                    printField("Tanggal:", jsonData.tanggalKejadian, 15, 40);
+                    printField("Status:", jsonData.statusComplain, 110, 130);
+                    y += 10;
+                    
+                    // --- PERBAIKAN: PENANGANAN DENGAN TINGGI DINAMIS ---
+                    
+                    // 1. Penanganan
+                    doc.setFont("helvetica", "bold"); 
+                    doc.text("Penanganan:", 15, y); 
+                    y += 6;
+                    
+                    doc.setFont("helvetica", "italic"); 
+                    doc.setFillColor(249, 250, 251);
+                    
+                    let penangananText = safeStr(jsonData.penanganan);
+                    let penangananLines = doc.splitTextToSize(penangananText, 175);
+                    let pHeight = Math.max(12, (penangananLines.length * 5) + 4); 
+                    
+                    doc.rect(15, y-4, 180, pHeight, 'F'); 
+                    doc.text(penangananLines, 17, y); 
+                    
+                    y += pHeight + 8;
+
+                    // 2. Akar Masalah
+                    doc.setFont("helvetica", "bold"); 
+                    doc.text("Akar Masalah:", 15, y); 
+                    y += 6;
+                    
+                    doc.setFont("helvetica", "italic"); 
+                    doc.setFillColor(249, 250, 251);
+                    
+                    let sebabText = safeStr(jsonData.sebab);
+                    let sebabLines = doc.splitTextToSize(sebabText, 175);
+                    let sHeight = Math.max(12, (sebabLines.length * 5) + 4); 
+                    
+                    doc.rect(15, y-4, 180, sHeight, 'F'); 
+                    doc.text(sebabLines, 17, y); 
+                    
+                    y += sHeight + 8;
+
+                    // 3. Perbaikan
+                    doc.setFont("helvetica", "bold"); 
+                    doc.text("Perbaikan:", 15, y); 
+                    y += 6;
+                    
+                    doc.setFont("helvetica", "italic"); 
+                    doc.setFillColor(249, 250, 251);
+                    
+                    let perbaikanText = safeStr(jsonData.perbaikan);
+                    let perbaikanLines = doc.splitTextToSize(perbaikanText, 175);
+                    let pbHeight = Math.max(12, (perbaikanLines.length * 5) + 4); 
+                    
+                    doc.rect(15, y-4, 180, pbHeight, 'F'); 
+                    doc.text(perbaikanLines, 17, y); 
+                    
+                    y += pbHeight + 8;
+
+                    // 4. Learning Points
+                    doc.setFont("helvetica", "bold"); 
+                    doc.text("Learning Points:", 15, y); 
+                    y += 6;
+                    
+                    doc.setFont("helvetica", "italic"); 
+                    doc.setFillColor(249, 250, 251);
+                    
+                    let learningText = safeStr(jsonData.learning);
+                    let learningLines = doc.splitTextToSize(learningText, 175);
+                    let lHeight = Math.max(12, (learningLines.length * 5) + 4); 
+                    
+                    doc.rect(15, y-4, 180, lHeight, 'F'); 
+                    doc.text(learningLines, 17, y); 
+                    
+                    y += lHeight + 8;
+                } 
+                else if (item.type === 'Refund Customer') {
+                    printField("Customer:", `${safeStr(jsonData.namaCustomer)} (${safeStr(jsonData.noTelp)})`, 15, 45);
+                    y += 6;
+                    printField("Bank:", `${safeStr(jsonData.namaBank)} - ${safeStr(jsonData.noRek)}`, 15, 45);
+                    y += 6;
+                    doc.setFont("helvetica", "bold"); doc.text("Nominal:", 15, y);
+                    doc.setTextColor(127, 29, 29); doc.text(fmtRupiah(jsonData.jumlahRefund), 45, y); doc.setTextColor(0);
+                    y += 10;
+                    printBlock("Alasan Refund:", jsonData.alasan);
+                }
+                else if (item.type === 'KOL Foodies') {
+                    printField("Foodies:", jsonData.namaFoodies, 15, 45);
+                    y += 6;
+                    printField("No Bill:", jsonData.noBill, 15, 45);
+                    y += 6;
+                    doc.setFont("helvetica", "bold"); doc.text("Total Bill:", 15, y);
+                    doc.setTextColor(127, 29, 29); doc.text(fmtRupiah(jsonData.totalBill), 45, y); doc.setTextColor(0);
+                    y += 10;
+                }
+                else if (item.type === 'Customer Entertain') { 
+                    printField("Tujuan:", jsonData.tujuan, 15, 40);
+                    printField("No Bill:", jsonData.noBill, 110, 130);
+                    y += 6;
+                    printField("Tgl Bill:", jsonData.tanggalBill, 15, 40);
+                    doc.setFont("helvetica", "bold"); doc.text("Total Bill:", 110, y);
+                    doc.setTextColor(127, 29, 29); doc.text(fmtRupiah(jsonData.totalBill), 140, y); doc.setTextColor(0);
+                    y += 10;
+                }
+                else if (item.type === 'Void') {
+                    printField("No Bill:", jsonData.noBill, 15, 40);
+                    printField("Tanggal:", `${jsonData.tanggal} (${jsonData.hari})`, 110, 130);
+                    y += 6;
+                    printField("Tipe Void:", jsonData.tipeVoid, 15, 40);
+                    printField("Nominal:", jsonData.nominal, 110, 130);
+                    y += 10;
+                    printBlock("Alasan Void:", jsonData.alasan);
+                }
+                else if (item.type === 'Waste Pcs To Pcs') {
+                    printField("Alasan:", jsonData.alasan, 15, 40); y += 10;
+                }
+                else if (item.type === 'Revisi Stock Opname') {
+                    printField("Tgl SO:", jsonData.tanggalSO, 15, 40);
+                    printField("Periode:", jsonData.periodeSO, 110, 130); y += 10;
+                }
+                else if (item.type === 'Purchasing Non Supplier') {
+                    printField("Vendor:", jsonData.vendor, 15, 40);
+                    printField("Tgl Bill:", jsonData.tanggalBill, 110, 130); y += 10;
+                    printBlock("Keperluan:", jsonData.alasan);
+                }
+                else if (item.type === 'Konsumsi General Cleaning') { 
+                     if(jsonData.alasan) printBlock("Keperluan:", jsonData.alasan);
+                }
+                else if (item.type === 'Minute of Meeting') {
+                    printField("Judul:", jsonData.namaMeeting, 15, 35); y += 6;
+                    printField("Waktu:", `${jsonData.tanggalMeeting} ${jsonData.jamMeeting}`, 15, 35); y += 6;
+                    printField("Tempat:", jsonData.tempatMeeting, 15, 35); y += 10;
+                }
+                else if (item.type === 'Penjualan & Dispose Asset') {
+                    printField("Tindakan:", jsonData.tindakan, 15, 40);
+                    printField("Tgl BA:", jsonData.tanggalBA, 110, 130); y += 10;
+                    printBlock("Alasan:", jsonData.alasan);
+                }
+                else if (item.type === 'Test Food') {
+                    printField("Tanggal Test:", jsonData.tanggalTest, 15, 45);
+                    printField("Lokasi:", jsonData.lokasiTest, 110, 130); y += 6;
+                    let keperluanTxt = jsonData.keperluanTest;
+                    if (jsonData.keperluanLainnya) keperluanTxt += ` (${jsonData.keperluanLainnya})`;
+                    printField("Keperluan:", keperluanTxt, 15, 45);
+                    printField("Peserta:", jsonData.person, 110, 130); y += 10;
+                }
+                else if (item.type === 'Discount Karyawan') {
+                    printField("Nama Karyawan:", `${jsonData.namaKaryawan} (${jsonData.idKaryawan})`, 15, 55);
+                    printField("No Bill:", jsonData.noBill, 110, 130);
+                    y += 6;
+                    doc.setFont("helvetica", "bold"); doc.text("Total Bill:", 15, y);
+                    doc.text("Nominal Diskon:", 110, y);
+                    doc.setFont("helvetica", "normal");
+                    doc.text(fmtRupiah(jsonData.totalBill), 55, y);
+                    doc.setTextColor(127, 29, 29); doc.text(fmtRupiah(jsonData.nominalDiskon), 150, y); doc.setTextColor(0);
+                    y += 10;
+                    printBlock("Keterangan:", jsonData.keterangan);
+                }
+                else if (item.type === 'Cancel Online') {
+                    printField("Platform:", jsonData.platform, 15, 45);
+                    printField("No Transaksi:", jsonData.noTransaksi, 110, 140);
+                    y += 6;
+                    printField("No Bill POS:", jsonData.noBill, 15, 45);
+                    
+                    doc.setFont("helvetica", "bold"); doc.text("Total Bill:", 110, y);
+                    doc.setTextColor(127, 29, 29); doc.text(fmtRupiah(jsonData.totalBill), 140, y); doc.setTextColor(0);
+                    y += 10;
+                    printBlock("Alasan Cancel:", jsonData.alasan);
+                }
+
+                // --- TABLE GENERATION ---
+                let itemsBA = typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : jsonData.items;
+                let head = [], bodyData = [], foot = null;
+                const totalText = jsonData.grandTotal || jsonData.totalBill || jsonData.grandTotalJual || 'Rp 0';
+                
+                if (item.type === 'Minute of Meeting') {
+                     // Table 1
+                     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(127, 29, 29);
+                     doc.text("DAFTAR HADIR", 15, y); y += 2;
+                     let attData = (jsonData.attendance || []).map((i, idx) => [idx+1, safeStr(i.nama), safeStr(i.divisi), safeStr(i.jabatan)]);
+                     doc.autoTable({ startY: y, head: [['No', 'Nama', 'Divisi', 'Jabatan']], body: attData, theme: 'striped', headStyles: { fillColor: [127, 29, 29], textColor: 255, fontStyle: 'bold' }, styles: { fontSize: 8, cellPadding: 2 } });
+                     y = doc.autoTable.previous.finalY + 10;
+                     
+                     // Table 2
+                     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(127, 29, 29);
+                     doc.text("NOTULENSI", 15, y); y += 2;
+                     let minData = (jsonData.minutes || []).map((i, idx) => [idx+1, safeStr(i.informasi), safeStr(i.instruction), safeStr(i.instructionFor), safeStr(i.deadline)]);
+                     doc.autoTable({ startY: y, head: [['No', 'Informasi', 'Tindakan', 'PIC', 'Deadline']], body: minData, theme: 'striped', headStyles: { fillColor: [127, 29, 29], textColor: 255, fontStyle: 'bold' }, styles: { fontSize: 8, cellPadding: 2 } });
+                     y = doc.autoTable.previous.finalY + 10;
+                     itemsBA = null; 
+                }
+                else if (item.type === 'Komplain Customer') {
+                     doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(127, 29, 29);
+                     doc.text("KRONOLOGIS KEJADIAN", 15, y); y += 2;
+                     
+                     head = [['No', 'Waktu', 'Kejadian', 'PIC', 'Foto']];
+                     bodyData = (jsonData.kronologis || []).map((i, idx) => [idx+1, `${safeStr(i.date)} ${safeStr(i.time)}`, safeStr(i.info), safeStr(i.handle), (i.photo ? 'Ada' : '-')]);
+                }
+                else if (item.type === 'Test Food' && Array.isArray(itemsBA) && itemsBA.length > 0) {
+                    doc.setFontSize(10); doc.setFont("helvetica", "bold"); doc.setTextColor(127, 29, 29);
+                    doc.text("RINCIAN PENILAIAN MENU", 15, y); y += 2;
+                    
+                    head = [['No', 'Menu', 'Tampilan', 'Rasa', 'Tekstur', 'Aroma', 'Komentar', 'Status']];
+                    let passCount = 0;
+                    bodyData = itemsBA.map((i, idx) => {
+                         const status = safeStr(i.status).toUpperCase();
+                         if (status === 'PASS') passCount++;
+                         return [idx+1, safeStr(i.menu), safeStr(i.look), safeStr(i.taste), safeStr(i.texture), safeStr(i.aroma), safeStr(i.comment), status];
+                    });
+
+                    const totalMenus = itemsBA.length;
+                    const score = totalMenus > 0 ? Math.round((passCount / totalMenus) * 100) : 0;
+                    
+                    doc.autoTable({ startY: y, head: head, body: bodyData, theme: 'striped', headStyles: { fillColor: [127, 29, 29], textColor: 255, fontStyle: 'bold' }, styles: { fontSize: 7, cellPadding: 1.5, valign: 'middle' }, columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 30, fontStyle: 'bold' }, 7: { cellWidth: 15, halign: 'center' } } });
+                    y = doc.autoTable.previous.finalY + 2;
+
+                    doc.setFontSize(10); doc.setFont("helvetica", "normal"); doc.setTextColor(0);
+                    doc.text(`Total Menu Dites: ${totalMenus}`, 15, y);
+                    doc.text(`Menu Berhasil (Pass): ${passCount}`, 15, y + 5);
+                    doc.setFont("helvetica", "bold"); doc.setFontSize(14); doc.setTextColor(127, 29, 29);
+                    doc.text(`SKOR AKHIR: ${score}/100`, pageWidth - MARGIN, y + 5, {align: 'right'});
+                    y += 15;
+                    itemsBA = null; 
+                    bodyData = []; 
+                }
+                else if (itemsBA && Array.isArray(itemsBA)) {
+                     if (item.type === 'Revisi Stock Opname') {
+                         head = [['No', 'Kode Item', 'Unit', 'Qty Awal', 'Qty Revisi', 'Alasan']];
+                         bodyData = itemsBA.map((i, idx) => [idx + 1, safeStr(i.kodeItem), safeStr(i.unit), safeStr(i.qtySebelum), safeStr(i.qtyRevisi), safeStr(i.alasan)]);
+                     } else if (item.type === 'Penjualan & Dispose Asset') {
+                         head = [['No', 'No Asset', 'Item', 'Qty', 'Book Val', 'Harga Jual', 'Ket']];
+                         bodyData = itemsBA.map((i, idx) => [idx + 1, safeStr(i.noAsset), safeStr(i.item), safeStr(i.qty), safeStr(i.bookValue), safeStr(i.hargaJual), safeStr(i.keterangan)]);
+                         foot = [['', '', '', '', '', 'TOTAL', safeStr(totalText)]];
+                     } else if (item.type === 'Purchasing Non Supplier' || item.type === 'Konsumsi General Cleaning') {
+                         head = [['No', 'Item', 'Qty', 'Harga', 'Total', 'Vendor']];
+                         bodyData = itemsBA.map((i, idx) => [idx + 1, safeStr(i.item), safeStr(i.qty), safeStr(i.price), safeStr(i.total), safeStr(i.vendor)]);
+                         foot = [['', '', '', 'TOTAL', safeStr(totalText), '']];
+                     } else if (item.type !== 'Discount Karyawan') { 
+                         // Generic & Cancel Online Fix
+                         head = [['No', 'Item / Menu', 'Qty', 'Notes / Unit', 'Harga', 'Total']];
+                         bodyData = itemsBA.map((i, idx) => {
+                            let itemName = safeStr(i.item || i.menu || i.name || i.namaMenu);
+                            return [idx + 1, itemName, safeStr(i.qty), safeStr(i.unit || i.notes), safeStr(i.price || i.harga), safeStr(i.total)];
+                         });
+                         if(jsonData.grandTotal || jsonData.totalBill) foot = [['', '', '', '', 'TOTAL', safeStr(totalText)]];
+                     }
+                }
+
+                if(bodyData.length > 0) {
+                     doc.autoTable({ startY: y, head: head, body: bodyData, theme: 'striped', headStyles: { fillColor: [127, 29, 29], textColor: 255, fontStyle: 'bold' }, styles: { fontSize: 8, cellPadding: 2, valign: 'middle' }, foot: foot, footStyles: { fillColor: [240, 240, 240], textColor: [127, 29, 29], fontStyle: 'bold' } });
+                     y = doc.autoTable.previous.finalY + 10;
+                }
+
+                // --- PHOTO SECTION ---
+                let photosToPrint = [];
+                
+                // 1. Specific Form Handling
+                if (jsonData.files) {
+                    ['strukEDC', 'billPOS', 'fotoMakanan'].forEach(key => {
+                        if (jsonData.files[key] && Array.isArray(jsonData.files[key])) {
+                            jsonData.files[key].forEach((src, i) => {
+                                if (src && src.startsWith('data:image')) {
+                                    photosToPrint.push({ src: src, label: `${key.toUpperCase()} #${i+1}` });
+                                }
+                            });
+                        }
+                    });
+                }
+                
+                // 2. Discount Karyawan (Single Photo)
+                if (jsonData.fotoBill && typeof jsonData.fotoBill === 'string' && jsonData.fotoBill.startsWith('data:image')) {
+                     photosToPrint.push({ src: jsonData.fotoBill, label: 'FOTO BILL' });
+                }
+
+                // 3. Existing Logic
+                if (item.type === 'Test Food' && jsonData.items && Array.isArray(jsonData.items)) {
+                    jsonData.items.forEach((menuItem, i) => { if (menuItem.photo && menuItem.photo.startsWith('data:image')) photosToPrint.push({ src: menuItem.photo, label: `Menu: ${menuItem.menu || `Menu ${i+1}`}` }); });
+                }
+                if (jsonData.kronologis && Array.isArray(jsonData.kronologis)) {
+                    jsonData.kronologis.forEach((k, i) => { if (k.photo && k.photo.startsWith('data:image')) photosToPrint.push({ src: k.photo, label: `Kronologis #${i+1} (${k.time})` }); });
+                }
+                if (jsonData.extraPhotos && Array.isArray(jsonData.extraPhotos)) {
+                    jsonData.extraPhotos.forEach((src, i) => { if (src && src.startsWith('data:image')) photosToPrint.push({ src: src, label: `Lampiran #${i+1}` }); });
+                }
+                else if (jsonData.photos && Array.isArray(jsonData.photos)) {
+                    jsonData.photos.forEach((src, i) => { if (src && src.startsWith('data:image')) photosToPrint.push({ src: src, label: `Foto #${i+1}` }); });
+                }
+                
+                // 4. Smart Catch-All
+                const keys = Object.keys(jsonData).filter(k => (k.startsWith('foto') || k.includes('Photo') || k === 'buktiBayar' || k === 'strukEDC' || k === 'billPOS') && jsonData[k] && typeof jsonData[k] === 'string' && jsonData[k].startsWith('data:image') && k !== 'fotoBill');
+                
+                if (jsonData.fotoBill && typeof jsonData.fotoBill === 'string' && jsonData.fotoBill.startsWith('data:image') && !photosToPrint.some(p => p.src === jsonData.fotoBill)) {
+                     photosToPrint.push({ src: jsonData.fotoBill, label: 'FOTO BILL' });
+                }
+
+                keys.forEach(k => {
+                    if (!photosToPrint.some(p => p.src === jsonData[k])) photosToPrint.push({ src: jsonData[k], label: k.replace(/([A-Z])/g, ' $1').toUpperCase() });
+                });
+
+                // --- START IMAGE ASPECT RATIO FIX (2 Column Max) ---
+                if (photosToPrint.length > 0) {
+                    if (y > pageHeight - 60) { doc.addPage(); y = 20; }
+                    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(127, 29, 29);
+                    doc.text("BUKTI FOTO / LAMPIRAN", 15, y);
+                    doc.setLineWidth(0.5); doc.setDrawColor(127, 29, 29); doc.line(15, y+2, 65, y+2);
+                    y += 10;
+
+                    // Mengubah ukuran box gambar menjadi maksimal untuk 2 kolom (86x60)
+                    let xPos = 15; const boxW = 86; const boxH = 60; 
+                    photosToPrint.forEach((photo) => {
+                        // Cek apakah perlu halaman baru sebelum render
+                        if (y + boxH > pageHeight - 30) { doc.addPage(); y = 20; xPos = 15; }
+                        // Cek apakah perlu pindah baris (wrap)
+                        if (xPos + boxW > pageWidth - 15) { xPos = 15; y += boxH + 12; }
+                        
+                        try {
+                            // Check double page break risk after wrap
+                            if (y + boxH > pageHeight - 30) { doc.addPage(); y = 20; xPos = 15; }
+
+                            // 1. Dapatkan dimensi asli gambar
+                            const props = doc.getImageProperties(photo.src);
+                            const imgRatio = props.width / props.height;
+                            const boxRatio = boxW / boxH;
+                            
+                            let drawW = boxW;
+                            let drawH = boxH;
+                            let offsetX = 0;
+                            let offsetY = 0;
+
+                            // 2. Hitung dimensi baru (Object-Fit: Contain)
+                            if (imgRatio > boxRatio) {
+                                // Gambar lebih "lebar" dari kotak -> Fit Width
+                                drawW = boxW;
+                                drawH = boxW / imgRatio;
+                                offsetY = (boxH - drawH) / 2; // Center Vertikal
+                            } else {
+                                // Gambar lebih "tinggi" dari kotak -> Fit Height
+                                drawH = boxH;
+                                drawW = boxH * imgRatio;
+                                offsetX = (boxW - drawW) / 2; // Center Horizontal
+                            }
+
+                            const format = photo.src.includes('image/png') ? 'PNG' : 'JPEG';
+                            
+                            // 3. Gambar border frame (kotak penuh 86x60)
+                            doc.setDrawColor(220); 
+                            doc.rect(xPos, y, boxW, boxH);
+                            
+                            // 4. Render gambar dengan dimensi proporsional di tengah frame
+                            doc.addImage(photo.src, format, xPos + offsetX, y + offsetY, drawW, drawH);
+                            
+                            // Label di bawah frame
+                            doc.setFontSize(7); doc.setTextColor(80);
+                            doc.text(safeStr(photo.label), xPos + boxW/2, y + boxH + 4, {align:'center'});
+                            
+                            xPos += boxW + 5;
+                        } catch(err) { console.error("Skip bad image", err); }
+                    });
+                    y += boxH + 15;
+                }
+                // --- END IMAGE ASPECT RATIO FIX ---
+
+                // --- SIGNATURES ---
+                if (y + 40 > pageHeight - 30) { doc.addPage(); y = 30; }
+                const leftX = 15; const boxHeight = 35;
+                const drawStamp = (name, date, role, status, cx, cy) => {
+                    if (!status) { doc.setFontSize(8); doc.setFont("helvetica", "italic"); doc.setTextColor(150); doc.text("Menunggu...", cx, cy, {align:'center'}); return; }
+                    doc.saveGraphicsState(); doc.setGState(new doc.GState({opacity: 0.5})); 
+                    doc.setFontSize(20); doc.setFont("helvetica", "bold");
+                    doc.setTextColor(status === 'REJECTED' ? 200 : 55, status === 'REJECTED' ? 0 : 48, status === 'REJECTED' ? 0 : 163);
+                    doc.text(status, cx, cy+5, {align:'center', angle: 20});
+                    doc.setFontSize(8); doc.text(date ? fmtDate(date) : '', cx, cy+15, {align:'center', angle: 20});
+                    doc.restoreGraphicsState();
+                    doc.setTextColor(0); doc.setFontSize(9); doc.setFont("helvetica", "bold");
+                    doc.text(safeStr(name), cx, y + boxHeight - 12, {align:'center'});
+                    doc.setFontSize(7); doc.setFont("helvetica", "normal");
+                    doc.text(`( ${role} )`, cx, y + boxHeight - 4, {align:'center'});
+                };
+
+                doc.setDrawColor(150); doc.setLineWidth(0.1); doc.setTextColor(0);
+
+                if (isFnbFlow) {
+                    const boxWidth = 55; const sigCol2X = leftX + boxWidth + 5; const sigCol3X = sigCol2X + boxWidth + 5;
+                    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("Dibuat Oleh:", leftX, y); doc.rect(leftX, y+2, boxWidth, boxHeight);
+                    doc.text(safeStr(item.NAME), leftX+boxWidth/2, y+boxHeight-12, {align:'center'}); doc.setFont("helvetica", "normal"); doc.text("( Pembuat )", leftX+boxWidth/2, y+boxHeight-4, {align:'center'});
+                    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("FNB Head:", sigCol2X, y); doc.rect(sigCol2X, y+2, boxWidth, boxHeight);
+                    let fnbStatus = item.FNB_Rejected_Date ? 'REJECTED' : (item.FNB_Approved_Date ? 'APPROVED' : null);
+                    drawStamp(item.FNB_Approved_By||item.FNB_Rejected_By, item.FNB_Approved_Date||item.FNB_Rejected_Date, 'FNB Head', fnbStatus, sigCol2X+boxWidth/2, y+boxHeight/2);
+                    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("Area Manager:", sigCol3X, y); doc.rect(sigCol3X, y+2, boxWidth, boxHeight);
+                    let amStatus = item.AM_Rejected_Date ? 'REJECTED' : (item.AM_Approved_Date ? 'APPROVED' : null);
+                    drawStamp(item.AM_Approved_By||item.AM_Rejected_By, item.AM_Approved_Date||item.AM_Rejected_Date, 'Area Manager', amStatus, sigCol3X+boxWidth/2, y+boxHeight/2);
+                } else { 
+                    const boxWidth = 70; const sigCol2X = pageWidth - leftX - boxWidth;
+                    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("Dibuat Oleh:", leftX, y); doc.rect(leftX, y+2, boxWidth, boxHeight);
+                    doc.text(safeStr(item.NAME), leftX+boxWidth/2, y+boxHeight-12, {align:'center'}); doc.setFont("helvetica", "normal"); doc.text("( Pembuat )", leftX+boxWidth/2, y+boxHeight-4, {align:'center'});
+                    doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.text("Area Manager:", sigCol2X, y); doc.rect(sigCol2X, y+2, boxWidth, boxHeight);
+                    let amStatus = item.AM_Rejected_Date ? 'REJECTED' : (item.AM_Approved_Date ? 'APPROVED' : null);
+                    drawStamp(item.AM_Approved_By||item.AM_Rejected_By, item.AM_Approved_Date||item.AM_Rejected_Date, 'Area Manager', amStatus, sigCol2X+boxWidth/2, y+boxHeight/2);
+                }
+            }
+
+            // --- FOOTER ---
+            const totalPages = doc.internal.getNumberOfPages();
+            const dateObj = new Date();
+            const genDate = `${String(dateObj.getDate()).padStart(2,'0')}${String(dateObj.getMonth()+1).padStart(2,'0')}${String(dateObj.getFullYear()).slice(-2)} ${String(dateObj.getHours()).padStart(2,'0')}:${String(dateObj.getMinutes()).padStart(2,'0')}`;
+            const footerText = `GENERATED DATE ${genDate.toUpperCase()}`;
+
+            for (let i = 1; i <= totalPages; i++) {
+                doc.setPage(i); 
+                if (!isQtnInv) {
+                    doc.setFontSize(7); doc.setTextColor(128, 128, 128); doc.setFont("helvetica", "italic");
+                    doc.text(`© 2025 | BAKERZIN | SISTEM BERITA ACARA DIGITAL | ${footerText}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+                }
+            }
+
+            doc.save(docName);
+
+        } catch(err) { console.error("❌ Gagal Generate PDF:", err); }
+    }
+    
+    console.log("PDFGenerator script loaded.");
+</script>

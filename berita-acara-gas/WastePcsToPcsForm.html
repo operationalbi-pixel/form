@@ -1,0 +1,344 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header Layout Asli -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">WASTE</p>
+            <!-- Badge Revisi (Hanya muncul jika mode edit) -->
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="wasteForm" class="space-y-6 font-sans text-sm">
+        <!-- Hidden Input untuk ID Submission (Penting untuk Revisi) -->
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="w_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="w_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="w_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">POSISI</label><input type="text" id="w_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Tanggal & Hari -->
+        <div class="grid grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tanggal</label>
+                <input type="date" name="tanggal" id="dateInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Hari</label>
+                <input type="text" name="hari" id="dayOutput" readonly class="w-full bg-gray-100 border border-gray-300 rounded p-2 outline-none text-gray-600 font-medium">
+            </div>
+        </div>
+
+        <!-- 3. Alasan Waste -->
+        <div class="space-y-2">
+            <label class="block font-bold text-gray-700">Alasan Waste</label>
+            <select id="alasanSelect" name="alasanKategori" class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" required>
+                <option value="">-- Pilih Alasan --</option>
+                <option value="Waste Display">Waste Display</option>
+                <option value="Expired">Expired</option>
+                <option value="Sisa Promo">Sisa Promo</option>
+                <option value="Rusak">Rusak</option>
+                <option value="Lainnya">Lainnya</option>
+            </select>
+            <input type="text" id="alasanLainnya" name="alasanDeskripsi" class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 hidden mt-2 transition" placeholder="Silahkan input alasan detail...">
+        </div>
+
+        <!-- 4. Tabel Item -->
+        <div class="border rounded-lg overflow-hidden shadow-sm">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-red-900 text-white">
+                    <tr>
+                        <th class="py-3 px-3 w-10 text-center">No</th>
+                        <th class="py-3 px-3">Item</th>
+                        <th class="py-3 px-3 w-20 text-center">QTY</th>
+                        <th class="py-3 px-3 w-32 text-right">Harga</th>
+                        <th class="py-3 px-3 w-32 text-right">Total</th>
+                        <th class="py-3 px-3 w-10 text-center">#</th>
+                    </tr>
+                </thead>
+                <tbody id="itemContainer" class="divide-y divide-gray-200 bg-white"></tbody>
+                <tfoot class="bg-gray-50 font-bold">
+                    <tr>
+                        <td colspan="4" class="py-3 px-3 text-right text-gray-600 uppercase text-xs tracking-wider">Total Value</td>
+                        <td class="py-3 px-3 text-right text-red-900 text-base" id="grandTotal">Rp 0</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        <button type="button" id="btnAddRow" class="text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded shadow flex items-center transition transform active:scale-95">
+            + Tambah Baris
+        </button>
+
+        <!-- 5. Upload Bukti dengan Preview (LAYOUT ASLI DIKEMBALIKAN) -->
+        <div class="space-y-4 pt-6 border-t mt-6">
+            <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3">Bukti Waste</h3>
+            
+            <!-- Peringatan Khusus Revisi -->
+            <div id="fotoNotice" class="hidden text-xs text-amber-600 bg-amber-50 p-2 rounded border border-amber-100 mb-2">
+                *Foto lama tersimpan. Upload baru hanya jika ingin mengganti foto.
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">1. Foto Sebelum Dimusnahkan</label>
+                    <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="fotoSebelum" onchange="previewImage(this, 'preview1')">
+                    <div id="preview1" class="hidden mt-2 w-full h-40 bg-gray-100 rounded flex items-center justify-center overflow-hidden"></div>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">2. Foto Setelah Dimusnahkan</label>
+                    <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="fotoSesudah" onchange="previewImage(this, 'preview2')">
+                    <div id="preview2" class="hidden mt-2 w-full h-40 bg-gray-100 rounded flex items-center justify-center overflow-hidden"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-8">
+            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SIMPAN & KIRIM</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+    window.parseRupiah = (str) => parseFloat(String(str).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+    window.previewImage = function(input, previewId) {
+        const previewDiv = document.getElementById(previewId);
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewDiv.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover">`;
+                previewDiv.classList.remove('hidden');
+            }
+            reader.readAsDataURL(input.files[0]);
+        } else { previewDiv.classList.add('hidden'); }
+    };
+
+    (function() {
+        // 1. Load User Data
+        const user = window.GLOBAL_USER;
+        // Data Existing untuk Revisi
+        const existing = window.EXISTING_DATA; 
+
+        if(user) {
+            document.getElementById('w_nama').value = user.NAME || '';
+            document.getElementById('w_nik').value = user.NIK || '';
+            document.getElementById('w_outlet').value = user.OUTLET || '';
+            document.getElementById('w_posisi').value = user.POSITION || '';
+        }
+
+        // --- LOGIKA REVISI (POPULATE FORM) ---
+        if (existing) {
+            // Tampilkan Badge & Ubah Teks
+            document.getElementById('revisiBadge').classList.remove('hidden');
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            
+            const btn = document.getElementById('btnSubmit');
+            btn.innerHTML = "SIMPAN PERBAIKAN";
+            btn.classList.remove('from-red-900', 'to-red-800');
+            btn.classList.add('from-amber-600', 'to-amber-500');
+            
+            document.getElementById('fotoNotice').classList.remove('hidden');
+
+            let json = {};
+            try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+
+            // Isi Tanggal
+            if(json.tanggal) {
+                document.getElementById('dateInput').value = json.tanggal;
+                const event = new Event('change');
+                document.getElementById('dateInput').dispatchEvent(event); // Trigger hari
+            }
+
+            // Isi Alasan
+            if (json.alasan) {
+                const sel = document.getElementById('alasanSelect');
+                if (json.alasan.startsWith('Lainnya:')) {
+                    sel.value = 'Lainnya';
+                    document.getElementById('alasanLainnya').classList.remove('hidden');
+                    document.getElementById('alasanLainnya').value = json.alasan.replace('Lainnya: ', '');
+                } else {
+                    sel.value = json.alasan;
+                }
+            }
+
+            // Isi Item (Nanti diload di bawah)
+            window.preloadItems = typeof json.items === 'string' ? JSON.parse(json.items) : json.items;
+            
+            // Foto Preview (Jika ada data lama)
+            if(json.fotoSebelum) {
+                const p1 = document.getElementById('preview1');
+                p1.innerHTML = `<img src="${json.fotoSebelum}" class="w-full h-full object-cover opacity-70 border-2 border-amber-400">`;
+                p1.classList.remove('hidden');
+            }
+            if(json.fotoSesudah) {
+                const p2 = document.getElementById('preview2');
+                p2.innerHTML = `<img src="${json.fotoSesudah}" class="w-full h-full object-cover opacity-70 border-2 border-amber-400">`;
+                p2.classList.remove('hidden');
+            }
+        }
+
+        // 2. Tanggal Listener
+        document.getElementById('dateInput').addEventListener('change', function() {
+            const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+            const d = new Date(this.value);
+            if(!isNaN(d.getTime())) document.getElementById('dayOutput').value = days[d.getDay()];
+        });
+
+        // 3. Dropdown Alasan
+        document.getElementById('alasanSelect').addEventListener('change', function() {
+            const inputLain = document.getElementById('alasanLainnya');
+            if(this.value === 'Lainnya') {
+                inputLain.classList.remove('hidden');
+                inputLain.required = true;
+            } else {
+                inputLain.classList.add('hidden');
+                inputLain.required = false;
+                inputLain.value = '';
+            }
+        });
+
+        // 4. Table Logic
+        window.addWasteRow = function(data = null) {
+            const tbody = document.getElementById('itemContainer');
+            const rowCount = tbody.rows.length + 1;
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="py-2 px-3 text-center text-gray-500 align-middle index-cell">${rowCount}</td>
+                <td class="py-2 px-3"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent item-input" placeholder="Item" value="${data ? (data.item||data.name) : ''}" required></td>
+                <td class="py-2 px-3"><input type="number" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 qty-input bg-transparent" value="${data ? data.qty : 1}" min="1" required></td>
+                <td class="py-2 px-3"><input type="text" class="w-full text-right border-b border-gray-300 outline-none py-1 focus:border-red-800 price-input bg-transparent" placeholder="0" value="${data ? data.price : ''}" required></td>
+                <td class="py-2 px-3 text-right font-medium text-gray-700 total-cell">Rp 0</td>
+                <td class="py-2 px-3 text-center"><button type="button" onclick="this.closest('tr').remove(); window.recalcTotal();" class="text-red-500 font-bold text-lg">×</button></td>
+            `;
+            tbody.appendChild(tr);
+            
+            const qty = tr.querySelector('.qty-input');
+            const price = tr.querySelector('.price-input');
+            
+            // Auto format saat init jika data ada
+            if(data && data.price) {
+                 // Clean price just in case
+                 const cleanP = window.parseRupiah(data.price);
+                 price.value = window.formatRupiah(cleanP).replace('Rp', '').trim();
+                 window.calcRow(tr);
+            }
+
+            price.addEventListener('keyup', function(e) {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+                window.calcRow(tr);
+            });
+            qty.addEventListener('input', () => window.calcRow(tr));
+        };
+
+        window.calcRow = function(tr) {
+            const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
+            const price = window.parseRupiah(tr.querySelector('.price-input').value);
+            const total = qty * price;
+            tr.querySelector('.total-cell').textContent = window.formatRupiah(total);
+            tr.dataset.total = total;
+            window.recalcTotal();
+        }
+
+        window.recalcTotal = function() {
+            let grand = 0;
+            document.querySelectorAll('#itemContainer tr').forEach((tr, index) => { 
+                grand += parseFloat(tr.dataset.total) || 0; 
+                tr.querySelector('.index-cell').textContent = index + 1; // Renumber
+            });
+            document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+        }
+
+        document.getElementById('btnAddRow').addEventListener('click', () => window.addWasteRow());
+        
+        // Init Rows
+        if (window.preloadItems && Array.isArray(window.preloadItems)) {
+            window.preloadItems.forEach(item => window.addWasteRow(item));
+        } else {
+            window.addWasteRow();
+        }
+
+
+        // 5. Submit
+        const form = document.getElementById('wasteForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = form.querySelector('button[type="submit"]');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Memproses...';
+
+            const items = [];
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                items.push({
+                    item: tr.querySelector('.item-input').value,
+                    qty: tr.querySelector('.qty-input').value,
+                    price: tr.querySelector('.price-input').value,
+                    total: tr.querySelector('.total-cell').textContent
+                });
+            });
+
+            const alasanKategori = document.getElementById('alasanSelect').value;
+            const alasanDetail = document.getElementById('alasanLainnya').value;
+            const alasanFinal = alasanKategori === 'Lainnya' ? `Lainnya: ${alasanDetail}` : alasanKategori;
+
+            const formData = {
+                tanggal: form.querySelector('[name="tanggal"]').value,
+                hari: form.querySelector('[name="hari"]').value,
+                alasan: alasanFinal,
+                items: items,
+                grandTotal: document.getElementById('grandTotal').textContent,
+                fotoSebelum: null, fotoSesudah: null
+            };
+
+            // Jika mode revisi, pertahankan foto lama jika user tidak upload baru
+            if (existing) {
+                 let oldJson = {};
+                 try { oldJson = JSON.parse(existing.Data_JSON); } catch(err){}
+                 formData.fotoSebelum = oldJson.fotoSebelum;
+                 formData.fotoSesudah = oldJson.fotoSesudah;
+            }
+
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: input.dataset.key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else { resolve({ key: input.dataset.key, data: null }); }
+                });
+            });
+
+            const files = await Promise.all(filePromises);
+            files.forEach(f => {
+                if(f.data) formData[f.key] = f.data; // Hanya overwrite jika ada file baru
+            });
+
+            // Params for Update
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) { 
+                    alert("Sukses! " + res.message); 
+                    if(typeof closeForm === 'function') closeForm(); 
+                }
+                else { alert("Gagal: " + res.message); btn.disabled = false; btn.innerHTML = originalText; }
+            }).rekamData(formData, 'Waste Pcs To Pcs', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+
+    })();
+</script>

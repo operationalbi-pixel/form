@@ -1,0 +1,504 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- FORM STYLE -->
+<style>
+    .form-group label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #9ca3af; /* gray-400 */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    .form-input {
+        width: 100%;
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #1f2937;
+        outline: none;
+        transition: all 0.2s;
+    }
+    .form-input:focus {
+        border-color: #991b1b;
+        box-shadow: 0 0 0 1px #991b1b;
+    }
+    .form-input[readonly] {
+        background-color: #f9fafb;
+        color: #6b7280;
+        border-color: #f3f4f6;
+        cursor: not-allowed;
+    }
+    .table-header {
+        background-color: #7f1d1d; /* red-900 */
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        padding: 0.75rem;
+    }
+    /* Modal & Upload Style */
+    .upload-box {
+        border: 2px dashed #d1d5db;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        text-align: center;
+        transition: all 0.2s;
+        background-color: #f9fafb;
+        position: relative;
+    }
+    .upload-box:hover {
+        border-color: #991b1b;
+        background-color: #fff1f2;
+    }
+    .preview-img {
+        max-height: 150px;
+        margin: 10px auto;
+        border-radius: 0.375rem;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        display: none; 
+        object-fit: contain;
+    }
+    /* Thumbnail di tabel */
+    .table-thumb {
+        width: 50px;
+        height: 50px;
+        object-fit: cover;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+    }
+</style>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">TEST FOOD & QC MENU</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="testFoodForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="k_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="k_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">JABATAN</label><input type="text" id="k_position" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="k_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">TANGGAL SUBMIT</label><input type="text" id="k_dateDisplay" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Detail Test -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="form-group">
+                <label>Tanggal Test</label>
+                <input type="date" name="tanggalTest" class="form-input" required>
+            </div>
+            
+            <div class="form-group">
+                <label>Lokasi Test</label>
+                <input type="text" name="lokasiTest" class="form-input" placeholder="Contoh: Kitchen Outlet, Meeting Room..." required>
+            </div>
+
+            <div class="form-group">
+                <label>Keperluan Test</label>
+                <select name="keperluanTest" class="form-input" required>
+                    <option value="">Pilih Keperluan...</option>
+                    <option value="Test Internal">Test Internal</option>
+                    <option value="Development">Development / Menu Baru</option>
+                    <option value="Training">Training Staff</option>
+                    <option value="Lainnya">Lainnya</option>
+                </select>
+            </div>
+
+            <div id="keperluanLainnyaContainer" class="form-group hidden">
+                <label>Keterangan Lainnya</label>
+                <input type="text" name="keperluanLainnya" class="form-input" placeholder="Isi keterangan...">
+            </div>
+
+            <div class="form-group md:col-span-2">
+                <label>Person (Peserta / Tester)</label>
+                <textarea name="person" class="form-input" rows="2" placeholder="Sebutkan siapa saja yang terlibat..." required></textarea>
+            </div>
+        </div>
+
+        <!-- 3. Tabel Penilaian Menu -->
+        <div class="mt-4">
+            <div class="flex justify-between items-end mb-2">
+                <label class="text-xs font-bold text-gray-400 uppercase">Daftar Menu & Penilaian</label>
+                <!-- BUTTON POP UP -->
+                <button type="button" id="btnOpenModal" class="text-xs bg-red-800 hover:bg-red-900 text-white font-bold py-2 px-4 rounded flex items-center transition shadow-md">
+                    <i class="fas fa-utensils mr-2"></i> TAMBAH MENU
+                </button>
+            </div>
+            
+            <div class="border rounded-lg overflow-hidden border-gray-200 bg-white shadow-sm overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead class="bg-gray-50 text-gray-600 text-xs uppercase font-bold border-b border-gray-200">
+                        <tr>
+                            <th class="p-3 w-8 text-center">#</th>
+                            <th class="p-3 w-16">Gambar</th>
+                            <th class="p-3 w-32">Nama Menu</th>
+                            <th class="p-3">Tampilan</th>
+                            <th class="p-3">Rasa</th>
+                            <th class="p-3">Tekstur</th>
+                            <th class="p-3">Aroma</th>
+                            <th class="p-3">Komentar</th>
+                            <th class="p-3 w-20 text-center">Status</th>
+                            <th class="p-3 w-10 text-center"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="menuTableBody" class="divide-y divide-gray-100">
+                        <!-- Rows injected here -->
+                    </tbody>
+                </table>
+                <div id="emptyTableMsg" class="p-8 text-center text-gray-400 text-sm italic bg-gray-50">
+                    Belum ada menu yang dinilai. Klik tombol "TAMBAH MENU" di atas.
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="pt-6 border-t border-gray-100">
+            <button type="submit" id="submitBtn" class="w-full bg-gradient-to-r from-red-800 to-red-900 text-white font-bold py-3 px-4 rounded-lg hover:shadow-lg transform transition hover:-translate-y-0.5">
+                KIRIM BERITA ACARA
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- ========================================== -->
+<!-- MODAL POP UP (Hidden by Default) -->
+<!-- ========================================== -->
+<div id="testModal" class="fixed inset-0 z-50 hidden overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+    <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onclick="closeModal()"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen">&#8203;</span>
+        
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-xl w-full">
+            <div class="bg-red-900 px-4 py-3 flex justify-between items-center">
+                <h3 class="text-lg leading-6 font-bold text-white uppercase" id="modal-title">
+                    <i class="fas fa-clipboard-check mr-2"></i> Input Penilaian Menu
+                </h3>
+                <button type="button" onclick="closeModal()" class="text-red-200 hover:text-white focus:outline-none">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4 space-y-4">
+                <!-- Nama Menu & Status -->
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="col-span-2 form-group">
+                        <label>Nama Menu</label>
+                        <input type="text" id="m_menuName" class="form-input border-gray-300" placeholder="Nama masakan/minuman">
+                    </div>
+                    <div class="form-group">
+                        <label>Status</label>
+                        <select id="m_status" class="form-input border-gray-300 text-center font-bold">
+                            <option value="Pass">PASS</option>
+                            <option value="Failed">FAILED</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Indikator Rasa -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-group">
+                        <label>Tampilan</label>
+                        <input type="text" id="m_look" class="form-input border-gray-300" placeholder="Deskripsi...">
+                    </div>
+                    <div class="form-group">
+                        <label>Rasa</label>
+                        <input type="text" id="m_taste" class="form-input border-gray-300" placeholder="Deskripsi...">
+                    </div>
+                    <div class="form-group">
+                        <label>Tekstur</label>
+                        <input type="text" id="m_texture" class="form-input border-gray-300" placeholder="Deskripsi...">
+                    </div>
+                    <div class="form-group">
+                        <label>Aroma</label>
+                        <input type="text" id="m_aroma" class="form-input border-gray-300" placeholder="Deskripsi...">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Komentar Lainnya</label>
+                    <textarea id="m_comment" class="form-input border-gray-300" rows="2" placeholder="Catatan tambahan..."></textarea>
+                </div>
+
+                <!-- Upload Foto Menu -->
+                <div class="form-group">
+                    <label>Foto Menu (Wajib)</label>
+                    <div class="upload-box">
+                        <input type="file" id="m_photo" class="hidden" accept="image/*" onchange="previewModalImage(this)">
+                        <label for="m_photo" class="cursor-pointer flex flex-col items-center justify-center">
+                            <div id="m_upload_ui">
+                                <i class="fas fa-camera text-gray-400 text-2xl mb-1"></i>
+                                <span class="text-xs text-red-600 font-bold">Klik Upload Foto</span>
+                            </div>
+                            <img id="m_preview" class="preview-img mt-2" src="">
+                        </label>
+                        <button type="button" id="m_clear_btn" class="hidden mt-2 text-xs text-red-500 underline" onclick="clearModalImage()">Hapus Foto</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t border-gray-100">
+                <button type="button" id="btnSaveRow" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-800 text-base font-medium text-white hover:bg-red-900 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm">
+                    SIMPAN KE TABEL
+                </button>
+                <button type="button" onclick="closeModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+                    BATAL
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- MODAL & IMAGE LOGIC ---
+    function closeModal() {
+        document.getElementById('testModal').classList.add('hidden');
+        resetModalForm();
+    }
+    
+    function resetModalForm() {
+        document.getElementById('m_menuName').value = '';
+        document.getElementById('m_status').value = 'Pass';
+        document.getElementById('m_look').value = '';
+        document.getElementById('m_taste').value = '';
+        document.getElementById('m_texture').value = '';
+        document.getElementById('m_aroma').value = '';
+        document.getElementById('m_comment').value = '';
+        clearModalImage();
+    }
+
+    function previewModalImage(input) {
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('m_preview').src = e.target.result;
+                document.getElementById('m_preview').style.display = 'block';
+                document.getElementById('m_upload_ui').classList.add('hidden');
+                document.getElementById('m_clear_btn').classList.remove('hidden');
+            }
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+
+    function clearModalImage() {
+        document.getElementById('m_photo').value = '';
+        document.getElementById('m_preview').src = '';
+        document.getElementById('m_preview').style.display = 'none';
+        document.getElementById('m_upload_ui').classList.remove('hidden');
+        document.getElementById('m_clear_btn').classList.add('hidden');
+    }
+
+    (function() {
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        // 1. Init User Data
+        document.getElementById('k_nama').value = user.NAME;
+        document.getElementById('k_nik').value = user.NIK;
+        document.getElementById('k_position').value = user.POSITION;
+        document.getElementById('k_outlet').value = user.OUTLET;
+        document.getElementById('k_dateDisplay').value = new Date().toLocaleDateString('id-ID');
+
+        // Toggle Keperluan Lainnya
+        document.querySelector('select[name="keperluanTest"]').addEventListener('change', function() {
+            document.getElementById('keperluanLainnyaContainer').classList.toggle('hidden', this.value !== 'Lainnya');
+        });
+
+        // 2. Event Listeners Modal
+        document.getElementById('btnOpenModal').addEventListener('click', function() {
+            document.getElementById('testModal').classList.remove('hidden');
+        });
+
+        // 3. Save Row Logic
+        document.getElementById('btnSaveRow').addEventListener('click', async function() {
+            const btn = this;
+            const originalText = btn.textContent;
+            btn.textContent = 'Menyimpan...';
+            btn.disabled = true;
+
+            // Validasi Input
+            const menuName = document.getElementById('m_menuName').value;
+            const status = document.getElementById('m_status').value;
+            const fileInput = document.getElementById('m_photo');
+
+            if (!menuName) {
+                alert("Nama Menu wajib diisi!");
+                btn.disabled = false; btn.textContent = originalText; return;
+            }
+
+            let photoBase64 = null;
+            if (fileInput.files.length > 0) {
+                photoBase64 = await new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.readAsDataURL(fileInput.files[0]);
+                });
+            } else {
+                 alert("Wajib upload foto menu!");
+                 btn.disabled = false; btn.textContent = originalText; return;
+            }
+
+            // Collect Other Data
+            const rowData = {
+                menu: menuName,
+                status: status,
+                look: document.getElementById('m_look').value,
+                taste: document.getElementById('m_taste').value,
+                texture: document.getElementById('m_texture').value,
+                aroma: document.getElementById('m_aroma').value,
+                comment: document.getElementById('m_comment').value,
+                photo: photoBase64
+            };
+
+            addMenuRow(rowData);
+            closeModal();
+            btn.disabled = false; btn.textContent = originalText;
+        });
+
+        // Function to Add Row
+        function addMenuRow(data) {
+            const tbody = document.getElementById('menuTableBody');
+            const rowCount = tbody.rows.length;
+            
+            document.getElementById('emptyTableMsg').classList.add('hidden');
+
+            const row = document.createElement('tr');
+            row.className = "border-b border-gray-100 last:border-0 hover:bg-gray-50";
+
+            // Color Status
+            const statusClass = data.status === 'Pass' ? 'text-green-600 bg-green-50 border-green-200' : 'text-red-600 bg-red-50 border-red-200';
+
+            row.innerHTML = `
+                <td class="p-2 text-center text-gray-500 font-bold">${rowCount + 1}</td>
+                <td class="p-2 text-center">
+                    <img src="${data.photo}" class="table-thumb mx-auto" onclick="window.open(this.src)">
+                </td>
+                <td class="p-2 font-bold">${data.menu}</td>
+                <td class="p-2 text-gray-600">${data.look}</td>
+                <td class="p-2 text-gray-600">${data.taste}</td>
+                <td class="p-2 text-gray-600">${data.texture}</td>
+                <td class="p-2 text-gray-600">${data.aroma}</td>
+                <td class="p-2 italic text-gray-500">${data.comment}</td>
+                <td class="p-2 text-center">
+                    <span class="px-2 py-1 rounded text-[10px] font-bold border ${statusClass}">${data.status.toUpperCase()}</span>
+                </td>
+                <td class="p-2 text-center">
+                    <button type="button" class="text-red-400 hover:text-red-700" onclick="deleteRow(this)">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                    <!-- Hidden input to store full data for submit -->
+                    <textarea class="hidden row-data">${JSON.stringify(data)}</textarea>
+                </td>
+            `;
+            tbody.appendChild(row);
+        }
+
+        window.deleteRow = function(btn) {
+            if(confirm('Hapus menu ini?')) {
+                btn.closest('tr').remove();
+                // Renumbering
+                const rows = document.querySelectorAll('#menuTableBody tr');
+                rows.forEach((r, i) => r.cells[0].textContent = i + 1);
+                if (rows.length === 0) document.getElementById('emptyTableMsg').classList.remove('hidden');
+            }
+        };
+
+        // 4. Mode Revisi Populate
+        if (existing) {
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('revisiBadge').classList.remove('hidden');
+
+            let data = {};
+            try { data = JSON.parse(existing.Data_JSON); } catch(e) {}
+            
+            const f = document.getElementById('testFoodForm');
+            f.querySelector('[name="tanggalTest"]').value = data.tanggalTest || '';
+            f.querySelector('[name="lokasiTest"]').value = data.lokasiTest || '';
+            f.querySelector('[name="keperluanTest"]').value = data.keperluanTest || '';
+            if (data.keperluanTest === 'Lainnya') {
+                document.getElementById('keperluanLainnyaContainer').classList.remove('hidden');
+                f.querySelector('[name="keperluanLainnya"]').value = data.keperluanLainnya || '';
+            }
+            f.querySelector('[name="person"]').value = data.person || '';
+
+            // Populate Items
+            if (data.items && Array.isArray(data.items)) {
+                data.items.forEach(item => addMenuRow(item));
+            }
+        }
+
+        // ==========================================
+        // SCRIPT SUBMIT
+        // ==========================================
+        const btn = document.getElementById('submitBtn');
+        const form = document.getElementById('testFoodForm');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Memproses...';
+            btn.disabled = true;
+
+            // 1. Collect Table Data
+            const rowDataInputs = document.querySelectorAll('.row-data');
+            let items = [];
+            rowDataInputs.forEach(input => {
+                try { items.push(JSON.parse(input.value)); } catch(e){}
+            });
+
+            if (items.length === 0) {
+                alert("Harap masukkan minimal 1 menu untuk dinilai.");
+                btn.disabled = false; btn.innerHTML = originalText; return;
+            }
+
+            // 2. Susun Data
+            const formData = {
+                tanggalTest: form.querySelector('[name="tanggalTest"]').value,
+                lokasiTest: form.querySelector('[name="lokasiTest"]').value,
+                keperluanTest: form.querySelector('[name="keperluanTest"]').value,
+                keperluanLainnya: !document.getElementById('keperluanLainnyaContainer').classList.contains('hidden') ? form.querySelector('[name="keperluanLainnya"]').value : '',
+                person: form.querySelector('[name="person"]').value,
+                items: items // Array containing menu, status, photo(base64), and details
+            };
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            // 3. Kirim ke Backend
+            google.script.run
+            .withSuccessHandler(res => {
+                if (res.success) {
+                    alert(`Berita Acara Test Food berhasil disubmit! ID: ${res.baId}`);
+                    if (typeof closeForm === 'function') { closeForm(); } 
+                    else { window.location.reload(); }
+                } else {
+                    alert('Gagal: ' + res.message);
+                    btn.disabled = false; btn.innerHTML = originalText;
+                }
+            })
+            .withFailureHandler(err => {
+                alert('Error: ' + err.message);
+                btn.disabled = false; btn.innerHTML = originalText;
+            })
+            .rekamData(formData, 'Test Food', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+    })();
+</script>

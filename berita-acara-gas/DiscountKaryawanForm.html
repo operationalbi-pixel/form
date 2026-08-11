@@ -1,0 +1,193 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">DISCOUNT KARYAWAN</p>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="discKaryawanForm" class="space-y-6 font-sans text-sm">
+        
+        <!-- 1. Data User Otomatis -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA PEMBUAT</label><input type="text" id="u_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="u_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="u_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">POSISI</label><input type="text" id="u_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Detail Bill & Transaksi -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Kolom Kiri -->
+            <div class="space-y-4">
+                <div>
+                    <label class="block font-bold text-gray-700 mb-1">Tanggal Bill</label>
+                    <input type="date" name="tanggalBill" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+                </div>
+                <div>
+                    <label class="block font-bold text-gray-700 mb-1">No. Bill / POS</label>
+                    <input type="text" name="noBill" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Contoh: 102030">
+                </div>
+            </div>
+
+            <!-- Kolom Kanan -->
+            <div class="space-y-4">
+                <div>
+                    <label class="block font-bold text-gray-700 mb-1">Total Bill (Sebelum Disc)</label>
+                    <input type="text" name="totalBill" id="totalBillInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition font-bold text-gray-800" placeholder="Rp 0">
+                </div>
+                <div>
+                    <label class="block font-bold text-gray-700 mb-1">Nominal Diskon</label>
+                    <input type="text" name="nominalDiskon" id="nominalDiskonInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition font-bold text-red-900" placeholder="Rp 0">
+                </div>
+            </div>
+        </div>
+
+        <hr class="border-gray-200 my-2">
+
+        <!-- 3. Detail Karyawan Penerima Diskon -->
+        <h3 class="font-bold text-gray-800 border-l-4 border-red-900 pl-2">Detail Karyawan (Penerima Benefit)</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">No ID Karyawan</label>
+                <input type="text" name="idKaryawan" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="NIK Karyawan yg makan">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Nama Karyawan</label>
+                <input type="text" name="namaKaryawan" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Nama Lengkap">
+            </div>
+        </div>
+
+        <!-- 4. Keterangan -->
+        <div>
+            <label class="block font-bold text-gray-700 mb-1">Keterangan</label>
+            <textarea name="keterangan" rows="3" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Tuliskan detail tambahan (misal: Makan Siang, Dinner, dll)..."></textarea>
+        </div>
+
+        <!-- 5. Upload Foto Bill -->
+        <div class="bg-gray-50 p-4 rounded border border-dashed border-gray-300 mt-4">
+            <h4 class="font-bold text-xs text-gray-600 uppercase mb-3">Upload Foto Bill (Wajib)</h4>
+            <input type="file" id="fileBill" accept="image/*" class="w-full text-xs" onchange="previewSingle(this, 'previewBillBox')">
+            
+            <!-- Container Preview -->
+            <div id="previewBillBox" class="hidden mt-3 w-full h-48 bg-white border rounded flex items-center justify-center overflow-hidden relative shadow-sm">
+                <!-- Image injected here by JS -->
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="mt-8">
+            <button type="submit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">
+                SIMPAN & KIRIM PENGAJUAN
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- Utilities ---
+    window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+    window.parseRupiah = (str) => parseFloat(str.replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+    // --- Preview Image Logic ---
+    window.previewSingle = function(input, targetId) {
+        const target = document.getElementById(targetId);
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                target.innerHTML = `<img src="${e.target.result}" class="h-full w-auto object-contain">`;
+                target.classList.remove('hidden');
+            }
+            reader.readAsDataURL(input.files[0]);
+        } else {
+            target.innerHTML = '';
+            target.classList.add('hidden');
+        }
+    };
+
+    // --- Helper Get File Base64 ---
+    window.getFileBase64 = async function(inputId) {
+        const input = document.getElementById(inputId);
+        if (!input || input.files.length === 0) return null;
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(input.files[0]);
+        });
+    };
+
+    (function() {
+        // 1. Populate User Data
+        const user = window.GLOBAL_USER;
+        if(user) {
+            document.getElementById('u_nama').value = user.NAME || '';
+            document.getElementById('u_nik').value = user.NIK || '';
+            document.getElementById('u_outlet').value = user.OUTLET || '';
+            document.getElementById('u_posisi').value = user.POSITION || '';
+        }
+
+        // 2. Format Currency Live
+        ['totalBillInput', 'nominalDiskonInput'].forEach(id => {
+            document.getElementById(id).addEventListener('keyup', function(e) {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+            });
+        });
+
+        // 3. Handle Submit
+        const form = document.getElementById('discKaryawanForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = form.querySelector('button[type="submit"]');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Mengirim Data...';
+
+            try {
+                // Get File Data First
+                const fotoBillData = await window.getFileBase64('fileBill');
+                if(!fotoBillData) {
+                    throw new Error("Mohon upload Foto Bill terlebih dahulu.");
+                }
+
+                const formData = {
+                    tanggalBill: form.querySelector('[name="tanggalBill"]').value,
+                    noBill: form.querySelector('[name="noBill"]').value,
+                    totalBill: form.querySelector('[name="totalBill"]').value,
+                    nominalDiskon: form.querySelector('[name="nominalDiskon"]').value,
+                    idKaryawan: form.querySelector('[name="idKaryawan"]').value,
+                    namaKaryawan: form.querySelector('[name="namaKaryawan"]').value,
+                    keterangan: form.querySelector('[name="keterangan"]').value,
+                    // File Mapping
+                    fotoBill: fotoBillData
+                };
+
+                // Send to Backend
+                // PASTIKAN: Di Code.gs, tipe 'Discount Karyawan' dimasukkan ke dalam list flow AM ONLY
+                google.script.run.withSuccessHandler(res => {
+                    if(res.success) { 
+                        alert("Sukses! Berita Acara Diskon Karyawan Terkirim. ID: " + res.baId); 
+                        if(typeof closeForm === 'function') closeForm(); 
+                    } else { 
+                        throw new Error(res.message);
+                    }
+                }).withFailureHandler(err => {
+                    throw err;
+                }).rekamData(formData, 'Discount Karyawan', window.GLOBAL_USER);
+
+            } catch (error) {
+                alert("Error: " + error.message);
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        });
+
+    })();
+</script>

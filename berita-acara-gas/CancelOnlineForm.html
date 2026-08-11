@@ -1,0 +1,277 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">CANCEL TRANSAKSI ONLINE</p>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="cancelOnlineForm" class="space-y-6 font-sans text-sm">
+        
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="c_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="c_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="c_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">POSISI</label><input type="text" id="c_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tanggal</label>
+                <input type="date" name="tanggal" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+            
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Platform</label>
+                <select id="platformSelect" name="platform" class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" required>
+                    <option value="">-- Pilih Platform --</option>
+                    <option value="GrabFood">GrabFood</option>
+                    <option value="GoFood">GoFood</option>
+                    <option value="ShopeeFood">ShopeeFood</option>
+                    <option value="Boga Apps">Boga Apps</option>
+                    <option value="Lainnya">Lainnya</option>
+                </select>
+                <input type="text" id="platformLainnya" class="hidden w-full mt-2 border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition bg-gray-50" placeholder="Sebutkan Platform Lainnya">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">No. Transaksi (App)</label>
+                <input type="text" name="noTransaksi" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Contoh: GF-12345">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">No. Bill (POS)</label>
+                <input type="text" name="noBill" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Contoh: 102030">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Total Bill</label>
+                <input type="text" name="totalBill" id="totalBillInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition font-bold text-red-900" placeholder="Rp 0">
+            </div>
+        </div>
+
+        <div>
+            <label class="block font-bold text-gray-700 mb-1">Alasan Cancel</label>
+            <textarea name="alasan" rows="3" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Jelaskan detail alasan (Driver tidak ketemu, Customer cancel, Item habis, dll)..."></textarea>
+        </div>
+
+        <div class="space-y-2">
+            <h3 class="font-bold text-gray-800 border-l-4 border-red-900 pl-2">Detail Item Cancel</h3>
+            <div class="border rounded-lg overflow-hidden shadow-sm">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-red-900 text-white">
+                        <tr>
+                            <th class="py-3 px-3 w-10 text-center">No</th>
+                            <th class="py-3 px-3">Item Menu</th>
+                            <th class="py-3 px-3 w-24 text-center">QTY</th>
+                            <th class="py-3 px-3 w-10 text-center">#</th>
+                        </tr>
+                    </thead>
+                    <tbody id="itemContainer" class="divide-y divide-gray-200 bg-white">
+                        </tbody>
+                </table>
+            </div>
+            <button type="button" id="btnAddRow" class="mt-2 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded shadow flex items-center transition transform active:scale-95">
+                + Tambah Baris
+            </button>
+        </div>
+
+        <div class="pt-6 border-t mt-6">
+            <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3 mb-4">Dokumentasi & Bukti (Wajib)</h3>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                
+                <div class="bg-gray-50 p-3 rounded border border-dashed border-gray-300">
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-2">1. Upload Struk EDC</label>
+                    <input type="file" id="fileEDC" accept="image/*" multiple class="w-full text-xs" onchange="previewMultiple(this, 'previewEDC')">
+                    <div id="previewEDC" class="grid grid-cols-2 gap-2 mt-3"></div> </div>
+
+                <div class="bg-gray-50 p-3 rounded border border-dashed border-gray-300">
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-2">2. Upload Bill POS</label>
+                    <input type="file" id="filePOS" accept="image/*" multiple class="w-full text-xs" onchange="previewMultiple(this, 'previewPOS')">
+                    <div id="previewPOS" class="grid grid-cols-2 gap-2 mt-3"></div> </div>
+
+                <div class="bg-gray-50 p-3 rounded border border-dashed border-gray-300">
+                    <label class="block text-xs font-bold text-gray-600 uppercase mb-2">3. Foto Makanan Jadi</label>
+                    <input type="file" id="fileFood" accept="image/*" multiple class="w-full text-xs" onchange="previewMultiple(this, 'previewFood')">
+                    <div id="previewFood" class="grid grid-cols-2 gap-2 mt-3"></div> </div>
+
+            </div>
+            <p class="text-[10px] text-gray-400 mt-2 italic">*Bisa pilih lebih dari 1 foto untuk setiap kategori.</p>
+        </div>
+
+        <div class="mt-8">
+            <button type="submit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">
+                SIMPAN & KIRIM
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- UTILITIES ---
+    window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+    window.parseRupiah = (str) => parseFloat(str.replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+    // --- PREVIEW FUNCTION FOR MULTIPLE IMAGES ---
+    window.previewMultiple = function(input, containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = ''; // Reset container
+
+        if (input.files) {
+            Array.from(input.files).forEach(file => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    // Create minimal image card
+                    const imgDiv = document.createElement('div');
+                    imgDiv.className = "relative h-20 w-full bg-white border rounded overflow-hidden shadow-sm";
+                    imgDiv.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover hover:scale-110 transition duration-300">`;
+                    container.appendChild(imgDiv);
+                }
+                reader.readAsDataURL(file);
+            });
+        }
+    };
+
+    // --- HELPER: CONVERT FILES TO BASE64 ARRAY ---
+    window.getFilesBase64 = async function(inputId) {
+        const input = document.getElementById(inputId);
+        if (!input || input.files.length === 0) return [];
+
+        const promises = Array.from(input.files).map(file => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result); // Base64 String
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        });
+
+        return await Promise.all(promises);
+    };
+
+    // --- MAIN LOGIC ---
+    (function() {
+        // 1. Load User Data
+        const user = window.GLOBAL_USER;
+        if(user) {
+            document.getElementById('c_nama').value = user.NAME || '';
+            document.getElementById('c_nik').value = user.NIK || '';
+            document.getElementById('c_outlet').value = user.OUTLET || '';
+            document.getElementById('c_posisi').value = user.POSITION || '';
+        }
+
+        // 2. Dropdown Logic
+        const platformSelect = document.getElementById('platformSelect');
+        const platformLainnya = document.getElementById('platformLainnya');
+        platformSelect.addEventListener('change', function() {
+            if(this.value === 'Lainnya') {
+                platformLainnya.classList.remove('hidden'); platformLainnya.required = true;
+            } else {
+                platformLainnya.classList.add('hidden'); platformLainnya.required = false; platformLainnya.value = '';
+            }
+        });
+
+        // 3. Rupiah Logic
+        document.getElementById('totalBillInput').addEventListener('keyup', function(e) {
+            const val = window.parseRupiah(this.value);
+            this.value = window.formatRupiah(val).replace('Rp', '').trim();
+        });
+
+        // 4. Table Logic
+        window.addItemRow = function() {
+            const tbody = document.getElementById('itemContainer');
+            const rowCount = tbody.rows.length + 1;
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="py-2 px-3 text-center text-gray-500 align-middle index-cell">${rowCount}</td>
+                <td class="py-2 px-3"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent item-input" placeholder="Nama Menu / Item" required></td>
+                <td class="py-2 px-3"><input type="number" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent qty-input" value="1" min="1" required></td>
+                <td class="py-2 px-3 text-center"><button type="button" onclick="this.closest('tr').remove(); window.recalcIndex();" class="text-red-500 font-bold text-lg">×</button></td>
+            `;
+            tbody.appendChild(tr);
+        };
+
+        window.recalcIndex = function() {
+            document.querySelectorAll('#itemContainer tr').forEach((tr, index) => { 
+                tr.querySelector('.index-cell').textContent = index + 1; 
+            });
+        };
+
+        document.getElementById('btnAddRow').addEventListener('click', window.addItemRow);
+        window.addItemRow();
+
+        // 5. SUBMIT HANDLER
+        const form = document.getElementById('cancelOnlineForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = form.querySelector('button[type="submit"]');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Mengupload Data...';
+
+            try {
+                // Prepare Basic Data
+                let platformFinal = platformSelect.value;
+                if (platformFinal === 'Lainnya') platformFinal = `Lainnya: ${platformLainnya.value}`;
+
+                const items = [];
+                document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                    items.push({
+                        item: tr.querySelector('.item-input').value,
+                        qty: tr.querySelector('.qty-input').value
+                    });
+                });
+
+                // --- PROCESS IMAGES (Async) ---
+                // Mengambil array Base64 dari masing-masing input file
+                const imagesEDC = await window.getFilesBase64('fileEDC');
+                const imagesPOS = await window.getFilesBase64('filePOS');
+                const imagesFood = await window.getFilesBase64('fileFood');
+
+                // Validasi Minimal 1 foto (Opsional, jika wajib)
+                if(imagesEDC.length === 0 && imagesPOS.length === 0 && imagesFood.length === 0) {
+                   throw new Error("Mohon upload setidaknya satu bukti foto.");
+                }
+
+                const formData = {
+                    tanggal: form.querySelector('[name="tanggal"]').value,
+                    platform: platformFinal,
+                    noTransaksi: form.querySelector('[name="noTransaksi"]').value,
+                    noBill: form.querySelector('[name="noBill"]').value,
+                    totalBill: form.querySelector('[name="totalBill"]').value,
+                    alasan: form.querySelector('[name="alasan"]').value,
+                    items: items,
+                    // Structure for backend:
+                    files: {
+                        strukEDC: imagesEDC,     // Array of Base64 Strings
+                        billPOS: imagesPOS,      // Array of Base64 Strings
+                        fotoMakanan: imagesFood  // Array of Base64 Strings
+                    }
+                };
+
+                // Send to Backend
+                google.script.run.withSuccessHandler(res => {
+                    if(res.success) { 
+                        alert("Sukses! Berita Acara Terkirim. ID: " + res.baId); 
+                        if(typeof closeForm === 'function') closeForm(); 
+                    } else { 
+                        throw new Error(res.message);
+                    }
+                }).withFailureHandler(err => {
+                    throw err;
+                }).rekamData(formData, 'Cancel Online', window.GLOBAL_USER);
+
+            } catch (error) {
+                alert("Error: " + error.message);
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        });
+    })();
+</script>

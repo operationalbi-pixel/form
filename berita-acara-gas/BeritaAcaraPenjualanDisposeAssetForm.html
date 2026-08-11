@@ -1,0 +1,354 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">PENJUALAN & DISPOSE ASSET</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="assetForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis (ID Disamakan dengan Form Lain: a_nama, a_nik, a_outlet, a_posisi) -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div>
+                <label class="block text-xs font-bold text-gray-400">NAMA</label>
+                <input type="text" id="a_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">NIK</label>
+                <input type="text" id="a_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">OUTLET</label>
+                <input type="text" id="a_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">POSISI</label>
+                <input type="text" id="a_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+        </div>
+        
+        <!-- 2. Detail Tindakan & Alasan -->
+        <div class="grid grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tanggal BA</label>
+                <input type="date" name="tanggalBA" id="dateInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tindakan</label>
+                <select name="tindakan" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+                    <option value="">-- Pilih Tindakan --</option>
+                    <option value="Penjualan">Penjualan Asset</option>
+                    <option value="Dispose">Dispose Asset</option>
+                </select>
+            </div>
+        </div>
+        <div class="space-y-2">
+            <label class="block font-bold text-gray-700">Alasan</label>
+            <textarea name="alasan" rows="3" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Jelaskan alasan tindakan Penjualan/Dispose asset secara detail..."></textarea>
+        </div>
+
+        <!-- 3. Tabel Asset -->
+        <div class="space-y-2">
+            <h3 class="font-bold text-gray-800 border-l-4 border-red-900 pl-2">Detail Asset</h3>
+            <div class="border rounded-lg overflow-hidden shadow-sm overflow-x-auto">
+                <table class="w-full text-left text-sm min-w-[1000px]">
+                    <thead class="bg-red-900 text-white">
+                        <tr>
+                            <th class="py-3 px-3 w-10 text-center">No</th>
+                            <th class="py-3 px-3 w-32">No Asset</th>
+                            <th class="py-3 px-3 w-64">Item</th>
+                            <th class="py-3 px-3 w-16 text-center">QTY</th>
+                            <th class="py-3 px-3 w-16 text-center">Unit</th>
+                            <th class="py-3 px-3 w-48">Keterangan</th>
+                            <th class="py-3 px-3 w-32 text-right">Book Value</th>
+                            <th class="py-3 px-3 w-32 text-right">Harga Jual</th>
+                            <th class="py-3 px-3 w-10 text-center">#</th>
+                        </tr>
+                    </thead>
+                    <tbody id="itemContainer" class="divide-y divide-gray-200 bg-white"></tbody>
+                    <tfoot class="bg-gray-50 font-bold">
+                        <tr>
+                            <td colspan="7" class="py-3 px-3 text-right text-gray-600 uppercase text-xs tracking-wider">Grand Total Harga Jual</td>
+                            <td class="py-3 px-3 text-right text-red-900 text-base" id="grandTotal">Rp 0</td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            
+            <!-- Tombol Tambah Baris -->
+            <button type="button" id="btnAddRow" class="mt-2 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded shadow flex items-center transition transform active:scale-95">
+                + Tambah Baris Asset
+            </button>
+        </div>
+
+        <!-- 4. Upload Bukti -->
+        <div class="space-y-4 pt-6 border-t mt-6">
+            <div class="flex justify-between items-center">
+                <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3">Bukti Foto Asset</h3>
+                <button type="button" id="btnAddPhoto" class="text-xs font-bold text-blue-600 hover:underline">+ Tambah Slot Foto</button>
+            </div>
+            
+            <div id="photoContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="space-y-2 border p-2 rounded bg-gray-50 relative">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">Foto Asset Utama</label>
+                    <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="fotoAsset" onchange="previewImageLocal(this)">
+                    <div class="preview-box hidden mt-2 w-full h-40 bg-gray-200 rounded flex items-center justify-center overflow-hidden"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tombol Submit -->
+        <div class="mt-8">
+            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SIMPAN & KIRIM</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    (function() {
+        // --- INITIALIZATION & USER DATA (FIXED) ---
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        // Auto Populate User Data
+        if (user) {
+            document.getElementById('a_nama').value = user.NAME || '';
+            document.getElementById('a_nik').value = user.NIK || '';
+            document.getElementById('a_outlet').value = user.OUTLET || '';
+            document.getElementById('a_posisi').value = user.POSITION || '';
+        }
+
+        // --- Helper Format & Parse Rupiah ---
+        window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+        window.parseRupiah = (str) => parseFloat(String(str).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+        // --- TABLE LOGIC (FIXED: Button & Renumbering) ---
+        
+        window.removeRow = function(btn) {
+            btn.closest('tr').remove();
+            window.recalcTotal();
+        };
+
+        window.addItemRow = function(data = null) {
+            const tbody = document.getElementById('itemContainer');
+            if(!tbody) return;
+
+            const rowCount = tbody.rows.length + 1;
+            const tr = document.createElement('tr');
+            
+            // Siapkan nilai awal
+            const bv = data ? data.bookValue : '';
+            const hj = data ? data.hargaJual : '';
+            
+            tr.innerHTML = `
+                <td class="py-2 px-3 text-center text-gray-500 align-middle index-cell">${rowCount}</td>
+                <td class="py-2 px-2"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent asset-no-input" placeholder="No Asset" value="${data?data.noAsset:''}" required></td>
+                <td class="py-2 px-2"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent item-input" placeholder="Nama Item" value="${data?data.item:''}" required></td>
+                <td class="py-2 px-2"><input type="number" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent qty-input" value="${data?data.qty:1}" min="1" required></td>
+                <td class="py-2 px-2"><input type="text" maxlength="4" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent unit-input" placeholder="Unit" value="${data?data.unit:''}" required></td>
+                <td class="py-2 px-2"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent ket-input" placeholder="Ket..." value="${data?data.keterangan:''}"></td>
+                <td class="py-2 px-2"><input type="text" class="w-full text-right border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent book-value-input" placeholder="0" value="${bv}" required></td>
+                <td class="py-2 px-2"><input type="text" class="w-full text-right border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent harga-jual-input" placeholder="0" value="${hj}" required></td>
+                <td class="py-2 px-3 text-center"><button type="button" onclick="window.removeRow(this)" class="text-red-500 font-bold text-lg hover:bg-red-100 rounded px-2 transition">×</button></td>
+            `;
+            tbody.appendChild(tr);
+
+            const bvInput = tr.querySelector('.book-value-input');
+            const hjInput = tr.querySelector('.harga-jual-input');
+            
+            // Init format (Pastikan value input diformat jika ada data lama)
+            if(bv) bvInput.value = window.formatRupiah(window.parseRupiah(bv)).replace('Rp', '').trim();
+            if(hj) hjInput.value = window.formatRupiah(window.parseRupiah(hj)).replace('Rp', '').trim();
+
+            // Event Listeners: Hanya Harga Jual yang mempengaruhi Grand Total
+            hjInput.addEventListener('keyup', function() {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+                window.calcRow(tr);
+            });
+            // Book Value hanya di-format
+            bvInput.addEventListener('keyup', function() {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+            });
+            // QTY/Unit/Asset/Ket change: trigger recalcTotal hanya untuk re-index
+            tr.querySelectorAll('.qty-input, .asset-no-input, .unit-input, .item-input, .ket-input').forEach(input => {
+                input.addEventListener('input', () => window.calcRow(tr));
+            });
+            
+            window.calcRow(tr); // Hitung baris ini (untuk total baris jika ada data lama)
+        };
+
+        window.calcRow = function(tr) {
+            const hargaJual = window.parseRupiah(tr.querySelector('.harga-jual-input').value);
+            tr.dataset.totalJual = hargaJual;
+            window.recalcTotal();
+        }
+
+        window.recalcTotal = function() {
+            let grand = 0;
+            const rows = document.querySelectorAll('#itemContainer tr');
+            rows.forEach((tr, index) => { 
+                grand += parseFloat(tr.dataset.totalJual) || 0; 
+                tr.querySelector('.index-cell').textContent = index + 1; // Renumbering
+            });
+            document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+        }
+
+        // Event Listener untuk Tombol Tambah Baris (FIXED)
+        document.getElementById('btnAddRow').addEventListener('click', () => window.addItemRow());
+        
+        // --- PHOTO LOGIC (Sama dengan Revisi SO) ---
+        let extraPhotoCount = 0;
+        window.addPhotoSlot = function(existingUrl = null, keyName = null) {
+            extraPhotoCount++;
+            const container = document.getElementById('photoContainer');
+            const div = document.createElement('div');
+            const key = keyName || `fotoTambahan${extraPhotoCount}`;
+            const label = keyName ? 'Foto Lama' : `Foto Tambahan #${extraPhotoCount}`;
+            
+            div.className = "space-y-2 border p-2 rounded bg-gray-50 relative";
+            div.innerHTML = `
+                <div class="flex justify-between">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">${label}</label>
+                    <button type="button" onclick="this.parentElement.parentElement.remove();" class="text-red-500 text-xs font-bold hover:underline">Hapus</button>
+                </div>
+                <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="${key}" onchange="previewImageLocal(this)">
+                <div class="preview-box hidden mt-2 w-full h-40 bg-gray-200 rounded flex items-center justify-center overflow-hidden"></div>
+            `;
+            container.appendChild(div);
+
+            if(existingUrl) {
+                const pBox = div.querySelector('.preview-box');
+                pBox.innerHTML = `<img src="${existingUrl}" class="w-full h-full object-cover">`;
+                pBox.classList.remove('hidden');
+                // Simpan URL lama di dataset agar tidak hilang saat submit jika user tidak upload file baru
+                div.querySelector('input').dataset.oldVal = existingUrl; 
+            }
+        };
+
+        window.previewImageLocal = function(input) {
+            const pBox = input.parentElement.querySelector('.preview-box');
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    pBox.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover">`;
+                    pBox.classList.remove('hidden');
+                }
+                reader.readAsDataURL(input.files[0]);
+            }
+        };
+
+        document.getElementById('btnAddPhoto').addEventListener('click', () => window.addPhotoSlot());
+
+        // --- LOAD EXISTING DATA / INIT DEFAULT ---
+        if (existing) {
+             let json = {}; try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+             if(json.tanggalBA) document.getElementById('dateInput').value = json.tanggalBA;
+             if(json.tindakan) document.querySelector('[name="tindakan"]').value = json.tindakan;
+             if(json.alasan) document.querySelector('[name="alasan"]').value = json.alasan;
+             
+             if (json.items && Array.isArray(json.items) && json.items.length > 0) {
+                json.items.forEach(i => window.addItemRow(i));
+             } else { window.addItemRow(); }
+
+             // Photo logic for revision
+             const inputAsset = document.querySelector('input[data-key="fotoAsset"]');
+             if(json.fotoAsset && inputAsset) {
+                inputAsset.dataset.oldVal = json.fotoAsset;
+                const pBox = inputAsset.parentElement.querySelector('.preview-box');
+                pBox.innerHTML = `<img src="${json.fotoAsset}" class="w-full h-full object-cover">`;
+                pBox.classList.remove('hidden');
+             }
+             for(let k in json) {
+                if(k.startsWith('fotoTambahan')) window.addPhotoSlot(json[k], k);
+             }
+             
+             document.getElementById('revisiBadge').classList.remove('hidden');
+             document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+             document.getElementById('submissionId').value = existing.Submission_ID;
+             document.getElementById('btnSubmit').innerHTML = "SIMPAN PERBAIKAN";
+             document.getElementById('btnSubmit').classList.replace('from-red-900', 'from-amber-600');
+             document.getElementById('btnSubmit').classList.replace('to-red-800', 'to-amber-500');
+
+        } else {
+            window.addItemRow(); 
+        }
+
+        // --- SUBMIT HANDLER ---
+        const form = document.getElementById('assetForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btnSubmit');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Memproses...';
+
+            const items = [];
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                items.push({
+                    noAsset: tr.querySelector('.asset-no-input').value,
+                    item: tr.querySelector('.item-input').value,
+                    qty: tr.querySelector('.qty-input').value,
+                    unit: tr.querySelector('.unit-input').value,
+                    keterangan: tr.querySelector('.ket-input').value,
+                    bookValue: tr.querySelector('.book-value-input').value, // Masih string berformat
+                    hargaJual: tr.querySelector('.harga-jual-input').value, // Masih string berformat
+                });
+            });
+
+            const formData = {
+                tanggalBA: form.querySelector('[name="tanggalBA"]').value,
+                tindakan: form.querySelector('[name="tindakan"]').value,
+                alasan: form.querySelector('[name="alasan"]').value,
+                items: items,
+                grandTotalJual: document.getElementById('grandTotal').textContent // Total Harga Jual
+            };
+
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    const key = input.dataset.key;
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else if (input.dataset.oldVal) {
+                        // Jika mode revisi dan ada oldVal, kirimkan kembali data lama
+                        resolve({ key: key, data: input.dataset.oldVal });
+                    } else {
+                        resolve({ key: key, data: null });
+                    }
+                });
+            });
+
+            const files = await Promise.all(filePromises);
+            files.forEach(f => { if(f.data) formData[f.key] = f.data; });
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) { 
+                    // Mengganti alert dengan console.log/custom modal karena alert() dilarang
+                    console.log("Sukses! " + res.message); 
+                    if(typeof closeForm === 'function') closeForm(); 
+                } else { 
+                    // Mengganti alert dengan console.error/custom modal
+                    console.error("Gagal: " + res.message); 
+                    btn.disabled = false; btn.innerHTML = originalText; 
+                }
+            }).rekamData(formData, 'Penjualan & Dispose Asset', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+    })();
+</script>

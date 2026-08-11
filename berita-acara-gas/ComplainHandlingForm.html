@@ -1,0 +1,668 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- FORM STYLE -->
+<style>
+    .form-group label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #9ca3af; /* gray-400 */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    .form-input {
+        width: 100%;
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #1f2937;
+        outline: none;
+        transition: all 0.2s;
+    }
+    .form-input:focus {
+        border-color: #991b1b;
+        box-shadow: 0 0 0 1px #991b1b;
+    }
+    .form-input[readonly] {
+        background-color: #f9fafb; /* gray-50 */
+        color: #6b7280; /* gray-500 */
+        border-color: #f3f4f6;
+        cursor: not-allowed;
+    }
+    .table-header {
+        background-color: #7f1d1d; /* red-900 */
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        padding: 0.75rem;
+    }
+    /* Modal Transition */
+    .modal {
+        transition: opacity 0.25s ease;
+    }
+    .modal-content {
+        transition: transform 0.25s ease;
+    }
+</style>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">PENANGANAN KOMPLAIN CUSTOMER</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="complainForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="k_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="k_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">JABATAN</label><input type="text" id="k_position" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="k_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">TANGGAL SUBMIT</label><input type="text" id="k_dateDisplay" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Detail Komplain -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-4">
+                <div class="form-group">
+                    <label>Jenis Komplain</label>
+                    <select name="jenisKomplain" class="form-input" required>
+                        <option value="">Pilih Jenis...</option>
+                        <option value="Kualitas Makanan/ Minuman">Kualitas Makanan/ Minuman</option>
+                        <option value="Kualitas Service">Kualitas Service</option>
+                        <option value="Membership">Membership</option>
+                        <option value="Pembayaran">Pembayaran</option>
+                        <option value="Kebersihan">Kebersihan</option>
+                        <option value="Keamanan">Keamanan</option>
+                        <option value="Fasilitias">Fasilitias</option>
+                        <option value="Lainnya">Lainnya</option>
+                    </select>
+                </div>
+                <div id="jenisLainnyaContainer" class="form-group hidden">
+                    <label>Silahkan isi Jenis Keluhan lain</label>
+                    <input type="text" name="jenisLainnya" class="form-input" placeholder="...">
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div class="form-group">
+                    <label>Sumber Komplain</label>
+                    <select name="sumberComplain" class="form-input" required>
+                        <option value="">Pilih Sumber...</option>
+                        <option value="On The Spot">On The Spot</option>
+                        <option value="Google Review">Google Review</option>
+                        <option value="Instagram">Instagram</option>
+                        <option value="X">X</option>
+                        <option value="Tiktok">Tiktok</option>
+                        <option value="Facebook">Facebook</option>
+                        <option value="WA Center">WA Center</option>
+                        <option value="Email">Email</option>
+                        <option value="Marketing">Marketing</option>
+                        <option value="Internal Review">Internal Review</option>
+                        <option value="GCC">GCC</option>
+                        <option value="Lainnya">Lainnya</option>
+                    </select>
+                </div>
+                
+                <div id="noBillContainer" class="form-group hidden">
+                    <label class="text-red-700">No GCC (Wajib)</label>
+                    <input type="text" name="noBillGCC" class="form-input border-red-200 focus:border-red-500" placeholder="Isi No GCC...">
+                </div>
+
+                <div id="sumberLainnyaContainer" class="form-group hidden">
+                    <label>Isi Sumber Lainnya</label>
+                    <input type="text" name="sumberLainnya" class="form-input" placeholder="...">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Tanggal Kejadian</label>
+                <input type="date" name="tanggalKejadian" class="form-input" required>
+            </div>
+        </div>
+
+        <!-- 3. Tabel Kronologis (POP UP BUTTON) -->
+        <div class="mt-4">
+            <div class="flex justify-between items-end mb-2">
+                <label class="text-xs font-bold text-gray-400 uppercase">Kronologis Kejadian</label>
+                <!-- Tombol ini sekarang memicu Modal -->
+                <button type="button" id="btnOpenModal" class="text-xs bg-red-800 hover:bg-red-900 text-white font-bold py-2 px-4 rounded flex items-center transition shadow-md">
+                    <i class="fas fa-plus-circle mr-2"></i> TAMBAH KRONOLOGIS
+                </button>
+            </div>
+            
+            <div class="border rounded-lg overflow-hidden border-gray-200 bg-white shadow-sm">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50 text-gray-600 text-xs uppercase font-bold border-b border-gray-200">
+                        <tr>
+                            <th class="p-3 w-10 text-center">#</th>
+                            <th class="p-3 w-32">Tanggal</th>
+                            <th class="p-3 w-24">Waktu</th>
+                            <th class="p-3 text-left">Detail Kejadian</th>
+                            <th class="p-3 w-32">PIC / Handle By</th>
+                            <th class="p-3 w-32">Bukti Foto</th>
+                            <th class="p-3 w-10 text-center"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="kronologisTableBody" class="divide-y divide-gray-100">
+                        <!-- Baris akan ditambahkan via Modal -->
+                    </tbody>
+                </table>
+                <!-- Pesan Kosong -->
+                <div id="emptyTableMsg" class="p-8 text-center text-gray-400 text-sm italic bg-gray-50">
+                    Belum ada data kronologis. Klik tombol "TAMBAH KRONOLOGIS" di atas.
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. Penanganan & Status -->
+        <div class="form-group">
+            <label>Tindakan Penanganan / Solusi</label>
+            <textarea name="penanganan" class="form-input" rows="3" placeholder="Jelaskan tindakan yang sudah dilakukan outlet..." required></textarea>
+        </div>
+
+        <!-- 4. Penanganan & Status -->
+        <div class="form-group">
+            <label>Akar Sebab Masalah</label>
+            <textarea name="sebab" class="form-input" rows="3" placeholder="Jelaskan akar sebab komplain terjadi..." required></textarea>
+        </div>
+
+        <!-- 4. Penanganan & Status -->
+        <div class="form-group">
+            <label>Perbaikan untuk pencagahan agar masalah tidak terulang</label>
+            <textarea name="perbaikan" class="form-input" rows="3" placeholder="Jelaskan perbaikan yang sudah dan akan dilakukan agar masalah yang sama tidak terjadi..." required></textarea>
+
+        </div>
+        <!-- 4. Penanganan & Status -->
+        <div class="form-group">
+            <label>Learning Points</label>
+            <textarea name="learning" class="form-input" rows="3" placeholder="Jelaskan apa saja pelajaran yang bisa diambil dari kejadian ini..." required></textarea>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="form-group">
+                <label>Status Komplain Saat Ini</label>
+                <select name="statusComplain" class="form-input" required>
+                    <option value="">Pilih Status...</option>
+                    <option value="Resolved">Selesai (Resolved)</option>
+                    <option value="Pending">Menunggu Info Lanjut</option>
+                    <option value="Investigating">Sedang Investigasi</option>
+                    <option value="Lainnya">Lainnya</option>
+                </select>
+            </div>
+            <div id="statusLainnyaContainer" class="form-group hidden">
+                <label>Status Lainnya</label>
+                <input type="text" name="statusLainnya" class="form-input" placeholder="...">
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="pt-6 border-t border-gray-100">
+            <button type="submit" id="submitBtn" class="w-full bg-gradient-to-r from-red-800 to-red-900 text-white font-bold py-3 px-4 rounded-lg hover:shadow-lg transform transition hover:-translate-y-0.5">
+                KIRIM BERITA ACARA
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- ========================================== -->
+<!-- MODAL POP UP (Hidden by Default) -->
+<!-- ========================================== -->
+<div id="kronologisModal" class="fixed inset-0 z-50 hidden overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+    <!-- Backdrop -->
+    <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true" onclick="closeModal()"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        
+        <!-- Modal Content -->
+        <div class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg w-full">
+            <div class="bg-red-900 px-4 py-3 flex justify-between items-center">
+                <h3 class="text-lg leading-6 font-bold text-white uppercase tracking-wider" id="modal-title">
+                    <i class="fas fa-edit mr-2"></i> Tambah Kronologis
+                </h3>
+                <button type="button" onclick="closeModal()" class="text-red-200 hover:text-white focus:outline-none">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4 space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-group">
+                        <label>Tanggal</label>
+                        <input type="date" id="m_date" class="form-input border-gray-300">
+                    </div>
+                    <div class="form-group">
+                        <label>Waktu</label>
+                        <input type="time" id="m_time" class="form-input border-gray-300">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Detail Kejadian</label>
+                    <textarea id="m_info" class="form-input border-gray-300" rows="3" placeholder="Deskripsikan kejadian di sini..."></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>PIC / Handle By</label>
+                    <input type="text" id="m_handle" class="form-input border-gray-300" placeholder="Nama Staff">
+                </div>
+
+                <div class="form-group">
+                    <label>Bukti Foto (Opsional)</label>
+                    <div class="mt-1 flex flex-col items-center justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md hover:bg-gray-50 transition relative">
+                        
+                        <!-- UI Upload (Icon & Teks) -->
+                        <div id="upload_ui" class="space-y-1 text-center">
+                            <i class="fas fa-image text-gray-400 text-3xl mb-2"></i>
+                            <div class="flex text-sm text-gray-600 justify-center">
+                                <label for="m_photo" class="relative cursor-pointer bg-white rounded-md font-medium text-red-600 hover:text-red-500 focus-within:outline-none">
+                                    <span>Upload file</span>
+                                    <input id="m_photo" type="file" class="sr-only" accept="image/*">
+                                </label>
+                                <p class="pl-1">atau drag & drop</p>
+                            </div>
+                            <p class="text-xs text-gray-500">PNG, JPG, GIF up to 5MB</p>
+                        </div>
+
+                        <!-- Filename Display (Hidden by default) -->
+                        <p id="m_filename" class="text-xs font-bold text-green-600 mt-2 hidden"></p>
+
+                        <!-- Preview Image Container (Hidden by default) -->
+                        <div id="m_preview_container" class="hidden mt-3 relative group w-full text-center">
+                             <img id="m_preview" src="" alt="Preview Foto" class="mx-auto max-h-48 rounded-md shadow-sm border border-gray-200 object-contain">
+                             <!-- Tombol Hapus Foto -->
+                             <button type="button" onclick="clearFile()" class="mt-2 inline-flex items-center px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded hover:bg-red-200">
+                                <i class="fas fa-trash mr-1"></i> Hapus Foto
+                             </button>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t border-gray-100">
+                <button type="button" id="btnSaveRow" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-800 text-base font-medium text-white hover:bg-red-900 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm">
+                    SIMPAN DATA
+                </button>
+                <button type="button" onclick="closeModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+                    BATAL
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Global Helper to Clear File & Preview
+    function clearFile() {
+        const input = document.getElementById('m_photo');
+        input.value = ''; // Reset nilai input file
+        
+        // Reset UI Text
+        const fileNameDisplay = document.getElementById('m_filename');
+        fileNameDisplay.textContent = '';
+        fileNameDisplay.classList.add('hidden');
+        
+        // Reset & Hide Preview
+        const previewContainer = document.getElementById('m_preview_container');
+        const previewImage = document.getElementById('m_preview');
+        previewImage.src = '';
+        previewContainer.classList.add('hidden');
+        
+        // Show Upload UI Again
+        document.getElementById('upload_ui').classList.remove('hidden');
+    }
+
+    // Global Helper to Close Modal
+    function closeModal() {
+        document.getElementById('kronologisModal').classList.add('hidden');
+        resetModalForm();
+    }
+    
+    function resetModalForm() {
+        document.getElementById('m_date').value = '';
+        document.getElementById('m_time').value = '';
+        document.getElementById('m_info').value = '';
+        document.getElementById('m_handle').value = '';
+        
+        // Panggil clearFile untuk reset foto dan preview
+        clearFile();
+    }
+
+    (function() {
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        // Init User Data
+        document.getElementById('k_nama').value = user.NAME;
+        document.getElementById('k_nik').value = user.NIK;
+        document.getElementById('k_position').value = user.POSITION;
+        document.getElementById('k_outlet').value = user.OUTLET;
+        document.getElementById('k_dateDisplay').value = new Date().toLocaleDateString('id-ID');
+
+        // === EVENT LISTENERS FOR MODAL ===
+        
+        // 1. Open Modal
+        document.getElementById('btnOpenModal').addEventListener('click', function() {
+            // Set default date/time to now
+            const now = new Date();
+            document.getElementById('m_date').valueAsDate = now;
+            document.getElementById('m_time').value = now.toTimeString().substring(0,5);
+            document.getElementById('kronologisModal').classList.remove('hidden');
+        });
+
+        // 2. File Input Change in Modal (Show Filename & Preview)
+        document.getElementById('m_photo').addEventListener('change', function() {
+            const fileNameDisplay = document.getElementById('m_filename');
+            const previewContainer = document.getElementById('m_preview_container');
+            const previewImage = document.getElementById('m_preview');
+            const uploadUi = document.getElementById('upload_ui');
+
+            if (this.files && this.files[0]) {
+                const file = this.files[0];
+                
+                // Show Filename
+                fileNameDisplay.textContent = 'Terpilih: ' + file.name;
+                fileNameDisplay.classList.remove('hidden');
+                
+                // Show Preview using FileReader
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImage.src = e.target.result;
+                    previewContainer.classList.remove('hidden');
+                    uploadUi.classList.add('hidden'); // Sembunyikan ikon upload agar rapi
+                }
+                reader.readAsDataURL(file);
+
+            } else {
+                // Jika user cancel dialog file, reset
+                clearFile();
+            }
+        });
+
+        // 3. Save Data from Modal
+        document.getElementById('btnSaveRow').addEventListener('click', async function() {
+            const btn = this;
+            const originalText = btn.textContent;
+            btn.textContent = 'Memproses...';
+            btn.disabled = true;
+
+            const date = document.getElementById('m_date').value;
+            const time = document.getElementById('m_time').value;
+            const info = document.getElementById('m_info').value;
+            const handle = document.getElementById('m_handle').value;
+            const fileInput = document.getElementById('m_photo');
+
+            if (!date || !info) {
+                alert("Tanggal dan Detail Kejadian wajib diisi.");
+                btn.disabled = false; btn.textContent = originalText;
+                return;
+            }
+
+            // Convert Photo to Base64
+            let photoBase64 = null;
+            if (fileInput.files.length > 0) {
+                photoBase64 = await new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.readAsDataURL(fileInput.files[0]);
+                });
+            }
+
+            // Add Row to Table
+            addKronologisRow(date, time, info, handle, photoBase64);
+            
+            // Close & Reset
+            closeModal();
+            btn.disabled = false; btn.textContent = originalText;
+        });
+
+        // Function to Add Row Programmatically
+        function addKronologisRow(date, time, info, handle, photoBase64) {
+            const tbody = document.getElementById('kronologisTableBody');
+            const rowCount = tbody.rows.length;
+            
+            // Hide Empty Msg
+            document.getElementById('emptyTableMsg').classList.add('hidden');
+
+            const row = document.createElement('tr');
+            row.className = "border-b border-gray-100 last:border-0 bg-white hover:bg-gray-50 transition";
+            
+            // Badge foto
+            const photoBadge = photoBase64 
+                ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800"><i class="fas fa-check mr-1"></i> Ada Foto</span>` 
+                : `<span class="text-gray-400 text-xs">-</span>`;
+
+            row.innerHTML = `
+                <td class="p-2 text-center text-gray-500 font-bold">${rowCount + 1}</td>
+                <td class="p-2">
+                    <input type="date" class="w-full text-xs border border-transparent bg-transparent rounded p-1 text-gray-700" name="k_date" value="${date}" readonly>
+                </td>
+                <td class="p-2">
+                    <input type="time" class="w-full text-xs border border-transparent bg-transparent rounded p-1 text-gray-700" name="k_time" value="${time}" readonly>
+                </td>
+                <td class="p-2">
+                    <textarea class="w-full text-xs border border-transparent bg-transparent rounded p-1 text-gray-700 resize-none" rows="2" name="k_info" readonly>${info}</textarea>
+                </td>
+                <td class="p-2">
+                    <input type="text" class="w-full text-xs border border-transparent bg-transparent rounded p-1 text-gray-700" name="k_handle" value="${handle}" readonly>
+                </td>
+                <td class="p-2 text-center">
+                    ${photoBadge}
+                    <!-- Hidden File Input store for Logic Compatibility -->
+                    <div class="hidden">
+                        <input type="file" class="k-photo-input" data-key="k_photo_${rowCount}" data-old-val="${photoBase64 || ''}">
+                    </div>
+                </td>
+                <td class="p-2 text-center">
+                    <button type="button" class="text-red-400 hover:text-red-700 transition" onclick="deleteRow(this)">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        }
+
+        // Global Delete Function
+        window.deleteRow = function(btn) {
+            if(confirm('Hapus baris ini?')) {
+                const row = btn.closest('tr');
+                row.remove();
+                // Re-numbering
+                const rows = document.querySelectorAll('#kronologisTableBody tr');
+                rows.forEach((r, i) => {
+                    r.cells[0].textContent = i + 1;
+                });
+                if (rows.length === 0) {
+                    document.getElementById('emptyTableMsg').classList.remove('hidden');
+                }
+            }
+        };
+
+        // === EXISTING FORM LOGIC ===
+
+        // Toggle Jenis Komplain Lainnya
+        const jenisSelect = document.querySelector('select[name="jenisKomplain"]');
+        jenisSelect.addEventListener('change', function() {
+            document.getElementById('jenisLainnyaContainer').classList.toggle('hidden', this.value !== 'Lainnya');
+        });
+
+        // Toggle Sumber Lainnya & GCC
+        const sumberSelect = document.querySelector('select[name="sumberComplain"]');
+        sumberSelect.addEventListener('change', function() {
+            const val = this.value;
+            document.getElementById('noBillContainer').classList.toggle('hidden', val !== 'GCC');
+            document.getElementById('sumberLainnyaContainer').classList.toggle('hidden', val !== 'Lainnya');
+        });
+
+        // Toggle Status Lainnya
+        const statusSelect = document.querySelector('select[name="statusComplain"]');
+        statusSelect.addEventListener('change', function() {
+             document.getElementById('statusLainnyaContainer').classList.toggle('hidden', this.value !== 'Lainnya');
+        });
+
+        // MODE REVISI - Populate Data
+        if (existing) {
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('revisiBadge').classList.remove('hidden');
+
+            let data = {};
+            try { data = JSON.parse(existing.Data_JSON); } catch(e) {}
+            
+            const form = document.getElementById('complainForm');
+            
+            // Populate Jenis
+            form.querySelector('[name="jenisKomplain"]').value = data.jenisKomplain || '';
+            if (data.jenisKomplain === 'Lainnya') {
+                 document.getElementById('jenisLainnyaContainer').classList.remove('hidden');
+                 form.querySelector('[name="jenisLainnya"]').value = data.jenisLainnya || '';
+            }
+
+            // Populate Sumber
+            form.querySelector('[name="sumberComplain"]').value = data.sumberComplain || '';
+            
+            if(data.sumberComplain === 'GCC') {
+                document.getElementById('noBillContainer').classList.remove('hidden');
+                form.querySelector('[name="noBillGCC"]').value = data.noBillGCC || '';
+            }
+            if(data.sumberComplain === 'Lainnya') {
+                document.getElementById('sumberLainnyaContainer').classList.remove('hidden');
+                form.querySelector('[name="sumberLainnya"]').value = data.sumberLainnya || '';
+            }
+
+            form.querySelector('[name="tanggalKejadian"]').value = data.tanggalKejadian || '';
+            form.querySelector('[name="penanganan"]').value = data.penanganan || '';
+            form.querySelector('[name="sebab"]').value = data.sebab || '';
+            form.querySelector('[name="perbaikan"]').value = data.perbaikan || '';
+            form.querySelector('[name="learning"]').value = data.learning || '';
+            form.querySelector('[name="statusComplain"]').value = data.statusComplain || '';
+
+            if(data.statusComplain === 'Lainnya') {
+                document.getElementById('statusLainnyaContainer').classList.remove('hidden');
+                form.querySelector('[name="statusLainnya"]').value = data.statusLainnya || '';
+            }
+
+            // Populate Kronologis from Existing Data
+            if (data.kronologis && Array.isArray(data.kronologis)) {
+                const tbody = document.getElementById('kronologisTableBody');
+                tbody.innerHTML = ''; // Clear default
+                data.kronologis.forEach((item) => {
+                    addKronologisRow(item.date, item.time, item.info, item.handle, item.photo);
+                });
+            }
+        }
+
+        const btn = document.getElementById('submitBtn');
+        const form = document.getElementById('complainForm');
+        
+        // ==========================================
+        // SCRIPT LOGIKA SUBMIT (UPDATED for MODAL)
+        // ==========================================
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Memproses...';
+            btn.disabled = true;
+
+            // 1. Proses Kronologis & Foto di dalamnya
+            // Logic ini tetap bekerja karena kita menyimpan base64 di data-old-val
+            const rows = document.querySelectorAll('#kronologisTableBody tr');
+            const kronologisPromises = Array.from(rows).map(async (row) => {
+                const date = row.querySelector('[name="k_date"]').value;
+                const time = row.querySelector('[name="k_time"]').value;
+                const info = row.querySelector('[name="k_info"]').value;
+                const handle = row.querySelector('[name="k_handle"]').value;
+                const fileInput = row.querySelector('.k-photo-input');
+                
+                let photoBase64 = null;
+                
+                if (fileInput.files.length > 0) {
+                    // Fallback jika user entah bagaimana bisa upload file manual di tabel
+                    photoBase64 = await new Promise(resolve => {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve(e.target.result);
+                        reader.readAsDataURL(fileInput.files[0]);
+                    });
+                } else if (fileInput.dataset.oldVal) {
+                    // INI UTAMA: Mengambil Base64 yang diset dari Modal
+                    photoBase64 = fileInput.dataset.oldVal;
+                }
+
+                if(date || info) {
+                    return { date, time, info, handle, photo: photoBase64 };
+                }
+                return null;
+            });
+
+            const kronologisArray = (await Promise.all(kronologisPromises)).filter(i => i !== null);
+
+            if (kronologisArray.length === 0) {
+                alert("Mohon isi minimal 1 kronologis kejadian.");
+                btn.disabled = false; btn.innerHTML = originalText;
+                return;
+            }
+
+            // 2. Collect Data Utama
+            const formData = {
+                jenisKomplain: form.querySelector('[name="jenisKomplain"]').value,
+                jenisLainnya: !document.getElementById('jenisLainnyaContainer').classList.contains('hidden') ? form.querySelector('[name="jenisLainnya"]').value : '',
+                
+                sumberComplain: form.querySelector('[name="sumberComplain"]').value,
+                noBillGCC: !document.getElementById('noBillContainer').classList.contains('hidden') ? form.querySelector('[name="noBillGCC"]').value : '',
+                sumberLainnya: !document.getElementById('sumberLainnyaContainer').classList.contains('hidden') ? form.querySelector('[name="sumberLainnya"]').value : '',
+                
+                tanggalKejadian: form.querySelector('[name="tanggalKejadian"]').value,
+                penanganan: form.querySelector('[name="penanganan"]').value,
+                sebab: form.querySelector('[name="sebab"]').value,
+                perbaikan: form.querySelector('[name="perbaikan"]').value,
+                learning: form.querySelector('[name="learning"]').value,
+
+                statusComplain: form.querySelector('[name="statusComplain"]').value,
+                statusLainnya: !document.getElementById('statusLainnyaContainer').classList.contains('hidden') ? form.querySelector('[name="statusLainnya"]').value : '',
+                
+                kronologis: kronologisArray
+            };
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            // 3. Kirim ke Google Apps Script
+            google.script.run
+            .withSuccessHandler(res => {
+                if (res && res.success) { 
+                    alert(`Berita Acara Komplain berhasil disubmit! ID: ${res.baId}`);
+                    if (typeof closeForm === 'function') {
+                        closeForm();
+                    } else {
+                        window.location.reload(); 
+                    }
+                } else {
+                    alert('Gagal menyimpan data: ' + (res?.message || 'Respons tidak valid.'));
+                    btn.disabled = false; btn.innerHTML = originalText;
+                }
+            })
+            .withFailureHandler(err => {
+                alert('Error koneksi: ' + err.message);
+                console.error(err);
+                btn.disabled = false; btn.innerHTML = originalText;
+            })
+            .rekamData(formData, 'Komplain Customer', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+    })();
+</script>

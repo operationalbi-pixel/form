@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const pairs = [
@@ -170,6 +170,53 @@ for (const [ok, message] of transferAuditRequirements) {
     }
   }
 }
+
+{
+  const wrapperPath = 'docs/berita-acara.html';
+  const wrapper = await text(wrapperPath);
+  if (!wrapper.includes("BAKERZIN_API.call('beritaAcaraHandoff'")) failures.push(`${wrapperPath} belum meminta kode SSO satu kali dari BI-Space`);
+  if (!wrapper.includes('AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg')) failures.push(`${wrapperPath} tidak menuju deployment Berita Acara yang disepakati`);
+  if (!wrapper.includes('env(safe-area-inset-top')) failures.push(`${wrapperPath} belum aman untuk notch aplikasi mobile`);
+
+  const baBackendPath = 'berita-acara-gas/Code.gs';
+  const baBackend = await text(baBackendPath);
+  try { new vm.Script(baBackend, { filename: baBackendPath }); }
+  catch (error) { failures.push(`${baBackendPath}: ${error.message}`); }
+  if (!baBackend.includes("BQ_PROJECT_ID = 'berita-acara-digital'")) failures.push('Backend Berita Acara tidak lagi memakai project BigQuery lama');
+  if (!baBackend.includes("BQ_DATASET_ID = 'berita_acara_app'")) failures.push('Backend Berita Acara tidak lagi memakai dataset lama');
+  if (!baBackend.includes("BQ_TABLE_ID   = 'submissions'")) failures.push('Backend Berita Acara tidak lagi memakai tabel submissions');
+  if (!baBackend.includes("action: 'consumeBeritaAcaraHandoff'")) failures.push('Backend Berita Acara belum memvalidasi handoff melalui EMP_LIST BI-Space');
+  if (!baBackend.includes('function requireBaSession_(')) failures.push('Operasi Berita Acara belum dilindungi sesi server-side');
+  if (!baBackend.includes("creatorPosition === 'AREA MANAGER'")) failures.push('Dokumen buatan AREA MANAGER belum auto approve');
+  if (!baBackend.includes("creatorPosition === 'FNB'")) failures.push('Dokumen buatan FNB belum melewati tahap approval FNB otomatis');
+  if (/SpreadsheetApp\.openById|USER_SHEET_NAME|USER_SS_ID/.test(baBackend)) failures.push('Backend Berita Acara masih memakai database login lama');
+
+  const baIndexPath = 'berita-acara-gas/Index.html';
+  const baIndex = await text(baIndexPath);
+  if (!baIndex.includes('initialBiSpaceUser')) failures.push('Berita Acara belum memuat identitas dari sesi BI-Space');
+  if (!baIndex.includes('function switchBaMode(')) failures.push('Mode Approval dan User Berita Acara belum dapat ditukar');
+  if (/id=["'](?:nik|outlet|loginBtn)["']/.test(baIndex)) failures.push('Halaman login lama masih tampil pada Berita Acara');
+  const approvalDashboard = await text('berita-acara-gas/ApprovalDashboard.html');
+  const outletDashboard = await text('berita-acara-gas/OutletDashboard.html');
+  if (!approvalDashboard.includes('SWITCH TO USER MODE')) failures.push('Approval Dashboard belum memiliki tombol Switch to User Mode');
+  if (!outletDashboard.includes('SWITCH TO APPROVAL MODE')) failures.push('User Mode approver belum memiliki tombol kembali ke Approval Mode');
+
+  const baHtmlFiles = (await readdir('berita-acara-gas')).filter(name => /\.html$/i.test(name));
+  if (baHtmlFiles.length !== 21) failures.push(`Folder Berita Acara seharusnya berisi 21 HTML, ditemukan ${baHtmlFiles.length}`);
+  for (const fileName of baHtmlFiles) {
+    const path = `berita-acara-gas/${fileName}`;
+    const html = await text(path);
+    let inlineIndex = 0;
+    for (const match of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+      inlineIndex += 1;
+      const script = match[1].replace(/<\?[\s\S]*?\?>/g, 'null');
+      try { new vm.Script(script, { filename: `${path}#inline-${inlineIndex}` }); }
+      catch (error) { failures.push(`${path} inline script ${inlineIndex}: ${error.message}`); }
+    }
+  }
+  try { JSON.parse(await text('berita-acara-gas/appsscript.json')); }
+  catch (error) { failures.push(`berita-acara-gas/appsscript.json: ${error.message}`); }
+}
 if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
   failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');
 }
@@ -181,6 +228,18 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
 }
 for (const action of clientActions) {
   if (!allowedActions.has(action)) failures.push(`Aksi frontend '${action}' belum tersedia di apiActions_`);
+}
+
+const pushRequirements = [
+  [backend.includes("PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS'"), 'Sheet token push Android belum dikonfigurasi'],
+  [allowedActions.has('registerPushToken'), 'Endpoint pendaftaran token FCM belum tersedia'],
+  [backend.includes('function registerMobilePushToken('), 'Pendaftaran perangkat Android belum tersedia'],
+  [backend.includes('function sendRealtimeMobilePush_('), 'Pengiriman FCM realtime belum tersedia'],
+  [backend.includes('notifyPendingStockTransfers_(pendingRows);'), 'Transfer pending belum memicu push realtime'],
+  [backend.includes("id: 'NEWS:' + newsId"), 'Berita baru belum memicu push realtime']
+];
+for (const [ok, message] of pushRequirements) {
+  if (!ok) failures.push(message);
 }
 
 if (failures.length) {

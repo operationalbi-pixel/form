@@ -1,0 +1,1155 @@
+<!-- ULTIMATE UI VERSION: Struktur Tetap, Tampilan Premium -->
+<!-- Fitur Lengkap: Info Column, Advanced Search, PDF Integration, Fix Reject Button, Toast Notification -->
+<?!= include('PDFGenerator'); ?>
+
+<div class="min-h-screen bg-slate-50 font-sans text-slate-800">
+    
+    <!-- STYLE KHUSUS (PREMIUM UPGRADE) -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body { font-family: 'Inter', sans-serif; }
+        
+        /* Scrollbar Halus */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Modern Tabs styling */
+        .chrome-tabs-container { display: flex; align-items: flex-end; padding-left: 1.5rem; padding-right: 1.5rem; background-color: #fff; border-bottom: 1px solid #e2e8f0; padding-top: 1rem; }
+        .chrome-tab { 
+            position: relative; display: flex; align-items: center; justify-content: center; 
+            padding: 0.75rem 1.5rem; margin-right: 0.5rem; 
+            border-bottom: 2px solid transparent; 
+            font-size: 0.875rem; font-weight: 600; cursor: pointer; 
+            transition: all 0.2s ease; color: #64748b; 
+        }
+        .chrome-tab:hover { color: #1e3a8a; background-color: #f8fafc; border-radius: 0.5rem 0.5rem 0 0; }
+        .chrome-tab-active { 
+            color: #1e3a8a !important; 
+            border-bottom-color: #1e3a8a; 
+            background-color: #eff6ff;
+            border-radius: 0.5rem 0.5rem 0 0;
+        }
+        
+        /* Badge Notification */
+        .badge-count { 
+            background-color: #ef4444; color: white; border-radius: 9999px; 
+            padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; 
+            margin-left: 0.5rem; display: none; box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+        }
+
+        /* Loading Overlay Backdrop */
+        .backdrop-blur-sm { backdrop-filter: blur(4px); }
+        
+        /* Table Styling */
+        .table-head-fixed { position: sticky; top: 0; z-index: 10; background-color: #f8fafc; }
+        
+        /* Input Focus Ring Custom */
+        .focus-ring { transition: box-shadow 0.2s; }
+        .focus-ring:focus-within { box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.15); border-color: #1e3a8a; }
+
+        /* Toast Notification Styling */
+        #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+        .toast { 
+            display: flex; align-items: center; padding: 16px 20px; border-radius: 12px; 
+            background: white; color: #1e293b; 
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); 
+            border-left: 6px solid #10b981; 
+            font-size: 0.875rem; font-weight: 600; 
+            transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55);
+            max-width: 350px;
+        }
+        .toast.show { transform: translateX(0); }
+        .toast-error { border-left-color: #ef4444; }
+        .toast i { font-size: 1.25rem; margin-right: 12px; }
+        .toast-success i { color: #10b981; }
+        .toast-error i { color: #ef4444; }
+    </style>
+
+    <!-- NAVBAR PREMIUM -->
+    <nav class="bg-white shadow-sm sticky top-0 z-50 border-b border-slate-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16"> <!-- Sedikit lebih ramping (h-16) agar elegan -->
+                <div class="flex items-center">
+                    <div class="h-9 w-9 rounded-lg bg-gradient-to-br from-blue-900 to-blue-700 flex items-center justify-center text-white font-bold text-lg shadow-blue-200 shadow-md">
+                        A
+                    </div>
+                    <div class="ml-3">
+                        <div class="text-sm font-extrabold text-slate-800 tracking-tight leading-none">APPROVAL DASHBOARD</div>
+                        <div class="text-[10px] text-blue-600 font-bold uppercase tracking-wider mt-0.5" id="roleDisplay">...</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button onclick="switchBaMode('user')" class="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-bold text-blue-800 transition hover:border-blue-800 hover:bg-blue-800 hover:text-white" title="Buka tampilan pembuatan dokumen">
+                        <i class="fa-solid fa-user"></i><span class="hidden sm:inline">SWITCH TO USER MODE</span>
+                    </button>
+                    <div class="text-right hidden sm:block">
+                        <div class="text-xs font-bold text-slate-700" id="approverName">Loading...</div>
+                        <div class="text-[10px] text-slate-400 font-medium">Authorized Approver</div>
+                    </div>
+                    <div class="h-8 w-[1px] bg-slate-200 mx-1"></div>
+                    <button onclick="window.location.reload()" class="text-slate-400 hover:text-red-600 transition p-2 rounded-full hover:bg-red-50" title="Logout">
+                        <i class="fa-solid fa-power-off"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- CONTENT WRAPPER -->
+    <main class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+    
+        <!-- MODERN TABS -->
+        <div class="chrome-tabs-container max-w-7xl mx-auto rounded-t-xl border border-b-0 border-slate-200 shadow-sm bg-white">
+            <button onclick="setTab('need_action')" id="tab-need_action" class="chrome-tab chrome-tab-active">
+                <i class="fas fa-bell mr-2 text-sm"></i> Need Action 
+                <span id="badgeCount" class="badge-count animate-pulse">0</span>
+            </button>
+            <button onclick="setTab('all_doc')" id="tab-all_doc" class="chrome-tab">
+                <i class="fas fa-history mr-2 text-sm"></i> All Document
+            </button>
+        </div>
+
+        <!-- MAIN CARD CONTAINER -->
+        <div class="bg-white rounded-b-xl shadow-lg border border-slate-200 overflow-hidden relative">
+            
+            <!-- FILTER TOOLBAR (Clean Layout) -->
+            <div class="p-6 bg-white border-b border-slate-100">
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                    
+                    <!-- Outlet Filter -->
+                    <div class="md:col-span-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Outlet</label>
+                        <div class="relative focus-ring rounded-lg">
+                            <select id="filterOutlet" onchange="filterTable()" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none bg-slate-50 text-slate-700 appearance-none cursor-pointer hover:bg-white transition">
+                                <option value="">Semua Outlet</option>
+                            </select>
+                            <i class="fa-solid fa-store absolute right-3 top-3 text-slate-400 text-xs pointer-events-none"></i>
+                        </div>
+                    </div>
+
+                    <!-- Type Filter -->
+                    <div class="md:col-span-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Tipe BA</label>
+                        <div class="relative focus-ring rounded-lg">
+                            <select id="filterType" onchange="filterTable()" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none bg-slate-50 text-slate-700 appearance-none cursor-pointer hover:bg-white transition">
+                                <option value="">Semua Tipe</option>
+                                <optgroup label="Operasional">
+                                    <option value="Komplain Customer">Komplain Cust.</option>
+                                    <option value="Konsumsi General Cleaning">Konsumsi GC</option>
+                                    <option value="Refund Customer">Refund Customer</option>
+                                    <option value="Customer Entertain">Customer Entertain</option>
+                                    <option value="Minute of Meeting">MoM Meeting</option>
+                                    <option value="Test Food">Test Food</option>
+                                    <option value="Discount Karyawan">Discount Karyawan</option>
+                                    <option value="Cancel Online">Cancel Online</option>
+                                </optgroup>
+                                <optgroup label="Finance">
+                                    <option value="Quotation">Quotation</option>
+                                    <option value="Invoice">Invoice</option>
+                                    <option value="Void">Void</option>
+                                </optgroup>
+                                <optgroup label="Inventory">
+                                    <option value="Waste Pcs To Pcs">Waste</option>
+                                    <option value="Revisi Stock Opname">Revisi SO</option>
+                                    <option value="Penjualan & Dispose Asset">Jual Asset</option>
+                                </optgroup>
+                                <optgroup label="Marketing">
+                                    <option value="KOL Foodies">KOL Foodies</option>
+                                </optgroup>
+                                <optgroup label="Purchasing">
+                                    <option value="Purchasing Non Supplier">Purchasing Non-Sup</option>
+                                </optgroup>
+                            </select>
+                            <i class="fa-solid fa-filter absolute right-3 top-3 text-slate-400 text-xs pointer-events-none"></i>
+                        </div>
+                    </div>
+                    
+                    <!-- NEW FILTER: CARI INFO (Highlight) -->
+                    <div class="md:col-span-3">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Cari</label>
+                        <div class="relative focus-ring rounded-lg group">
+                            <input type="text" id="filterInfo" onkeyup="filterTable()" placeholder="Ketik Keterangan / No Bill..." class="w-full border border-blue-100 bg-blue-50/30 rounded-lg pl-9 p-2.5 text-sm outline-none text-slate-700 placeholder-slate-400 transition group-hover:bg-white">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-blue-400 text-xs"></i>
+                        </div>
+                    </div>
+
+                    <!-- Date Filters -->
+                    <div class="md:col-span-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Dari Tanggal</label>
+                        <input type="date" id="filterStart" onchange="filterTable()" class="w-full border border-slate-200 bg-slate-50 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 text-slate-600 transition">
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">Sampai Tanggal</label>
+                        <input type="date" id="filterEnd" onchange="filterTable()" class="w-full border border-slate-200 bg-slate-50 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 text-slate-600 transition">
+                    </div>
+
+                    <!-- Reset Button -->
+                    <div class="md:col-span-1">
+                        <button onclick="resetFilters()" class="w-full h-[42px] bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700 rounded-lg transition flex items-center justify-center" title="Reset Filter">
+                            <i class="fa-solid fa-rotate-left"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- TABLE CONTENT -->
+            <div class="overflow-x-auto min-h-[450px]">
+                <table class="w-full text-sm text-left border-collapse">
+                    <thead class="text-xs text-slate-500 uppercase bg-slate-50/80 border-b border-slate-200 table-head-fixed backdrop-blur-sm">
+                        <tr>
+                            <th class="px-6 py-4 font-bold tracking-wider">Tipe BA</th>
+                            <th class="px-6 py-4 font-bold tracking-wider">No Dokumen</th>
+                            <!-- NEW COLUMN HEADER: INFO -->
+                            <th class="px-6 py-4 font-bold tracking-wider">Info</th>
+                            <th class="px-6 py-4 font-bold tracking-wider">Outlet</th> 
+                            <th class="px-6 py-4 font-bold tracking-wider">Pembuat</th>
+                            <th class="px-6 py-4 font-bold tracking-wider">Tanggal</th>
+                            <th class="px-6 py-4 font-bold tracking-wider text-center">Detail</th>
+                            <th class="px-6 py-4 font-bold tracking-wider text-center">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="approvalBody" class="divide-y divide-slate-100 bg-white">
+                        <!-- Content Injected Here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- PAGINATION CONTROL -->
+            <div class="bg-white px-6 py-4 border-t border-slate-100 flex items-center justify-between">
+                <span class="text-xs text-slate-400 font-bold uppercase tracking-wide bg-slate-50 px-3 py-1 rounded-full border border-slate-100" id="pageInfo">0 - 0 dari 0</span>
+                <div class="flex space-x-2">
+                    <button id="btnPrev" onclick="prevPage()" class="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-sm">
+                        <i class="fa-solid fa-chevron-left mr-1"></i> Prev
+                    </button>
+                    <button id="btnNext" onclick="nextPage()" class="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-sm">
+                        Next <i class="fa-solid fa-chevron-right ml-1"></i>
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- APPROVE CONFIRM MODAL -->
+    <div id="approveConfirmModal" class="fixed inset-0 bg-slate-900 bg-opacity-50 z-[70] hidden flex items-center justify-center p-4 backdrop-blur-sm transition-opacity">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all scale-100 border border-slate-100">
+            <div class="p-8 text-center">
+                <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-6 shadow-sm">
+                    <i class="fas fa-check text-3xl text-green-600"></i>
+                </div>
+                <h3 class="text-xl font-bold text-slate-800 mb-2">Setujui Dokumen?</h3>
+                <p class="text-sm text-slate-500 mb-6 px-4">Anda akan menyetujui dokumen <span id="approveModalDocId" class="font-mono font-bold text-slate-700 block mt-1 bg-slate-100 py-1 rounded"></span></p>
+                
+                <div class="flex flex-col gap-3">
+                    <button id="btnConfirmApprove" type="button" class="w-full inline-flex justify-center items-center rounded-xl border border-transparent shadow-lg shadow-green-200 px-4 py-3 bg-green-600 text-sm font-bold text-white hover:bg-green-700 focus:outline-none transition transform hover:-translate-y-0.5">
+                        Ya, Setujui Sekarang
+                    </button>
+                    <button onclick="closeApproveModal()" type="button" class="w-full inline-flex justify-center items-center rounded-xl border border-slate-200 px-4 py-3 bg-white text-sm font-bold text-slate-600 hover:bg-slate-50 focus:outline-none transition">
+                        Batal
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DETAIL MODAL -->
+    <div id="appDetailModal" class="fixed inset-0 bg-slate-900 bg-opacity-60 z-[60] hidden flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200">
+            <!-- Modal Header -->
+            <div class="bg-gradient-to-r from-blue-900 to-blue-800 p-5 flex justify-between items-center shrink-0">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 bg-white/10 rounded-lg"><i class="fa-solid fa-file-invoice text-white text-lg"></i></div>
+                    <div>
+                        <h3 class="text-white font-bold text-lg tracking-wide">Review Submission</h3>
+                        <p class="text-blue-200 text-xs">Detail lengkap dokumen pengajuan</p>
+                    </div>
+                </div>
+                <button onclick="closeAppDetail()" class="text-blue-200 hover:text-white text-2xl leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 transition">&times;</button>
+            </div>
+            
+            <!-- Modal Content -->
+            <div id="appDetailContent" class="p-8 overflow-y-auto bg-slate-50/50 relative text-slate-700"></div>
+
+            <!-- Modal Footer -->
+            <div class="p-5 border-t border-slate-100 bg-white flex justify-end items-center shrink-0 space-x-3">
+                <button onclick="downloadPDF()" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-2.5 px-5 rounded-xl flex items-center text-xs transition border border-slate-200">
+                    <i class="fas fa-file-pdf mr-2 text-red-500"></i> DOWNLOAD PDF
+                </button>
+                
+                <div class="h-8 w-[1px] bg-slate-200 mx-2"></div>
+
+                <button id="modalProcessBtn" class="hidden bg-slate-400 text-white font-bold py-2.5 px-6 rounded-xl text-xs cursor-wait shadow-inner">Processing...</button>
+                <button onclick="closeAppDetail()" class="text-slate-500 hover:text-slate-700 font-bold py-2.5 px-5 rounded-xl text-xs transition">CLOSE</button>
+                
+                <button id="modalRejectBtn" data-action="reject" class="hidden bg-white border border-red-200 hover:bg-red-50 text-red-600 font-bold py-2.5 px-6 rounded-xl transition text-xs flex items-center gap-2">
+                    <i class="fa-solid fa-xmark"></i> REJECT
+                </button>
+                <button id="modalApproveBtn" data-action="approve" class="hidden bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-8 rounded-xl shadow-lg shadow-blue-200 transform transition hover:-translate-y-0.5 text-xs flex items-center gap-2">
+                    <i class="fa-solid fa-check"></i> APPROVE
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST CONTAINER -->
+    <div id="toast-container"></div>
+</div>
+
+<script>
+    let originalData = [];
+    let displayData = [];
+    let currentDetailData = null;
+    let currentSelectedIndex = -1;
+    let currentTab = 'need_action';
+    let tempApproveIndex = -1; 
+    
+    // --- PAGINATION VARIABLES ---
+    let currentPage = 1;
+    const itemsPerPage = 10;
+
+    // --- FLOW DEFINITIONS (SINKRON DENGAN BACKEND) ---
+    const FLOW_FNB_REQUIRED = [
+        'Waste Pcs To Pcs', 'Penjualan & Dispose Asset', 
+        'Purchasing Non Supplier', 'Test Food', 'Revisi Stock Opname'
+    ];
+    
+    const FLOW_AM_ONLY = [
+        'KOL Foodies', 'Void', 'Konsumsi General Cleaning', 'Quotation', 'Invoice',
+        'Refund Customer', 'Komplain Customer', 'Minute of Meeting', 'Customer Entertain',
+        'Discount Karyawan', 'Cancel Online'
+    ];
+
+    function initializeDashboard(user) {
+        window.userData = user;
+        document.getElementById('roleDisplay').textContent = user.POSITION;
+        document.getElementById('approverName').textContent = user.NAME;
+        loadData();
+    }
+
+    // --- DATA FETCHING (SAFE LOAD) ---
+    function loadData() {
+        document.getElementById('approvalBody').innerHTML = '<tr><td colspan="8" class="text-center py-20"><div class="flex flex-col items-center justify-center"><i class="fas fa-circle-notch fa-spin text-blue-600 text-3xl mb-4"></i><span class="text-slate-500 font-medium">Sedang memuat data...</span></div></td></tr>';
+        
+        google.script.run
+            .withSuccessHandler(processData)
+            .withFailureHandler(function(error) {
+                console.error("Load Error:", error);
+                document.getElementById('approvalBody').innerHTML = `<tr><td colspan="8" class="text-center py-10 text-red-600 font-bold bg-red-50 rounded-lg border border-red-200 m-4"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><br>Gagal memuat data.<br><span class="text-sm font-normal text-gray-600">${error.message}</span></td></tr>`;
+            })
+            .getAllSubmissions(window.userData);
+    }
+
+    function processData(data) {
+        if (!data) data = [];
+
+        const user = window.userData;
+        const position = (user.POSITION || '').toUpperCase().trim();
+        
+        const relevantData = data.filter(ba => {
+            const isAmFlow = [...FLOW_AM_ONLY, ...FLOW_FNB_REQUIRED];
+            const isFnbFlow = FLOW_FNB_REQUIRED;
+
+            if (position === 'AREA MANAGER') return isAmFlow.includes(ba.type);
+            if (position === 'FNB') return isFnbFlow.includes(ba.type);
+            return false;
+        });
+
+        originalData = relevantData;
+        updateNeedActionBadge(relevantData, position);
+        populateOutletFilter(relevantData);
+        filterTable();
+    }
+    
+    function updateNeedActionBadge(data, position) {
+        const count = data.filter(item => checkCanApprove(item, position)).length;
+        const badge = document.getElementById('badgeCount');
+        badge.textContent = count;
+        if(count > 0) badge.classList.remove('hidden'); else badge.classList.add('hidden');
+    }
+
+    function populateOutletFilter(data) {
+        const outletSelect = document.getElementById('filterOutlet');
+        const currentVal = outletSelect.value;
+        const outlets = [...new Set(data.map(item => item.Outlet))].sort();
+        outletSelect.innerHTML = '<option value="">Semua Outlet</option>';
+        outlets.forEach(outlet => {
+            if(outlet) {
+                const option = document.createElement('option');
+                option.value = outlet;
+                option.textContent = outlet;
+                outletSelect.appendChild(option);
+            }
+        });
+        outletSelect.value = currentVal; 
+    }
+
+    function setTab(tabName) {
+        currentTab = tabName;
+        if(tabName === 'need_action') {
+            document.getElementById('tab-need_action').classList.add('chrome-tab-active');
+            document.getElementById('tab-all_doc').classList.remove('chrome-tab-active');
+        } else {
+            document.getElementById('tab-need_action').classList.remove('chrome-tab-active');
+            document.getElementById('tab-all_doc').classList.add('chrome-tab-active');
+        }
+        filterTable();
+    }
+
+    function resetFilters() {
+        document.getElementById('filterOutlet').value = "";
+        document.getElementById('filterType').value = "";
+        document.getElementById('filterInfo').value = ""; // RESET INFO INPUT
+        document.getElementById('filterStart').value = "";
+        document.getElementById('filterEnd').value = "";
+        filterTable();
+    }
+
+    function filterTable() {
+        const fOutlet = document.getElementById('filterOutlet').value;
+        const fType = document.getElementById('filterType').value;
+        const fInfo = document.getElementById('filterInfo').value.toLowerCase(); // NEW: FILTER INFO
+        const fStart = document.getElementById('filterStart').value;
+        const fEnd = document.getElementById('filterEnd').value;
+        const position = (window.userData.POSITION || '').toUpperCase().trim();
+
+        let filtered = originalData.filter(item => {
+            if (currentTab === 'need_action') {
+                if (!checkCanApprove(item, position)) return false;
+            }
+            if (fOutlet && item.Outlet !== fOutlet) return false;
+            if (fType && item.type !== fType) return false;
+            
+            // NEW LOGIC: FILTER INFO
+            if (fInfo) {
+                const infoText = (item.info || '').toLowerCase();
+                if (!infoText.includes(fInfo)) return false;
+            }
+
+            if (fStart || fEnd) {
+                const itemDate = new Date(item.Timestamp);
+                itemDate.setHours(0,0,0,0);
+                if (fStart) { const sDate = new Date(fStart); sDate.setHours(0,0,0,0); if (itemDate < sDate) return false; }
+                if (fEnd) { const eDate = new Date(fEnd); eDate.setHours(0,0,0,0); if (itemDate > eDate) return false; }
+            }
+            return true;
+        });
+
+        // RESET HALAMAN KE 1 SAAT FILTER BERUBAH
+        currentPage = 1;
+        renderTable(filtered);
+    }
+
+    function renderTable(data) {
+        const tbody = document.getElementById('approvalBody');
+        const position = (window.userData.POSITION || '').toUpperCase().trim();
+
+        // 1. Sort Data
+        data.sort((a, b) => {
+            const aNeedsAction = checkCanApprove(a, position);
+            const bNeedsAction = checkCanApprove(b, position);
+            if (aNeedsAction && !bNeedsAction) return -1;
+            if (!aNeedsAction && bNeedsAction) return 1;
+            return new Date(b.Timestamp) - new Date(a.Timestamp);
+        });
+
+        // 2. Simpan Full Data untuk Referensi
+        displayData = data; 
+
+        // 3. LOGIKA PAGINASI (SLICE DATA)
+        const start = (currentPage - 1) * itemsPerPage;
+        const end = start + itemsPerPage;
+        const pageData = data.slice(start, end);
+
+        updatePaginationUI(data.length, start, end);
+
+        if (pageData.length === 0) {
+            let emptyMsg = currentTab === 'need_action' ? "Kerja bagus! Tidak ada dokumen pending." : "Data tidak ditemukan.";
+            tbody.innerHTML = `<tr><td colspan="8" class="px-8 py-16 text-center text-slate-400"><div class="flex flex-col items-center"><i class="fas fa-clipboard-check text-5xl mb-4 text-slate-200"></i><span class="font-medium">${emptyMsg}</span></div></td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = pageData.map((row, index) => {
+            const canApprove = checkCanApprove(row, position);
+            
+            // Hitung Index Asli dari displayData agar aksi klik valid
+            const absoluteIndex = start + index; 
+            
+            let statusBadge = '';
+            if (row.currentStatus === 'Approved') {
+                statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 font-bold text-[10px] tracking-wide uppercase"><i class="fa-solid fa-check mr-1"></i> APPROVED</span>`;
+            } else if (row.currentStatus === 'Rejected') {
+                statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-100 font-bold text-[10px] tracking-wide uppercase"><i class="fa-solid fa-xmark mr-1"></i> REJECTED</span>`;
+            } else if (canApprove) {
+                statusBadge = `<button onclick="doApprove(${absoluteIndex})" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 text-xs font-bold shadow-md hover:shadow-blue-200 transform transition hover:-translate-y-0.5 border border-blue-700 flex items-center justify-center gap-1 w-full"><i class="fa-solid fa-pen-nib"></i> APPROVE</button>`;
+            } else {
+                statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100 font-bold text-[10px] tracking-wide italic"><i class="fa-regular fa-clock mr-1"></i> ${row.currentStatus}</span>`;
+            }
+
+            // Simple Display Type
+            let displayType = row.type;
+            if(row.type === 'Waste Pcs To Pcs') displayType = 'Waste';
+            if(row.type === 'Revisi Stock Opname') displayType = 'Revisi SO';
+            if(row.type === 'Konsumsi General Cleaning') displayType = 'Konsumsi GC';
+            if(row.type === 'Penjualan & Dispose Asset') displayType = 'Jual Asset';
+            if(row.type === 'Refund Customer') displayType = 'Refund Cust';
+            if(row.type === 'Komplain Customer') displayType = 'Komplain';
+            if(row.type === 'Minute of Meeting') displayType = 'MoM';
+            if(row.type === 'Purchasing Non Supplier') displayType = 'Purchasing';
+            if(row.type === 'Customer Entertain') displayType = 'Entertain';
+            if(row.type === 'Test Food') displayType = 'Test Food';
+            if(row.type === 'Discount Karyawan') displayType = 'Disc. Karyawan'; // NEW
+            if(row.type === 'Cancel Online') displayType = 'Cancel Online'; // NEW
+
+            return `
+            <tr class="hover:bg-slate-50 transition border-b border-slate-50 last:border-0 group">
+                <td class="px-6 py-4 font-bold text-slate-700 text-xs">${displayType}</td>
+                <td class="px-6 py-4 font-mono text-xs text-slate-500 group-hover:text-blue-700 transition">${row.Submission_ID || '-'}</td>
+                
+                <!-- NEW COLUMN: INFO -->
+                <td class="px-6 py-4 text-xs text-slate-600 font-medium break-words max-w-[200px] bg-slate-50/50 border-x border-slate-50">${row.info || '-'}</td>
+
+                <td class="px-6 py-4 text-slate-600 font-bold text-xs">${row.Outlet}</td>
+                <td class="px-6 py-4 text-slate-500 text-xs">${row.NAME}</td>
+                <td class="px-6 py-4 text-slate-400 text-xs font-mono">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
+                <td class="px-6 py-4 text-center">
+                    <button onclick="showAppDetail(${absoluteIndex})" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
+                </td>
+                <td class="px-6 py-4 text-center w-32">${statusBadge}</td>
+            </tr>
+            `;
+        }).join('');
+    }
+
+    // --- PAGINATION HELPERS ---
+    function updatePaginationUI(totalItems, start, end) {
+        const info = document.getElementById('pageInfo');
+        const btnPrev = document.getElementById('btnPrev');
+        const btnNext = document.getElementById('btnNext');
+        
+        if(totalItems === 0) {
+            info.textContent = '0 - 0 dari 0';
+            btnPrev.disabled = true;
+            btnNext.disabled = true;
+            return;
+        }
+        
+        const displayEnd = Math.min(end, totalItems);
+        info.textContent = `${start + 1} - ${displayEnd} dari ${totalItems}`;
+        
+        btnPrev.disabled = currentPage === 1;
+        btnNext.disabled = end >= totalItems;
+    }
+
+    function prevPage() {
+        if (currentPage > 1) {
+            currentPage--;
+            renderTable(displayData); // Pakai displayData yang sudah tersortir
+        }
+    }
+
+    function nextPage() {
+        if ((currentPage * itemsPerPage) < displayData.length) {
+            currentPage++;
+            renderTable(displayData); // Pakai displayData yang sudah tersortir
+        }
+    }
+
+    // --- Helper Checks (Approval Logic) ---
+    function checkIsApprovedByMe(ba, position) {
+        if (position === 'AREA MANAGER') return !!ba.AM_Approved_Date;
+        if (position === 'FNB') return !!ba.FNB_Approved_Date;
+        return false;
+    }
+    
+    function checkCanReject(ba, position) {
+        // PERBAIKAN LOGIKA REJECT BUTTON: 
+        // Izinkan Reject jika dokumen belum selesai (belum ada rejected global)
+        // Dan user belum melakukan aksi (Approve/Reject)
+        if (ba.currentStatus === 'Rejected') return false; 
+        
+        const isFnbFlow = FLOW_FNB_REQUIRED;
+        if (position === 'AREA MANAGER') {
+            if (!isFnbFlow.includes(ba.type)) return !ba.AM_Rejected_Date && !ba.AM_Approved_Date;
+            if (isFnbFlow.includes(ba.type)) {
+                // Untuk FNB Flow: AM hanya bisa reject JIKA FNB sudah approve, DAN AM belum reject/approve
+                return !!ba.FNB_Approved_Date && !ba.AM_Rejected_Date && !ba.AM_Approved_Date;
+            }
+        }
+        
+        if (position === 'FNB') {
+            if (isFnbFlow.includes(ba.type)) return !ba.FNB_Rejected_Date && !ba.FNB_Approved_Date;
+        }
+        return false;
+    }
+
+    function checkCanApprove(ba, position) {
+        if (checkIsApprovedByMe(ba, position)) return false;
+        if (ba.currentStatus === 'Rejected') return false; 
+        
+        const isFnbFlow = FLOW_FNB_REQUIRED;
+        if (position === 'AREA MANAGER') {
+            if (!isFnbFlow.includes(ba.type)) return !ba.AM_Rejected_Date;
+            if (isFnbFlow.includes(ba.type)) return !!ba.FNB_Approved_Date && !ba.AM_Rejected_Date;
+        }
+        
+        if (position === 'FNB') {
+            if (isFnbFlow.includes(ba.type)) return !ba.FNB_Rejected_Date;
+        }
+        return false;
+    }
+
+    // --- Detail & Modal Logic (FETCH ON DEMAND) ---
+    function showAppDetail(index) {
+        const modal = document.getElementById('appDetailModal');
+        const container = document.getElementById('appDetailContent');
+        
+        modal.classList.remove('hidden');
+        container.innerHTML = '<div class="flex flex-col items-center justify-center h-40"><i class="fas fa-circle-notch fa-spin text-blue-700 text-3xl mb-4"></i><span class="text-slate-500 font-medium">Mengambil detail dari database...</span></div>';
+        
+        // Hide Buttons
+        document.getElementById('modalApproveBtn').classList.add('hidden');
+        document.getElementById('modalRejectBtn').classList.add('hidden');
+        
+        const itemLite = displayData[index];
+        currentSelectedIndex = index;
+
+        // FETCH FULL DATA DARI SERVER
+        google.script.run
+            .withSuccessHandler(renderFullDetail)
+            .withFailureHandler(function(error) {
+                console.error("Detail Fetch Error:", error);
+                container.innerHTML = `<div class="text-red-500 text-center p-4">Gagal memuat detail data.<br>Error: ${error.message}</div>`;
+            })
+            .getSubmissionDetail(itemLite.Submission_ID);
+    }
+
+    function renderFullDetail(item) {
+        currentDetailData = item;
+        const container = document.getElementById('appDetailContent');
+        const btnApprove = document.getElementById('modalApproveBtn');
+        const btnReject = document.getElementById('modalRejectBtn');
+        const userPos = window.userData.POSITION.toUpperCase().trim();
+
+        // Check permission with full data
+        if(checkCanApprove(item, userPos)) {
+            btnApprove.classList.remove('hidden');
+            btnApprove.onclick = function() { doApprove(currentSelectedIndex); };
+        } else { btnApprove.classList.add('hidden'); }
+        
+        if(checkCanReject(item, userPos)) {
+            btnReject.classList.remove('hidden');
+            btnReject.onclick = function() { showRejectModal(currentSelectedIndex); };
+        } else { btnReject.classList.add('hidden'); }
+
+        let jsonData = {};
+        try { jsonData = JSON.parse(item.Data_JSON); } catch(e) {}
+
+        let isApproved = item.currentStatus === 'Approved';
+        let isRejected = item.currentStatus === 'Rejected';
+        
+        let approverName = item.AM_Approved_By || item.FNB_Approved_By || item.AM_Rejected_By || item.FNB_Rejected_By || 'Approver';
+        let approverRole = item.AM_Approved_By ? 'Area Manager' : (item.FNB_Approved_By ? 'FNB Head' : '');
+        let appDate = item.AM_Approved_Date || item.FNB_Approved_Date || item.AM_Rejected_Date || item.FNB_Rejected_Date;
+        
+        let stampHTML = '';
+        if(isApproved || isRejected) {
+            const text = isApproved ? 'APPROVED' : 'REJECTED';
+            const color = isApproved ? 'green' : 'red';
+            // Simple stamp look
+            stampHTML = `
+            <div class="absolute top-4 right-4 border-4 border-${color}-600 text-${color}-600 font-bold text-xl px-4 py-2 rounded transform -rotate-12 opacity-80 pointer-events-none z-10 text-center bg-white/80 backdrop-blur-sm shadow-sm">
+                ${text}<br>
+                <span class="text-xs text-black block mt-1">By: ${approverName}</span>
+                <span class="text-[10px] text-gray-600 block">${appDate ? new Date(appDate).toLocaleDateString('id-ID') : ''}</span>
+            </div>`;
+        }
+        
+        let customContent = '';
+        
+        // 1. DISCOUNT KARYAWAN (NEW)
+        if (item.type === 'Discount Karyawan') {
+            customContent = `
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div><label class="block text-xs font-bold text-gray-400">NAMA KARYAWAN</label><div class="font-medium border-b pb-1">${jsonData.namaKaryawan || '-'} (ID: ${jsonData.idKaryawan})</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">TOTAL BILL</label><div class="font-medium border-b pb-1 text-blue-800">Rp ${jsonData.totalBill || '0'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">NOMINAL DISKON</label><div class="font-medium border-b pb-1 text-red-600 font-bold">Rp ${jsonData.nominalDiskon || '0'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">NO BILL</label><div class="font-medium border-b pb-1">${jsonData.noBill || '-'}</div></div>
+                    <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">KETERANGAN</label><div class="p-2 bg-gray-50 rounded border italic">${jsonData.keterangan || '-'}</div></div>
+                </div>
+            `;
+        } 
+        // 2. CANCEL ONLINE (NEW)
+        else if (item.type === 'Cancel Online') {
+            customContent = `
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div><label class="block text-xs font-bold text-gray-400">PLATFORM</label><div class="font-medium border-b pb-1">${jsonData.platform || '-'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">NO TRANSAKSI</label><div class="font-medium border-b pb-1">${jsonData.noTransaksi || '-'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">NO BILL POS</label><div class="font-medium border-b pb-1">${jsonData.noBill || '-'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">TOTAL BILL</label><div class="font-medium border-b pb-1 text-red-600 font-bold">Rp ${jsonData.totalBill || '0'}</div></div>
+                    <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN CANCEL</label><div class="p-2 bg-gray-50 rounded border italic">${jsonData.alasan || '-'}</div></div>
+                </div>
+                ${renderItemTable(item.type, jsonData.items, jsonData.totalBill)}
+            `;
+        }
+        // 3. INVOICE & QUOTATION (FIXED VIEW)
+        else if (item.type === 'Quotation' || item.type === 'Invoice') {
+            customContent = renderQuotationInvoiceDetail(jsonData, item.type);
+        }
+        // 4. TEST FOOD
+        else if (item.type === 'Test Food') { 
+            customContent = renderTestFoodDetail(jsonData);
+        }
+        // 5. EXISTING FORMS
+        else if (item.type === 'Revisi Stock Opname') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TANGGAL SO</label><div class="font-medium border-b pb-1">${jsonData.tanggalSO || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">PERIODE</label><div class="font-medium border-b pb-1">${jsonData.periodeSO || '-'}</div></div></div><div class="mt-4 border rounded-lg overflow-hidden border-gray-200"><table class="w-full text-sm"><thead class="bg-blue-900 text-white text-xs"><tr><th class="p-2">Kode</th><th class="p-2">Unit</th><th class="p-2 text-center">Sebelum</th><th class="p-2 text-center">Revisi</th><th class="p-2">Alasan</th></tr></thead><tbody class="bg-white">${(jsonData.items || []).map(i => `<tr class="border-b"><td class="p-2">${i.kodeItem || '-'}</td><td class="p-2">${i.unit || '-'}</td><td class="p-2 text-center text-red-600 font-bold">${i.qtySebelum || 0}</td><td class="p-2 text-center text-green-600 font-bold">${i.qtyRevisi || 0}</td><td class="p-2 text-xs italic text-gray-600">${i.alasan || '-'}</td></tr>`).join('')}</tbody></table></div>`;
+        } else if (item.type === 'Konsumsi General Cleaning') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TANGGAL GC</label><div class="font-medium border-b pb-1">${jsonData.tanggalGC || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">JML PESERTA</label><div class="font-medium border-b pb-1">${jsonData.jumlahPeserta || '-'} Orang</div></div></div>${renderItemTable(item.type, jsonData.items, jsonData.grandTotal, true)}`;
+        } else if (item.type === 'Penjualan & Dispose Asset') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TINDAKAN</label><div class="font-medium border-b pb-1">${jsonData.tindakan || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL BA</label><div class="font-medium border-b pb-1">${jsonData.tanggalBA || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>${renderAssetTable(jsonData.items, jsonData.grandTotalJual)}`;
+        } else if (item.type === 'Refund Customer') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">CUSTOMER</label><div class="font-medium border-b pb-1">${jsonData.namaCustomer || '-'} (${jsonData.noTelp})</div></div><div><label class="block text-xs font-bold text-gray-400">JUMLAH REFUND</label><div class="font-medium border-b pb-1 text-blue-700 font-bold">Rp ${jsonData.jumlahRefund || '0'}</div></div><div><label class="block text-xs font-bold text-gray-400">BANK</label><div class="font-medium border-b pb-1">${jsonData.namaBank || '-'} - ${jsonData.noRek || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">ATAS NAMA</label><div class="font-medium border-b pb-1">${jsonData.atasNama || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>`;
+        } 
+        
+        // --- UPDATE: Komplain Customer with NEW FIELDS ---
+        else if (item.type === 'Komplain Customer') {
+            customContent = `
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div><label class="block text-xs font-bold text-gray-400">JENIS</label><div class="font-medium border-b pb-1">${jsonData.jenisKomplain || '-'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">SUMBER</label><div class="font-medium border-b pb-1">${jsonData.sumberComplain || '-'} ${jsonData.noBillGCC ? '('+jsonData.noBillGCC+')' : ''}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">STATUS</label><div class="font-medium border-b pb-1">${jsonData.statusComplain || '-'}</div></div>
+                    <div><label class="block text-xs font-bold text-gray-400">TANGGAL</label><div class="font-medium border-b pb-1">${jsonData.tanggalKejadian || '-'}</div></div>
+                    
+                    <div class="col-span-2">
+                        <label class="block text-xs font-bold text-gray-400">PENANGANAN</label>
+                        <div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.penanganan || '-'}</div>
+                    </div>
+
+                    <!-- NEW FIELDS ADDED HERE -->
+                    <div class="col-span-2">
+                        <label class="block text-xs font-bold text-gray-400">AKAR SEBAB MASALAH</label>
+                        <div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.sebab || '-'}</div>
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs font-bold text-gray-400">PERBAIKAN / PENCEGAHAN</label>
+                        <div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.perbaikan || '-'}</div>
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs font-bold text-gray-400">LEARNING POINTS</label>
+                        <div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.learning || '-'}</div>
+                    </div>
+                </div>
+                ${renderChronologyTable(jsonData.kronologis)}
+            `;
+        } 
+        
+        else if (item.type === 'Minute of Meeting') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">JUDUL MEETING</label><div class="font-medium border-b pb-1">${jsonData.namaMeeting || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">WAKTU</label><div class="font-medium border-b pb-1">${jsonData.tanggalMeeting || '-'} ${jsonData.jamMeeting || ''}</div></div><div><label class="block text-xs font-bold text-gray-400">TEMPAT</label><div class="font-medium border-b pb-1">${jsonData.tempatMeeting || '-'}</div></div></div>${renderAttendanceTable(jsonData.attendance)}${renderMinutesTable(jsonData.minutes)}`;
+        } else if (item.type === 'Purchasing Non Supplier') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">VENDOR</label><div class="font-medium border-b pb-1">${jsonData.vendor || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL BILL</label><div class="font-medium border-b pb-1">${jsonData.tanggalBill || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN PEMBELIAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>${renderItemTable('Purchasing', jsonData.items, jsonData.grandTotal)}`;
+        } else if (item.type === 'Customer Entertain') {
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">CUSTOMER</label><div class="font-medium border-b pb-1">${jsonData.customer || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TOTAL BILL</label><div class="font-medium border-b pb-1 text-blue-700 font-bold">Rp ${jsonData.totalBill || '0'}</div></div><div><label class="block text-xs font-bold text-gray-400">NO BILL</label><div class="font-medium border-b pb-1">${jsonData.noBill || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL</label><div class="font-medium border-b pb-1">${jsonData.tanggalBill || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">TUJUAN ENTERTAIN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.tujuan || '-'}</div></div></div>`;
+        } else {
+            customContent = renderSpecificFields(item.type, jsonData) + renderItemTable(item.type, jsonData.items, jsonData.grandTotal || jsonData.totalBill);
+        }
+
+        let html = `
+            <div class="space-y-6 font-sans text-sm text-gray-800 relative">
+                <div class="border-b-2 border-blue-900 pb-4 mb-6 flex justify-between items-end">
+                    <div>
+                        <h2 class="text-2xl font-bold text-blue-900 uppercase tracking-wider">Berita Acara</h2>
+                        <p class="text-gray-500 font-bold uppercase tracking-wide mt-1">${item.type}</p>
+                    </div>
+                    <div class="text-right text-xs text-gray-500">
+                        <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+                        <div class="font-mono text-sm font-bold text-gray-600">${item.Submission_ID || '-'}</div>
+                    </div>
+                </div>
+                ${stampHTML}
+
+                <div class="grid grid-cols-2 gap-4 bg-blue-50 p-4 rounded border border-blue-100 text-xs">
+                    <div><span class="block font-bold text-gray-400">NAMA</span><span class="font-bold text-gray-900 text-sm uppercase border-b border-gray-300 block w-full pb-1">${item.NAME}</span></div>
+                    <div><span class="block font-bold text-gray-400">NIK</span><span class="font-bold text-gray-900 text-sm uppercase border-b border-gray-300 block w-full pb-1">${item.NIK}</span></div>
+                    <div><span class="block font-bold text-gray-400">OUTLET</span><span class="font-bold text-gray-900 text-sm uppercase border-b border-gray-300 block w-full pb-1">${item.Outlet}</span></div>
+                    <div><span class="block font-bold text-gray-400">STATUS</span><span class="font-bold ${isApproved ? 'text-green-600' : (isRejected ? 'text-red-600' : 'text-amber-600')} text-sm uppercase border-b border-gray-300 block w-full pb-1">${item.currentStatus}</span></div>
+                </div>
+
+                ${customContent}
+
+                <div class="mt-6 pt-4 border-t border-blue-200">
+                    <h4 class="font-bold text-blue-900 mb-3 uppercase text-xs tracking-wider border-l-4 border-blue-900 pl-2">Bukti Foto</h4>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        ${renderPhotos(jsonData)}
+                    </div>
+                </div>
+            </div>
+        `;
+        container.innerHTML = html;
+    }
+
+    // --- RENDER FUNCTIONS ---
+    
+    function renderTestFoodDetail(data) {
+        const menuRows = (data.items || []).map((i, idx) => {
+            const statusClass = i.status === 'Pass' ? 'text-green-600 bg-green-50 border-green-200' : 'text-red-600 bg-red-50 border-red-200';
+            return `<tr class="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                <td class="p-2 text-center text-gray-500 font-bold">${idx + 1}</td>
+                <td class="p-2 text-center"><img src="${i.photo}" class="table-thumb mx-auto" onclick="window.open(this.src)"></td>
+                <td class="p-2 font-bold">${i.menu}</td>
+                <td class="p-2 text-gray-600">${i.look || '-'}</td>
+                <td class="p-2 text-gray-600">${i.taste || '-'}</td>
+                <td class="p-2 text-gray-600">${i.texture || '-'}</td>
+                <td class="p-2 text-gray-600">${i.aroma || '-'}</td>
+                <td class="p-2 italic text-gray-500 text-xs">${i.comment || '-'}</td>
+                <td class="p-2 text-center"><span class="px-2 py-1 rounded text-[10px] font-bold border ${statusClass}">${i.status.toUpperCase()}</span></td>
+            </tr>`;
+        }).join('');
+
+        return `
+            <div class="grid grid-cols-2 gap-4 mb-4">
+                <div><label class="block text-xs font-bold text-gray-400">TANGGAL TEST</label><div class="font-medium border-b pb-1">${data.tanggalTest || '-'}</div></div>
+                <div><label class="block text-xs font-bold text-gray-400">LOKASI TEST</label><div class="font-medium border-b pb-1">${data.lokasiTest || '-'}</div></div>
+                <div><label class="block text-xs font-bold text-gray-400">KEPERLUAN</label><div class="font-medium border-b pb-1">${data.keperluanTest || '-'} ${data.keperluanLainnya ? '(' + data.keperluanLainnya + ')' : ''}</div></div>
+                <div><label class="block text-xs font-bold text-gray-400">PESERTA</label><div class="font-medium border-b pb-1">${data.person || '-'}</div></div>
+            </div>
+            <h4 class="font-bold text-blue-900 mt-6 mb-3 uppercase text-xs tracking-wider border-l-4 border-blue-900 pl-2">Rincian Penilaian Menu</h4>
+            <div class="border rounded-lg overflow-hidden border-gray-200 bg-white shadow-sm overflow-x-auto">
+                <table class="w-full text-xs min-w-[700px]">
+                    <thead class="bg-blue-900 text-white uppercase text-xs">
+                        <tr>
+                            <th class="p-3 w-8 text-center">#</th>
+                            <th class="p-3 w-16">Gambar</th>
+                            <th class="p-3 w-32">Nama Menu</th>
+                            <th class="p-3">Tampilan</th>
+                            <th class="p-3">Rasa</th>
+                            <th class="p-3">Tekstur</th>
+                            <th class="p-3">Aroma</th>
+                            <th class="p-3">Komentar</th>
+                            <th class="p-3 w-20 text-center">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white">${menuRows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function renderQuotationInvoiceDetail(data, type) {
+        const math = data.math || {};
+        const fees = data.fees || {};
+        const itemRows = (data.items || []).map((i, idx) => `<tr class="border-b border-gray-100"><td class="py-2 px-2 text-center text-gray-500">${idx + 1}</td><td class="py-2 px-2 font-medium text-gray-800">${i.item || '-'}</td><td class="py-2 px-2 text-center">${i.unit || '-'}</td><td class="py-2 px-2 text-center">${i.qty || 0}</td><td class="py-2 px-2 text-right text-gray-600">${i.price || '-'}</td><td class="py-2 px-2 text-right font-bold text-gray-800">${i.total || '-'}</td></tr>`).join('');
+        
+        // FIXED LOGIC: Show if value exists (truthy or not '0')
+        const showDisc = math.discVal && math.discVal !== 'Rp 0';
+        const showSvc = math.svcVal && math.svcVal !== 'Rp 0';
+        const showPb1 = math.pb1Val && math.pb1Val !== 'Rp 0';
+        const showDeliv = fees.delivery && fees.delivery !== 'Rp 0';
+        const showHand = fees.handling && fees.handling !== 'Rp 0';
+
+        return `<div class="grid grid-cols-2 gap-6 mt-4"><div class="bg-blue-50 p-4 rounded border border-blue-100 text-xs"><label class="block font-bold text-blue-900 uppercase mb-1">Bill To</label><span class="block font-bold text-sm">${data.company || '-'}</span><span class="block text-gray-700">${data.person || '-'} (${data.phone || '-'})</span><span class="block text-gray-500 italic">${data.address || '-'}</span></div><div class="bg-gray-50 p-4 rounded border border-gray-200 text-xs"><label class="block font-bold text-gray-500 uppercase mb-1">Details</label><div class="flex justify-between"><span class="font-bold">Total</span><span class="font-black text-blue-900 text-lg">${math.grandTotal || 'Rp 0'}</span></div>
+        <div class="mt-2 pt-2 border-t border-gray-200 space-y-1">
+            <div class="flex justify-between text-gray-600"><span>Subtotal</span><span>${math.subtotal}</span></div>
+            ${showDisc ? `<div class="flex justify-between text-red-600"><span>Discount (${math.discPct}%)</span><span>${math.discVal}</span></div>` : ''}
+            ${showSvc ? `<div class="flex justify-between text-gray-600"><span>Service (${math.svcPct}%)</span><span>${math.svcVal}</span></div>` : ''}
+            ${showPb1 ? `<div class="flex justify-between text-gray-600"><span>PB1 (${math.pb1Pct}%)</span><span>${math.pb1Val}</span></div>` : ''}
+            ${showDeliv ? `<div class="flex justify-between text-gray-600"><span>Delivery</span><span>${fees.delivery}</span></div>` : ''}
+            ${showHand ? `<div class="flex justify-between text-gray-600"><span>Handling</span><span>${fees.handling}</span></div>` : ''}
+        </div>
+        </div></div><div class="mt-4 border rounded-lg overflow-hidden border-gray-200"><table class="w-full text-sm"><thead class="bg-blue-900 text-white uppercase text-xs"><tr><th class="py-3 px-3">No</th><th class="py-3 px-3">Item</th><th class="py-3 px-3">Unit</th><th class="py-3 px-3">Qty</th><th class="py-3 px-3 text-right">Price</th><th class="py-3 px-3 text-right">Total</th></tr></thead><tbody class="bg-white">${itemRows}</tbody></table></div>`;
+    }
+
+    function renderSpecificFields(type, data) {
+        let html = '<div class="grid grid-cols-2 gap-6">';
+        if (type === 'Void') html += `<div><label class="block text-xs font-bold text-gray-400">NO BILL</label><div class="font-medium border-b pb-1">${data.noBill || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL</label><div class="font-medium border-b pb-1">${data.tanggal || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border italic">${data.alasan || '-'}</div></div>`;
+        else if (type === 'KOL Foodies') html += `<div><label class="block text-xs font-bold text-gray-400">NAMA KOL</label><div class="font-medium border-b pb-1">${data.namaFoodies || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">NO BILL</label><div class="font-medium border-b pb-1">${data.noBill || '-'}</div></div>`;
+        else if (type === 'Waste Pcs To Pcs') html += `<div><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="font-medium border-b pb-1">${data.alasan || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL</label><div class="font-medium border-b pb-1">${data.tanggal || '-'}</div></div>`;
+        html += '</div>'; return html;
+    }
+
+    function renderAssetTable(items, total) {
+        if (!items) return '';
+        let itemArray = typeof items === 'string' ? JSON.parse(items) : items; if (!Array.isArray(itemArray)) return '';
+        let rows = itemArray.map((i, idx) => `<tr class="border-b border-gray-100"><td class="py-2 px-2 text-center text-gray-500">${idx + 1}</td><td class="py-2 px-2 font-mono text-xs text-gray-600">${i.noAsset || '-'}</td><td class="py-2 px-2 font-medium text-gray-800">${i.item || '-'}</td><td class="py-2 px-2 text-center">${i.qty || 0}</td><td class="py-2 px-2 text-right">${i.bookValue || '-'}</td><td class="py-2 px-2 text-right font-bold text-blue-700">${i.hargaJual || '-'}</td></tr>`).join('');
+        return `<div class="mt-6 border rounded-lg overflow-hidden border-gray-200"><table class="w-full text-sm"><thead class="bg-blue-900 text-white uppercase text-xs"><tr><th>No</th><th>Asset</th><th>Item</th><th>Qty</th><th>Book Val</th><th>Jual</th></tr></thead><tbody class="bg-white">${rows}</tbody><tfoot class="bg-gray-50"><tr><td colspan="5" class="text-right font-bold uppercase p-3">Total</td><td class="text-right font-bold text-blue-900 p-3">${total || '-'}</td></tr></tfoot></table></div>`;
+    }
+
+    function renderItemTable(type, items, total, withVendor = false) {
+        if (!items) return '';
+        let itemArray = typeof items === 'string' ? JSON.parse(items) : items; if (!Array.isArray(itemArray)) return '';
+        const vendorHeader = withVendor ? '<th>Vendor</th>' : '';
+        let rows = itemArray.map((i, idx) => {
+            const vendorCell = withVendor ? `<td class="text-gray-600 text-xs">${i.vendor || '-'}</td>` : '';
+            return `<tr class="border-b border-gray-100"><td class="text-center text-gray-500 p-2">${idx + 1}</td><td class="font-medium text-gray-800 p-2">${i.item || i.name}</td><td class="text-center p-2">${i.qty} ${i.unit || ''}</td><td class="text-right text-gray-600 p-2">${i.price || '-'}</td><td class="text-right font-bold text-gray-800 p-2">${i.total || '-'}</td>${vendorCell}</tr>`;
+        }).join('');
+        let colSpan = withVendor ? 5 : 4;
+        return `<div class="mt-6 border rounded-lg overflow-hidden border-gray-200"><table class="w-full text-sm"><thead class="bg-blue-900 text-white uppercase text-xs"><tr><th>No</th><th>Item</th><th>Qty</th><th>Harga</th><th>Total</th>${vendorHeader}</tr></thead><tbody class="bg-white">${rows}</tbody><tfoot class="bg-gray-50"><tr><td colspan="${colSpan}" class="text-right font-bold uppercase p-3">Total</td><td class="text-right font-bold text-blue-900 p-3">${total || '-'}</td>${withVendor?'<td></td>':''}</tr></tfoot></table></div>`;
+    }
+    
+    function renderChronologyTable(data) {
+        if (!data || !Array.isArray(data)) return '';
+        const rows = data.map((r, i) => `<tr class="border-b"><td class="p-2 text-center">${i+1}</td><td class="p-2">${r.date} ${r.time}</td><td class="p-2">${r.info}</td><td class="p-2 italic">${r.handle}</td></tr>`).join('');
+        return `<div class="mt-4 border rounded bg-white"><h4 class="font-bold text-xs uppercase p-2 bg-gray-50">Kronologis</h4><table class="w-full text-sm"><thead class="bg-blue-900 text-white text-xs"><tr><th>No</th><th>Waktu</th><th>Kejadian</th><th>PIC</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function renderAttendanceTable(data) {
+        if (!data || !Array.isArray(data)) return '';
+        const rows = data.map((r, i) => `<tr class="border-b"><td class="p-2 text-center">${i+1}</td><td class="p-2 font-bold">${r.nama}</td><td class="p-2">${r.divisi}</td><td class="p-2">${r.jabatan}</td></tr>`).join('');
+        return `<div class="mt-4 border rounded bg-white"><h4 class="font-bold text-xs uppercase p-2 bg-gray-50">Absensi</h4><table class="w-full text-sm"><thead class="bg-blue-900 text-white text-xs"><tr><th>No</th><th>Nama</th><th>Divisi</th><th>Jabatan</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    
+    function renderMinutesTable(data) {
+        if (!data || !Array.isArray(data)) return '';
+        const rows = data.map((r, i) => `<tr class="border-b"><td class="p-2 text-center">${i+1}</td><td class="p-2">${r.informasi}</td><td class="p-2 font-medium">${r.instruction}</td><td class="p-2">${r.instructionFor}</td><td class="p-2 text-red-600 text-xs">${r.deadline}</td></tr>`).join('');
+        return `<div class="mt-4 border rounded bg-white"><h4 class="font-bold text-xs uppercase p-2 bg-gray-50">Notulensi</h4><table class="w-full text-sm"><thead class="bg-blue-900 text-white text-xs"><tr><th>No</th><th>Info</th><th>Tindakan</th><th>PIC</th><th>Deadline</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    function renderPhotos(data) {
+        let html = '';
+        const isTestFood = data.items && Array.isArray(data.items) && data.items.every(item => item.photo !== undefined);
+        if (isTestFood) {
+            data.items.forEach((item, i) => {
+                if (item.photo && item.photo.startsWith('data:image')) {
+                    html += `<div class="border rounded p-2 bg-gray-50 shadow-sm"><div class="aspect-video bg-gray-200 rounded overflow-hidden flex items-center justify-center mb-2 relative group border border-gray-200"><img src="${item.photo}" class="object-cover w-full h-full"></div><div class="text-[10px] font-bold text-gray-500 text-center uppercase tracking-wide">Foto Menu: ${item.menu || `Menu ${i+1}`}</div></div>`;
+                }
+            });
+            if (html) return html;
+        }
+
+        const photoArr = data.extraPhotos || data.photos;
+        if (photoArr && Array.isArray(photoArr)) {
+             photoArr.forEach((src, i) => {
+                 html += `<div class="border rounded p-2 bg-gray-50 shadow-sm"><div class="aspect-video bg-gray-200 rounded overflow-hidden flex items-center justify-center mb-2 relative group border border-gray-200"><img src="${src}" class="object-cover w-full h-full"></div><div class="text-[10px] font-bold text-gray-500 text-center uppercase tracking-wide">Lampiran ${i+1}</div></div>`;
+             });
+        }
+        else {
+            for (const key in data) { 
+                if ((key.startsWith('foto') || key.includes('Photo') || key === 'buktiBayar') && data[key] && data[key].startsWith('data:image')) { 
+                    let label = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                    html += `<div class="border rounded p-2 bg-gray-50 shadow-sm"><div class="aspect-video bg-gray-200 rounded overflow-hidden flex items-center justify-center mb-2 relative group border border-gray-200"><img src="${data[key]}" class="object-cover w-full h-full"></div><div class="text-[10px] font-bold text-gray-500 text-center uppercase tracking-wide">${label}</div></div>`;
+                } 
+            }
+        }
+        return html || '<div class="text-gray-400 text-xs italic p-4 border rounded border-dashed w-full text-center col-span-2">Tidak ada foto lampiran.</div>';
+    }
+
+    async function downloadPDF() {
+        if (!currentDetailData) return;
+        let jsonData = {}; try { jsonData = JSON.parse(currentDetailData.Data_JSON); } catch(e) {}
+        if (window.generatePDF) { await window.generatePDF(currentDetailData, jsonData); } 
+        else { showToast('Sistem PDF belum siap.', 'error'); }
+    }
+
+    function closeAppDetail() { 
+        document.getElementById('appDetailModal').classList.add('hidden');
+        currentSelectedIndex = -1;
+    }
+    
+    function showToast(message, type = 'success') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `toast ${type === 'error' ? 'toast-error' : ''}`;
+        toast.innerHTML = `<i class="fas fa-${type === 'error' ? 'exclamation-circle' : 'check-circle'} mr-2"></i> ${message}`;
+        container.appendChild(toast);
+        
+        setTimeout(() => toast.classList.add('show'), 10);
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    function toggleProcessing(isProcessing, action, skipReload = false) {
+        const btnApprove = document.getElementById('modalApproveBtn');
+        const btnReject = document.getElementById('modalRejectBtn');
+        const btnProcess = document.getElementById('modalProcessBtn');
+        btnApprove.classList.add('hidden');
+        btnReject.classList.add('hidden');
+        
+        if (isProcessing) {
+            btnProcess.classList.remove('hidden');
+            btnProcess.textContent = action === 'approve' ? 'Menyetujui...' : 'Menolak...';
+        } else {
+            btnProcess.classList.add('hidden');
+            if(!skipReload) loadData(); 
+        }
+    }
+
+    // New Modal Functionality
+    function doApprove(index) {
+        tempApproveIndex = index;
+        const item = displayData[index];
+        document.getElementById('approveModalDocId').textContent = item.Submission_ID;
+        document.getElementById('approveConfirmModal').classList.remove('hidden');
+        
+        const btn = document.getElementById('btnConfirmApprove');
+        btn.onclick = executeApprove;
+    }
+
+    function closeApproveModal() {
+        document.getElementById('approveConfirmModal').classList.add('hidden');
+        tempApproveIndex = -1;
+    }
+
+    function executeApprove() {
+        if (tempApproveIndex === -1) return;
+        const index = tempApproveIndex;
+        const item = displayData[index];
+        
+        closeApproveModal();
+        toggleProcessing(true, 'approve');
+        closeAppDetail();
+
+        google.script.run.withSuccessHandler(res => {
+            if(res.success) {
+                updateLocalData(item.Submission_ID, 'Approved');
+                toggleProcessing(false, 'approve', true); 
+                showToast(`Dokumen ${item.Submission_ID} berhasil disetujui.`);
+            } else {
+                showToast(res.message, 'error');
+                toggleProcessing(false, 'approve'); 
+            }
+        }).approveBa(item.sheetName, item.rowNumber, window.userData.NAME, window.userData.POSITION, window.userData);
+    }
+    
+    function showRejectModal(index) {
+        const modal = document.getElementById('appDetailModal');
+        modal.dataset.tempIndex = index;
+
+        let rejectModal = document.getElementById('rejectReasonModal');
+        if (!rejectModal) {
+            rejectModal = document.createElement('div');
+            rejectModal.id = 'rejectReasonModal';
+            rejectModal.className = 'fixed inset-0 bg-black bg-opacity-70 z-[70] flex items-center justify-center p-4 hidden';
+            rejectModal.innerHTML = `
+                <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                    <div class="bg-blue-800 p-4 flex justify-between items-center">
+                        <h3 class="text-white font-bold text-lg">Alasan Penolakan</h3>
+                        <button onclick="document.getElementById('rejectReasonModal').classList.add('hidden')" class="text-white hover:text-gray-200 text-2xl leading-none">&times;</button>
+                    </div>
+                    <div class="p-6">
+                        <p class="text-sm text-gray-700 mb-4">Masukkan alasan penolakan:</p>
+                        <textarea id="rejectReasonInput" rows="4" class="w-full border border-gray-300 rounded p-2 outline-none focus:border-blue-800 transition" placeholder="Contoh: Bukti foto kurang jelas..."></textarea>
+                        <p id="reasonError" class="text-xs text-red-500 mt-1 hidden">Wajib diisi.</p>
+                    </div>
+                    <div class="p-4 border-t bg-gray-50 flex justify-end">
+                        <button id="confirmRejectBtn" class="bg-blue-700 hover:bg-blue-800 text-white font-bold py-2 px-4 rounded shadow">Konfirmasi Tolak</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(rejectModal);
+
+            document.getElementById('confirmRejectBtn').onclick = function() {
+                const reasonInput = document.getElementById('rejectReasonInput');
+                const reason = reasonInput.value.trim();
+                const error = document.getElementById('reasonError');
+                if (!reason) { error.classList.remove('hidden'); return; }
+                error.classList.add('hidden');
+                document.getElementById('rejectReasonModal').classList.add('hidden');
+                doReject(parseInt(modal.dataset.tempIndex), reason);
+            };
+        }
+        document.getElementById('rejectReasonInput').value = ''; 
+        document.getElementById('reasonError').classList.add('hidden');
+        rejectModal.classList.remove('hidden');
+    }
+    
+    function doReject(index, reason) {
+        const item = displayData[index];
+        toggleProcessing(true, 'reject');
+        closeAppDetail(); 
+        google.script.run.withSuccessHandler(res => {
+            if(res.success) {
+                updateLocalData(item.Submission_ID, 'Rejected', reason);
+                toggleProcessing(false, 'reject', true);
+                showToast(`Dokumen ${item.Submission_ID} ditolak.`, 'error');
+            } else {
+                showToast(res.message, 'error');
+                toggleProcessing(false, 'reject');
+            }
+        }).rejectBa(item.sheetName, item.rowNumber, window.userData.NAME, window.userData.POSITION, reason, window.userData);
+    }
+
+    // FAST UPDATE HELPER
+    function updateLocalData(submissionId, newStatus, reason = '') {
+        const userPos = window.userData.POSITION.toUpperCase().trim();
+        const userName = window.userData.NAME;
+        const now = new Date().toISOString();
+
+        // Find and update item in originalData
+        const item = originalData.find(x => x.Submission_ID === submissionId);
+        if (item) {
+            if (newStatus === 'Approved') {
+                if (userPos === 'AREA MANAGER') {
+                    item.AM_Approved_Date = now;
+                    item.AM_Approved_By = userName;
+                } else if (userPos === 'FNB') {
+                    item.FNB_Approved_Date = now;
+                    item.FNB_Approved_By = userName;
+                }
+                // We update currentStatus visually, though logic relies on Dates
+                item.currentStatus = 'Approved'; 
+            } else if (newStatus === 'Rejected') {
+                if (userPos === 'AREA MANAGER') {
+                    item.AM_Rejected_Date = now;
+                    item.AM_Rejected_By = userName;
+                } else if (userPos === 'FNB') {
+                    item.FNB_Rejected_Date = now;
+                    item.FNB_Rejected_By = userName;
+                }
+                item.currentStatus = 'Rejected';
+            }
+        }
+        
+        // Re-run filter to refresh view instantly
+        // This moves approved items out of 'Need Action' list immediately
+        updateNeedActionBadge(originalData, userPos);
+        filterTable();
+    }
+
+    // --- ACTIONS ---
+    function processApproval(id, status, reason = '') {
+        const userPos = window.userData.POSITION.toUpperCase().trim();
+        const userName = window.userData.NAME;
+        const btnContainer = document.getElementById('modalActions');
+        btnContainer.innerHTML = '<span class="text-blue-600 font-bold animate-pulse text-xs">Sedang memproses...</span>';
+
+        const run = status === 'Approved' 
+            ? google.script.run.withSuccessHandler(done).approveBa(id, 0, userName, userPos, window.userData)
+            : google.script.run.withSuccessHandler(done).rejectBa(id, 0, userName, userPos, reason, window.userData);
+
+        function done(res) {
+            if(res.success) {
+                // Update Local Data (Optimistic)
+                const item = originalData.find(x => x.Submission_ID === id);
+                if(item) {
+                    item.currentStatus = status; 
+                    // Update dates logic skipped for brevity, mainly need status update for UI
+                }
+                
+                // CHANGE: Use showToast instead of alert
+                showToast(status === 'Approved' ? "Dokumen berhasil disetujui!" : "Dokumen berhasil ditolak.");
+                
+                if(status === 'Rejected') closeRejectModal();
+                closeModal();
+                updateNeedActionBadge(originalData, userPos);
+                filterTable();
+            } else {
+                // CHANGE: Use showToast instead of alert
+                showToast("Gagal: " + res.message, 'error');
+                
+                closeModal(); // Force close to reset state
+            }
+        }
+    }
+
+    function openRejectModal() { document.getElementById('rejectModal').classList.remove('hidden'); }
+    function closeRejectModal() { document.getElementById('rejectModal').classList.add('hidden'); document.getElementById('rejectReason').value = ''; }
+    function confirmReject() {
+        const r = document.getElementById('rejectReason').value;
+        if(!r) { 
+            // CHANGE: Use showToast
+            showToast("Wajib isi alasan penolakan!", 'error'); 
+            return; 
+        }
+        processApproval(currentDetailId, 'Rejected', r);
+    }
+</script>

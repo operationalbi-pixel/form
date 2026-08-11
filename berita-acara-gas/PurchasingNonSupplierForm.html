@@ -1,0 +1,455 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- FORM STYLE -->
+<style>
+    .form-group label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #9ca3af; /* gray-400 */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    .form-input {
+        width: 100%;
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #1f2937;
+        outline: none;
+        transition: all 0.2s;
+    }
+    .form-input:focus {
+        border-color: #991b1b;
+        box-shadow: 0 0 0 1px #991b1b;
+    }
+    .form-input[readonly] {
+        background-color: #f9fafb;
+        color: #6b7280;
+        border-color: #f3f4f6;
+        cursor: not-allowed;
+    }
+    .table-header {
+        background-color: #7f1d1d; /* red-900 */
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        padding: 0.75rem;
+    }
+    /* Upload Box Style */
+    .upload-box {
+        border: 2px dashed #d1d5db;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        text-align: center;
+        transition: all 0.2s;
+        background-color: #f9fafb;
+        position: relative;
+    }
+    .upload-box:hover {
+        border-color: #991b1b;
+        background-color: #fff1f2;
+    }
+    .preview-img {
+        max-height: 150px;
+        margin: 10px auto;
+        border-radius: 0.375rem;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        display: none; /* Hidden by default */
+        object-fit: contain;
+    }
+</style>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">PURCHASING NON SUPPLIER</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="purchasingForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis (Added POSITION) -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="k_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="k_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">JABATAN</label><input type="text" id="k_position" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="k_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">TANGGAL SUBMIT</label><input type="text" id="k_dateDisplay" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Detail Pembelian -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="form-group">
+                <label>Nama Vendor / Toko</label>
+                <input type="text" name="vendor" class="form-input" placeholder="Nama Toko tempat beli" required>
+            </div>
+            <div class="form-group">
+                <label>Tanggal Pembelian (Sesuai Nota)</label>
+                <input type="date" name="tanggalBill" class="form-input" required>
+            </div>
+            <div class="form-group md:col-span-2">
+                <label>Alasan Pembelian</label>
+                <textarea name="alasan" class="form-input" rows="2" placeholder="Kenapa harus beli non-supplier? (Cth: Stock habis mendadak, barang urgent, dll)" required></textarea>
+            </div>
+        </div>
+
+        <!-- 3. Tabel Item -->
+        <div class="mt-4">
+            <div class="flex justify-between items-end mb-2">
+                <label class="text-xs font-bold text-gray-400 uppercase">Daftar Barang</label>
+                <button type="button" id="btnAddItem" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-1 px-3 rounded flex items-center transition"><i class="fas fa-plus mr-1"></i> Tambah Item</button>
+            </div>
+            <div class="border rounded-lg overflow-hidden border-gray-200 bg-white shadow-sm">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50 text-gray-600 text-xs uppercase font-bold border-b border-gray-200">
+                        <tr>
+                            <th class="p-3 text-left">Nama Barang</th>
+                            <th class="p-3 w-20 text-center">Qty</th>
+                            <th class="p-3 w-24 text-center">Satuan</th>
+                            <th class="p-3 w-32 text-right">Harga (@)</th>
+                            <th class="p-3 w-32 text-right">Total</th>
+                            <th class="p-3 w-10"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="itemsTableBody" class="divide-y divide-gray-100">
+                        <!-- Items appended here -->
+                    </tbody>
+                    <tfoot class="bg-gray-50 font-bold text-gray-700">
+                        <tr>
+                            <td colspan="4" class="p-3 text-right uppercase text-xs tracking-wider">Grand Total</td>
+                            <td class="p-3 text-right text-red-900" id="grandTotalDisplay">Rp 0</td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+
+        <!-- 4. Bukti Foto (Struk) -->
+        <div class="form-group mt-6">
+            <label>Foto Struk / Nota (Wajib)</label>
+            <div class="upload-box" id="uploadBox_main">
+                <input type="file" id="file_struk" class="hidden file-input" accept="image/*" data-key="fotoStruk" onchange="previewImage(this, 'preview_struk')">
+                <label for="file_struk" class="cursor-pointer flex flex-col items-center justify-center">
+                    <i class="fas fa-receipt text-3xl text-gray-400 mb-2"></i>
+                    <span class="text-xs font-bold text-red-700 hover:underline">Klik untuk Upload Struk</span>
+                    <span class="text-[10px] text-gray-400 mt-1">Format: JPG/PNG, Max 5MB</span>
+                </label>
+                <img id="preview_struk" class="preview-img" src="">
+                <button type="button" class="hidden absolute top-2 right-2 text-red-500 hover:text-red-700 bg-white rounded-full p-1 shadow-sm" onclick="clearImage('file_struk', 'preview_struk')"><i class="fas fa-times"></i></button>
+            </div>
+        </div>
+
+        <!-- Foto Tambahan -->
+        <div class="form-group">
+            <div class="flex justify-between items-end mb-2">
+                <label>Foto Barang (Opsional)</label>
+                <button type="button" id="btnAddPhoto" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-1 px-3 rounded"><i class="fas fa-plus mr-1"></i> Tambah Foto</button>
+            </div>
+            <div id="extraPhotosContainer" class="space-y-3">
+                <!-- Dynamic photos -->
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="pt-6 border-t border-gray-100">
+            <button type="submit" id="submitBtn" class="w-full bg-gradient-to-r from-red-800 to-red-900 text-white font-bold py-3 px-4 rounded-lg hover:shadow-lg transform transition hover:-translate-y-0.5">
+                KIRIM BERITA ACARA
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- HELPER: Image Preview Logic ---
+    window.previewImage = function(input, imgId) {
+        const file = input.files[0];
+        const img = document.getElementById(imgId);
+        const box = input.closest('.upload-box');
+        const clearBtn = box.querySelector('button');
+
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                img.src = e.target.result;
+                img.style.display = 'block';
+                if(clearBtn) clearBtn.classList.remove('hidden');
+            }
+            reader.readAsDataURL(file);
+        }
+    };
+
+    window.clearImage = function(inputId, imgId) {
+        const input = document.getElementById(inputId);
+        const img = document.getElementById(imgId);
+        const box = input.closest('.upload-box');
+        const clearBtn = box.querySelector('button');
+
+        input.value = ''; 
+        img.src = '';
+        img.style.display = 'none';
+        if(clearBtn) clearBtn.classList.add('hidden');
+    };
+
+    // --- HELPER: Rupiah Formatter & Parser ---
+    function formatRupiah(angka, prefix) {
+        var number_string = angka.replace(/[^,\d]/g, '').toString(),
+            split = number_string.split(','),
+            sisa = split[0].length % 3,
+            rupiah = split[0].substr(0, sisa),
+            ribuan = split[0].substr(sisa).match(/\d{3}/gi);
+
+        if (ribuan) {
+            separator = sisa ? '.' : '';
+            rupiah += separator + ribuan.join('.');
+        }
+
+        rupiah = split[1] != undefined ? rupiah + ',' + split[1] : rupiah;
+        return prefix == undefined ? rupiah : (rupiah ? 'Rp ' + rupiah : '');
+    }
+
+    function parseRupiah(str) {
+        if(!str) return 0;
+        return parseInt(str.replace(/[^0-9]/g, '')) || 0;
+    }
+
+    // --- HELPER: Table Calculation ---
+    function calculateTable() {
+        const rows = document.querySelectorAll('#itemsTableBody tr');
+        let grandTotal = 0;
+
+        rows.forEach(row => {
+            const qty = parseFloat(row.querySelector('[name="p_qty"]').value) || 0;
+            const priceInput = row.querySelector('[name="p_price"]');
+            const totalInput = row.querySelector('[name="p_total"]');
+            
+            const price = parseRupiah(priceInput.value);
+            const total = qty * price;
+
+            // Update Total Row View
+            totalInput.value = formatRupiah(String(total), 'Rp');
+            
+            grandTotal += total;
+        });
+
+        // Update Grand Total
+        document.getElementById('grandTotalDisplay').textContent = formatRupiah(String(grandTotal), 'Rp');
+    }
+
+    (function() {
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        // 1. Init Data User
+        document.getElementById('k_nama').value = user.NAME;
+        document.getElementById('k_nik').value = user.NIK;
+        document.getElementById('k_position').value = user.POSITION; // Added Position
+        document.getElementById('k_outlet').value = user.OUTLET;
+        document.getElementById('k_dateDisplay').value = new Date().toLocaleDateString('id-ID');
+
+        // 2. Add Item Logic
+        const tbody = document.getElementById('itemsTableBody');
+        
+        function addItemRow(item = '', qty = '', unit = '', price = 0) {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td class="p-2"><input type="text" name="p_item" class="w-full text-xs border rounded p-1" value="${item}" placeholder="Nama Barang" required></td>
+                <td class="p-2"><input type="number" name="p_qty" class="w-full text-xs border rounded p-1 text-center" value="${qty}" placeholder="1" min="1" required oninput="calculateTable()"></td>
+                <td class="p-2"><input type="text" name="p_unit" class="w-full text-xs border rounded p-1 text-center" value="${unit}" placeholder="Pcs/Kg"></td>
+                <td class="p-2"><input type="text" name="p_price" class="w-full text-xs border rounded p-1 text-right" value="${formatRupiah(String(price), 'Rp')}" placeholder="Rp 0" required onkeyup="this.value=formatRupiah(this.value, 'Rp'); calculateTable()"></td>
+                <td class="p-2"><input type="text" name="p_total" class="w-full text-xs border-0 bg-transparent text-right font-bold text-gray-700" value="Rp 0" readonly></td>
+                <td class="p-2 text-center"><button type="button" class="text-red-500 hover:text-red-700" onclick="this.closest('tr').remove(); calculateTable()"><i class="fas fa-trash"></i></button></td>
+            `;
+            tbody.appendChild(row);
+            calculateTable();
+        }
+
+        document.getElementById('btnAddItem').addEventListener('click', () => addItemRow());
+
+        // 3. Dynamic Extra Photos
+        let photoCount = 0;
+        document.getElementById('btnAddPhoto').addEventListener('click', function() {
+            photoCount++;
+            const container = document.getElementById('extraPhotosContainer');
+            const div = document.createElement('div');
+            div.className = 'upload-box relative';
+            div.innerHTML = `
+                <input type="file" id="extra_${photoCount}" class="hidden file-input" accept="image/*" data-key="extraPhoto_${photoCount}" onchange="previewImage(this, 'prev_extra_${photoCount}')">
+                <label for="extra_${photoCount}" class="cursor-pointer flex items-center justify-center space-x-2">
+                    <i class="fas fa-camera text-gray-400"></i>
+                    <span class="text-xs font-bold text-gray-600">Foto Barang ${photoCount}</span>
+                </label>
+                <img id="prev_extra_${photoCount}" class="preview-img" src="">
+                <button type="button" class="absolute top-2 right-2 text-red-500 hover:text-red-700" onclick="this.closest('.upload-box').remove()"><i class="fas fa-trash"></i></button>
+            `;
+            container.appendChild(div);
+        });
+
+        // 4. Mode Revisi Populate
+        if (existing) {
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('revisiBadge').classList.remove('hidden');
+
+            let data = {};
+            try { data = JSON.parse(existing.Data_JSON); } catch(e) {}
+            
+            const f = document.getElementById('purchasingForm');
+            f.querySelector('[name="vendor"]').value = data.vendor || '';
+            f.querySelector('[name="tanggalBill"]').value = data.tanggalBill || '';
+            f.querySelector('[name="alasan"]').value = data.alasan || '';
+
+            // Populate Items
+            if (data.items && Array.isArray(data.items)) {
+                data.items.forEach(item => {
+                    // Bersihkan harga dari format Rupiah lama jika ada, ambil angka saja
+                    let rawPrice = item.price;
+                    if(typeof rawPrice === 'string') rawPrice = parseRupiah(rawPrice);
+                    addItemRow(item.item, item.qty, item.unit, rawPrice);
+                });
+            } else {
+                addItemRow(); // Default 1 row if empty
+            }
+
+            // Populate Photos
+            // Logic mapping mirip dengan Entertain Form: Foto pertama dianggap struk
+            let photos = data.photos || [];
+            if (photos.length > 0) {
+                const img = document.getElementById('preview_struk');
+                img.src = photos[0];
+                img.style.display = 'block';
+                document.getElementById('file_struk').setAttribute('data-old-val', photos[0]);
+                
+                // Sisanya masuk extra
+                for(let i=1; i<photos.length; i++) {
+                     document.getElementById('btnAddPhoto').click();
+                     const imgExtra = document.getElementById(`prev_extra_${photoCount}`);
+                     imgExtra.src = photos[i];
+                     imgExtra.style.display = 'block';
+                     document.getElementById(`extra_${photoCount}`).setAttribute('data-old-val', photos[i]);
+                }
+            }
+        } else {
+            // Default 1 Row for New Entry
+            addItemRow();
+        }
+
+        // ==========================================
+        // SCRIPT LOGIKA SUBMIT (ANTI-STUCK)
+        // ==========================================
+        const btn = document.getElementById('submitBtn');
+        const form = document.getElementById('purchasingForm');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Memproses...';
+            btn.disabled = true;
+
+            // 1. Ambil Item dari Tabel
+            const itemRows = document.querySelectorAll('#itemsTableBody tr');
+            if (itemRows.length === 0) {
+                alert("Harap isi minimal 1 item pembelian.");
+                btn.disabled = false; btn.innerHTML = originalText; return;
+            }
+
+            let items = [];
+            itemRows.forEach(row => {
+                // Simpan harga dalam format number murni agar mudah diolah di spreadsheet
+                const rawPrice = parseRupiah(row.querySelector('[name="p_price"]').value);
+                const qty = parseFloat(row.querySelector('[name="p_qty"]').value) || 0;
+                
+                items.push({
+                    item: row.querySelector('[name="p_item"]').value,
+                    qty: qty,
+                    unit: row.querySelector('[name="p_unit"]').value,
+                    price: rawPrice, 
+                    total: qty * rawPrice,
+                    // Vendor sudah ada di header, tapi jika butuh per-item (opsional)
+                    vendor: document.querySelector('[name="vendor"]').value 
+                });
+            });
+
+            // 2. Proses Foto
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    const key = input.dataset.key;
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else if (input.dataset.oldVal) {
+                        resolve({ key: key, data: input.dataset.oldVal });
+                    } else {
+                        resolve({ key: key, data: null });
+                    }
+                });
+            });
+
+            const filesData = await Promise.all(filePromises);
+
+            // Ambil foto struk & extra
+            const fotoStruk = filesData.find(f => f.key === 'fotoStruk')?.data;
+            const extraPhotos = filesData.filter(f => f.key.startsWith('extraPhoto_') && f.data).map(f => f.data);
+
+            let finalPhotos = [];
+            if(fotoStruk) finalPhotos.push(fotoStruk);
+            if(extraPhotos.length > 0) finalPhotos = finalPhotos.concat(extraPhotos);
+
+            if (finalPhotos.length === 0) {
+                alert("Harap upload minimal 1 foto struk/nota.");
+                btn.disabled = false; btn.innerHTML = originalText; return;
+            }
+
+            // 3. Susun Data
+            const formData = {
+                vendor: this.querySelector('[name="vendor"]').value,
+                tanggalBill: this.querySelector('[name="tanggalBill"]').value,
+                alasan: this.querySelector('[name="alasan"]').value,
+                items: items,
+                // Kirim Grand Total sebagai string Rupiah atau number (disini string agar user lihat sama)
+                grandTotal: document.getElementById('grandTotalDisplay').textContent, 
+                photos: finalPhotos
+            };
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            // 4. Kirim
+            google.script.run
+            .withSuccessHandler(res => {
+                if (res.success) {
+                    alert(`Berita Acara Purchasing berhasil! ID: ${res.baId}`);
+                    if (typeof closeForm === 'function') {
+                        closeForm();
+                    } else {
+                        window.location.reload(); 
+                    }
+                } else {
+                    alert('Gagal: ' + res.message);
+                    btn.disabled = false; btn.innerHTML = originalText;
+                }
+            })
+            .withFailureHandler(err => {
+                alert('Error: ' + err.message);
+                btn.disabled = false; btn.innerHTML = originalText;
+            })
+            .rekamData(formData, 'Purchasing Non Supplier', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+    })();
+</script>

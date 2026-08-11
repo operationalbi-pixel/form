@@ -16,6 +16,7 @@ const CONFIG = Object.freeze({
   PAGE_SHEET: 'APP_PAGES',
   SUBPAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
   SESSION_SHEET: 'APP_SESSIONS',
+  PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -102,9 +103,12 @@ function apiActions_() {
     activateAccount: activateAccount,
     login: login,
     resumeSession: resumeSession,
+    beritaAcaraHandoff: createBeritaAcaraHandoff,
+    consumeBeritaAcaraHandoff: consumeBeritaAcaraHandoff,
     logout: logout,
     getAppData: getAppData,
     mobileNotifications: getMobileNotifications,
+    registerPushToken: registerMobilePushToken,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
     adminAddNews: adminAddNews,
@@ -278,6 +282,42 @@ function logout(token) {
   });
 }
 
+/** Creates a short-lived, one-time sign-on code for the separate Berita Acara Web App. */
+function createBeritaAcaraHandoff(token) {
+  return safe_(function () {
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    const handoff = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+    CacheService.getScriptCache().put('ba-handoff:' + handoff, JSON.stringify({ nik: employee.nik, issuedAt: Date.now() }), 300);
+    return { handoff: handoff, expiresIn: 300 };
+  });
+}
+
+/** Consumed server-to-server by the Berita Acara Apps Script. A code can only be used once. */
+function consumeBeritaAcaraHandoff(handoff) {
+  return safe_(function () {
+    handoff = String(handoff || '').trim();
+    if (!/^[a-f0-9]{64}$/i.test(handoff)) throw new Error('Kode akses Berita Acara tidak valid.');
+    const cache = CacheService.getScriptCache(), key = 'ba-handoff:' + handoff, raw = cache.get(key);
+    cache.remove(key);
+    if (!raw) throw new Error('Kode akses Berita Acara sudah dipakai atau kedaluwarsa. Silakan buka kembali dari BI-Space.');
+    const data = JSON.parse(raw);
+    if (!data.issuedAt || Date.now() - Number(data.issuedAt) > 300000) throw new Error('Kode akses Berita Acara telah kedaluwarsa.');
+    const employee = findEmployee_(normalizeNik_(data.nik));
+    assertEmployeeActive_(employee);
+    const position = normalizeEmployeePosition_(employee.position);
+    return {
+      NIK: employee.nik,
+      NAME: employee.name,
+      OUTLET: employee.outlet,
+      POSITION: position,
+      GRADE: employee.grade,
+      ROLE: employee.outlet === 'BIHQ' || position === 'AREA MANAGER' || position === 'FNB' ? 'APPROVER' : 'OUTLET'
+    };
+  });
+}
+
 function mobileJsonOutput_(response) {
   return ContentService.createTextOutput(JSON.stringify(response))
     .setMimeType(ContentService.MimeType.JSON);
@@ -354,6 +394,13 @@ function adminAddNews(token, payload) {
       const sheet = ensureNewsSheet_();
       const imageUrl = resolveNewsImage_(payload, '', newsId);
       sheet.appendRow([newsId, title, content, imageUrl, linkUrl, new Date(), true, employee.nik]);
+      sendRealtimeMobilePush_({}, {
+        id: 'NEWS:' + newsId,
+        type: 'NEWS',
+        title: title,
+        body: content,
+        url: linkUrl || 'https://operationalbi-pixel.github.io/form/'
+      });
       return { news: readNews_(false), newsId: newsId };
     } finally { lock.releaseLock(); }
   });
@@ -415,6 +462,174 @@ function getMobileNotifications(token) {
     };
   });
 }
+
+
+function ensureMobilePushTokenSheet_() {
+  const sheet = ensureSheet_(CONFIG.PUSH_TOKEN_SHEET,
+    ['FCM_TOKEN', 'NIK', 'OUTLET', 'DEVICE_ID', 'PLATFORM', 'APP_VERSION', 'ACTIVE', 'UPDATED_AT']);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function registerMobilePushToken(token, payload) {
+  return safe_(function () {
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    payload = payload || {};
+    const fcmToken = String(payload.fcmToken || '').trim();
+    const deviceId = cleanText_(payload.deviceId, 180);
+    if (!fcmToken || fcmToken.length < 40 || fcmToken.length > 4096) throw new Error('Token push perangkat tidak valid.');
+    if (!deviceId) throw new Error('Identitas perangkat tidak tersedia.');
+    const lock = LockService.getScriptLock();
+    lock.waitLock(15000);
+    try {
+      const sheet = ensureMobilePushTokenSheet_();
+      const values = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues() : [];
+      let targetRow = 0;
+      values.forEach(function (row, index) {
+        const sameDevice = String(row[1] || '') === employee.nik && String(row[3] || '') === deviceId;
+        const sameToken = String(row[0] || '') === fcmToken;
+        if (sameDevice || sameToken) {
+          if (!targetRow) targetRow = index + 2;
+          else sheet.getRange(index + 2, 7).setValue(false);
+        }
+      });
+      const row = [fcmToken, employee.nik, employee.outlet, deviceId,
+        cleanText_(payload.platform || 'ANDROID', 40), cleanText_(payload.appVersion, 40), true, new Date()];
+      if (targetRow) sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+      else sheet.appendRow(row);
+      return { registered: true, outlet: employee.outlet, deviceId: deviceId };
+    } finally { lock.releaseLock(); }
+  });
+}
+
+function mobilePushConfig_() {
+  const properties = PropertiesService.getScriptProperties();
+  const projectId = String(properties.getProperty('FCM_PROJECT_ID') || '').trim();
+  const clientEmail = String(properties.getProperty('FCM_CLIENT_EMAIL') || '').trim();
+  const privateKey = String(properties.getProperty('FCM_PRIVATE_KEY') || '').replace(/\\n/g, '\n').trim();
+  return projectId && clientEmail && privateKey ? { projectId: projectId, clientEmail: clientEmail, privateKey: privateKey } : null;
+}
+
+function mobilePushAccessToken_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('fcm-oauth-access-token-v1');
+  if (cached) return cached;
+  const config = mobilePushConfig_();
+  if (!config) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const encode = function (value) {
+    return Utilities.base64EncodeWebSafe(typeof value === 'string' ? value : JSON.stringify(value)).replace(/=+$/g, '');
+  };
+  const header = encode({ alg: 'RS256', typ: 'JWT' });
+  const claim = encode({
+    iss: config.clientEmail,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now,
+    exp: now + 3600
+  });
+  const unsigned = header + '.' + claim;
+  const signature = Utilities.base64EncodeWebSafe(
+    Utilities.computeRsaSha256Signature(unsigned, config.privateKey)).replace(/=+$/g, '');
+  const response = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+    method: 'post',
+    contentType: 'application/x-www-form-urlencoded',
+    payload: {
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: unsigned + '.' + signature
+    },
+    muteHttpExceptions: true
+  });
+  if (response.getResponseCode() !== 200) {
+    console.error('FCM OAuth gagal: ' + response.getContentText());
+    return '';
+  }
+  const accessToken = String(JSON.parse(response.getContentText() || '{}').access_token || '');
+  if (accessToken) cache.put('fcm-oauth-access-token-v1', accessToken, 3300);
+  return accessToken;
+}
+
+function readMobilePushTokens_(filter) {
+  filter = filter || {};
+  const sheet = ensureMobilePushTokenSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  const seen = {};
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues().filter(function (row) {
+    if (!truthy_(row[6])) return false;
+    if (filter.nik && String(row[1] || '') !== String(filter.nik)) return false;
+    if (filter.outlet && String(row[2] || '').toUpperCase() !== String(filter.outlet).toUpperCase()) return false;
+    const token = String(row[0] || '').trim();
+    if (!token || seen[token]) return false;
+    seen[token] = true;
+    return true;
+  }).map(function (row) { return String(row[0] || '').trim(); });
+}
+
+function sendRealtimeMobilePush_(filter, notification) {
+  try {
+    const config = mobilePushConfig_(), accessToken = mobilePushAccessToken_();
+    if (!config || !accessToken) return { configured: false, sent: 0 };
+    const tokens = readMobilePushTokens_(filter);
+    if (!tokens.length) return { configured: true, sent: 0 };
+    notification = notification || {};
+    const data = {
+      id: String(notification.id || Utilities.getUuid()),
+      type: String(notification.type || 'SYSTEM'),
+      title: String(notification.title || 'BI-Space'),
+      body: String(notification.body || ''),
+      url: String(notification.url || 'https://operationalbi-pixel.github.io/form/'),
+      createdAt: String(notification.createdAt || new Date().toISOString())
+    };
+    const endpoint = 'https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(config.projectId) + '/messages:send';
+    const requests = tokens.slice(0, 500).map(function (deviceToken) {
+      return {
+        url: endpoint,
+        method: 'post',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + accessToken },
+        payload: JSON.stringify({ message: {
+          token: deviceToken,
+          data: data,
+          android: { priority: 'HIGH' }
+        }}),
+        muteHttpExceptions: true
+      };
+    });
+    const responses = UrlFetchApp.fetchAll(requests);
+    const sent = responses.filter(function (response) { return response.getResponseCode() >= 200 && response.getResponseCode() < 300; }).length;
+    responses.forEach(function (response) {
+      if (response.getResponseCode() >= 400) console.error('FCM send gagal ' + response.getResponseCode() + ': ' + response.getContentText());
+    });
+    return { configured: true, sent: sent, attempted: requests.length };
+  } catch (error) {
+    console.error('Push realtime gagal; polling Android tetap aktif: ' + error.message);
+    return { configured: Boolean(mobilePushConfig_()), sent: 0, error: error.message };
+  }
+}
+
+function notifyPendingStockTransfers_(pendingRows) {
+  const groups = {};
+  (pendingRows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || row.status !== 'PENDING' || !row.to_outlet) return;
+    const key = String(row.to_outlet) + '|' + String(row.transfer_id);
+    if (!groups[key]) groups[key] = { toOutlet: String(row.to_outlet), fromOutlet: String(row.from_outlet || ''), transferId: String(row.transfer_id || ''), items: {} };
+    groups[key].items[String(row.item_code || row.item_name || '')] = true;
+  });
+  Object.keys(groups).forEach(function (key) {
+    const group = groups[key], count = Object.keys(group.items).length;
+    sendRealtimeMobilePush_({ outlet: group.toOutlet }, {
+      id: 'TRANSFER:' + group.transferId,
+      type: 'TRANSFER',
+      title: 'Transfer masuk dari ' + group.fromOutlet,
+      body: count + ' item menunggu diterima di ' + group.toOutlet + '.',
+      url: 'https://operationalbi-pixel.github.io/form/stock-card.html'
+    });
+  });
+}
+
 
 /** Admin: edit an existing login-page news item without changing its original publication date. */
 function adminUpdateNews(token, payload) {
@@ -1249,6 +1464,7 @@ function writeBihqGoodsDeliveryGroup_(context, prepared) {
   });
   insertStockCardRows_(stockRows);
   insertAll_('stock_transfers', pendingRows);
+  notifyPendingStockTransfers_(pendingRows);
 }
 
 function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
@@ -1555,6 +1771,7 @@ function createInterOutletStockTransfer(token, payload) {
       if (pendingRows.length && photoData.length) pendingRows[0].json.photo_data_json = JSON.stringify(photoData);
       insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', pendingRows);
+      notifyPendingStockTransfers_(pendingRows);
       return { sent: true, transferId: transferId, fromOutlet: fromOutlet, toOutlet: toOutlet, itemCount: lines.length, photoCount: photoData.length };
     } finally { lock.releaseLock(); }
   });
@@ -4638,6 +4855,7 @@ function uploadGoodsDelivery(token, payload) {
       });
       insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', pendingRows);
+      notifyPendingStockTransfers_(pendingRows);
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
         transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
@@ -7375,7 +7593,11 @@ function sessionPayload_(employee, token) {
 }
 
 function userView_(employee) {
-  return { nik: employee.nik, name: employee.name, outlet: employee.outlet, isAdmin: employee.outlet === 'BIHQ' };
+  return {
+    nik: employee.nik, name: employee.name, outlet: employee.outlet,
+    position: employee.position, grade: employee.grade,
+    isAdmin: employee.outlet === 'BIHQ'
+  };
 }
 
 function requireSession_(token) {
