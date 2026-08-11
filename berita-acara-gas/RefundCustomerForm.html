@@ -1,0 +1,374 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- FORM STYLE -->
+<style>
+    .form-group label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #9ca3af; /* gray-400 */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    .form-input {
+        width: 100%;
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: #1f2937;
+        outline: none;
+        transition: all 0.2s;
+    }
+    .form-input:focus {
+        border-color: #991b1b;
+        box-shadow: 0 0 0 1px #991b1b;
+    }
+    .form-input[readonly] {
+        background-color: #f9fafb;
+        color: #6b7280;
+        border-color: #f3f4f6;
+        cursor: not-allowed;
+    }
+    /* Upload Box Style */
+    .upload-box {
+        border: 2px dashed #d1d5db;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        text-align: center;
+        transition: all 0.2s;
+        background-color: #f9fafb;
+        position: relative;
+    }
+    .upload-box:hover {
+        border-color: #991b1b;
+        background-color: #fff1f2;
+    }
+    .preview-img {
+        max-height: 150px;
+        margin: 10px auto;
+        border-radius: 0.375rem;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        display: none; /* Hidden by default */
+        object-fit: contain;
+    }
+</style>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">PENGEMBALIAN DANA (REFUND)</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="refundForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis (Added POSITION) -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="k_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="k_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">JABATAN</label><input type="text" id="k_position" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="k_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div class="col-span-2"><label class="block text-xs font-bold text-gray-400">TANGGAL SUBMIT</label><input type="text" id="k_dateDisplay" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Data Customer & Refund -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="form-group">
+                <label>Nama Customer</label>
+                <input type="text" name="namaCustomer" class="form-input" placeholder="Nama lengkap customer" required>
+            </div>
+            <div class="form-group">
+                <label>No. Telp / WA</label>
+                <input type="text" name="noTelp" class="form-input" placeholder="Contoh: 0812..." required>
+            </div>
+            
+            <div class="form-group md:col-span-2">
+                <label>Jumlah Refund (Rp)</label>
+                <input type="text" name="jumlahRefundDisplay" id="jumlahRefundDisplay" class="form-input text-lg font-bold text-red-900" placeholder="Rp 0" required>
+                <!-- Hidden input untuk nilai raw angka -->
+                <input type="hidden" name="jumlahRefund" id="jumlahRefundRaw">
+            </div>
+        </div>
+
+        <!-- 3. Detail Transfer Bank -->
+        <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+            <h3 class="text-xs font-bold text-gray-500 uppercase mb-4 border-b border-gray-300 pb-2">Informasi Rekening Tujuan</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="form-group">
+                    <label>Nama Bank</label>
+                    <!-- UPDATED: Sekarang Manual Text Input -->
+                    <input type="text" name="namaBank" class="form-input" placeholder="Contoh: BCA / Mandiri" required>
+                </div>
+                <div class="form-group">
+                    <label>No. Rekening</label>
+                    <input type="text" name="noRek" class="form-input font-mono" placeholder="Nomor Rekening" required>
+                </div>
+                <div class="form-group">
+                    <label>Atas Nama</label>
+                    <input type="text" name="atasNama" class="form-input" placeholder="Nama Pemilik Rekening" required>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. Alasan & Bukti -->
+        <div class="form-group">
+            <label>Alasan Refund</label>
+            <textarea name="alasan" class="form-input" rows="3" placeholder="Jelaskan kenapa refund dilakukan..." required></textarea>
+        </div>
+
+        <!-- Bukti Bayar Utama -->
+        <div class="form-group">
+            <label>Bukti Bayar / Struk Asli (Wajib)</label>
+            <div class="upload-box" id="uploadBox_main">
+                <input type="file" id="file_buktiBayar" class="hidden file-input" accept="image/*" data-key="buktiBayar" onchange="previewImage(this, 'preview_main')">
+                <label for="file_buktiBayar" class="cursor-pointer flex flex-col items-center justify-center">
+                    <i class="fas fa-receipt text-3xl text-gray-400 mb-2"></i>
+                    <span class="text-xs font-bold text-red-700 hover:underline">Klik untuk Upload Struk</span>
+                    <span class="text-[10px] text-gray-400 mt-1">Format: JPG/PNG, Max 5MB</span>
+                </label>
+                <img id="preview_main" class="preview-img" src="">
+                <button type="button" class="hidden absolute top-2 right-2 text-red-500 hover:text-red-700 bg-white rounded-full p-1 shadow-sm" onclick="clearImage('file_buktiBayar', 'preview_main')"><i class="fas fa-times"></i></button>
+            </div>
+        </div>
+
+        <!-- Foto Tambahan (Dynamic) -->
+        <div class="form-group">
+            <div class="flex justify-between items-end mb-2">
+                <label>Foto Tambahan (Opsional)</label>
+                <button type="button" id="btnAddPhoto" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-1 px-3 rounded"><i class="fas fa-plus mr-1"></i> Tambah Foto</button>
+            </div>
+            <div id="extraPhotosContainer" class="space-y-3">
+                <!-- Dynamic photos will go here -->
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="pt-6 border-t border-gray-100">
+            <button type="submit" id="submitBtn" class="w-full bg-gradient-to-r from-red-800 to-red-900 text-white font-bold py-3 px-4 rounded-lg hover:shadow-lg transform transition hover:-translate-y-0.5">
+                KIRIM PERMINTAAN REFUND
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- HELPER: Image Preview Logic ---
+    window.previewImage = function(input, imgId) {
+        const file = input.files[0];
+        const img = document.getElementById(imgId);
+        const box = input.closest('.upload-box');
+        const clearBtn = box.querySelector('button');
+
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                img.src = e.target.result;
+                img.style.display = 'block';
+                if(clearBtn) clearBtn.classList.remove('hidden');
+            }
+            reader.readAsDataURL(file);
+        }
+    };
+
+    window.clearImage = function(inputId, imgId) {
+        const input = document.getElementById(inputId);
+        const img = document.getElementById(imgId);
+        const box = input.closest('.upload-box');
+        const clearBtn = box.querySelector('button');
+
+        input.value = ''; // Reset input
+        img.src = '';
+        img.style.display = 'none';
+        if(clearBtn) clearBtn.classList.add('hidden');
+    };
+
+    // --- HELPER: Rupiah Formatter ---
+    function formatRupiah(angka, prefix) {
+        var number_string = angka.replace(/[^,\d]/g, '').toString(),
+            split = number_string.split(','),
+            sisa = split[0].length % 3,
+            rupiah = split[0].substr(0, sisa),
+            ribuan = split[0].substr(sisa).match(/\d{3}/gi);
+
+        if (ribuan) {
+            separator = sisa ? '.' : '';
+            rupiah += separator + ribuan.join('.');
+        }
+
+        rupiah = split[1] != undefined ? rupiah + ',' + split[1] : rupiah;
+        return prefix == undefined ? rupiah : (rupiah ? 'Rp ' + rupiah : '');
+    }
+
+    (function() {
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        // 1. Init Data User
+        document.getElementById('k_nama').value = user.NAME;
+        document.getElementById('k_nik').value = user.NIK;
+        document.getElementById('k_position').value = user.POSITION; // Added Position
+        document.getElementById('k_outlet').value = user.OUTLET;
+        document.getElementById('k_dateDisplay').value = new Date().toLocaleDateString('id-ID');
+
+        // 2. Rupiah Listener
+        const rpInput = document.getElementById('jumlahRefundDisplay');
+        const rawInput = document.getElementById('jumlahRefundRaw');
+        
+        rpInput.addEventListener('keyup', function(e) {
+            this.value = formatRupiah(this.value, 'Rp');
+            // Simpan nilai raw angka saja ke hidden input
+            rawInput.value = this.value.replace(/[^0-9]/g, '');
+        });
+
+        // 3. Dynamic Extra Photos
+        let photoCount = 0;
+        document.getElementById('btnAddPhoto').addEventListener('click', function() {
+            photoCount++;
+            const container = document.getElementById('extraPhotosContainer');
+            const div = document.createElement('div');
+            div.className = 'upload-box relative';
+            div.innerHTML = `
+                <input type="file" id="extra_${photoCount}" class="hidden file-input" accept="image/*" data-key="extraPhoto_${photoCount}" onchange="previewImage(this, 'prev_extra_${photoCount}')">
+                <label for="extra_${photoCount}" class="cursor-pointer flex items-center justify-center space-x-2">
+                    <i class="fas fa-camera text-gray-400"></i>
+                    <span class="text-xs font-bold text-gray-600">Foto Tambahan ${photoCount}</span>
+                </label>
+                <img id="prev_extra_${photoCount}" class="preview-img" src="">
+                <button type="button" class="absolute top-2 right-2 text-red-500 hover:text-red-700" onclick="this.closest('.upload-box').remove()"><i class="fas fa-trash"></i></button>
+            `;
+            container.appendChild(div);
+        });
+
+        // 4. Mode Revisi Populate
+        if (existing) {
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('revisiBadge').classList.remove('hidden');
+
+            let data = {};
+            try { data = JSON.parse(existing.Data_JSON); } catch(e) {}
+            
+            const f = document.getElementById('refundForm');
+            f.querySelector('[name="namaCustomer"]').value = data.namaCustomer || '';
+            f.querySelector('[name="noTelp"]').value = data.noTelp || '';
+            
+            // Set Refund
+            if(data.jumlahRefund) {
+                rawInput.value = data.jumlahRefund;
+                rpInput.value = formatRupiah(data.jumlahRefund, 'Rp');
+            }
+
+            f.querySelector('[name="namaBank"]').value = data.namaBank || '';
+            f.querySelector('[name="noRek"]').value = data.noRek || '';
+            f.querySelector('[name="atasNama"]').value = data.atasNama || '';
+            f.querySelector('[name="alasan"]').value = data.alasan || '';
+
+            // Handle Existing Photo (Bukti Bayar)
+            if(data.buktiBayar) {
+                const img = document.getElementById('preview_main');
+                img.src = data.buktiBayar;
+                img.style.display = 'block';
+                // Simpan data lama di attribute agar tidak hilang jika tidak diubah
+                document.getElementById('file_buktiBayar').setAttribute('data-old-val', data.buktiBayar);
+            }
+        }
+
+        // ==========================================
+        // SCRIPT LOGIKA SUBMIT (PERBAIKAN UTAMA)
+        // ==========================================
+        const btn = document.getElementById('submitBtn');
+        const form = document.getElementById('refundForm');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Memproses...';
+            btn.disabled = true;
+
+            // 1. Validasi Input
+            if(rawInput.value === '' || parseInt(rawInput.value) <= 0) {
+                alert("Mohon isi Jumlah Refund dengan benar.");
+                btn.disabled = false; btn.innerHTML = originalText; return;
+            }
+
+            // 2. Proses File Inputs
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    const key = input.dataset.key;
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else if (input.dataset.oldVal) {
+                        // Support revisi: pakai foto lama jika tidak ada yg baru
+                        resolve({ key: key, data: input.dataset.oldVal });
+                    } else {
+                        resolve({ key: key, data: null });
+                    }
+                });
+            });
+
+            const filesData = await Promise.all(filePromises);
+            
+            // Cek Wajib Bukti Bayar
+            const buktiBayarData = filesData.find(f => f.key === 'buktiBayar')?.data;
+            if(!buktiBayarData) {
+                alert("Wajib upload Bukti Bayar / Struk.");
+                btn.disabled = false; btn.innerHTML = originalText; return;
+            }
+
+            // 3. Susun Data
+            const formData = {
+                namaCustomer: this.querySelector('[name="namaCustomer"]').value,
+                noTelp: this.querySelector('[name="noTelp"]').value,
+                jumlahRefund: rawInput.value, // Kirim angka murni
+                namaBank: this.querySelector('[name="namaBank"]').value,
+                noRek: this.querySelector('[name="noRek"]').value,
+                atasNama: this.querySelector('[name="atasNama"]').value,
+                alasan: this.querySelector('[name="alasan"]').value,
+                buktiBayar: buktiBayarData,
+                // Kumpulkan semua extraPhoto menjadi array
+                extraPhotos: filesData.filter(f => f.key.startsWith('extraPhoto_') && f.data).map(f => f.data)
+            };
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            // 4. Kirim ke Google Apps Script
+            google.script.run
+            .withSuccessHandler(res => {
+                if (res && res.success) { 
+                    alert(`Berita Acara Refund berhasil disubmit! ID: ${res.baId}`);
+                    if (typeof closeForm === 'function') {
+                        closeForm();
+                    } else {
+                        window.location.reload(); 
+                    }
+                } else {
+                    alert('Gagal menyimpan data: ' + (res?.message || 'Respons tidak valid.'));
+                    btn.disabled = false; btn.innerHTML = originalText;
+                }
+            })
+            .withFailureHandler(err => {
+                alert('Error koneksi: ' + err.message);
+                console.error(err);
+                btn.disabled = false; btn.innerHTML = originalText;
+            })
+            .rekamData(formData, 'Refund Customer', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+
+    })();
+</script>

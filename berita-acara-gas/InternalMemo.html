@@ -1,0 +1,294 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- STYLE KHUSUS MEMO -->
+<style>
+    .paper-canvas {
+        background-color: white;
+        width: 100%;
+        min-height: 250mm; /* A4 Height approx */
+        padding: 25mm 20mm;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        border: 1px solid #e5e7eb;
+        font-family: 'Times New Roman', serif; /* Formal Look */
+        color: #1f2937;
+        position: relative;
+    }
+    
+    .memo-header-text {
+        font-family: 'Arial', sans-serif;
+        font-weight: 900;
+        font-size: 2rem;
+        color: #7f1d1d; /* red-900 */
+        letter-spacing: 0.05em;
+        border-bottom: 4px double #7f1d1d;
+        padding-bottom: 10px;
+        margin-bottom: 20px;
+        text-transform: uppercase;
+    }
+
+    .memo-field-label {
+        font-family: 'Arial', sans-serif;
+        font-weight: 700;
+        color: #4b5563;
+        width: 80px;
+        display: inline-block;
+        text-transform: uppercase;
+        font-size: 0.75rem;
+    }
+
+    .memo-input {
+        font-family: 'Arial', sans-serif;
+        border: none;
+        border-bottom: 1px dashed #d1d5db;
+        width: calc(100% - 90px);
+        padding: 4px;
+        outline: none;
+        transition: border-color 0.2s;
+        background: transparent;
+    }
+    .memo-input:focus {
+        border-bottom: 1px solid #7f1d1d;
+    }
+
+    .memo-body {
+        width: 100%;
+        min-height: 150mm;
+        border: none;
+        outline: none;
+        resize: vertical;
+        font-size: 1.1rem;
+        line-height: 1.6;
+        margin-top: 30px;
+        background: transparent;
+    }
+
+    /* Approval Checkbox Style */
+    .approval-card {
+        transition: all 0.2s;
+        border: 1px solid #e5e7eb;
+    }
+    .approval-card.active {
+        border-color: #7f1d1d;
+        background-color: #fef2f2;
+    }
+</style>
+
+<div class="max-w-4xl mx-auto pb-10 font-sans text-gray-800">
+    
+    <!-- Header Aplikasi (Navigasi) -->
+    <div class="flex justify-between items-end mb-6 px-4">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-800 flex items-center">
+                <i class="fas fa-file-alt mr-2 text-red-900"></i> Buat Internal Memo
+            </h1>
+            <p class="text-sm text-gray-500">Buat dan distribusikan memo resmi perusahaan.</p>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="memoForm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- KERTAS MEMO (CANVAS) -->
+        <div class="paper-canvas rounded-lg">
+            <!-- Kop Memo -->
+            <div class="flex justify-between items-start mb-6">
+                <img src="https://drive.google.com/thumbnail?id=1fvlLYHilx88vSEJ2fTP7m9dI9E0u-mza&sz=w1000" alt="Logo" class="h-12 object-contain">
+                <div class="text-right">
+                    <div class="text-xs font-bold text-gray-400 uppercase">CONFIDENTIAL</div>
+                    <div class="text-[10px] text-gray-400">Internal Use Only</div>
+                </div>
+            </div>
+
+            <div class="memo-header-text">INTERNAL MEMO</div>
+
+            <!-- Meta Data Memo -->
+            <div class="space-y-3 mb-8">
+                <div>
+                    <span class="memo-field-label">To</span>
+                    <input type="text" name="memoTo" class="memo-input" placeholder="All Staff / Specific Dept..." required>
+                </div>
+                <div>
+                    <span class="memo-field-label">From</span>
+                    <input type="text" name="memoFrom" id="memoFrom" class="memo-input font-bold" readonly>
+                </div>
+                <div>
+                    <span class="memo-field-label">Date</span>
+                    <input type="date" name="memoDate" id="memoDate" class="memo-input" required>
+                </div>
+                <div>
+                    <span class="memo-field-label">Subject</span>
+                    <input type="text" name="memoSubject" class="memo-input font-bold" placeholder="Perihal Memo..." required>
+                </div>
+            </div>
+
+            <!-- Isi Memo -->
+            <textarea name="memoContent" class="memo-body" placeholder="Ketik isi memo di sini..." required></textarea>
+
+            <!-- Footer Kertas -->
+            <div class="mt-10 pt-10 border-t border-gray-200 text-center text-xs text-gray-400 italic">
+                This document is electronically generated and valid without wet signature.
+            </div>
+        </div>
+
+        <!-- SETTING APPROVAL (DI LUAR KERTAS) -->
+        <div class="mt-8 bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3 mb-4 uppercase tracking-wider text-sm">
+                Approval Required (Signature Box)
+            </h3>
+            <p class="text-xs text-gray-500 mb-4">Centang pihak yang harus menyetujui/menandatangani memo ini.</p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="approvalContainer">
+                <!-- Checkboxes generated by JS -->
+            </div>
+        </div>
+
+        <!-- TOMBOL SUBMIT -->
+        <div class="mt-8">
+            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99] uppercase tracking-widest text-sm flex justify-center items-center">
+                <i class="fas fa-paper-plane mr-2"></i> PUBLISH MEMO
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- KONFIGURASI ROLE APPROVAL ---
+    const APPROVAL_ROLES = [
+        "COO",
+        "Vice President",
+        "General Manager",
+        "Asst General Manager",
+        "Area Chef",
+        "Asst Area Chef",
+        "FNB",
+        "Area Manager",
+        "Asst Area Manager"
+    ];
+
+    (function() {
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+
+        // 1. Init Data
+        if(user) {
+            document.getElementById('memoFrom').value = `${user.NAME} (${user.POSITION})`;
+        }
+        document.getElementById('memoDate').valueAsDate = new Date();
+
+        // 2. Render Approval Checkboxes
+        const appContainer = document.getElementById('approvalContainer');
+        APPROVAL_ROLES.forEach((role, idx) => {
+            const div = document.createElement('div');
+            div.className = "approval-card rounded p-3 bg-gray-50";
+            div.innerHTML = `
+                <div class="flex items-center mb-2">
+                    <input type="checkbox" id="chk_${idx}" class="w-4 h-4 text-red-900 rounded focus:ring-red-900 cursor-pointer" onchange="toggleApprovalInput(this, 'inp_${idx}', 'card_${idx}')">
+                    <label for="chk_${idx}" class="ml-2 text-sm font-bold text-gray-700 cursor-pointer select-none">${role}</label>
+                </div>
+                <input type="text" id="inp_${idx}" data-role="${role}" class="hidden w-full text-xs border border-gray-300 rounded p-2 outline-none focus:border-red-800 bg-white" placeholder="Nama Pejabat ${role}">
+            `;
+            div.id = `card_${idx}`;
+            appContainer.appendChild(div);
+        });
+
+        // 3. Helper Toggle
+        window.toggleApprovalInput = function(checkbox, inputId, cardId) {
+            const input = document.getElementById(inputId);
+            const card = document.getElementById(cardId);
+            
+            if(checkbox.checked) {
+                input.classList.remove('hidden');
+                input.required = true;
+                card.classList.add('active');
+                setTimeout(() => input.focus(), 100);
+            } else {
+                input.classList.add('hidden');
+                input.required = false;
+                input.value = '';
+                card.classList.remove('active');
+            }
+        };
+
+        // 4. Load Existing (Revisi)
+        if(existing) {
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            
+            let json = {};
+            try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+
+            // Populate Form
+            const f = document.getElementById('memoForm');
+            f.querySelector('[name="memoTo"]').value = json.to || '';
+            f.querySelector('[name="memoDate"]').value = json.date || '';
+            f.querySelector('[name="memoSubject"]').value = json.subject || '';
+            f.querySelector('[name="memoContent"]').value = json.content || '';
+
+            // Populate Approvals
+            if(json.approvals && Array.isArray(json.approvals)) {
+                json.approvals.forEach(app => {
+                    // Cari index berdasarkan role
+                    const idx = APPROVAL_ROLES.indexOf(app.role);
+                    if(idx !== -1) {
+                        const chk = document.getElementById(`chk_${idx}`);
+                        const inp = document.getElementById(`inp_${idx}`);
+                        if(chk && inp) {
+                            chk.click(); // Trigger toggle
+                            inp.value = app.name;
+                        }
+                    }
+                });
+            }
+        }
+
+        // 5. Submit Handler
+        document.getElementById('memoForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btnSubmit');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Memproses...';
+
+            // Collect Approvals
+            const approvals = [];
+            APPROVAL_ROLES.forEach((role, idx) => {
+                const chk = document.getElementById(`chk_${idx}`);
+                const inp = document.getElementById(`inp_${idx}`);
+                if(chk && chk.checked) {
+                    approvals.push({
+                        role: role,
+                        name: inp.value,
+                        status: 'Pending' // Default status
+                    });
+                }
+            });
+
+            const formData = {
+                to: this.querySelector('[name="memoTo"]').value,
+                from: this.querySelector('[name="memoFrom"]').value,
+                date: this.querySelector('[name="memoDate"]').value,
+                subject: this.querySelector('[name="memoSubject"]').value,
+                content: this.querySelector('[name="memoContent"]').value,
+                approvals: approvals
+            };
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            // Kita pakai "Internal Memo" sebagai tipe BA
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) {
+                    alert("Memo berhasil dibuat! ID: " + res.baId);
+                    if(typeof closeForm === 'function') closeForm();
+                } else {
+                    alert("Gagal: " + res.message);
+                    btn.disabled = false; btn.innerHTML = originalText;
+                }
+            }).rekamData(formData, 'Internal Memo', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+
+    })();
+</script>

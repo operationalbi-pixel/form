@@ -1,0 +1,263 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">VOID TRANSAKSI</p>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="voidForm" class="space-y-6 font-sans text-sm">
+        <!-- 1. Data Otomatis -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div><label class="block text-xs font-bold text-gray-400">NAMA</label><input type="text" id="v_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">NIK</label><input type="text" id="v_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">OUTLET</label><input type="text" id="v_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+            <div><label class="block text-xs font-bold text-gray-400">POSISI</label><input type="text" id="v_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly></div>
+        </div>
+
+        <!-- 2. Tanggal & Hari -->
+        <div class="grid grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tanggal</label>
+                <input type="date" name="tanggal" id="dateInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Hari</label>
+                <input type="text" name="hari" id="dayOutput" readonly class="w-full bg-gray-100 border border-gray-300 rounded p-2 outline-none text-gray-600 font-medium">
+            </div>
+        </div>
+
+        <!-- 3. Detail Void -->
+        <div class="space-y-4">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">No. Bill</label>
+                <input type="text" name="noBill" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Contoh: 102938">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Alasan Void</label>
+                <textarea name="alasan" rows="3" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition" placeholder="Jelaskan alasan void secara detail..."></textarea>
+            </div>
+        </div>
+
+        <!-- 4. Tabel Item -->
+        <div class="border rounded-lg overflow-hidden shadow-sm">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-red-900 text-white">
+                    <tr>
+                        <th class="py-3 px-3 w-12 text-center">No</th>
+                        <th class="py-3 px-3">Item</th>
+                        <th class="py-3 px-3 w-24 text-center">QTY</th>
+                        <th class="py-3 px-3 w-36 text-right">Harga</th>
+                        <th class="py-3 px-3 w-36 text-right">Total</th>
+                        <th class="py-3 px-3 w-12 text-center">#</th>
+                    </tr>
+                </thead>
+                <tbody id="itemContainer" class="divide-y divide-gray-200 bg-white"></tbody>
+                <tfoot class="bg-gray-50 font-bold">
+                    <tr>
+                        <td colspan="4" class="py-3 px-3 text-right text-gray-600 uppercase text-xs tracking-wider">Total Value</td>
+                        <td class="py-3 px-3 text-right text-red-900 text-base" id="grandTotal">Rp 0</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        
+        <button type="button" id="btnAddRow" class="text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded shadow flex items-center transition transform active:scale-95">
+            + Tambah Baris
+        </button>
+
+        <!-- 5. Upload Bukti dengan Preview -->
+        <div class="space-y-4 pt-6 border-t mt-6">
+            <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3">Bukti Void</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">1. Foto Sebelum Void</label>
+                    <div class="relative group">
+                        <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded cursor-pointer bg-gray-50 hover:bg-gray-100 transition" data-key="fotoSebelum" onchange="previewImage(this, 'preview1')">
+                    </div>
+                    <div id="preview1" class="hidden mt-2 w-full h-32 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden"></div>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">2. Foto Setelah Void</label>
+                    <div class="relative group">
+                        <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded cursor-pointer bg-gray-50 hover:bg-gray-100 transition" data-key="fotoSesudah" onchange="previewImage(this, 'preview2')">
+                    </div>
+                    <div id="preview2" class="hidden mt-2 w-full h-32 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden"></div>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">3. Foto Struk Void</label>
+                    <div class="relative group">
+                        <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded cursor-pointer bg-gray-50 hover:bg-gray-100 transition" data-key="fotoStruk" onchange="previewImage(this, 'preview3')">
+                    </div>
+                    <div id="preview3" class="hidden mt-2 w-full h-32 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-8">
+            <button type="submit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">
+                SIMPAN & KIRIM
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+    // --- Helper Functions (Global Scope) ---
+    window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+    window.parseRupiah = (str) => parseFloat(str.replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+    // --- Preview Logic ---
+    window.previewImage = function(input, previewId) {
+        const previewDiv = document.getElementById(previewId);
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewDiv.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover">`;
+                previewDiv.classList.remove('hidden');
+            }
+            reader.readAsDataURL(input.files[0]);
+        } else {
+            previewDiv.classList.add('hidden');
+        }
+    };
+
+    // --- Main Logic (Immediately Invoked Function) ---
+    (function() {
+        // 1. Load User Data Otomatis
+        // Ambil dari variable window.GLOBAL_USER yang di-inject di baris 1
+        const user = window.GLOBAL_USER;
+        if (user) {
+            document.getElementById('v_nama').value = user.NAME || '';
+            document.getElementById('v_nik').value = user.NIK || '';
+            document.getElementById('v_outlet').value = user.OUTLET || '';
+            document.getElementById('v_posisi').value = user.POSITION || '';
+        } else {
+            console.error("User data not found in GLOBAL_USER");
+        }
+
+        // 2. Tanggal & Hari Listener
+        const dateInput = document.getElementById('dateInput');
+        if(dateInput) {
+            dateInput.addEventListener('change', function() {
+                const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+                const d = new Date(this.value);
+                if(!isNaN(d.getTime())) {
+                    document.getElementById('dayOutput').value = days[d.getDay()];
+                }
+            });
+        }
+
+        // 3. Tabel Logic
+        window.addVoidRow = function() {
+            const tbody = document.getElementById('itemContainer');
+            const rowCount = tbody.rows.length + 1;
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td class="py-2 px-3 text-center text-gray-500 align-middle">${rowCount}</td>
+                <td class="py-2 px-3"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent" placeholder="Menu" required></td>
+                <td class="py-2 px-3"><input type="number" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 qty-input bg-transparent" value="1" min="1" required></td>
+                <td class="py-2 px-3"><input type="text" class="w-full text-right border-b border-gray-300 outline-none py-1 focus:border-red-800 price-input bg-transparent" placeholder="0" required></td>
+                <td class="py-2 px-3 text-right font-medium text-gray-700 total-cell">Rp 0</td>
+                <td class="py-2 px-3 text-center"><button type="button" onclick="this.closest('tr').remove(); window.recalcTotal();" class="text-red-500 font-bold text-lg">×</button></td>
+            `;
+            tbody.appendChild(tr);
+            
+            const qty = tr.querySelector('.qty-input');
+            const price = tr.querySelector('.price-input');
+            
+            price.addEventListener('keyup', function(e) {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+                window.calcRow(tr);
+            });
+            qty.addEventListener('input', () => window.calcRow(tr));
+        };
+
+        window.calcRow = function(tr) {
+            const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
+            const price = window.parseRupiah(tr.querySelector('.price-input').value);
+            const total = qty * price;
+            tr.querySelector('.total-cell').textContent = window.formatRupiah(total);
+            tr.dataset.total = total;
+            window.recalcTotal();
+        };
+
+        window.recalcTotal = function() {
+            let grand = 0;
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                grand += parseFloat(tr.dataset.total) || 0;
+            });
+            document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+            // Renumbering
+            document.querySelectorAll('#itemContainer tr').forEach((tr, index) => {
+                tr.querySelector('td:first-child').textContent = index + 1;
+            });
+        };
+
+        // Attach Add Button
+        document.getElementById('btnAddRow').addEventListener('click', window.addVoidRow);
+        
+        // Init First Row
+        window.addVoidRow();
+
+        // 4. Submit Handler
+        const form = document.getElementById('voidForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = form.querySelector('button[type="submit"]');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Memproses...';
+
+            const items = [];
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                items.push({
+                    item: tr.querySelector('input[type="text"]').value,
+                    qty: tr.querySelector('.qty-input').value,
+                    price: tr.querySelector('.price-input').value,
+                    total: tr.querySelector('.total-cell').textContent
+                });
+            });
+
+            const formData = {
+                tanggal: form.querySelector('[name="tanggal"]').value,
+                hari: form.querySelector('[name="hari"]').value,
+                noBill: form.querySelector('[name="noBill"]').value,
+                alasan: form.querySelector('[name="alasan"]').value,
+                items: items,
+                grandTotal: document.getElementById('grandTotal').textContent,
+                fotoSebelum: null, fotoSesudah: null, fotoStruk: null
+            };
+
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: input.dataset.key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else {
+                        resolve({ key: input.dataset.key, data: null });
+                    }
+                });
+            });
+
+            const files = await Promise.all(filePromises);
+            files.forEach(f => formData[f.key] = f.data);
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) { alert("Sukses! ID: " + res.baId); closeForm(); }
+                else { alert("Gagal: " + res.message); btn.disabled = false; btn.innerHTML = originalText; }
+            }).rekamData(formData, 'Void', window.GLOBAL_USER);
+        });
+
+    })(); // End IIFE
+</script>

@@ -1,0 +1,489 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<!-- STYLE KHUSUS -->
+<style>
+    /* Font judul yang lebih kecil dan profesional (ukuran 3xl) */
+    .doc-title {
+        font-family: 'Plus Jakarta Sans', sans-serif; 
+        font-weight: 800; 
+        font-size: 2.5rem; 
+    }
+</style>
+
+<div class="space-y-8 font-sans text-gray-800 pb-10 max-w-5xl mx-auto">
+    
+    <!-- HEADER SURAT (LOGO KIRI & ALAMAT KANAN) -->
+    <div class="flex justify-between items-start pb-2">
+        <!-- Kiri: Logo -->
+        <div class="flex flex-col items-start">
+            <!-- Logo -->
+            <img src="https://drive.google.com/thumbnail?id=1fvlLYHilx88vSEJ2fTP7m9dI9E0u-mza&sz=w1000" alt="Bakerzin" class="h-14 w-auto object-contain mb-1">
+        </div>
+
+        <!-- Kanan: Alamat Perusahaan (Rata Kanan) -->
+        <div class="text-right space-y-1">
+            <h3 class="font-bold text-gray-800 text-xs tracking-wide uppercase">MEMBER OF BOGA GROUP</h3>
+            <p class="text-[10px] text-gray-500 leading-tight max-w-[250px]">
+                Rukan CBD Blok J001-J006 & J008, Jl. Green Lake City Boulevard, RT.002/RW.005, Ketapang, Kec. Cipondoh, Kota Tangerang, Banten 15148
+            </p>
+            <p class="text-[10px] font-bold text-gray-600">Phone (021) 29725559</p>
+             <!-- Badge Revisi (Ditempatkan di sini untuk rata kanan) -->
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+    </div>
+    
+    <!-- Garis Pemisah (Dipindahkan ke bawah logo/alamat) -->
+    <div class="border-b-2 border-red-900 pt-2"></div>
+
+    <!-- JUDUL DOKUMEN & DESKRIPSI (Dipindahkan ke bawah garis) -->
+    <div class="flex justify-between items-end">
+        <h1 class="doc-title text-red-900 tracking-tighter uppercase leading-none">QUOTATION</h1>
+        <div class="mt-1 text-xs font-bold text-gray-400 tracking-widest uppercase">Commercial Document</div>
+    </div>
+
+    <form id="billingForm" class="space-y-8">
+        <!-- Hardcode Mode Quotation -->
+        <input type="hidden" id="activeMode" name="activeMode" value="Quotation">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- INFO DOKUMEN & CUSTOMER -->
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-8">
+            <!-- Kolom Kiri: Kepada (Customer) -->
+            <div class="md:col-span-7 space-y-4">
+                <div class="bg-red-50 p-5 rounded-xl border border-red-100">
+                    <h3 class="text-xs font-bold text-red-900 uppercase mb-3 border-b border-red-200 pb-2">Bill To (Customer)</h3>
+                    <div class="grid grid-cols-1 gap-3">
+                        <input type="text" name="company" class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm outline-none focus:border-red-800 focus:ring-1 focus:ring-red-800 transition font-bold" placeholder="Company Name / Nama Perusahaan" required>
+                        <div class="grid grid-cols-2 gap-3">
+                            <input type="text" name="person" class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm outline-none focus:border-red-800 transition" placeholder="Attn (PIC Name)" required>
+                            <input type="text" name="phone" class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm outline-none focus:border-red-800 transition" placeholder="Phone / WA (08...)" required pattern="^08[0-9]*$">
+                        </div>
+                        <textarea name="address" rows="2" class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm outline-none focus:border-red-800 transition" placeholder="Full Address / Alamat Lengkap" required></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Kolom Kanan: Detail Dokumen -->
+            <div class="md:col-span-5 space-y-4">
+                <div class="bg-gray-50 p-5 rounded-xl border border-gray-200 h-full">
+                    <h3 class="text-xs font-bold text-gray-500 uppercase mb-3 border-b border-gray-300 pb-2">Document Details</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">No. Dokumen</label>
+                            <div class="font-mono font-bold text-lg text-gray-800" id="autoDocNo">QTN-GEN-AUTO</div>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Valid Until</label>
+                            <input type="date" id="dateInput" name="date" required class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm font-bold text-gray-700 outline-none focus:border-red-800">
+                        </div>
+                        <div id="dateHint" class="text-[10px] text-amber-600 italic bg-amber-50 p-2 rounded border border-amber-100">
+                            *Otomatis diset 14 hari dari hari ini.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TABLE ITEM -->
+        <div class="border rounded-xl overflow-hidden shadow-sm bg-white">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-gray-800 text-white">
+                    <tr>
+                        <th class="py-3 px-4 w-12 text-center font-semibold">#</th>
+                        <th class="py-3 px-4 font-semibold">Description</th>
+                        <th class="py-3 px-4 w-24 text-center font-semibold">Unit</th>
+                        <th class="py-3 px-4 w-24 text-center font-semibold">Qty</th>
+                        <th class="py-3 px-4 w-40 text-right font-semibold">Price (@)</th>
+                        <th class="py-3 px-4 w-40 text-right font-semibold">Total</th>
+                        <th class="py-3 px-4 w-12"></th>
+                    </tr>
+                </thead>
+                <tbody id="itemContainer" class="divide-y divide-gray-100"></tbody>
+            </table>
+            <!-- TOMBOL ADD NEW ITEM LINE -->
+            <button type="button" onclick="window.addItemRow()" class="w-full py-3 text-center text-xs font-bold text-gray-500 hover:text-red-700 hover:bg-red-50 transition uppercase tracking-wider border-t border-gray-100">
+                + Add New Item Line
+            </button>
+        </div>
+
+        <!-- KALKULASI (FOOTER) -->
+        <div class="flex flex-col md:flex-row justify-end items-start gap-8">
+            <!-- Space Kiri (Notes) -->
+            <div class="flex-1 w-full">
+                 <div class="mt-4">
+                     <label class="block text-xs font-bold text-gray-700 mb-1">Catatan Tambahan (Opsional)</label>
+                     <textarea name="notes" rows="3" class="w-full bg-white border border-gray-300 rounded px-3 py-2 text-sm outline-none focus:border-red-800 transition" placeholder="Masukkan syarat dan ketentuan, dll."></textarea>
+                 </div>
+            </div>
+
+            <!-- Space Kanan (Hitungan) -->
+            <div class="w-full md:w-96 bg-gray-50 p-6 rounded-xl border border-gray-200 space-y-3">
+                <div class="flex justify-between items-center text-sm">
+                    <span class="font-bold text-gray-500">Subtotal</span>
+                    <span id="displaySubtotal" class="font-bold text-gray-800">Rp 0</span>
+                </div>
+
+                <!-- Diskon -->
+                <div class="flex justify-between items-center text-sm pt-1">
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" id="chkDisc" onchange="window.togglePercentInput('chkDisc', 'wrapDisc', 'valDisc')" class="rounded text-red-800 focus:ring-red-800 cursor-pointer">
+                        <span class="text-gray-600">Discount</span>
+                        <div id="wrapDisc" class="flex items-center hidden">
+                            <input type="number" id="valDisc" oninput="window.calcTotal()" class="w-14 border rounded text-center text-xs p-1 focus:border-red-800 outline-none" min="0" max="100">
+                            <span class="ml-1 text-gray-500 font-bold">%</span>
+                        </div>
+                    </div>
+                    <span id="displayDisc" class="text-red-600 font-medium">Rp 0</span>
+                </div>
+
+                <!-- Service -->
+                <div class="flex justify-between items-center text-sm pt-1">
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" id="chkSvc" onchange="window.togglePercentInput('chkSvc', 'wrapSvc', 'valSvc')" class="rounded text-red-800 focus:ring-red-800 cursor-pointer">
+                        <span class="text-gray-600">Service Chg</span>
+                        <div id="wrapSvc" class="flex items-center hidden">
+                            <input type="number" id="valSvc" oninput="window.calcTotal()" class="w-14 border rounded text-center text-xs p-1 focus:border-red-800 outline-none" step="0.1">
+                            <span class="ml-1 text-gray-500 font-bold">%</span>
+                        </div>
+                    </div>
+                    <span id="displaySvc" class="text-gray-700">Rp 0</span>
+                </div>
+
+                <!-- Tax -->
+                <div class="flex justify-between items-center text-sm pt-1 border-b border-gray-200 pb-3">
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" id="chkPb1" onchange="window.togglePercentInput('chkPb1', 'wrapPb1', 'valPb1')" class="rounded text-red-800 focus:ring-red-800 cursor-pointer">
+                        <span class="text-gray-600">PB1</span>
+                        <div id="wrapPb1" class="flex items-center hidden">
+                            <input type="number" id="valPb1" oninput="window.calcTotal()" class="w-14 border rounded text-center text-xs p-1 focus:border-red-800 outline-none" step="0.1">
+                            <span class="ml-1 text-gray-500 font-bold">%</span>
+                        </div>
+                    </div>
+                    <span id="displayPb1" class="text-gray-700">Rp 0</span>
+                </div>
+
+                <!-- Fees -->
+                <div class="space-y-2 pt-2">
+                     <div class="flex justify-between items-center text-sm">
+                        <span class="text-gray-500">Delivery Fee</span>
+                        <input type="text" id="valDeliv" onkeyup="window.formatMe(this); window.calcTotal()" class="w-28 border border-gray-200 bg-white rounded p-1 text-right text-xs outline-none focus:border-red-800" placeholder="Rp 0" value="Rp 0">
+                    </div>
+                     <div class="flex justify-between items-center text-sm">
+                        <span class="text-gray-500">Handling Fee</span>
+                        <input type="text" id="valHand" onkeyup="window.formatMe(this); window.calcTotal()" class="w-28 border border-gray-200 bg-white rounded p-1 text-right text-xs outline-none focus:border-red-800" placeholder="Rp 0" value="Rp 0">
+                    </div>
+                </div>
+
+                <!-- Grand Total -->
+                <div class="flex justify-between items-end border-t-2 border-red-900 pt-4 mt-2">
+                    <span class="font-bold text-red-900 text-lg uppercase">TOTAL</span>
+                    <span id="displayGrand" class="font-black text-red-900 text-2xl">Rp 0</span>
+                </div>
+                
+                <div class="bg-white p-2 rounded border border-gray-200 italic text-gray-500 text-[10px] text-right" id="textTerbilang">
+                    Nol Rupiah
+                </div>
+            </div>
+        </div>
+
+        <!-- SUBMIT -->
+        <div class="pt-6">
+            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-xl shadow-lg transition transform active:scale-[0.99] uppercase tracking-widest text-sm flex justify-center items-center">
+                <span>SUBMIT QUOTATION</span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- LOGIC -->
+<script>
+    window.fmtRupiah = (n) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
+    window.parseNum = (s) => parseFloat(String(s).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+    
+    window.formatMe = function(elm) {
+        let val = window.parseNum(elm.value);
+        elm.value = window.fmtRupiah(val).replace('Rp', '').trim();
+    };
+
+    window.terbilang = function(nilai) {
+        var bilangan = String(Math.floor(Math.abs(nilai)));
+        var angka = new Array('0','0','0','0','0','0','0','0','0','0','0','0','0','0','0','0');
+        var kata = new Array('','Satu','Dua','Tiga','Empat','Lima','Enam','Tujuh','Delapan','Sembilan');
+        var tingkat = new Array('','Ribu','Juta','Milyar','Triliun');
+        var panjang_bilangan = bilangan.length;
+        var kalimat = "";
+        var subkalimat = "";
+        var kata1 = ""; var kata2 = ""; var kata3 = "";
+        
+        if (panjang_bilangan > 15) return "Diluar Batas";
+        
+        for (let i = 1; i <= panjang_bilangan; i++) angka[i] = bilangan.substr(-(i),1);
+        
+        let i = 1; let j = 0;
+        while (i <= panjang_bilangan) {
+            subkalimat = ""; kata1 = ""; kata2 = ""; kata3 = "";
+            if (angka[i+2] != "0") {
+                if (angka[i+2] == "1") kata1 = "Seratus"; else kata1 = kata[angka[i+2]] + " Ratus";
+            }
+            if (angka[i+1] != "0") {
+                if (angka[i+1] == "1") {
+                    if (angka[i] == "0") kata2 = "Sepuluh"; else if (angka[i] == "1") kata2 = "Sebelas"; else kata2 = kata[angka[i]] + " Belas";
+                } else kata2 = kata[angka[i+1]] + " Puluh";
+            }
+            if (angka[i] != "0") { if (angka[i+1] != "1") kata3 = kata[angka[i]]; }
+            
+            if ((angka[i] != "0") || (angka[i+1] != "0") || (angka[i+2] != "0")) subkalimat = kata1+" "+kata2+" "+kata3+" "+tingkat[j]+" ";
+            if ((j==1) && (angka[i+2]=="0") && (angka[i+1]=="0") && (angka[i]=="1")) kalimat = "Seribu " + kalimat; else kalimat = subkalimat + kalimat;
+            i = i + 3; j = j + 1;
+        }
+        if ((angka[5] == "0") && (angka[6] == "0")) kalimat = kalimat.replace("Satu Ribu","Seribu");
+        return (kalimat.trim().replace(/\s+/g, ' ')) + " Rupiah";
+    }
+
+    window.togglePercentInput = function(chkId, wrapId, inputId) {
+        const chk = document.getElementById(chkId);
+        const wrap = document.getElementById(wrapId);
+        const inp = document.getElementById(inputId);
+        
+        if(chk.checked) { 
+            wrap.classList.remove('hidden'); 
+            inp.focus(); 
+            if (!inp.value) inp.value = 0; 
+        } else { 
+            wrap.classList.add('hidden'); 
+            inp.value = ''; 
+        }
+        window.calcTotal();
+    };
+
+    window.addItemRow = function(data = null) {
+        const tbody = document.getElementById('itemContainer');
+        const rowCount = tbody.rows.length + 1;
+        const tr = document.createElement('tr');
+        
+        tr.innerHTML = `
+            <td class="py-2 px-4 text-center text-gray-400 font-mono text-xs align-middle index-cell select-none">${rowCount}</td>
+            <td class="py-2 px-2"><input type="text" name="item_desc" class="w-full border-b border-gray-200 outline-none py-1 focus:border-red-800 bg-transparent font-medium text-gray-800 placeholder-gray-300" placeholder="Item Name / Description" value="${data?data.item:''}" required></td>
+            <td class="py-2 px-2"><input type="text" name="item_unit" class="w-full text-center border-b border-gray-200 outline-none py-1 focus:border-red-800 bg-transparent text-gray-600 placeholder-gray-300" placeholder="Unit" value="${data?data.unit:''}" required></td>
+            <td class="py-2 px-2"><input type="number" name="item_qty" class="w-full text-center border-b border-gray-200 outline-none py-1 focus:border-red-800 bg-transparent qty-input font-bold text-gray-800" value="${data?data.qty:1}" min="1" required></td>
+            <td class="py-2 px-2"><input type="text" name="item_price" class="w-full text-right border-b border-gray-200 outline-none py-1 focus:border-red-800 bg-transparent price-input font-mono text-gray-600 placeholder-gray-300" placeholder="0" value="${data?data.price:''}" required></td>
+            <td class="py-2 px-4 text-right font-bold text-gray-800 total-cell text-sm">Rp 0</td>
+            <td class="py-2 px-2 text-center"><button type="button" onclick="this.closest('tr').remove(); window.reindex(); window.calcTotal();" class="text-gray-400 hover:text-red-600 hover:bg-red-50 rounded px-2 py-1 transition font-bold">×</button></td>
+        `;
+        tbody.appendChild(tr);
+
+        const qty = tr.querySelector('.qty-input');
+        const price = tr.querySelector('.price-input');
+        
+        price.addEventListener('keyup', function() { window.formatMe(this); window.calcRow(tr); });
+        qty.addEventListener('input', () => window.calcRow(tr));
+        
+        if(data && data.price) { 
+            const cleanedPrice = window.parseNum(data.price);
+            price.value = window.fmtRupiah(cleanedPrice).replace('Rp', '').trim();
+            window.calcRow(tr); 
+        }
+        
+        if(!data) tr.querySelector('[name="item_desc"]').focus();
+        window.reindex();
+    };
+
+    window.calcRow = function(tr) {
+        const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
+        const price = window.parseNum(tr.querySelector('.price-input').value);
+        const total = qty * price;
+        tr.querySelector('.total-cell').textContent = window.fmtRupiah(total);
+        tr.dataset.total = total;
+        window.calcTotal();
+    };
+
+    window.reindex = function() {
+        document.querySelectorAll('#itemContainer tr').forEach((tr, i) => tr.querySelector('.index-cell').textContent = i + 1);
+    };
+
+    window.calcTotal = function() {
+        // 1. Subtotal
+        let subtotal = 0;
+        document.querySelectorAll('#itemContainer tr').forEach(tr => subtotal += parseFloat(tr.dataset.total) || 0);
+        document.getElementById('displaySubtotal').textContent = window.fmtRupiah(subtotal);
+
+        // 2. Diskon
+        let discVal = 0;
+        const discInput = document.getElementById('valDisc');
+        if(document.getElementById('chkDisc').checked && discInput.value) {
+            const pct = parseFloat(discInput.value) || 0;
+            discVal = subtotal * (pct / 100);
+        }
+        discVal = Math.round(discVal); 
+        document.getElementById('displayDisc').textContent = "- " + window.fmtRupiah(discVal);
+        const afterDisc = subtotal - discVal;
+
+        // 3. Service Charge
+        let svcVal = 0;
+        const svcInput = document.getElementById('valSvc');
+        if(document.getElementById('chkSvc').checked && svcInput.value) {
+            const pct = parseFloat(svcInput.value) || 0;
+            svcVal = afterDisc * (pct / 100);
+        }
+        svcVal = Math.round(svcVal); 
+        document.getElementById('displaySvc').textContent = window.fmtRupiah(svcVal);
+        const afterSvc = afterDisc + svcVal;
+
+        // 4. PB1
+        let pb1Val = 0;
+        const pb1Input = document.getElementById('valPb1');
+        if(document.getElementById('chkPb1').checked && pb1Input.value) {
+            const pct = parseFloat(pb1Input.value) || 0;
+            pb1Val = afterSvc * (pct / 100);
+        }
+        pb1Val = Math.round(pb1Val); 
+        document.getElementById('displayPb1').textContent = window.fmtRupiah(pb1Val);
+
+        // 5. Fees
+        const deliv = window.parseNum(document.getElementById('valDeliv').value);
+        const hand = window.parseNum(document.getElementById('valHand').value);
+
+        // 6. Grand Total
+        const grand = afterSvc + pb1Val + deliv + hand;
+        document.getElementById('displayGrand').textContent = window.fmtRupiah(grand);
+        document.getElementById('textTerbilang').textContent = window.terbilang(grand);
+    };
+
+    // MAIN INIT
+    (function() {
+        const existing = window.EXISTING_DATA;
+
+        // --- Handle Existing Data (Revisi) ---
+        if(existing) {
+             let json = {};
+             try { json = JSON.parse(existing.Data_JSON); } catch(e){ console.error("Error parsing existing data:", e); }
+             
+             document.getElementById('revisiBadge').classList.remove('hidden');
+             document.getElementById('autoDocNo').textContent = existing.Submission_ID;
+             document.getElementById('submissionId').value = existing.Submission_ID;
+
+             const btnSubmit = document.getElementById('btnSubmit').querySelector('span');
+             btnSubmit.textContent = `SIMPAN PERBAIKAN QUOTATION`;
+             document.getElementById('btnSubmit').classList.replace('from-red-900', 'from-amber-600');
+             document.getElementById('btnSubmit').classList.replace('to-red-800', 'to-amber-500');
+
+             const form = document.getElementById('billingForm');
+             form.querySelector('[name="company"]').value = json.company || '';
+             form.querySelector('[name="person"]').value = json.person || '';
+             form.querySelector('[name="phone"]').value = json.phone || '';
+             form.querySelector('[name="address"]').value = json.address || '';
+             form.querySelector('[name="notes"]').value = json.notes || '';
+             if(json.date) document.getElementById('dateInput').value = json.date;
+             
+             if(json.fees) {
+                 document.getElementById('valDeliv').value = json.fees.delivery ? window.fmtRupiah(window.parseNum(json.fees.delivery)).replace('Rp', '').trim() : 'Rp 0';
+                 document.getElementById('valHand').value = json.fees.handling ? window.fmtRupiah(window.parseNum(json.fees.handling)).replace('Rp', '').trim() : 'Rp 0';
+             }
+
+             if(json.math) {
+                 if(json.math.discPct > 0) { 
+                     document.getElementById('chkDisc').checked=true; 
+                     document.getElementById('valDisc').value=json.math.discPct; 
+                 }
+                 if(json.math.svcPct > 0) { 
+                     document.getElementById('chkSvc').checked=true; 
+                     document.getElementById('valSvc').value=json.math.svcPct; 
+                 }
+                 if(json.math.pb1Pct > 0) { 
+                     document.getElementById('chkPb1').checked=true; 
+                     document.getElementById('valPb1').value=json.math.pb1Pct; 
+                 }
+                 if(document.getElementById('chkDisc').checked) window.togglePercentInput('chkDisc', 'wrapDisc', 'valDisc');
+                 if(document.getElementById('chkSvc').checked) window.togglePercentInput('chkSvc', 'wrapSvc', 'valSvc');
+                 if(document.getElementById('chkPb1').checked) window.togglePercentInput('chkPb1', 'wrapPb1', 'valPb1');
+             }
+             
+             const tbody = document.getElementById('itemContainer');
+             tbody.innerHTML = ''; 
+             if(json.items && Array.isArray(json.items)) {
+                 json.items.forEach(i => window.addItemRow(i));
+             } else {
+                 window.addItemRow(); 
+             }
+             window.calcTotal(); 
+
+        } else {
+            // Mode Baru
+            // Default date + 14 days
+            const d = new Date(); d.setDate(d.getDate() + 14);
+            document.getElementById('dateInput').valueAsDate = d;
+            window.addItemRow(); 
+        }
+        
+        document.getElementById('billingForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btnSubmit');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; 
+            btn.innerHTML = '<span class="animate-spin inline-block mr-2">↻</span> SAVING...';
+
+            const items = [];
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                const priceInput = tr.querySelector('[name="item_price"]');
+                items.push({
+                    item: tr.querySelector('[name="item_desc"]').value,
+                    unit: tr.querySelector('[name="item_unit"]').value,
+                    qty: tr.querySelector('[name="item_qty"]').value,
+                    price: priceInput ? priceInput.value : '', 
+                    total: tr.querySelector('.total-cell').textContent
+                });
+            });
+
+            if (items.length === 0 || (items.length === 1 && !items[0].item)) {
+                console.error("ERROR: Minimal harus ada 1 item di daftar."); 
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+                return;
+            }
+
+            const deliveryFee = document.getElementById('valDeliv').value;
+            const handlingFee = document.getElementById('valHand').value;
+
+            const formData = {
+                company: this.querySelector('[name="company"]').value,
+                person: this.querySelector('[name="person"]').value,
+                phone: this.querySelector('[name="phone"]').value,
+                address: this.querySelector('[name="address"]').value,
+                date: document.getElementById('dateInput').value,
+                notes: this.querySelector('[name="notes"]').value,
+                items: items,
+                math: {
+                    discPct: document.getElementById('chkDisc').checked ? document.getElementById('valDisc').value : 0,
+                    svcPct: document.getElementById('chkSvc').checked ? document.getElementById('valSvc').value : 0,
+                    pb1Pct: document.getElementById('chkPb1').checked ? document.getElementById('valPb1').value : 0,
+                    subtotal: document.getElementById('displaySubtotal').textContent,
+                    discVal: document.getElementById('displayDisc').textContent,
+                    svcVal: document.getElementById('displaySvc').textContent,
+                    pb1Val: document.getElementById('displayPb1').textContent,
+                    grandTotal: document.getElementById('displayGrand').textContent,
+                    terbilang: document.getElementById('textTerbilang').textContent
+                },
+                fees: {
+                    delivery: deliveryFee,
+                    handling: handlingFee
+                }
+            };
+            
+            const mode = document.getElementById('activeMode').value;
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) { 
+                    console.log("Sukses! " + res.message); 
+                    if(typeof closeForm === 'function') closeForm(); 
+                }
+                else { 
+                    console.error("Gagal: " + res.message); 
+                    btn.disabled = false; btn.innerHTML = originalText; 
+                }
+            }).rekamData(formData, mode, window.GLOBAL_USER, isUpdate, submissionId);
+        });
+
+    })();
+</script>

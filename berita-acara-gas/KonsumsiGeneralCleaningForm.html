@@ -1,0 +1,357 @@
+<?!= '<script> window.GLOBAL_USER = ' + userDataJson + '; window.EXISTING_DATA = ' + existingDataJson + '; </script>' ?>
+
+<div class="space-y-6 font-serif text-gray-800 pb-10">
+    <!-- Header -->
+    <div class="border-b-2 border-red-900 pb-4 mb-8 flex justify-between items-end">
+        <div>
+            <h1 class="text-3xl font-bold text-red-900 uppercase tracking-wider">Berita Acara</h1>
+            <p class="text-gray-500 text-sm font-sans font-bold mt-1">KONSUMSI GENERAL CLEANING</p>
+            <div id="revisiBadge" class="hidden mt-2 inline-block bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200">MODE REVISI</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-400 font-sans">No. Dokumen</div>
+            <div id="docIdDisplay" class="font-mono text-sm font-bold text-gray-600">AUTO-GEN</div>
+        </div>
+    </div>
+
+    <form id="gcForm" class="space-y-6 font-sans text-sm">
+        <input type="hidden" id="submissionId" name="submissionId">
+
+        <!-- 1. Data Otomatis (Pastikan ID ini cocok dengan Script di bawah) -->
+        <div class="grid grid-cols-2 gap-4 bg-red-50 p-4 rounded border border-red-100">
+            <div>
+                <label class="block text-xs font-bold text-gray-400">NAMA</label>
+                <input type="text" id="gc_nama" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">NIK</label>
+                <input type="text" id="gc_nik" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">OUTLET</label>
+                <input type="text" id="gc_outlet" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-gray-400">POSISI</label>
+                <input type="text" id="gc_posisi" class="w-full bg-transparent font-bold text-gray-800 border-b border-gray-300 outline-none" readonly>
+            </div>
+        </div>
+
+        <!-- 2. Detail Kegiatan -->
+        <div class="grid grid-cols-2 gap-6">
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Tanggal General Cleaning</label>
+                <input type="date" name="tanggalGC" id="dateInput" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+            <div>
+                <label class="block font-bold text-gray-700 mb-1">Jumlah Peserta (Orang)</label>
+                <input type="number" name="jumlahPeserta" id="pesertaInput" min="1" required class="w-full border border-gray-300 rounded p-2 outline-none focus:border-red-800 transition">
+            </div>
+        </div>
+
+        <!-- 3. Tabel Item -->
+        <div class="border rounded-lg overflow-hidden shadow-sm overflow-x-auto">
+            <table class="w-full text-left text-sm min-w-[800px]">
+                <thead class="bg-red-900 text-white">
+                    <tr>
+                        <th class="py-3 px-3 w-10 text-center">No</th>
+                        <th class="py-3 px-3 w-48">Item</th>
+                        <th class="py-3 px-3 w-20 text-center">Unit</th>
+                        <th class="py-3 px-3 w-20 text-center">QTY</th>
+                        <th class="py-3 px-3 w-32 text-right">Harga (@)</th>
+                        <th class="py-3 px-3 w-32 text-right">Total</th>
+                        <th class="py-3 px-3 w-32">Vendor</th>
+                        <th class="py-3 px-3 w-10 text-center">#</th>
+                    </tr>
+                </thead>
+                <tbody id="itemContainer" class="divide-y divide-gray-200 bg-white"></tbody>
+                <tfoot class="bg-gray-50 font-bold">
+                    <tr>
+                        <td colspan="5" class="py-3 px-3 text-right text-gray-600 uppercase text-xs tracking-wider">Grand Total</td>
+                        <td class="py-3 px-3 text-right text-red-900 text-base" id="grandTotal">Rp 0</td>
+                        <td colspan="2"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+        
+        <!-- Tombol Tambah Baris -->
+        <button type="button" id="btnAddRow" class="mt-2 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 px-4 py-2 rounded shadow flex items-center transition transform active:scale-95">
+            + Tambah Baris
+        </button>
+
+        <!-- 4. Upload Bukti -->
+        <div class="space-y-4 pt-6 border-t mt-6">
+            <div class="flex justify-between items-center">
+                <h3 class="font-bold text-red-900 border-l-4 border-red-900 pl-3">Bukti Foto</h3>
+                <button type="button" id="btnAddPhoto" class="text-xs font-bold text-blue-600 hover:underline">+ Tambah Slot Foto</button>
+            </div>
+            
+            <div id="photoContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Slot 1: Struk -->
+                <div class="space-y-2 border p-2 rounded bg-gray-50 relative">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">Foto Struk / Nota</label>
+                    <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="fotoStruk" onchange="previewImageLocal(this)">
+                    <div class="preview-box hidden mt-2 w-full h-40 bg-gray-200 rounded flex items-center justify-center overflow-hidden"></div>
+                </div>
+                <!-- Slot 2: Kegiatan -->
+                <div class="space-y-2 border p-2 rounded bg-gray-50 relative">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">Foto Kegiatan GC</label>
+                    <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="fotoKegiatan" onchange="previewImageLocal(this)">
+                    <div class="preview-box hidden mt-2 w-full h-40 bg-gray-200 rounded flex items-center justify-center overflow-hidden"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tombol Submit -->
+        <div class="mt-8">
+            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SIMPAN & KIRIM</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    (function() {
+        // --- 1. INITIALIZATION & AUTO POPULATE ---
+        const user = window.GLOBAL_USER;
+        const existing = window.EXISTING_DATA;
+        
+        console.log("User Data:", user); // Cek di console browser jika masih error
+
+        // Pastikan elemen ada sebelum diisi
+        if(user) {
+            const elNama = document.getElementById('gc_nama');
+            const elNik = document.getElementById('gc_nik');
+            const elOutlet = document.getElementById('gc_outlet');
+            const elPosisi = document.getElementById('gc_posisi');
+
+            if(elNama) elNama.value = user.NAME || '';
+            if(elNik) elNik.value = user.NIK || '';
+            if(elOutlet) elOutlet.value = user.OUTLET || '';
+            if(elPosisi) elPosisi.value = user.POSITION || '';
+        }
+
+        // --- Helper Format Rupiah ---
+        window.formatRupiah = (num) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+        window.parseRupiah = (str) => parseFloat(String(str).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
+
+        // --- 2. TABLE LOGIC ---
+        // Kita tempel fungsi ke window agar bisa dipanggil oleh tombol inline (onclick)
+        window.removeRow = function(btn) {
+            btn.closest('tr').remove();
+            window.recalcTotal();
+        };
+
+        window.addItemRow = function(data = null) {
+            const tbody = document.getElementById('itemContainer');
+            const rowCount = tbody.rows.length + 1;
+            const tr = document.createElement('tr');
+            
+            tr.innerHTML = `
+                <td class="py-2 px-3 text-center text-gray-500 align-middle index-cell">${rowCount}</td>
+                <td class="py-2 px-2"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent item-input" placeholder="Nama Item" value="${data?data.item:''}" required></td>
+                <td class="py-2 px-2"><input type="text" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent unit-input" placeholder="Unit" value="${data?data.unit:''}" required></td>
+                <td class="py-2 px-2"><input type="number" class="w-full text-center border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent qty-input" value="${data?data.qty:1}" min="1" required></td>
+                <td class="py-2 px-2"><input type="text" class="w-full text-right border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent price-input" placeholder="0" value="${data?data.price:''}" required></td>
+                <td class="py-2 px-3 text-right font-medium text-gray-700 total-cell">Rp 0</td>
+                <td class="py-2 px-2"><input type="text" class="w-full border-b border-gray-300 outline-none py-1 focus:border-red-800 bg-transparent vendor-input" placeholder="Vendor" value="${data?data.vendor:''}" required></td>
+                <td class="py-2 px-3 text-center"><button type="button" onclick="window.removeRow(this)" class="text-red-500 font-bold text-lg hover:bg-red-100 rounded px-2 transition">×</button></td>
+            `;
+            tbody.appendChild(tr);
+
+            // Event Listeners untuk Kalkulasi
+            const qtyInput = tr.querySelector('.qty-input');
+            const priceInput = tr.querySelector('.price-input');
+            
+            // Hitung awal jika data ada (edit mode)
+            if(data && data.price) {
+                 const cleanP = window.parseRupiah(data.price);
+                 priceInput.value = window.formatRupiah(cleanP).replace('Rp', '').trim();
+                 window.calcRow(tr);
+            }
+
+            // Format Rupiah saat mengetik
+            priceInput.addEventListener('keyup', function(e) {
+                const val = window.parseRupiah(this.value);
+                this.value = window.formatRupiah(val).replace('Rp', '').trim();
+                window.calcRow(tr);
+            });
+
+            qtyInput.addEventListener('input', () => window.calcRow(tr));
+        };
+
+        window.calcRow = function(tr) {
+            const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
+            const price = window.parseRupiah(tr.querySelector('.price-input').value);
+            const total = qty * price;
+            tr.querySelector('.total-cell').textContent = window.formatRupiah(total);
+            tr.dataset.total = total;
+            window.recalcTotal();
+        }
+
+        window.recalcTotal = function() {
+            let grand = 0;
+            const rows = document.querySelectorAll('#itemContainer tr');
+            rows.forEach((tr, index) => { 
+                grand += parseFloat(tr.dataset.total) || 0; 
+                tr.querySelector('.index-cell').textContent = index + 1; 
+            });
+            document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+        }
+
+        // Pasang Event Listener Tombol Tambah
+        const btnAdd = document.getElementById('btnAddRow');
+        if(btnAdd) {
+            btnAdd.addEventListener('click', function() {
+                window.addItemRow();
+            });
+        }
+
+        // --- 3. PHOTO LOGIC ---
+        let extraPhotoCount = 0;
+        window.addPhotoSlot = function(existingUrl = null, keyName = null) {
+            extraPhotoCount++;
+            const container = document.getElementById('photoContainer');
+            const div = document.createElement('div');
+            const key = keyName || `fotoTambahan${extraPhotoCount}`;
+            const label = keyName ? 'Foto Lama' : `Foto Tambahan #${extraPhotoCount}`;
+            
+            div.className = "space-y-2 border p-2 rounded bg-gray-50 relative";
+            div.innerHTML = `
+                <div class="flex justify-between">
+                    <label class="block text-xs font-bold text-gray-500 uppercase">${label}</label>
+                    <button type="button" onclick="this.parentElement.parentElement.remove();" class="text-red-500 text-xs font-bold hover:underline">Hapus</button>
+                </div>
+                <input type="file" accept="image/*" class="file-input w-full text-xs p-2 border rounded" data-key="${key}" onchange="previewImageLocal(this)">
+                <div class="preview-box hidden mt-2 w-full h-40 bg-gray-200 rounded flex items-center justify-center overflow-hidden"></div>
+            `;
+            container.appendChild(div);
+
+            if(existingUrl) {
+                const pBox = div.querySelector('.preview-box');
+                pBox.innerHTML = `<img src="${existingUrl}" class="w-full h-full object-cover">`;
+                pBox.classList.remove('hidden');
+                div.querySelector('input').dataset.oldVal = existingUrl;
+            }
+        };
+
+        window.previewImageLocal = function(input) {
+            const pBox = input.parentElement.querySelector('.preview-box');
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    pBox.innerHTML = `<img src="${e.target.result}" class="w-full h-full object-cover">`;
+                    pBox.classList.remove('hidden');
+                }
+                reader.readAsDataURL(input.files[0]);
+            }
+        };
+
+        document.getElementById('btnAddPhoto').addEventListener('click', () => window.addPhotoSlot());
+
+        // --- 4. LOAD EXISTING DATA (REVISI MODE) ---
+        if (existing) {
+            document.getElementById('revisiBadge').classList.remove('hidden');
+            document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
+            document.getElementById('submissionId').value = existing.Submission_ID;
+            
+            const btn = document.getElementById('btnSubmit');
+            btn.innerHTML = "SIMPAN PERBAIKAN";
+            btn.classList.replace('from-red-900', 'from-amber-600');
+            btn.classList.replace('to-red-800', 'to-amber-500');
+
+            let json = {};
+            try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+            
+            if(json.tanggalGC) document.getElementById('dateInput').value = json.tanggalGC;
+            if(json.jumlahPeserta) document.getElementById('pesertaInput').value = json.jumlahPeserta;
+            
+            if (json.items && Array.isArray(json.items)) {
+                json.items.forEach(i => window.addItemRow(i));
+            } else { window.addItemRow(); }
+
+            // Foto
+            const inputStruk = document.querySelector('input[data-key="fotoStruk"]');
+            if(json.fotoStruk && inputStruk) {
+                inputStruk.dataset.oldVal = json.fotoStruk;
+                const pBox = inputStruk.parentElement.querySelector('.preview-box');
+                pBox.innerHTML = `<img src="${json.fotoStruk}" class="w-full h-full object-cover">`;
+                pBox.classList.remove('hidden');
+            }
+            const inputKegiatan = document.querySelector('input[data-key="fotoKegiatan"]');
+            if(json.fotoKegiatan && inputKegiatan) {
+                inputKegiatan.dataset.oldVal = json.fotoKegiatan;
+                const pBox = inputKegiatan.parentElement.querySelector('.preview-box');
+                pBox.innerHTML = `<img src="${json.fotoKegiatan}" class="w-full h-full object-cover">`;
+                pBox.classList.remove('hidden');
+            }
+            for(let k in json) {
+                if(k.startsWith('fotoTambahan')) window.addPhotoSlot(json[k], k);
+            }
+        } else {
+            // Default Mode
+            window.addItemRow(); 
+        }
+
+        // --- 5. SUBMIT HANDLER ---
+        const form = document.getElementById('gcForm');
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btnSubmit');
+            const originalText = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = 'Memproses...';
+
+            const items = [];
+            document.querySelectorAll('#itemContainer tr').forEach(tr => {
+                items.push({
+                    item: tr.querySelector('.item-input').value,
+                    unit: tr.querySelector('.unit-input').value,
+                    qty: tr.querySelector('.qty-input').value,
+                    price: tr.querySelector('.price-input').value,
+                    total: tr.querySelector('.total-cell').textContent,
+                    vendor: tr.querySelector('.vendor-input').value
+                });
+            });
+
+            const formData = {
+                tanggalGC: document.getElementById('dateInput').value,
+                jumlahPeserta: document.getElementById('pesertaInput').value,
+                items: items,
+                grandTotal: document.getElementById('grandTotal').textContent
+            };
+
+            const fileInputs = document.querySelectorAll('.file-input');
+            const filePromises = Array.from(fileInputs).map(input => {
+                return new Promise((resolve) => {
+                    const key = input.dataset.key;
+                    if (input.files.length > 0) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => resolve({ key: key, data: e.target.result });
+                        reader.readAsDataURL(input.files[0]);
+                    } else if (input.dataset.oldVal) {
+                        resolve({ key: key, data: input.dataset.oldVal });
+                    } else {
+                        resolve({ key: key, data: null });
+                    }
+                });
+            });
+
+            const files = await Promise.all(filePromises);
+            files.forEach(f => { if(f.data) formData[f.key] = f.data; });
+
+            const submissionId = document.getElementById('submissionId').value;
+            const isUpdate = !!submissionId;
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) { 
+                    alert("Sukses! " + res.message); 
+                    if(typeof closeForm === 'function') closeForm(); 
+                } else { 
+                    alert("Gagal: " + res.message); 
+                    btn.disabled = false; btn.innerHTML = originalText; 
+                }
+            }).rekamData(formData, 'Konsumsi General Cleaning', window.GLOBAL_USER, isUpdate, submissionId);
+        });
+
+    })();
+</script>

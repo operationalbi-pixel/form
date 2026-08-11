@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <base target="_top">
+    <title>SISTEM BERITA ACARA DIGITAL</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            overflow-x: hidden;
+        }
+        
+        /* Animasi Input Garis Bawah */
+        .input-underlined {
+            border: none;
+            border-bottom: 2px solid #e5e7eb; /* Gray-200 */
+            background: transparent;
+            border-radius: 0;
+            padding: 12px 0;
+            transition: all 0.3s ease;
+        }
+        .input-underlined:focus {
+            outline: none;
+            border-bottom-color: #7f1d1d; /* Red-900 */
+            box-shadow: 0 1px 0 0 #7f1d1d;
+        }
+        .input-group {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+        
+        /* Placeholder Animation */
+        .input-underlined::placeholder {
+            color: #9ca3af;
+            transition: all 0.3s ease;
+        }
+        .input-underlined:focus::placeholder {
+            color: #7f1d1d;
+            transform: translateY(-10px);
+            font-size: 0.75rem;
+            opacity: 0.7;
+        }
+
+        /* Gradient Background Kiri */
+        .bg-quote-section {
+            background: linear-gradient(135deg, #450a0a 0%, #7f1d1d 50%, #b91c1c 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* Hiasan Background */
+        .blob {
+            position: absolute;
+            filter: blur(80px);
+            opacity: 0.4;
+            border-radius: 50%;
+        }
+        .blob-1 { top: -10%; left: -10%; width: 300px; height: 300px; background: #fb7185; }
+        .blob-2 { bottom: -10%; right: -10%; width: 400px; height: 400px; background: #000; }
+
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-white">
+
+    <div id="appContainer" class="flex min-h-screen w-full items-center justify-center bg-gray-50">
+        <div class="text-center text-gray-500">
+            <div class="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-red-100 border-t-red-800"></div>
+            <p class="text-sm font-semibold">Membuka Berita Acara...</p>
+            <p class="mt-1 text-xs">Identitas diverifikasi dari sesi BI-Space.</p>
+        </div>
+    </div>
+
+    <!-- Script Quote & Login Logic -->
+    <script>
+        const initialBiSpaceUser = <?!= initialUserJson ?>;
+        const initialDashboardMode = <?!= initialModeJson ?>;
+        // --- LOGIC 1: DAILY QUOTES ---
+        const quotesData = [
+            // --- ISLAMI ---
+            { text: "Sebaik-baik manusia adalah yang paling bermanfaat bagi orang lain.", author: "Nabi Muhammad SAW" },
+            { text: "Keberhasilan bukan milik orang pintar, tapi milik mereka yang senantiasa berusaha.", author: "B.J. Habibie" },
+            { text: "Balas dendam terbaik adalah menjadikan dirimu lebih baik.", author: "Ali bin Abi Thalib" },
+            { text: "Jangan takut jatuh, karena yang tidak pernah memanjatlah yang tidak pernah jatuh.", author: "Buya Hamka" },
+            { text: "Apa yang melewatkanku tidak akan pernah menjadi takdirku.", author: "Umar bin Khattab" },
+            { text: "Kebahagiaan terletak pada kemenangan memerangi hawa nafsu.", author: "Imam Al-Ghazali" },
+            { text: "Jika kamu tidak tahan lelahnya belajar, kamu akan menanggung perihnya kebodohan.", author: "Imam Syafi'i" },
+            { text: "Hati yang damai adalah hati yang selalu ingat kepada Tuhan.", author: "Quraish Shihab" },
+            { text: "Dunia ini hanya persinggahan, akhiratlah tempat kembali yang abadi.", author: "Hasan Al-Bashri" },
+            { text: "Senyummu di hadapan saudaramu adalah sedekah.", author: "Nabi Muhammad SAW" },
+            { text: "Semakin banyak ilmu yang kamu miliki, semakin besar pula ketakwaanmu.", author: "Abu Bakar Ash-Shiddiq" },
+            { text: "Jadikan setiap tempat sebagai sekolah dan setiap orang sebagai guru.", author: "Ki Hajar Dewantara" },
+            { text: "Pengetahuan tanpa tindakan adalah kegilaan.", author: "Ibnu Sina" },
+            { text: "Orang kuat bukan yang pandai bergulat, tapi yang bisa menahan amarah.", author: "Nabi Muhammad SAW" },
+            { text: "Perbaikilah batinmu, niscaya Allah akan memperbaiki lahiriahmu.", author: "Umar bin Abdul Aziz" },
+            { text: "Mahkota orang beradab adalah kerendahan hati.", author: "Ali bin Abi Thalib" },
+            { text: "Kesabaran itu ada dua: sabar atas sesuatu yang tidak kau ingin dan sabar menahan diri dari sesuatu yang kau ingini.", author: "Ali bin Abi Thalib" },
+            { text: "Lidahmu jangan kau biarkan menyebut kekurangan orang lain, sebab kau pun punya kekurangan dan orang lain pun punya lidah.", author: "Imam Syafi'i" },
+            
+            // --- MOTIVASI KERJA & PROFESIONAL ---
+            { text: "Cara terbaik untuk memprediksi masa depan adalah dengan menciptakannya.", author: "Peter Drucker" },
+            { text: "Satu-satunya cara untuk melakukan pekerjaan hebat adalah dengan mencintai apa yang Anda lakukan.", author: "Steve Jobs" },
+            { text: "Jangan menghitung hari, buatlah hari-hari itu berarti.", author: "Muhammad Ali" },
+            { text: "Kualitas bukanlah sebuah tindakan, melainkan sebuah kebiasaan.", author: "Aristoteles" },
+            { text: "Sukses berjalan dari satu kegagalan ke kegagalan lain tanpa kehilangan antusiasme.", author: "Winston Churchill" },
+            { text: "Peluang tidak terjadi begitu saja. Anda yang membuatnya.", author: "Chris Grosser" },
+            { text: "Bekerjalah dalam diam, biarkan kesuksesanmu yang membuat suara.", author: "Frank Ocean" },
+            { text: "Jangan biarkan hari kemarin menyita terlalu banyak hari ini.", author: "Will Rogers" },
+            { text: "Ketekunan adalah kerja keras yang Anda lakukan setelah Anda lelah melakukan kerja keras yang sudah Anda lakukan.", author: "Newt Gingrich" },
+            { text: "Pekerjaan yang baik bukanlah kecelakaan, melainkan hasil dari niat yang luhur dan usaha yang tulus.", author: "Aristoteles" },
+            { text: "Berhentilah takut pada apa yang salah dan mulailah bersemangat tentang apa yang bisa benar.", author: "Tony Robbins" },
+            
+            // --- TOKOH INDONESIA ---
+            { text: "Bermimpilah setinggi langit. Jika engkau jatuh, engkau akan jatuh di antara bintang-bintang.", author: "Ir. Soekarno" },
+            { text: "Kurang cerdas dapat diperbaiki dengan belajar, kurang cakap dapat dihilangkan dengan pengalaman. Namun tidak jujur itu sulit diperbaiki.", author: "Bung Hatta" },
+            { text: "Hidup yang tidak dipertaruhkan tidak akan pernah dimenangkan.", author: "Sutan Syahrir" },
+            { text: "Terkadang, kesulitan harus kamu rasakan terlebih dulu sebelum kebahagiaan yang sempurna datang kepadamu.", author: "R.A. Kartini" },
+            { text: "Barangsiapa ingin mutiara, harus berani terjun di lautan yang dalam.", author: "Ir. Soekarno" },
+            { text: "Pahlawan yang setia itu berkorban, bukan buat dikenal namanya, tetapi semata-mata membela cita-cita.", author: "Mohammad Hatta" },
+            { text: "Kejahatan akan menang bila orang yang benar tidak melakukan apa-apa.", author: "Jenderal Soedirman" },
+
+            // --- STOICISM & MINDFULNESS ---
+            { text: "Bukan kejadiannya yang mengganggu manusia, tapi pandangan mereka terhadap kejadian itu.", author: "Epictetus" },
+            { text: "Kita menderita lebih sering dalam imajinasi daripada dalam kenyataan.", author: "Seneca" },
+            { text: "Fokuslah pada apa yang bisa kamu kendalikan, dan terima apa yang tidak bisa kamu kendalikan.", author: "Marcus Aurelius" },
+            { text: "Hidup itu sangat sederhana, tapi kita yang bersikeras membuatnya rumit.", author: "Confucius" },
+            { text: "Kebahagiaan hidupmu bergantung pada kualitas pikiranmu.", author: "Marcus Aurelius" },
+            { text: "Waktu lebih berharga daripada uang. Kamu bisa mendapatkan lebih banyak uang, tapi kamu tidak bisa mendapatkan lebih banyak waktu.", author: "Jim Rohn" },
+            
+            // --- TAMBAHAN BARU ---
+            { text: "Jangan pernah menyerah pada mimpi hanya karena waktu yang dibutuhkan untuk mencapainya.", author: "Earl Nightingale" },
+            { text: "Anda tidak bisa kembali dan mengubah awal, tetapi Anda bisa mulai dari tempat Anda berada dan mengubah akhirnya.", author: "C.S. Lewis" },
+            { text: "Keberanian adalah ketahanan terhadap rasa takut, penguasaan rasa takut, bukan ketiadaan rasa takut.", author: "Mark Twain" },
+            { text: "Optimisme adalah keyakinan yang mengarah pada pencapaian.", author: "Helen Keller" },
+            { text: "Hanya mereka yang berani gagal besar yang bisa mencapai hal besar.", author: "Robert F. Kennedy" },
+            { text: "Hidup adalah 10% apa yang terjadi pada Anda dan 90% bagaimana Anda bereaksi terhadapnya.", author: "Charles R. Swindoll" },
+            { text: "Lakukan apa yang Anda bisa, dengan apa yang Anda miliki, di mana Anda berada.", author: "Theodore Roosevelt" },
+            { text: "Percayalah Anda bisa dan Anda sudah setengah jalan.", author: "Theodore Roosevelt" },
+            { text: "Batasan satu-satunya untuk meraih masa depan kita adalah keragu-raguan kita hari ini.", author: "Franklin D. Roosevelt" },
+            { text: "Jika Anda ingin hidup bahagia, ikatlah pada tujuan, bukan pada orang atau benda.", author: "Albert Einstein" },
+            { text: "Orang bijak belajar ketika mereka bisa; orang bodoh belajar ketika mereka terpaksa.", author: "Arthur Wellesley" },
+            { text: "Pendidikan adalah senjata paling mematikan di dunia, karena dengan pendidikan, Anda dapat mengubah dunia.", author: "Nelson Mandela" },
+
+            // --- DARA ZAINAL ANWAR MUSADAD ---
+            { text: "Yang terbaik pasti terjadi, yang terjadi pasti terbaik.", author: "Dara Zainal Anwar Musadad" },
+            { text: "Langit yang gelap akan memperlihatkan bintang yang paling terang.", author: "Dara Zainal Anwar Musadad" },
+            { text: "Jika Kau benci diceramahi, maka lakukanlah hal yang benar.", author: "Dara Zainal Anwar Musadad" },
+            { text: "Kabar baiknya, semua ini hanya sementara. Kabar buruknya, semua ini juga hanya sementara. Segalanya akan berlalu.", author: "Dara Zainal Anwar Musadad" },
+            { text: "Selalu gampang untuk melihat hal-hal yang kita inginkan, tetapi sangat penting untuk melihat apa yang kita punya. Bersyukurlah..", author: "Dara Zainal Anwar Musadad" },
+            { text: "Jangan pernah mengukur sepatu orang lain dengan kakimu.", author: "Dara Zainal Anwar Musadad" }
+        ];
+
+        function setDailyQuote() {
+            try {
+                // 1. Dapatkan tanggal hari ini (reset jam ke 00:00 untuk konsistensi)
+                const now = new Date();
+                const start = new Date(now.getFullYear(), 0, 0);
+                
+                // 2. Hitung Diff dengan memperhitungkan Timezone Offset agar akurat
+                const diff = (now - start) + ((start.getTimezoneOffset() - now.getTimezoneOffset()) * 60 * 1000);
+                const oneDay = 1000 * 60 * 60 * 24;
+                const dayOfYear = Math.floor(diff / oneDay);
+                
+                // 3. Tentukan Quote
+                let quoteIndex = dayOfYear % quotesData.length;
+                
+                // Fallback jika index NaN atau error
+                if (isNaN(quoteIndex) || quoteIndex < 0) quoteIndex = 0;
+                
+                const selectedQuote = quotesData[quoteIndex];
+                
+                // 4. Update UI
+                const quoteTextElem = document.getElementById('quoteText');
+                const quoteAuthorElem = document.getElementById('quoteAuthor');
+                
+                // (BAGIAN TANGGAL DIHAPUS SESUAI PERMINTAAN)
+
+                if (quoteTextElem && selectedQuote) {
+                    quoteTextElem.textContent = `"${selectedQuote.text}"`;
+                    quoteAuthorElem.textContent = selectedQuote.author;
+                }
+                
+            } catch (error) {
+                console.error("Gagal memuat quote:", error);
+                // Fallback darurat jika semua gagal
+                document.getElementById('quoteText').textContent = `"${quotesData[0].text}"`;
+                document.getElementById('quoteAuthor').textContent = quotesData[0].author;
+            }
+        }
+
+        // --- SETUP SAAT HALAMAN SELESAI DIMUAT ---
+        document.addEventListener('DOMContentLoaded', function() {
+            openBiSpaceDashboard(initialBiSpaceUser, initialDashboardMode);
+        });
+
+        function openBiSpaceDashboard(user, requestedMode) {
+            window.userData = user;
+            let page = 'OutletDashboard';
+            const approver = user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB';
+            if (approver && requestedMode !== 'user') page = 'ApprovalDashboard';
+            google.script.run
+                .withSuccessHandler(html => {
+                    const container = document.getElementById('appContainer');
+                    container.className = 'w-full min-h-screen bg-gray-50';
+                    container.innerHTML = html;
+                    Array.from(container.querySelectorAll('script')).forEach(oldScript => {
+                        const newScript = document.createElement('script');
+                        Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value));
+                        newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+                        oldScript.parentNode.replaceChild(newScript, oldScript);
+                    });
+                    if (window.initializeDashboard) window.initializeDashboard(user);
+                })
+                .withFailureHandler(error => {
+                    document.getElementById('appContainer').innerHTML = '<div class="m-auto max-w-lg rounded-2xl border border-red-100 bg-white p-8 text-center text-red-800"><h2 class="text-xl font-bold">Berita Acara belum dapat dibuka</h2><p class="mt-3 text-sm">' + String(error && error.message || error) + '</p></div>';
+                })
+                .include(page);
+        }
+
+        function switchBaMode(mode) {
+            const user = window.userData || initialBiSpaceUser;
+            const approver = user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB';
+            if (!approver) return;
+            const nextMode = mode === 'approval' ? 'approval' : 'user';
+            window.top.postMessage({ biSpaceBeritaAcara: true, mode: nextMode }, '*');
+        }
+
+    </script>
+</body>
+</html>

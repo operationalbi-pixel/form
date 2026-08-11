@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>Berita Acara · BI-Space</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <script src="config.js"></script>
+  <script src="api-client.js"></script>
+  <style>
+    :root{--red:#9f172b;--ink:#332b2e;--line:#e8e1e3;--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px)}
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;font-family:"Plus Jakarta Sans","Segoe UI",sans-serif;color:var(--ink);background:#f7f4f5}
+    .shell{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr);padding-top:var(--safe-top);padding-bottom:var(--safe-bottom)}
+    .bar{min-height:58px;display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.96);box-shadow:0 5px 18px rgba(55,35,41,.06)}
+    .back{width:40px;height:40px;display:grid;place-items:center;border:1px solid var(--line);border-radius:12px;color:var(--red);background:#fff;text-decoration:none;font-size:22px;font-weight:700}.title{min-width:0}.title strong,.title span{display:block}.title strong{font-size:13px}.title span{margin-top:2px;color:#8b7f83;font-size:9px}.frame-wrap{position:relative;min-height:0}.frame{width:100%;height:100%;display:block;border:0;background:#fff}.state{position:absolute;z-index:2;inset:0;display:grid;place-items:center;padding:24px;background:#f7f4f5}.card{max-width:520px;padding:26px;border:1px solid var(--line);border-radius:18px;background:#fff;text-align:center;box-shadow:0 16px 45px rgba(70,30,40,.08)}.spinner{width:36px;height:36px;margin:0 auto 14px;border:4px solid #f2dfe3;border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite}.card strong{display:block;font-size:15px}.card p{margin:8px 0 0;color:#82767a;font-size:11px;line-height:1.6}.retry{margin-top:16px;padding:10px 14px;border:0;border-radius:10px;color:#fff;background:var(--red);font-weight:750}@keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-width:600px){.bar{min-height:52px;padding:6px 10px}.back{width:38px;height:38px}.title strong{font-size:12px}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="bar"><a class="back" href="index.html" aria-label="Kembali ke BI-Space">‹</a><div class="title"><strong>Berita Acara Digital</strong><span>Identitas mengikuti akun BI-Space</span></div></header>
+    <section class="frame-wrap">
+      <div id="state" class="state"><div class="card"><div class="spinner"></div><strong>Membuka Berita Acara...</strong><p>Memvalidasi sesi dan data karyawan dari EMP_LIST.</p></div></div>
+      <iframe id="beritaAcaraFrame" class="frame" title="Sistem Berita Acara Digital" allow="camera; microphone; clipboard-write" referrerpolicy="strict-origin"></iframe>
+    </section>
+  </main>
+  <script>
+    (function(){
+      'use strict';
+      var WEB_APP_URL='https://script.google.com/macros/s/AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg/exec';
+      var token='';try{token=localStorage.getItem('bakerzin_session')||''}catch(error){}
+      var state=document.getElementById('state'),frame=document.getElementById('beritaAcaraFrame');
+      function fail(message){state.innerHTML='<div class="card"><strong>Berita Acara belum dapat dibuka</strong><p>'+escapeHtml(message)+'</p><button class="retry" type="button" onclick="location.reload()">Coba Lagi</button></div>'}
+      function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,function(char){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]})}
+      if(!token){location.replace('index.html');return}
+      function openFrame(mode){
+        state.style.display='grid';
+        state.innerHTML='<div class="card"><div class="spinner"></div><strong>Membuka '+(mode==='user'?'User Mode':'Approval Mode')+'...</strong><p>Memvalidasi ulang identitas dari EMP_LIST.</p></div>';
+        BAKERZIN_API.call('beritaAcaraHandoff',[token]).then(function(result){
+          if(!result||!result.ok||!result.data||!result.data.handoff)throw new Error(result&&result.error||'Sesi BI-Space tidak dapat diteruskan.');
+          frame.addEventListener('load',function(){state.style.display='none'},{once:true});
+          frame.src=WEB_APP_URL+'?handoff='+encodeURIComponent(result.data.handoff)+'&mode='+encodeURIComponent(mode||'');
+        }).catch(function(error){fail(error&&error.message||error)});
+      }
+      window.addEventListener('message',function(event){
+        var data=event.data||{},host='';try{host=new URL(event.origin).hostname}catch(error){}
+        if(!data.biSpaceBeritaAcara||!/(^|\.)googleusercontent\.com$|^script\.google\.com$/.test(host))return;
+        openFrame(data.mode==='user'?'user':'approval');
+      });
+      openFrame('');
+    }());
+  </script>
+</body>
+</html>

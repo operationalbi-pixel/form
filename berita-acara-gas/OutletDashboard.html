@@ -1,0 +1,1050 @@
+<!-- PENTING: Sertakan file PDFGenerator. Wajib update Code.gs agar ini jalan -->
+<?!= include('PDFGenerator'); ?>
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital BA System</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Gaya umum untuk item menu */
+        .sidebar-item { display: flex; align-items: center; padding: 0.75rem 1rem; margin-bottom: 0.25rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 600; color: #4b5563; transition: all 0.2s; cursor: pointer; }
+        .sidebar-item:hover { background-color: #fef2f2; color: #991b1b; }
+        .sidebar-item-active { background-color: #f3f4f6; color: #7f1d1d; border-right: 4px solid #7f1d1d; }
+        
+        /* Gaya untuk sub-menu (tombol BA) */
+        .sidebar-subitem { display: flex; align-items: center; padding: 0.5rem 1rem 0.5rem 2.5rem; font-size: 0.8rem; font-weight: 500; color: #6b7280; border-radius: 0.5rem; transition: all 0.2s; }
+        .sidebar-subitem:hover { color: #991b1b; background-color: #fff1f2; }
+        .sidebar-subitem i { margin-right: 0.75rem; width: 16px; text-align: center; opacity: 0.7; }
+
+        /* Gaya untuk Tombol Kategori */
+        .sidebar-category-toggle {
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between;
+            padding: 0.75rem 1rem; 
+            margin-bottom: 0.5rem; 
+            border-radius: 0.5rem; 
+            font-size: 0.875rem; 
+            font-weight: 700; 
+            color: #1f2937;
+            background-color: #e5e7eb;
+            transition: all 0.2s; 
+            cursor: pointer;
+            border: 1px solid #d1d5db;
+        }
+        .sidebar-category-toggle:hover {
+            background-color: #d1d5db;
+            color: #7f1d1d;
+        }
+        .sidebar-category-toggle i.fa-chevron-down {
+            transition: transform 0.3s;
+        }
+        .sidebar-category-toggle.expanded i.fa-chevron-down {
+            transform: rotate(180deg);
+        }
+        
+        /* CHROME TAB STYLE */
+        .chrome-tabs-container { display: flex; align-items: flex-end; padding-left: 0.5rem; padding-right: 0.5rem; border-bottom: 1px solid #e5e7eb; }
+        .chrome-tab { position: relative; display: flex; align-items: center; justify-content: center; padding: 0.5rem 1.25rem; margin-right: -10px; border-top-left-radius: 0.75rem; border-top-right-radius: 0.75rem; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease-in-out; z-index: 1; border: 1px solid transparent; bottom: -1px; }
+        .chrome-tab:hover { z-index: 5; }
+        .chrome-tab-active { background-color: white; color: #991b1b; border-color: #e5e7eb; border-bottom-color: white; z-index: 10; box-shadow: 0 -2px 5px rgba(0,0,0,0.02); }
+        .chrome-tab-inactive { background-color: #f3f4f6; color: #6b7280; border-bottom: 1px solid #e5e7eb; }
+        .chrome-tab-inactive:hover { background-color: #e5e7eb; }
+        .chrome-tab::after { content: ''; position: absolute; right: 0; top: 25%; height: 50%; width: 1px; background-color: #d1d5db; opacity: 1; }
+        .chrome-tab:last-child::after, .chrome-tab-active::after, .chrome-tab:hover::after { opacity: 0; }
+
+        /* ANIMASI MODAL */
+        @keyframes modalPop {
+            0% { transform: scale(0.9); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .modal-animate { animation: modalPop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans text-gray-800 antialiased overflow-hidden">
+
+    <div class="flex h-screen">
+        
+        <!-- SIDEBAR -->
+        <aside class="w-72 bg-white shadow-xl z-20 hidden md:flex flex-col transition-all duration-300 relative border-r border-gray-200">
+            <div class="h-16 flex items-center px-6 border-b border-gray-100 shrink-0">
+                <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-red-900 to-red-700 flex items-center justify-center text-white font-black text-sm shadow-md mr-3">BA</div>
+                <div>
+                    <div class="text-lg font-extrabold text-red-900 tracking-tight leading-none">DIGITAL BA</div>
+                    <div class="text-[10px] text-gray-400 font-medium tracking-widest uppercase">System</div>
+                </div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto py-6 px-4 space-y-3">
+                
+                <!-- Dashboard Menu -->
+                <a href="#" onclick="window.location.reload()" class="sidebar-item sidebar-item-active">
+                    <i class="fas fa-th-large w-6 text-lg"></i>
+                    <span>Dashboard</span>
+                </a>
+
+                <div class="px-2 mt-6 mb-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Buat Berita Acara Baru</div>
+                
+                <!-- KATEGORI OPERASIONAL -->
+                <div>
+                    <button id="toggleOperasional" onclick="toggleCategory('Operasional')" class="w-full sidebar-category-toggle focus:outline-none">
+                        <div class="flex items-center">
+                            <i class="fas fa-tools mr-3 text-red-700"></i>
+                            <span>Operasional</span>
+                        </div>
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </button>
+                    <div id="categoryOperasional" class="hidden space-y-1 mt-1 mb-2">
+                        <button onclick="loadForm('Komplain Customer')" class="w-full sidebar-subitem text-left"><i class="fas fa-exclamation-circle"></i><span class="truncate">Komplain Customer</span></button>
+                        <button onclick="loadForm('Konsumsi General Cleaning')" class="w-full sidebar-subitem text-left"><i class="fas fa-broom"></i><span class="truncate">Konsumsi GC</span></button>
+                        <button onclick="loadForm('Refund Customer')" class="w-full sidebar-subitem text-left"><i class="fas fa-undo-alt"></i><span class="truncate">Refund Customer</span></button>
+                        <button onclick="loadForm('Customer Entertain')" class="w-full sidebar-subitem text-left"><i class="fas fa-glass-cheers"></i><span class="truncate">Customer Entertain</span></button>
+                        <button onclick="loadForm('Minute of Meeting')" class="w-full sidebar-subitem text-left"><i class="fas fa-users"></i><span class="truncate">Minute Of Meeting</span></button>
+                        <button onclick="loadForm('Test Food')" class="w-full sidebar-subitem text-left"><i class="fas fa-flask"></i><span class="truncate">Test Food</span></button>
+                        <button onclick="loadForm('Discount Karyawan')" class="w-full sidebar-subitem text-left"><i class="fas fa-percent"></i><span class="truncate">Discount Karyawan</span></button>
+                        <button onclick="loadForm('Cancel Online')" class="w-full sidebar-subitem text-left"><i class="fas fa-motorcycle"></i><span class="truncate">Cancel Online</span></button>
+                    </div>
+                </div>
+
+                <!-- KATEGORI FINANCE -->
+                <div>
+                    <button id="toggleFinance" onclick="toggleCategory('Finance')" class="w-full sidebar-category-toggle focus:outline-none">
+                        <div class="flex items-center">
+                            <i class="fas fa-wallet mr-3 text-red-700"></i>
+                            <span>Finance</span>
+                        </div>
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </button>
+                    <div id="categoryFinance" class="hidden space-y-1 mt-1 mb-2">
+                        <button onclick="loadForm('Quotation')" class="w-full sidebar-subitem text-left"><i class="fas fa-file-invoice-dollar"></i><span>Quotation</span></button>
+                        <button onclick="loadForm('Invoice')" class="w-full sidebar-subitem text-left"><i class="fas fa-file-invoice"></i><span>Invoice</span></button>
+                        <button onclick="loadForm('Void')" class="w-full sidebar-subitem text-left"><i class="fas fa-ban"></i><span class="truncate">Void Transaksi</span></button>
+                    </div>
+                </div>
+
+                <!-- KATEGORI INVENTORY -->
+                <div>
+                    <button id="toggleInventory" onclick="toggleCategory('Inventory')" class="w-full sidebar-category-toggle focus:outline-none">
+                        <div class="flex items-center">
+                            <i class="fas fa-boxes-stacked mr-3 text-red-700"></i>
+                            <span>Inventory</span>
+                        </div>
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </button>
+                    <div id="categoryInventory" class="hidden space-y-1 mt-1 mb-2">
+                        <button onclick="loadForm('Waste Pcs To Pcs')" class="w-full sidebar-subitem text-left"><i class="fas fa-trash-alt"></i><span class="truncate">Waste</span></button>
+                        <button onclick="loadForm('Revisi Stock Opname')" class="w-full sidebar-subitem text-left"><i class="fas fa-box-open"></i><span class="truncate">Revisi Stock Opname</span></button>
+                        <button onclick="loadForm('Penjualan & Dispose Asset')" class="w-full sidebar-subitem text-left"><i class="fas fa-money-bill-wave"></i><span class="truncate">Jual/Dispose Asset</span></button>
+                    </div>
+                </div>
+
+                <!-- KATEGORI MARKETING -->
+                <div>
+                    <button id="toggleMarketing" onclick="toggleCategory('Marketing')" class="w-full sidebar-category-toggle focus:outline-none">
+                        <div class="flex items-center">
+                            <i class="fas fa-bullhorn mr-3 text-red-700"></i>
+                            <span>Marketing</span>
+                        </div>
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </button>
+                    <div id="categoryMarketing" class="hidden space-y-1 mt-1 mb-2">
+                        <button onclick="loadForm('KOL Foodies')" class="w-full sidebar-subitem text-left"><i class="fas fa-utensils"></i><span class="truncate">KOL Foodies</span></button>
+                    </div>
+                </div>
+
+                <!-- KATEGORI PURCHASING -->
+                <div>
+                    <button id="togglePurchasing" onclick="toggleCategory('Purchasing')" class="w-full sidebar-category-toggle focus:outline-none">
+                        <div class="flex items-center">
+                            <i class="fas fa-shopping-cart mr-3 text-red-700"></i>
+                            <span>Purchasing</span>
+                        </div>
+                        <i class="fas fa-chevron-down text-xs"></i>
+                    </button>
+                    <div id="categoryPurchasing" class="hidden space-y-1 mt-1 mb-2">
+                        <button onclick="loadForm('Purchasing Non Supplier')" class="w-full sidebar-subitem text-left"><i class="fas fa-truck-ramp-box"></i><span class="truncate">Pembelian Non-Supplier</span></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-gray-100 shrink-0">
+                <button onclick="window.location.reload()" class="flex items-center text-gray-500 hover:text-red-700 text-sm font-medium transition-colors w-full px-4 py-2 hover:bg-red-50 rounded-lg">
+                    <i class="fas fa-sign-out-alt w-6"></i><span>Logout</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <div class="flex-1 flex flex-col h-screen overflow-x-hidden overflow-y-auto bg-gray-100 relative">
+            <header class="h-16 bg-white shadow-sm border-b border-gray-200 flex items-center justify-between px-6 z-10 shrink-0">
+                <button class="md:hidden text-gray-600 focus:outline-none"><i class="fas fa-bars text-xl"></i></button>
+                <div class="hidden md:block text-gray-500 text-sm"><span class="font-medium text-gray-400">Home</span><span class="mx-2">/</span><span class="font-bold text-gray-800">Dashboard</span></div>
+                <div class="flex items-center space-x-6">
+                    <button id="switchApprovalMode" onclick="switchBaMode('approval')" class="hidden items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-bold text-red-800 transition hover:border-red-800 hover:bg-red-800 hover:text-white" title="Kembali ke tampilan approval">
+                        <i class="fas fa-user-shield"></i><span class="hidden sm:inline">SWITCH TO APPROVAL MODE</span>
+                    </button>
+                    <div class="text-right">
+                        <div class="text-sm font-bold text-gray-800 uppercase" id="userNameDisplay">Loading...</div>
+                        <div class="text-xs text-gray-500" id="outletNameDisplay">...</div>
+                    </div>
+                    <div class="h-9 w-9 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-bold border-2 border-white shadow-sm"><i class="fas fa-user"></i></div>
+                </div>
+            </header>
+
+            <main id="mainContent" class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-100 p-6 scroll-smooth">
+                <!-- FORM CONTAINER -->
+                <div id="formContainer" class="hidden flex justify-center mb-10">
+                    <div class="w-full max-w-[210mm]"> 
+                        <button onclick="closeForm()" class="mb-4 flex items-center text-gray-500 hover:text-red-900 transition font-medium text-sm"><i class="fas fa-arrow-left mr-2"></i> Kembali ke Dashboard</button>
+                        <div class="bg-white shadow-xl min-h-[297mm] relative rounded-lg overflow-hidden">
+                            <div class="h-1.5 w-full bg-gradient-to-r from-red-900 to-red-700"></div>
+                            <div id="formContent" class="p-8 md:p-12"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LIST VIEW -->
+                <div id="listView" class="space-y-6 animate-fade-in-up max-w-7xl mx-auto">
+                    <div class="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                        <div><h1 class="text-2xl font-bold text-gray-800 flex items-center">Dashboard <i class="fas fa-info-circle text-gray-400 text-sm ml-2 cursor-pointer hover:text-red-700"></i></h1></div>
+                        <div class="flex flex-wrap gap-3">
+                            <!-- SEARCH INFO (NEW) -->
+                            <div class="relative">
+                                <input type="text" id="infoFilter" onkeyup="filterTable()" placeholder="Cari Info..." class="appearance-none bg-white border border-gray-300 hover:border-red-800 text-gray-700 py-2 px-3 rounded shadow-sm text-sm focus:outline-none focus:ring-1 focus:ring-red-500 w-48 font-medium">
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400"><i class="fas fa-search text-xs"></i></div>
+                            </div>
+
+                            <div class="relative group">
+                                <select id="outletFilter" class="appearance-none bg-white border border-gray-300 hover:border-red-800 text-gray-700 py-2 pl-3 pr-8 rounded shadow-sm text-sm focus:outline-none focus:ring-1 focus:ring-red-500 w-40 cursor-not-allowed font-medium" disabled><option value="">Loading...</option></select>
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500"><i class="fas fa-chevron-down text-xs"></i></div>
+                            </div>
+                             <div class="flex bg-white border border-gray-300 rounded shadow-sm overflow-hidden">
+                                <input type="date" id="startDateFilter" onchange="filterTable()" class="py-2 px-3 text-sm text-gray-700 focus:outline-none hover:bg-gray-50 border-r border-gray-200">
+                                <input type="date" id="endDateFilter" onchange="filterTable()" class="py-2 px-3 text-sm text-gray-700 focus:outline-none hover:bg-gray-50">
+                            </div>
+                            <div class="relative">
+                                <select id="typeFilter" onchange="filterTable()" class="appearance-none bg-white border border-gray-300 hover:border-red-800 text-gray-700 py-2 pl-3 pr-8 rounded shadow-sm text-sm focus:outline-none focus:ring-1 focus:ring-red-500 min-w-[140px] font-medium">
+                                    <option value="">Semua Tipe BA</option>
+                                    <optgroup label="Operasional">
+                                        <option value="Komplain Customer">Komplain Cust.</option>
+                                        <option value="Konsumsi General Cleaning">Konsumsi GC</option>
+                                        <option value="Refund Customer">Refund Customer</option>
+                                        <option value="Customer Entertain">Customer Entertain</option>
+                                        <option value="Minute of Meeting">MoM Meeting</option>
+                                        <option value="Test Food">Test Food</option>
+                                        <option value="Discount Karyawan">Discount Karyawan</option>
+                                        <option value="Cancel Online">Cancel Online</option>
+                                    </optgroup>
+                                    <optgroup label="Finance">
+                                        <option value="Quotation">Quotation</option>
+                                        <option value="Invoice">Invoice</option>
+                                        <option value="Void">Void</option>
+                                    </optgroup>
+                                    <optgroup label="Inventory">
+                                        <option value="Waste Pcs To Pcs">Waste</option>
+                                        <option value="Revisi Stock Opname">Revisi SO</option>
+                                        <option value="Penjualan & Dispose Asset">Jual/Dispose Asset</option>
+                                    </optgroup>
+                                    <optgroup label="Marketing">
+                                        <option value="KOL Foodies">KOL Foodies</option>
+                                    </optgroup>
+                                    <optgroup label="Purchasing">
+                                        <option value="Purchasing Non Supplier">Purchasing Non-Sup</option>
+                                    </optgroup>
+                                </select>
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500"><i class="fas fa-chevron-down text-xs"></i></div>
+                            </div>
+                             <button onclick="resetFilters()" class="bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-2 rounded shadow-sm text-sm font-bold transition"><i class="fas fa-sync-alt"></i></button>
+                        </div>
+                    </div>
+                    
+                    <div id="historySection" class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                        <div class="pt-4 px-6 bg-gray-50">
+                            <h3 class="font-bold text-sm text-gray-700 uppercase tracking-wide mb-3">Submission History</h3>
+                            <div class="flex items-center justify-between border-b border-gray-200">
+                                <div class="chrome-tabs-container w-full md:w-auto overflow-x-auto scrollbar-hide">
+                                    <button onclick="setTab('all')" id="tab-all" class="chrome-tab chrome-tab-active whitespace-nowrap"><i class="fas fa-list-ul mr-2 text-xs"></i> Semua</button>
+                                    <button onclick="setTab('wait')" id="tab-wait" class="chrome-tab chrome-tab-inactive whitespace-nowrap"><i class="fas fa-clock mr-2 text-xs"></i> Menunggu Approval</button>
+                                    <button onclick="setTab('approved')" id="tab-approved" class="chrome-tab chrome-tab-inactive whitespace-nowrap"><i class="fas fa-check-circle mr-2 text-xs"></i> Approved</button>
+                                </div>
+                                <button onclick="reloadTable()" class="mb-1 text-xs font-bold text-red-700 hover:text-red-900 flex items-center whitespace-nowrap px-3 py-1"><i class="fas fa-sync-alt mr-1"></i> Refresh</button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead class="text-xs text-gray-500 uppercase bg-gray-50 border-b border-gray-200 font-semibold tracking-wider">
+                                    <tr>
+                                        <th class="px-6 py-3">Tipe</th>
+                                        <th class="px-6 py-3">ID Dokumen</th>
+                                        <!-- COLUMN INFO DETAIL (NEW) -->
+                                        <th class="px-6 py-3">Info</th>
+                                        <th class="px-6 py-3">Outlet</th>
+                                        <th class="px-6 py-3">Tanggal</th>
+                                        <th class="px-6 py-3 text-center">Status</th>
+                                        <th class="px-6 py-3 text-right">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="submissionTableBody" class="divide-y divide-gray-100 bg-white"></tbody>
+                            </table>
+                        </div>
+                        <!-- PAGINATION FOOTER -->
+                        <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex flex-col md:flex-row justify-between items-center gap-2">
+                            <span id="paginationInfo" class="text-xs text-gray-500 font-medium">Menampilkan 0-0 dari 0 data</span>
+                            <div class="flex space-x-2">
+                                <button onclick="changePage(-1)" id="btnPrev" class="px-3 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition"><i class="fas fa-chevron-left mr-1"></i> Prev</button>
+                                <button onclick="changePage(1)" id="btnNext" class="px-3 py-1 text-xs font-bold text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition">Next <i class="fas fa-chevron-right ml-1"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- GLOBAL CUSTOM MODAL (Pengganti Alert) -->
+    <div id="globalModal" class="fixed inset-0 bg-black bg-opacity-60 z-[100] hidden flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden transform scale-95 transition-all modal-animate" id="globalModalContent">
+            <div class="p-6 text-center">
+                <!-- Icon -->
+                <div id="modalIconContainer" class="mx-auto flex items-center justify-center h-16 w-16 rounded-full mb-6 transition-colors">
+                    <i id="modalIcon" class="text-3xl"></i>
+                </div>
+                <!-- Message -->
+                <h3 class="text-lg font-bold text-gray-900 mb-2" id="modalTitle">Notifikasi</h3>
+                <p class="text-sm text-gray-600 mb-6" id="modalMessage">...</p>
+                <!-- Button -->
+                <button onclick="closeGlobalModal()" class="w-full bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 rounded-lg shadow transition transform active:scale-95">
+                    TUTUP
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detail Modal (ROBUST VIEWER LIKE APPROVAL DASHBOARD) -->
+    <div id="detailModal" class="fixed inset-0 bg-black bg-opacity-60 z-50 hidden flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh] animate-fade-in-up">
+            <div class="bg-white border-b border-gray-100 p-4 flex justify-between items-center shrink-0">
+                <h3 class="text-red-900 font-bold text-lg border-l-4 border-red-800 pl-3">Detail Berita Acara</h3>
+                <button onclick="closeDetail()" class="text-gray-400 hover:text-red-700 text-2xl leading-none transition">&times;</button>
+            </div>
+            <div id="detailContent" class="p-8 overflow-y-auto bg-gray-50 relative text-sm"></div>
+            <div class="p-4 border-t border-gray-100 bg-white flex justify-between items-center shrink-0">
+                <div id="detailActionButtons" class="flex space-x-2"></div>
+                <button onclick="closeDetail()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2 px-4 rounded shadow-sm text-sm transition">Tutup</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    let globalData = [];
+    let originalData = []; 
+    let currentDetailData = null;
+    let currentTab = 'all';
+    let openCategory = null; 
+    
+    // PAGINATION STATE
+    let currentPage = 1;
+    const itemsPerPage = 10;
+
+    // --- SYSTEM INITIALIZATION ---
+    function initializeDashboard(user) {
+        window.userData = user;
+        document.getElementById('outletNameDisplay').textContent = user.OUTLET;
+        document.getElementById('userNameDisplay').textContent = user.NAME;
+        const switchButton = document.getElementById('switchApprovalMode');
+        if (switchButton && (user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB')) {
+            switchButton.classList.remove('hidden');
+            switchButton.classList.add('inline-flex');
+        }
+        setupCategoryToggles(); 
+        reloadTable();
+        overrideNativeAlert(); 
+    }
+
+    // --- MODERN ALERT SYSTEM ---
+    function overrideNativeAlert() {
+        window.alert = function(message) {
+            showCustomModal(message);
+        };
+    }
+
+    function showCustomModal(message) {
+        const modal = document.getElementById('globalModal');
+        const iconContainer = document.getElementById('modalIconContainer');
+        const icon = document.getElementById('modalIcon');
+        const title = document.getElementById('modalTitle');
+        const msgEl = document.getElementById('modalMessage');
+
+        // Deteksi Tipe Pesan
+        const isSuccess = /sukses|berhasil|success/i.test(message);
+        const isError = /gagal|error|validasi/i.test(message);
+
+        if (isSuccess) {
+            iconContainer.className = "mx-auto flex items-center justify-center h-16 w-16 rounded-full mb-6 bg-green-100";
+            icon.className = "fas fa-check text-3xl text-green-600";
+            title.textContent = "Berhasil!";
+            title.className = "text-lg font-bold text-green-800 mb-2";
+        } else if (isError) {
+            iconContainer.className = "mx-auto flex items-center justify-center h-16 w-16 rounded-full mb-6 bg-red-100";
+            icon.className = "fas fa-times text-3xl text-red-600";
+            title.textContent = "Gagal / Perhatian";
+            title.className = "text-lg font-bold text-red-800 mb-2";
+        } else {
+            iconContainer.className = "mx-auto flex items-center justify-center h-16 w-16 rounded-full mb-6 bg-blue-100";
+            icon.className = "fas fa-info text-3xl text-blue-600";
+            title.textContent = "Informasi";
+            title.className = "text-lg font-bold text-gray-900 mb-2";
+        }
+
+        msgEl.textContent = message;
+        modal.classList.remove('hidden');
+    }
+
+    function closeGlobalModal() {
+        document.getElementById('globalModal').classList.add('hidden');
+    }
+
+    // --- UI LOGIC ---
+    function cleanOutletName(name) {
+        if (!name) return '';
+        return String(name).trim().toUpperCase().replace(/\s+/g, ' ');
+    }
+    
+    function toggleCategory(category) {
+        const submenu = document.getElementById('category' + category);
+        const toggleBtn = document.getElementById('toggle' + category);
+        const categories = ['Operasional', 'Finance', 'Inventory', 'Marketing', 'Purchasing'];
+
+        if (submenu.classList.contains('hidden')) {
+            categories.forEach(cat => {
+                const sub = document.getElementById('category' + cat);
+                const btn = document.getElementById('toggle' + cat);
+                if (cat !== category) {
+                    sub.classList.add('hidden');
+                    btn.classList.remove('expanded');
+                }
+            });
+            submenu.classList.remove('hidden');
+            toggleBtn.classList.add('expanded');
+            openCategory = category;
+        } else {
+            submenu.classList.add('hidden');
+            toggleBtn.classList.remove('expanded');
+            openCategory = null;
+        }
+    }
+
+    function setupCategoryToggles() {
+        const categories = ['Operasional', 'Finance', 'Inventory', 'Marketing', 'Purchasing'];
+        categories.forEach(cat => {
+            const sub = document.getElementById('category' + cat);
+            const btn = document.getElementById('toggle' + cat);
+            if (cat === openCategory) { sub.classList.remove('hidden'); btn.classList.add('expanded'); } 
+            else { sub.classList.add('hidden'); btn.classList.remove('expanded'); }
+        });
+    }
+
+    function setTab(tabName) {
+        currentTab = tabName;
+        ['all', 'wait', 'approved'].forEach(t => {
+            const btn = document.getElementById('tab-' + t);
+            btn.className = (t === tabName) ? "chrome-tab chrome-tab-active whitespace-nowrap" : "chrome-tab chrome-tab-inactive whitespace-nowrap";
+        });
+        filterTable();
+    }
+
+    function renderSkeletonLoader() {
+        const tbody = document.getElementById('submissionTableBody');
+        let skeletonHTML = '';
+        for(let i=0; i<5; i++) {
+            skeletonHTML += `<tr class="animate-pulse border-b border-gray-100 last:border-0"><td class="px-6 py-4"><div class="h-4 bg-gray-200 rounded w-24"></div></td><td class="px-6 py-4"><div class="h-4 bg-gray-200 rounded w-16"></div></td><td class="px-6 py-4"><div class="h-4 bg-gray-200 rounded w-32"></div></td><td class="px-6 py-4"><div class="h-4 bg-gray-200 rounded w-20"></div></td><td class="px-6 py-4"><div class="h-5 bg-gray-200 rounded w-24 rounded-full"></div></td><td class="px-6 py-4 text-right"><div class="h-6 bg-gray-200 rounded w-16 ml-auto"></div></td></tr>`;
+        }
+        tbody.innerHTML = skeletonHTML;
+    }
+
+    function reloadTable() {
+        currentPage = 1; // Reset to page 1 on reload
+        renderSkeletonLoader();
+        google.script.run.withSuccessHandler(processInitialData).getAllSubmissions(window.userData);
+    }
+
+    function processInitialData(data) {
+        originalData = data || [];
+        populateOutletFilter(window.userData.OUTLET);
+        filterTable();
+    }
+
+    function populateOutletFilter(userOutletName) {
+        const filterEl = document.getElementById('outletFilter');
+        filterEl.innerHTML = '';
+        const option = document.createElement('option');
+        option.value = cleanOutletName(userOutletName);
+        option.textContent = userOutletName; 
+        option.selected = true;
+        filterEl.appendChild(option);
+    }
+
+    function resetFilters() {
+        document.getElementById('startDateFilter').value = '';
+        document.getElementById('endDateFilter').value = '';
+        document.getElementById('typeFilter').value = '';
+        document.getElementById('infoFilter').value = ''; // NEW
+        setTab('all');
+    }
+
+    // --- PAGINATION LOGIC ---
+    function updatePagination() {
+        const totalItems = globalData.length;
+        const totalPages = Math.ceil(totalItems / itemsPerPage);
+        
+        // Ensure currentPage valid
+        if (currentPage < 1) currentPage = 1;
+        if (currentPage > totalPages && totalPages > 0) currentPage = totalPages;
+        
+        // Slice Data
+        const startIdx = (currentPage - 1) * itemsPerPage;
+        const endIdx = startIdx + itemsPerPage;
+        const pagedData = globalData.slice(startIdx, endIdx);
+        
+        // Render current slice
+        renderTable(pagedData);
+
+        // Update Info Text
+        const startDisplay = totalItems === 0 ? 0 : startIdx + 1;
+        const endDisplay = Math.min(endIdx, totalItems);
+        document.getElementById('paginationInfo').textContent = `Menampilkan ${startDisplay}-${endDisplay} dari ${totalItems} data`;
+        
+        // Update Buttons
+        document.getElementById('btnPrev').disabled = currentPage === 1;
+        document.getElementById('btnNext').disabled = currentPage >= totalPages || totalPages === 0;
+    }
+
+    function changePage(delta) {
+        currentPage += delta;
+        updatePagination();
+    }
+
+    function filterTable() {
+        const outletFilterVal = document.getElementById('outletFilter').value;
+        const typeFilterVal = document.getElementById('typeFilter').value;
+        const startDateVal = document.getElementById('startDateFilter').value;
+        const endDateVal = document.getElementById('endDateFilter').value;
+        const infoFilterVal = document.getElementById('infoFilter').value.toLowerCase(); // NEW
+        
+        let filteredData = originalData.filter(item => {
+            const matchOutlet = cleanOutletName(item.Outlet) === outletFilterVal;
+            
+            let matchType = true;
+            if (typeFilterVal) {
+                 matchType = item.type === typeFilterVal;
+            }
+
+            let matchDate = true;
+            if (startDateVal || endDateVal) {
+                const itemDate = new Date(item.Timestamp);
+                itemDate.setHours(0,0,0,0);
+                if (startDateVal) {
+                    const start = new Date(startDateVal);
+                    start.setHours(0,0,0,0);
+                    if (itemDate < start) matchDate = false;
+                }
+                if (endDateVal && matchDate) { 
+                    const end = new Date(endDateVal);
+                    end.setHours(0,0,0,0);
+                    if (itemDate > end) matchDate = false;
+                }
+            }
+
+            let matchTab = true;
+            const statusLower = (item.currentStatus || '').toLowerCase();
+            if (currentTab === 'wait') {
+                matchTab = statusLower.includes('menunggu') || statusLower.includes('waiting') || statusLower.includes('pending');
+            } else if (currentTab === 'approved') {
+                matchTab = statusLower === 'approved';
+            }
+
+            // NEW: MATCH INFO
+            let matchInfo = true;
+            if (infoFilterVal) {
+                const itemInfo = (item.info || '').toLowerCase();
+                matchInfo = itemInfo.includes(infoFilterVal);
+            }
+
+            return matchOutlet && matchType && matchDate && matchTab && matchInfo;
+        });
+        
+        globalData = filteredData;
+        currentPage = 1; // Reset to page 1 whenever filters change
+        updatePagination(); // Use pagination render
+    }
+
+    function renderTable(data) {
+        const tbody = document.getElementById('submissionTableBody');
+        if(!data || data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" class="py-12 text-center"><div class="flex flex-col items-center justify-center text-gray-400"><i class="fas fa-folder-open text-4xl mb-3 opacity-50"></i><span class="text-sm font-medium">Data tidak ditemukan.</span><span class="text-xs">Coba ubah filter atau tab.</span></div></td></tr>`;
+            return;
+        }
+        
+        tbody.innerHTML = data.map((row) => {
+            // Display Type Logic
+            let displayType = row.type;
+            if(row.type === 'Waste Pcs To Pcs') displayType = 'Waste';
+            if(row.type === 'Revisi Stock Opname') displayType = 'Revisi SO';
+            if(row.type === 'Konsumsi General Cleaning') displayType = 'Konsumsi GC';
+            if(row.type === 'Penjualan & Dispose Asset') displayType = 'Jual Asset';
+            if(row.type === 'Refund Customer') displayType = 'Refund Cust';
+            if(row.type === 'Komplain Customer') displayType = 'Komplain';
+            if(row.type === 'Minute of Meeting') displayType = 'MoM';
+            if(row.type === 'Purchasing Non Supplier') displayType = 'Purchasing';
+            if(row.type === 'Customer Entertain') displayType = 'Entertain';
+            if(row.type === 'Test Food') displayType = 'Test Food';
+            if(row.type === 'Discount Karyawan') displayType = 'Disc. Karyawan'; 
+            if(row.type === 'Cancel Online') displayType = 'Cancel Online'; 
+
+            let rowClass = 'hover:bg-red-50 transition';
+            let statusColor = ''; 
+            
+            if (row.currentStatus === 'Rejected') {
+                 rowClass = 'bg-red-50 hover:bg-red-100 text-red-700 font-medium';
+                 statusColor = 'bg-red-100 text-red-800 border-red-200';
+            } else if (row.currentStatus === 'Approved') {
+                 statusColor = 'bg-[#DCFCE7] text-[#166534] border border-[#BBF7D0]'; 
+            } else {
+                 statusColor = 'bg-[#FFF7D1] text-[#785906] border border-[#FDE68A]'; 
+            }
+
+            // INFO CONTENT STYLING
+            const infoText = row.info && row.info !== '-' ? 
+                `<div class="text-xs font-semibold text-gray-600 line-clamp-2" title="${row.info}">${row.info}</div>` : 
+                `<span class="text-gray-300 text-xs italic">-</span>`;
+
+            // Using row.Submission_ID directly for safer lookup regardless of page index
+            return `
+            <tr class="${rowClass} border-b last:border-0 border-gray-100 group">
+                <td class="px-6 py-4 font-bold text-gray-700">${displayType}</td>
+                <td class="px-6 py-4 font-mono text-xs text-gray-500 bg-gray-50 rounded w-fit my-2 px-2 inline-block">${row.Submission_ID}</td>
+                
+                <!-- NEW INFO COLUMN CONTENT -->
+                <td class="px-6 py-4">${infoText}</td>
+
+                <td class="px-6 py-4 font-medium text-gray-500">${row.Outlet}</td>
+                <td class="px-6 py-4 text-sm text-gray-600">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
+                <td class="px-6 py-4 text-center"><span class="px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${statusColor} shadow-sm">${row.currentStatus}</span></td>
+                <td class="px-6 py-4 text-right"><button onclick="viewDetail('${row.Submission_ID}')" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition">Detail</button></td>
+            </tr>
+        `}).join('');
+    }
+
+    // UPDATE: FETCH DETAIL DARI SERVER
+    // Now receives ID string instead of index to support pagination safely
+    function viewDetail(id) {
+        console.log(`[viewDetail] Memuat detail untuk ID ${id}...`);
+        
+        // Find item in the full globalData list using ID
+        const itemLite = globalData.find(x => x.Submission_ID === id);
+        
+        if (!itemLite) {
+            alert("Data tidak ditemukan di memory lokal.");
+            return;
+        }
+
+        const modal = document.getElementById('detailModal');
+        const container = document.getElementById('detailContent');
+        const actionButtons = document.getElementById('detailActionButtons');
+        
+        // Tampilkan Loading di Modal
+        modal.classList.remove('hidden');
+        container.innerHTML = '<div class="flex flex-col items-center justify-center h-40"><i class="fas fa-circle-notch fa-spin text-3xl text-red-800 mb-3"></i><span class="text-gray-500">Memuat detail dokumen...</span></div>';
+        actionButtons.innerHTML = '';
+
+        // Fetch Full Data
+        google.script.run.withSuccessHandler(item => {
+            if (!item) {
+                container.innerHTML = '<div class="text-center text-red-600">Gagal memuat data. Dokumen mungkin telah dihapus.</div>';
+                return;
+            }
+            renderDetailContent(item, container, actionButtons);
+        }).getSubmissionDetail(itemLite.Submission_ID);
+    }
+
+    function renderDetailContent(item, container, actionContainer) {
+        let jsonData = {};
+        try { jsonData = JSON.parse(item.Data_JSON); } catch(e) {}
+
+        const safeStr = (val) => val || '-';
+        const fmtRupiah = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(parseFloat(val) || 0);
+        
+        // --- MODIFY DISPLAY NAME FOR WASTE ---
+        let displayType = item.type;
+        if (displayType === 'Waste Pcs To Pcs') displayType = 'Waste';
+
+        // 1. HEADER INFO
+        let html = `
+            <div class="space-y-6">
+                <!-- Header -->
+                <div class="flex justify-between items-start border-b border-gray-200 pb-4">
+                    <div>
+                        <h4 class="font-bold text-xl text-red-900">${displayType}</h4>
+                        <div class="text-gray-500 text-xs mt-1">Dibuat oleh: ${item.NAME}</div>
+                    </div>
+                    <div class="text-right">
+                        <span class="inline-block px-2 py-1 bg-gray-100 rounded text-xs font-mono font-bold text-gray-600 mb-1">${item.Submission_ID}</span>
+                        <div class="text-gray-400 text-xs">${new Date(item.Timestamp).toLocaleString('id-ID')}</div>
+                    </div>
+                </div>
+
+                <!-- Status Box -->
+                <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-100">
+                    <div>
+                        <span class="block text-xs text-gray-400 font-bold uppercase">Status Dokumen</span>
+                        <span class="font-bold ${item.currentStatus === 'Approved' ? 'text-green-600' : (item.currentStatus === 'Rejected' ? 'text-red-600' : 'text-amber-600')}">${item.currentStatus}</span>
+                    </div>
+                    ${item.currentStatus === 'Rejected' ? 
+                        `<div class="text-right max-w-xs">
+                            <span class="block text-xs text-red-400 font-bold uppercase">Alasan Penolakan</span>
+                            <span class="text-xs text-red-700 italic">"${item.AM_Reject_Reason || item.FNB_Reject_Reason || 'Tidak ada catatan'}"</span>
+                        </div>` : ''}
+                </div>
+        `;
+
+        // 2. DYNAMIC CONTENT BASED ON TYPE
+        html += `<div class="bg-white rounded border border-gray-200 p-4 space-y-3">`;
+
+        // -- KOMPLAIN --
+        if (item.type === 'Komplain Customer') {
+            html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">Jenis Komplain</span><span class="font-bold">${safeStr(jsonData.jenisKomplain)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Status</span><span class="font-bold">${safeStr(jsonData.statusComplain)}</span></div>
+                    <div class="col-span-2"><span class="text-xs text-gray-500 block">Sumber</span><span>${safeStr(jsonData.sumberComplain)} ${jsonData.noBillGCC ? `(Bill: ${jsonData.noBillGCC})` : ''}</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block mb-1">Kronologis</span>
+                         <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="bg-gray-50 font-bold"><tr><th class="p-2">Waktu</th><th class="p-2">Kejadian</th><th class="p-2">PIC</th></tr></thead>
+                         <tbody>${(jsonData.kronologis||[]).map(k => `<tr><td class="p-2 border-b">${k.date} ${k.time}</td><td class="p-2 border-b">${k.info}</td><td class="p-2 border-b">${k.handle}</td></tr>`).join('')}</tbody></table></div>
+                    </div>
+                </div>`;
+        }
+        // -- REFUND --
+        else if (item.type === 'Refund Customer') {
+            html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">Customer</span><span class="font-bold">${safeStr(jsonData.namaCustomer)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Nominal Refund</span><span class="font-bold text-red-700">${fmtRupiah(jsonData.jumlahRefund)}</span></div>
+                    <div class="col-span-2"><span class="text-xs text-gray-500 block">Bank Info</span><span>${safeStr(jsonData.namaBank)} - ${safeStr(jsonData.noRek)} a/n ${safeStr(jsonData.atasNama)}</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block">Alasan</span><p class="text-gray-700 italic">${safeStr(jsonData.alasan)}</p></div>
+                </div>`;
+        }
+        // -- VOID --
+        else if (item.type === 'Void') {
+            html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">No Bill</span><span class="font-bold">${safeStr(jsonData.noBill)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Nominal Void</span><span class="font-bold text-red-700">${fmtRupiah(jsonData.nominal)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Tipe Void</span><span>${safeStr(jsonData.tipeVoid)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Tanggal/Hari</span><span>${safeStr(jsonData.tanggal)} (${safeStr(jsonData.hari)})</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block">Alasan</span><p class="text-gray-700 italic">${safeStr(jsonData.alasan)}</p></div>
+                </div>`;
+        }
+        // -- ASSET --
+        else if (item.type === 'Penjualan & Dispose Asset') {
+            html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">Tindakan</span><span class="font-bold">${safeStr(jsonData.tindakan)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Grand Total</span><span class="font-bold text-red-700">${safeStr(jsonData.grandTotalJual || 'Rp 0')}</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block mb-1">Daftar Asset</span>
+                         <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="bg-gray-50 font-bold"><tr><th class="p-2">No Asset</th><th class="p-2">Item</th><th class="p-2">Qty</th><th class="p-2">Harga Jual</th></tr></thead>
+                         <tbody>${JSON.parse(jsonData.items||'[]').map(i => `<tr><td class="p-2 border-b">${i.noAsset}</td><td class="p-2 border-b">${i.item}</td><td class="p-2 border-b">${i.qty}</td><td class="p-2 border-b">${i.hargaJual}</td></tr>`).join('')}</tbody></table></div>
+                    </div>
+                </div>`;
+        }
+        // -- INVOICE / QUOTATION (NEW) --
+        else if (item.type === 'Invoice' || item.type === 'Quotation') {
+             const math = jsonData.math || {};
+             const fees = jsonData.fees || {};
+             html += `
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4 border-b pb-4">
+                         <div>
+                            <span class="text-xs text-gray-500 block font-bold uppercase">Customer Info</span>
+                            <div class="font-bold text-sm">${safeStr(jsonData.company)}</div>
+                            <div class="text-xs">${safeStr(jsonData.person)} | ${safeStr(jsonData.phone)}</div>
+                            <div class="text-xs text-gray-500 italic mt-1">${safeStr(jsonData.address)}</div>
+                         </div>
+                         <div class="text-right">
+                            <span class="text-xs text-gray-500 block font-bold uppercase">${item.type === 'Invoice' ? 'Due Date' : 'Valid Until'}</span>
+                            <div class="font-bold text-sm text-red-700">${safeStr(jsonData.date)}</div>
+                         </div>
+                    </div>
+                    <div>
+                        <span class="text-xs text-gray-500 block font-bold uppercase mb-2">Item List</span>
+                        <div class="overflow-x-auto"><table class="w-full text-xs text-left border"><thead class="bg-gray-100 font-bold"><tr><th class="p-2">Item</th><th class="p-2">Qty</th><th class="p-2">Price</th><th class="p-2 text-right">Total</th></tr></thead>
+                        <tbody>${(typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : (jsonData.items||[])).map(i => `<tr><td class="p-2 border-b">${i.item}</td><td class="p-2 border-b">${i.qty} ${i.unit}</td><td class="p-2 border-b">${i.price}</td><td class="p-2 border-b text-right">${i.total}</td></tr>`).join('')}</tbody></table></div>
+                    </div>
+                    <div class="flex justify-end">
+                        <div class="w-1/2 space-y-1 text-right text-xs">
+                            <div class="flex justify-between"><span>Subtotal</span><span class="font-bold">${safeStr(math.subtotal)}</span></div>
+                            ${math.discVal ? `<div class="flex justify-between text-red-600"><span>Discount</span><span>${math.discVal}</span></div>` : ''}
+                            ${math.svcVal ? `<div class="flex justify-between"><span>Service</span><span>${math.svcVal}</span></div>` : ''}
+                            ${math.pb1Val ? `<div class="flex justify-between"><span>PB1</span><span>${math.pb1Val}</span></div>` : ''}
+                            ${fees.delivery ? `<div class="flex justify-between"><span>Delivery</span><span>${fees.delivery}</span></div>` : ''}
+                            <div class="flex justify-between border-t pt-1 mt-1 text-sm font-bold text-red-800"><span>GRAND TOTAL</span><span>${safeStr(math.grandTotal)}</span></div>
+                        </div>
+                    </div>
+                </div>
+             `;
+        }
+        // -- GENERIC TABLE ITEMS --
+        else if (['Waste Pcs To Pcs', 'Revisi Stock Opname', 'Purchasing Non Supplier', 'Konsumsi General Cleaning', 'Cancel Online'].includes(item.type)) {
+            // Header Tambahan per Tipe
+            if(item.type === 'Cancel Online') {
+                 html += `<div class="grid grid-cols-2 gap-4 mb-3"><div><span class="text-xs text-gray-500 block">Platform</span><span class="font-bold">${safeStr(jsonData.platform)}</span></div><div><span class="text-xs text-gray-500 block">No Transaksi</span><span class="font-bold">${safeStr(jsonData.noTransaksi)}</span></div><div class="col-span-2"><span class="text-xs text-gray-500 block">Alasan</span><span>${safeStr(jsonData.alasan)}</span></div></div>`;
+            }
+            if(item.type === 'Purchasing Non Supplier') {
+                 html += `<div class="grid grid-cols-2 gap-4 mb-3"><div><span class="text-xs text-gray-500 block">Vendor</span><span class="font-bold">${safeStr(jsonData.vendor)}</span></div><div><span class="text-xs text-gray-500 block">Tanggal Bill</span><span class="font-bold">${safeStr(jsonData.tanggalBill)}</span></div><div class="col-span-2"><span class="text-xs text-gray-500 block">Keperluan</span><span>${safeStr(jsonData.alasan)}</span></div><div class="col-span-2 border-t pt-2 font-bold text-right text-red-700">Total: ${safeStr(jsonData.grandTotal)}</div></div>`;
+            }
+            if(item.type === 'Konsumsi General Cleaning') {
+                 html += `<div class="mb-3"><span class="text-xs text-gray-500 block">Keperluan</span><span class="font-bold">${safeStr(jsonData.alasan)}</span></div>`;
+            }
+            if(item.type === 'Waste Pcs To Pcs') {
+                 // Hitung Total Value jika ada di items
+                 let totalWaste = 0;
+                 let itemsCalc = typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : (jsonData.items||[]);
+                 itemsCalc.forEach(i => {
+                     let v = i.total || i.subtotal || 0;
+                     if(typeof v === 'string') v = parseFloat(v.replace(/[^0-9]/g, '')) || 0;
+                     totalWaste += v;
+                 });
+                 
+                 if(totalWaste > 0) {
+                     html += `<div class="mb-3 border-b border-gray-100 pb-2"><span class="text-xs text-gray-500 block">Total Value Waste</span><span class="font-bold text-red-700 text-lg">${fmtRupiah(totalWaste)}</span></div>`;
+                 }
+            }
+            
+            let items = [];
+            try { items = typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : jsonData.items; } catch(e){}
+            
+            if(items && items.length > 0) {
+                html += `<div class="border-t pt-2"><span class="text-xs text-gray-500 block mb-1">Rincian Item</span>
+                    <div class="overflow-x-auto"><table class="w-full text-xs text-left border"><thead class="bg-gray-100 font-bold"><tr>
+                        <th class="p-2">Item/Menu</th><th class="p-2 text-center">Qty</th><th class="p-2 text-right">Total/Ket</th>
+                    </tr></thead><tbody>`;
+                items.forEach(i => {
+                    // Logic Name Check Lengkap
+                    const name = i.item || i.namaItem || i.menu || i.namaMenu || i.kodeItem || '-';
+                    const qty = i.qty || i.qtyRevisi || '-';
+                    
+                    // Logic Value Check (Enhanced to show BOTH Total AND Reason)
+                    let valRaw = i.total || i.price;
+                    let reasonRaw = i.reason || i.alasan || i.ket;
+                    let displayVal = '';
+
+                    if (valRaw) {
+                        displayVal += `<div class="font-bold">${valRaw}</div>`;
+                    }
+                    
+                    if (reasonRaw) {
+                         // Jika sudah ada value, reason jadi kecil
+                         if(valRaw) displayVal += `<div class="text-[10px] text-gray-500 italic leading-tight mt-0.5">${reasonRaw}</div>`;
+                         else displayVal += `<div>${reasonRaw}</div>`;
+                    }
+
+                    if (!displayVal) displayVal = '-';
+                    
+                    html += `<tr><td class="p-2 border-b">${name}</td><td class="p-2 border-b text-center">${qty} ${i.unit||''}</td><td class="p-2 border-b text-right">${displayVal}</td></tr>`;
+                });
+                html += `</tbody></table></div></div>`;
+            }
+        }
+        // -- TEST FOOD --
+        else if (item.type === 'Test Food') {
+             html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">Lokasi</span><span class="font-bold">${safeStr(jsonData.lokasiTest)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Keperluan</span><span class="font-bold">${safeStr(jsonData.keperluanTest)}</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block mb-1">Penilaian Menu</span>
+                         <div class="overflow-x-auto"><table class="w-full text-xs text-left"><thead class="bg-gray-50 font-bold"><tr><th class="p-2">Menu</th><th class="p-2 text-center">Rasa</th><th class="p-2 text-center">Tekstur</th><th class="p-2 text-center">Status</th></tr></thead>
+                         <tbody>${(typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : (jsonData.items||[])).map(i => `<tr><td class="p-2 border-b">${i.menu}</td><td class="p-2 border-b text-center">${i.taste}</td><td class="p-2 border-b text-center">${i.texture}</td><td class="p-2 border-b text-center font-bold ${i.status==='Pass'?'text-green-600':'text-red-600'}">${i.status}</td></tr>`).join('')}</tbody></table></div>
+                    </div>
+                </div>`;
+        }
+        // -- KOL & ENTERTAIN & DISCOUNT --
+        else if (['KOL Foodies', 'Customer Entertain', 'Discount Karyawan'].includes(item.type)) {
+             const lblNama = item.type === 'Discount Karyawan' ? 'Nama Karyawan' : (item.type === 'KOL Foodies' ? 'Nama Foodies' : 'Tujuan Entertain');
+             const valNama = jsonData.namaKaryawan || jsonData.namaFoodies || jsonData.tujuan;
+             
+             html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div><span class="text-xs text-gray-500 block">${lblNama}</span><span class="font-bold">${safeStr(valNama)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Total Bill</span><span class="font-bold text-red-700">${fmtRupiah(jsonData.totalBill)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">No Bill</span><span>${safeStr(jsonData.noBill)}</span></div>
+                    ${jsonData.nominalDiskon ? `<div><span class="text-xs text-gray-500 block">Nominal Diskon</span><span class="font-bold text-green-700">${fmtRupiah(jsonData.nominalDiskon)}</span></div>` : ''}
+                    
+                    ${item.type === 'Discount Karyawan' ? `<div><span class="text-xs text-gray-500 block">ID Karyawan</span><span>${safeStr(jsonData.idKaryawan)}</span></div><div class="col-span-2"><span class="text-xs text-gray-500 block">Keterangan</span><span class="italic">${safeStr(jsonData.keterangan)}</span></div>` : ''}
+                    ${item.type === 'Customer Entertain' ? `<div><span class="text-xs text-gray-500 block">Tanggal Bill</span><span>${safeStr(jsonData.tanggalBill)}</span></div>` : ''}
+                </div>`;
+        }
+        // -- MOM --
+        else if (item.type === 'Minute of Meeting') {
+             html += `
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="col-span-2"><span class="text-xs text-gray-500 block">Judul Meeting</span><span class="font-bold">${safeStr(jsonData.namaMeeting)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Waktu</span><span>${safeStr(jsonData.tanggalMeeting)} ${safeStr(jsonData.jamMeeting)}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Tempat</span><span>${safeStr(jsonData.tempatMeeting)}</span></div>
+                    <div class="col-span-2 border-t pt-2"><span class="text-xs text-gray-500 block mb-1">Peserta Hadir (${(jsonData.attendance||[]).length})</span>
+                         <div class="flex flex-wrap gap-2">${(jsonData.attendance||[]).map(a => `<span class="px-2 py-1 bg-gray-100 rounded text-xs">${a.nama}</span>`).join('')}</div>
+                    </div>
+                </div>`;
+        }
+        
+        html += `</div>`;
+
+        // 3. PHOTOS (SMART SCANNING)
+        let photos = [];
+        
+        // Scan semua key di root level JSON yang mengandung kata kunci foto
+        Object.keys(jsonData).forEach(key => {
+            const lowerKey = key.toLowerCase();
+            if ((lowerKey.includes('foto') || lowerKey.includes('photo') || lowerKey.includes('struk') || lowerKey.includes('bukti') || lowerKey.includes('bill')) && typeof jsonData[key] === 'string' && jsonData[key].startsWith('data:image')) {
+                 photos.push({src: jsonData[key], label: key.replace(/([A-Z])/g, ' $1').toUpperCase()});
+            }
+        });
+
+        // Scan Array 'files' (Khusus Cancel Online)
+        if(jsonData.files) {
+             Object.keys(jsonData.files).forEach(k => {
+                 if(Array.isArray(jsonData.files[k])) {
+                     jsonData.files[k].forEach((src, i) => {
+                         if(src && src.startsWith('data:image')) photos.push({src, label: k.toUpperCase() + ' ' + (i+1)});
+                     });
+                 }
+             });
+        }
+        
+        // Scan Array 'photos', 'extraPhotos', 'kronologis'
+        if(Array.isArray(jsonData.photos)) jsonData.photos.forEach((src,i) => { if(src) photos.push({src, label: 'FOTO '+(i+1)}) });
+        if(Array.isArray(jsonData.extraPhotos)) jsonData.extraPhotos.forEach((src,i) => { if(src) photos.push({src, label: 'EXTRA '+(i+1)}) });
+        if(Array.isArray(jsonData.kronologis)) jsonData.kronologis.forEach((k,i) => { if(k.photo) photos.push({src: k.photo, label: 'KRONOLOGIS '+(i+1)}) });
+        
+        // Scan items with photos (Test Food, Waste)
+        try { 
+            let itms = typeof jsonData.items === 'string' ? JSON.parse(jsonData.items) : jsonData.items;
+            if(Array.isArray(itms)) itms.forEach((m,i) => { 
+                if(m.photo) photos.push({src: m.photo, label: m.menu || 'MENU '+(i+1)});
+                if(m.foto) photos.push({src: m.foto, label: m.item || 'ITEM '+(i+1)}); // Utk Waste
+            });
+        } catch(e){}
+
+        // Hapus duplikat berdasarkan src string
+        photos = photos.filter((v,i,a)=>a.findIndex(t=>(t.src === v.src))===i);
+
+        if (photos.length > 0) {
+            html += `
+                <div class="mt-4">
+                    <h5 class="text-xs font-bold text-gray-500 uppercase mb-2">Lampiran Foto (${photos.length})</h5>
+                    <div class="flex gap-2 overflow-x-auto pb-2">
+                        ${photos.map(p => `
+                            <div class="shrink-0 w-24 h-24 bg-gray-200 rounded overflow-hidden relative group border cursor-pointer" onclick="window.open('${p.src}')">
+                                <img src="${p.src}" class="w-full h-full object-cover">
+                                <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition"></div>
+                                <div class="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-[9px] p-1 truncate text-center">${p.label}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        html += `</div>`; // Close space-y-6
+
+        container.innerHTML = html;
+
+        // Tombol Aksi
+        actionContainer.innerHTML = '';
+        
+        const isApproved = item.currentStatus === 'Approved';
+        const isRejected = item.currentStatus === 'Rejected';
+
+        if (isApproved) {
+            const btnPdf = document.createElement('button');
+            btnPdf.className = "bg-red-800 hover:bg-red-900 text-white font-bold py-2 px-4 rounded shadow-sm flex items-center transition transform active:scale-95 text-sm";
+            btnPdf.innerHTML = '<i class="fas fa-file-pdf mr-2"></i> Download PDF';
+            btnPdf.onclick = () => { 
+                if(window.generatePDF) { window.generatePDF(item, jsonData); } 
+                else { alert("Library PDF belum siap."); }
+            };
+            actionContainer.appendChild(btnPdf);
+        }
+
+        if (isRejected) {
+            const btnEdit = document.createElement('button');
+            btnEdit.className = "bg-amber-500 hover:bg-amber-600 text-white font-bold py-2 px-4 rounded flex items-center shadow-sm animate-pulse text-sm";
+            btnEdit.innerHTML = '<i class="fas fa-edit mr-2"></i> PERBAIKI DATA';
+            btnEdit.onclick = () => { 
+                document.getElementById('detailModal').classList.add('hidden');
+                loadForm(item.type, item); // INI BARU MEMBUKA FORM EDIT
+            };
+            actionContainer.appendChild(btnEdit);
+        }
+    }
+
+    function closeDetail() { document.getElementById('detailModal').classList.add('hidden'); }
+    
+    function loadForm(type, existingData = null) {
+        document.getElementById('listView').classList.add('hidden'); 
+        document.getElementById('formContainer').classList.remove('hidden'); 
+        document.getElementById('formContent').innerHTML = '<div class="text-center py-20 flex flex-col items-center justify-center"><i class="fas fa-circle-notch fa-spin text-4xl text-red-800 mb-4"></i><span class="text-gray-500 font-medium">Memuat Form...</span></div>';
+        
+        let filename = ''; 
+        if (type === 'KOL Foodies') filename = 'KOLFoodiesForm'; 
+        if (type === 'Void') filename = 'VoidForm'; 
+        if (type === 'Waste Pcs To Pcs') filename = 'WastePcsToPcsForm';
+        if (type === 'Revisi Stock Opname') filename = 'RevisiStockOpnameForm';
+        if (type === 'Konsumsi General Cleaning') filename = 'KonsumsiGeneralCleaningForm';
+        if (type === 'Penjualan & Dispose Asset') filename = 'BeritaAcaraPenjualanDisposeAssetForm';
+        if (type === 'Quotation') filename = 'QuotationForm.html'; 
+        if (type === 'Invoice') filename = 'InvoiceForm.html'; 
+        if (type === 'Refund Customer') filename = 'RefundCustomerForm';
+        if (type === 'Komplain Customer') filename = 'ComplainHandlingForm';
+        if (type === 'Minute of Meeting') filename = 'MinuteOfMeetingForm';
+        if (type === 'Purchasing Non Supplier') filename = 'PurchasingNonSupplierForm.html';
+        if (type === 'Customer Entertain') filename = 'CustomerEntertainForm';
+        if (type === 'Test Food') filename = 'TestFoodForm.html';
+        
+        // NEW FORMS TAHAP 2
+        if (type === 'Discount Karyawan') filename = 'DiscountKaryawanForm';
+        if (type === 'Cancel Online') filename = 'CancelOnlineForm';
+
+        if(filename) {
+            google.script.run.withSuccessHandler(html => { 
+                const c = document.getElementById('formContent'); 
+                c.innerHTML = html; 
+                const scripts = c.querySelectorAll('script'); 
+                scripts.forEach(oldScript => { 
+                    const newScript = document.createElement('script'); 
+                    Array.from(oldScript.attributes).forEach(attr => newScript.setAttribute(attr.name, attr.value)); 
+                    newScript.appendChild(document.createTextNode(oldScript.innerHTML)); 
+                    oldScript.parentNode.replaceChild(newScript, oldScript); 
+                }); 
+            }).includeForm(filename, window.userData, existingData);
+        } else {
+            console.error('Form belum tersedia untuk tipe: ' + type);
+            closeForm();
+        }
+    }
+    function closeForm() { 
+        document.getElementById('formContainer').classList.add('hidden'); 
+        document.getElementById('listView').classList.remove('hidden'); 
+        document.getElementById('formContent').innerHTML = ''; 
+        reloadTable(); 
+    }
+</script>
+</body>
+</html>
