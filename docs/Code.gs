@@ -118,6 +118,13 @@ function apiActions_() {
     adminAddPage: adminAddPage,
     adminPageVisibility: getAdminPageVisibility,
     adminSavePageVisibility: saveAdminPageVisibility,
+    lostFoundBootstrap: getLostFoundBootstrap,
+    lostFoundOutlets: getLostFoundOutlets,
+    lostFoundItems: getLostFoundItems,
+    lostFoundItemDetail: getLostFoundItemDetail,
+    lostFoundSave: saveLostFoundItem,
+    lostFoundUpdate: updateLostFoundItem,
+    lostFoundProcess: processLostFoundItem,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
@@ -8226,4 +8233,782 @@ function truthy_(value) { return value === true || String(value).toLowerCase() =
 function dateIso_(value) {
   const date = value instanceof Date ? value : new Date(value || 0);
   return isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+// ---------- Lost And Found (SABAR) ----------
+// Modul berada dalam scope tersendiri agar helper SABAR tidak bertabrakan dengan BI-Space.
+const LOST_FOUND = (function () {
+/**
+ * VERSION: FAST-DATABASE-UNDER3S - 2026-06-19
+ * Fokus fix:
+ * 1) Login dibuat ringan: authenticateUser() hanya baca sheet store, tidak scan/migrasi database.
+ * 2) Database tetap header-based dan toleran nama sheet/header.
+ * 3) Database cepat: tidak convert foto Drive ke base64 saat fetch list; foto dikirim sebagai thumbnail URL.
+ * 4) Tabel menampilkan kode outlet melalui outletCode.
+ * 5) Support: submit, edit, action diambil/dimusnahkan/diserahkan, audit.
+ */
+
+const SPREADSHEET_ID = "1hDdaSWxSG6bmUPsp2eyQnCyuhP6Jg7ZMQGiYmGoSTgw";
+const BASE64_CELL_LIMIT = 45000; // jaga batas 50k karakter/cell Google Sheets
+
+function openSpreadsheet_() {
+  return SpreadsheetApp.openById(SPREADSHEET_ID);
+}
+
+function normalizeText_(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^A-Z0-9 ]/g, '')
+    .trim();
+}
+
+function normalizeKey_(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function isSameOutlet_(a, b) {
+  const aa = normalizeText_(a);
+  const bb = normalizeText_(b);
+  if (!aa || !bb) return false;
+  if (aa === bb) return true;
+  if (aa.length >= 4 && bb.length >= 4 && (aa.indexOf(bb) !== -1 || bb.indexOf(aa) !== -1)) return true;
+  return false;
+}
+
+function findSheetByNames_(ss, names) {
+  const wanted = names.map(n => normalizeKey_(n));
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    if (wanted.indexOf(normalizeKey_(sheets[i].getName())) !== -1) return sheets[i];
+  }
+  return null;
+}
+
+function canonicalStoreHeader_(h) {
+  const k = normalizeKey_(h);
+  const alias = {
+    idoutlet: 'ID Outlet', outletid: 'ID Outlet', idstore: 'ID Outlet', kodeid: 'ID Outlet',
+    namaoutlet: 'Nama Outlet', outlet: 'Nama Outlet', store: 'Nama Outlet', namastore: 'Nama Outlet',
+    kodeoutlet: 'Kode Outlet', kode: 'Kode Outlet', code: 'Kode Outlet', logincode: 'Kode Outlet'
+  };
+  return alias[k] || '';
+}
+
+function buildStoreColumnMap_(headers) {
+  const col = {};
+  headers.forEach((h, i) => {
+    const c = canonicalStoreHeader_(h);
+    if (c) col[c] = i;
+  });
+  if (col['ID Outlet'] === undefined) col['ID Outlet'] = 0;
+  if (col['Nama Outlet'] === undefined) col['Nama Outlet'] = 1;
+  if (col['Kode Outlet'] === undefined) col['Kode Outlet'] = 4;
+  return col;
+}
+
+function getStoreSheet_(ss) {
+  const byName = findSheetByNames_(ss, ['store', 'stores', 'outlet', 'outlets']);
+  if (byName) return byName;
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    const sh = sheets[i];
+    const lastCol = sh.getLastColumn();
+    if (lastCol < 1) continue;
+    const headers = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+    const cols = headers.map(h => canonicalStoreHeader_(h)).filter(Boolean);
+    if (cols.indexOf('Nama Outlet') !== -1 && cols.indexOf('Kode Outlet') !== -1) return sh;
+  }
+  return null;
+}
+
+function getStoreRecords_(ss) {
+  const sh = getStoreSheet_(ss);
+  if (!sh) return [];
+  const values = sh.getDataRange().getDisplayValues();
+  if (values.length < 2) return [];
+  const col = buildStoreColumnMap_(values[0]);
+  const rows = [];
+  for (let r = 1; r < values.length; r++) {
+    const row = values[r];
+    const id = String(row[col['ID Outlet']] || '').trim();
+    const name = String(row[col['Nama Outlet']] || '').trim();
+    const code = String(row[col['Kode Outlet']] || '').trim();
+    if (!id && !name && !code) continue;
+    rows.push({ id: id, name: name, code: code || id });
+  }
+  return rows;
+}
+
+function buildOutletLookup_(records) {
+  const lookup = {};
+  (records || []).forEach(rec => {
+    const code = rec.code || rec.id || rec.name || '';
+    const keys = [rec.name, rec.code, rec.id].map(normalizeText_).filter(Boolean);
+    keys.forEach(k => lookup[k] = code);
+  });
+  return lookup;
+}
+
+function resolveOutletCodeFromRecords_(records, outletName) {
+  const n = normalizeText_(outletName);
+  if (!n) return outletName || '';
+  const lookup = buildOutletLookup_(records || []);
+  if (lookup[n]) return lookup[n];
+  for (let i = 0; i < (records || []).length; i++) {
+    const rec = records[i];
+    if (isSameOutlet_(rec.name, outletName) || isSameOutlet_(rec.code, outletName) || isSameOutlet_(rec.id, outletName)) {
+      return rec.code || rec.id || rec.name || outletName || '';
+    }
+  }
+  return outletName || '';
+}
+
+function resolveOutletCodeByName_(ss, outletName) {
+  return resolveOutletCodeFromRecords_(getStoreRecords_(ss), outletName);
+}
+
+/**
+ * LOGIN RINGAN. Tidak memanggil setup/migrasi database agar tombol login cepat dan tidak stuck.
+ */
+function authenticateUserFromStoreRecords_(loginCode, records) {
+  const code = String(loginCode || '').trim().toUpperCase();
+  if (!code) return { success: false, message: 'Kode login tidak boleh kosong.' };
+  if (code === 'BIHQ') return { success: true, outletName: 'BIHQ (Headquarters)', outletCode: 'BIHQ', role: 'HQ' };
+
+  if (!records || !records.length) {
+    return { success: false, message: 'Sheet store tidak ditemukan atau kosong. Pastikan ada kolom Nama Outlet dan Kode Outlet.' };
+  }
+
+  const searchNorm = normalizeText_(code);
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const idNorm = normalizeText_(rec.id);
+    const nameNorm = normalizeText_(rec.name);
+    const codeNorm = normalizeText_(rec.code);
+    if (codeNorm === searchNorm || idNorm === searchNorm || nameNorm === searchNorm || idNorm.indexOf(searchNorm) !== -1 || nameNorm.indexOf(searchNorm) !== -1) {
+      return { success: true, outletName: rec.name || rec.code || rec.id, outletCode: rec.code || rec.id, role: 'OUTLET' };
+    }
+  }
+  return { success: false, message: 'Kode outlet tidak ditemukan: ' + code };
+}
+
+function authenticateUser(loginCode) {
+  try {
+    const ss = openSpreadsheet_();
+    return authenticateUserFromStoreRecords_(loginCode, getStoreRecords_(ss));
+  } catch (err) {
+    return { success: false, message: 'Login gagal: ' + err.message };
+  }
+}
+
+function fetchOutletList() {
+  const ss = openSpreadsheet_();
+  return getStoreRecords_(ss).map(r => ({ id: r.id, code: r.code || r.id, name: r.name }));
+}
+
+function getItemStandardHeaders_() {
+  return [
+    'ID Item','Timestamp','Tanggal Kejadian','Jam Kejadian','Outlet','Nomor Meja','No Bill','Nama Tamu','No Telp Tamu','No Member',
+    'QTY','Jenis Item','Nama Item','Merk','Type','Warna','Info Lain','Foto Item URL','Status','Tanggal Aksi','Nama Eksekutor','No Telp Penerima',
+    'Daftar Saksi','Instruksi Oleh Nama','Instruksi Oleh Jabatan','Action Foto 1 URL','Action Foto 2 URL'
+  ];
+}
+
+function canonicalItemHeader_(h) {
+  const k = normalizeKey_(h);
+  const alias = {
+    iditem:'ID Item', idbarang:'ID Item', id:'ID Item',
+    timestamp:'Timestamp', waktuinput:'Timestamp', tanggalinput:'Timestamp',
+    tanggalkejadian:'Tanggal Kejadian', tglkejadian:'Tanggal Kejadian', tanggal:'Tanggal Kejadian',
+    jamkejadian:'Jam Kejadian', jam:'Jam Kejadian',
+    outlet:'Outlet', store:'Outlet', namaoutlet:'Outlet',
+    nomormeja:'Nomor Meja', nomeja:'Nomor Meja', table:'Nomor Meja', meja:'Nomor Meja',
+    nobill:'No Bill', bill:'No Bill', billno:'No Bill', salesnumber:'No Bill',
+    namatamu:'Nama Tamu', namacustomer:'Nama Tamu', customer:'Nama Tamu',
+    notelptamu:'No Telp Tamu', notlp:'No Telp Tamu', notelp:'No Telp Tamu', phone:'No Telp Tamu', notelpcustomer:'No Telp Tamu',
+    nomember:'No Member', member:'No Member',
+    qty:'QTY', quantity:'QTY', jumlah:'QTY',
+    jenisitem:'Jenis Item', jenisbarang:'Jenis Item', kategori:'Jenis Item', kategoriitem:'Jenis Item',
+    namaitem:'Nama Item', namabarang:'Nama Item', barang:'Nama Item',
+    merk:'Merk', brand:'Merk', type:'Type', tipe:'Type', model:'Type', warna:'Warna', color:'Warna',
+    infolain:'Info Lain', keterangan:'Info Lain', catatan:'Info Lain',
+    fotoitemurl:'Foto Item URL', fotoitemuri:'Foto Item URL', fotobarangurl:'Foto Item URL', fotobaranguri:'Foto Item URL', fotourl:'Foto Item URL', fotouri:'Foto Item URL', foto:'Foto Item URL',
+    status:'Status', tanggalaksi:'Tanggal Aksi', tglaksi:'Tanggal Aksi',
+    namaeksekutor:'Nama Eksekutor', namapetugas:'Nama Eksekutor', namaaks:'Nama Eksekutor',
+    notelppenerima:'No Telp Penerima', notelpeksekutor:'No Telp Penerima', notelppetugas:'No Telp Penerima',
+    daftarsaksi:'Daftar Saksi', saksi:'Daftar Saksi',
+    instruksiolehnama:'Instruksi Oleh Nama', instruksinama:'Instruksi Oleh Nama',
+    instruksiolehjabatan:'Instruksi Oleh Jabatan', instruksijabatan:'Instruksi Oleh Jabatan',
+    actionfoto1url:'Action Foto 1 URL', actionfoto1uri:'Action Foto 1 URL', fotoaksi1url:'Action Foto 1 URL', fotoaksi1uri:'Action Foto 1 URL',
+    actionfoto2url:'Action Foto 2 URL', actionfoto2uri:'Action Foto 2 URL', fotoaksi2url:'Action Foto 2 URL', fotoaksi2uri:'Action Foto 2 URL'
+  };
+  const std = getItemStandardHeaders_();
+  for (let i = 0; i < std.length; i++) if (normalizeKey_(std[i]) === k) return std[i];
+  return alias[k] || '';
+}
+
+function buildItemColumnMap_(headers) {
+  const col = {};
+  getItemStandardHeaders_().forEach((h, i) => col[h] = i);
+  headers.forEach((h, i) => {
+    const c = canonicalItemHeader_(h);
+    if (c) col[c] = i;
+  });
+  return col;
+}
+
+function analyzeItemSheet_(sh) {
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  const result = { sheet: sh, sheetName: sh.getName(), lastRow: lastRow, lastCol: lastCol, score: 0, dataRows: 0, found: {} };
+  const preferred = ['items','item','data item','database item','daftar barang','lost and found','lost found','database','data barang'].map(normalizeKey_);
+  if (preferred.indexOf(normalizeKey_(sh.getName())) !== -1) result.score += 100;
+  if (lastRow < 1 || lastCol < 1) return result;
+  const headers = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  headers.forEach((h, i) => { const c = canonicalItemHeader_(h); if (c) result.found[c] = i; });
+  const core = ['ID Item','Nama Item','Status'];
+  const secondary = ['Timestamp','Tanggal Kejadian','Jam Kejadian','Outlet','Jenis Item','QTY'];
+  const coreCount = core.filter(h => result.found[h] !== undefined).length;
+  const secCount = secondary.filter(h => result.found[h] !== undefined).length;
+  result.score += coreCount * 1000 + secCount * 100;
+  if (lastRow > 1 && (result.found['ID Item'] !== undefined || result.found['Nama Item'] !== undefined)) {
+    const sample = sh.getRange(2, 1, Math.min(lastRow - 1, 200), lastCol).getDisplayValues();
+    for (let r = 0; r < sample.length; r++) {
+      const row = sample[r];
+      const id = result.found['ID Item'] !== undefined ? row[result.found['ID Item']] : '';
+      const name = result.found['Nama Item'] !== undefined ? row[result.found['Nama Item']] : '';
+      if (String(id + name).trim()) result.dataRows++;
+    }
+  }
+  result.score += result.dataRows * 5000;
+  return result;
+}
+
+function pickItemsSheet_(ss) {
+  const sheets = ss.getSheets();
+  let best = null;
+  for (let i = 0; i < sheets.length; i++) {
+    const a = analyzeItemSheet_(sheets[i]);
+    if (a.found['ID Item'] === undefined && a.found['Nama Item'] === undefined) continue;
+    if (!best || a.score > best.score) best = a;
+  }
+  return best;
+}
+
+function itemSheetLooksValid_(sh) {
+  if (!sh || sh.getLastRow() < 1 || sh.getLastColumn() < 1) return false;
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+  const found = {};
+  headers.forEach(h => { const c = canonicalItemHeader_(h); if (c) found[c] = true; });
+  return !!(found['ID Item'] || found['Nama Item']);
+}
+
+function getItemsSheet_(ss) {
+  const props = PropertiesService.getScriptProperties();
+  const cachedName = props.getProperty('SABAR_ITEMS_SHEET_NAME');
+  if (cachedName) {
+    const cachedSheet = ss.getSheetByName(cachedName);
+    if (itemSheetLooksValid_(cachedSheet)) return cachedSheet;
+  }
+
+  const direct = findSheetByNames_(ss, ['items','item','data item','database item','daftar barang','lost and found','lost found','database','data barang']);
+  if (itemSheetLooksValid_(direct)) {
+    props.setProperty('SABAR_ITEMS_SHEET_NAME', direct.getName());
+    return direct;
+  }
+
+  const picked = pickItemsSheet_(ss);
+  if (picked && picked.sheet) {
+    props.setProperty('SABAR_ITEMS_SHEET_NAME', picked.sheet.getName());
+    return picked.sheet;
+  }
+
+  const sh = ss.insertSheet('items');
+  sh.appendRow(getItemStandardHeaders_());
+  sh.getRange(1,1,1,getItemStandardHeaders_().length).setFontWeight('bold').setBackground('#0f172a').setFontColor('#ffffff');
+  props.setProperty('SABAR_ITEMS_SHEET_NAME', sh.getName());
+  return sh;
+}
+
+function ensureItemColumns_(sh) {
+  const lastCol = Math.max(sh.getLastColumn(), 1);
+  let headers = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  let found = {};
+  headers.forEach(h => { const c = canonicalItemHeader_(h); if (c) found[c] = true; });
+
+  const missing = getItemStandardHeaders_().filter(h => !found[h]);
+  if (missing.length) {
+    sh.getRange(1, sh.getLastColumn() + 1, 1, missing.length).setValues([missing]);
+    sh.getRange(1, 1, 1, sh.getLastColumn()).setFontWeight('bold').setBackground('#0f172a').setFontColor('#ffffff');
+  }
+}
+
+function readCell_(row, col, header) {
+  const i = col[header];
+  if (i === undefined || i < 0 || i >= row.length) return '';
+  return String(row[i] === null || row[i] === undefined ? '' : row[i]).trim();
+}
+
+function normalizeStatus_(v) {
+  const n = normalizeText_(v);
+  if (!n) return 'Dilaporkan';
+  if (n.indexOf('AMBIL') !== -1 || n.indexOf('CLAIM') !== -1) return 'Sudah Diambil';
+  if (n.indexOf('MUSNAH') !== -1 || n.indexOf('DESTROY') !== -1) return 'Dimusnahkan';
+  if (n.indexOf('SERAH') !== -1 || n.indexOf('DELIVER') !== -1 || n.indexOf('HANDOVER') !== -1) return 'Diserahkan';
+  if (n.indexOf('LAPOR') !== -1 || n.indexOf('REPORT') !== -1) return 'Dilaporkan';
+  return String(v || 'Dilaporkan').trim();
+}
+
+function normalizeJenis_(v) {
+  const n = normalizeText_(v);
+  if (!n) return '';
+  if (n.indexOf('ELECT') !== -1 || n.indexOf('ELEK') !== -1) return 'Electronic';
+  if (n.indexOf('MAKAN') !== -1 || n.indexOf('FOOD') !== -1 || n.indexOf('MINUM') !== -1) return 'Makanan';
+  if (n.indexOf('DOK') !== -1 || n.indexOf('DOC') !== -1) return 'Dokumen';
+  if (n.indexOf('HIAS') !== -1 || n.indexOf('JEWEL') !== -1 || n.indexOf('PERHIAS') !== -1) return 'Perhiasan';
+  if (n.indexOf('OTHER') !== -1 || n.indexOf('LAIN') !== -1) return 'Others';
+  return String(v || '').trim();
+}
+
+function formatTimeValue_(raw, display) {
+  if (display && String(display).trim()) {
+    const m = String(display).trim().match(/(\d{1,2})[:.](\d{2})/);
+    if (m) return String(m[1]).padStart(2, '0') + ':' + m[2];
+    return String(display).trim();
+  }
+  if (raw instanceof Date && !isNaN(raw.getTime())) return Utilities.formatDate(raw, 'GMT+7', 'HH:mm');
+  if (typeof raw === 'number' && raw >= 0 && raw < 1) {
+    const minutes = Math.round(raw * 24 * 60);
+    return String(Math.floor(minutes / 60) % 24).padStart(2, '0') + ':' + String(minutes % 60).padStart(2, '0');
+  }
+  return raw ? String(raw) : '';
+}
+
+function formatDateValue_(raw, display, pattern) {
+  if (display && String(display).trim()) return String(display).trim();
+  if (raw instanceof Date && !isNaN(raw.getTime())) return Utilities.formatDate(raw, 'GMT+7', pattern || 'yyyy-MM-dd');
+  return raw ? String(raw) : '';
+}
+
+function extractDriveFileId_(urlOrId) {
+  const v = String(urlOrId || '').trim();
+  if (!v) return '';
+  if (!/drive\.google\.com/i.test(v) && !/^[-\w]{25,}$/.test(v)) return '';
+  const m1 = v.match(/\/file\/d\/([^\/]+)/i);
+  const m2 = v.match(/[?&]id=([^&]+)/i);
+  const m3 = v.match(/^[-\w]{25,}$/);
+  return (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[0]) || '';
+}
+
+function driveUrlToClientImage_(urlOrId, size) {
+  const v = String(urlOrId || '').trim();
+  if (!v) return '';
+  const id = extractDriveFileId_(v);
+  if (!id) return v;
+  return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(id) + '&sz=w' + (size || 320);
+}
+
+function imageForClient_(value, mode) {
+  const v = String(value || '').trim();
+  if (!v) return '';
+
+  // Di list, jangan kirim base64 besar karena payload Google Apps Script jadi sangat berat.
+  if (/^data:image\//i.test(v)) {
+    if (mode === 'detail') return v;
+    return v.length <= 12000 ? v : '';
+  }
+
+  // Drive URL tidak dikonversi ke base64 lagi. Pakai thumbnail URL agar ringan.
+  if (/drive\.google\.com/i.test(v) || /^[-\w]{25,}$/.test(v)) {
+    return driveUrlToClientImage_(v, mode === 'detail' ? 1200 : 320);
+  }
+
+  return v;
+}
+
+// Nama lama dipertahankan supaya fungsi lain yang mungkin memanggil tidak error.
+function driveUrlToBase64_(urlOrId) {
+  return imageForClient_(urlOrId, 'detail');
+}
+
+function storeImageValue_(base64, filename, folderName) {
+  const val = String(base64 || '').trim();
+  if (!val) return '';
+
+  // Untuk performa database jangka panjang, foto baru selalu disimpan ke Drive.
+  // Jangan lagi menyimpan base64 ke cell karena membuat sheet dan fetch database lambat.
+  return saveFileToDrive(val, filename || ('Image_' + Date.now() + '.jpg'), folderName || 'LostAndFound_Photos');
+}
+
+function getValuesForColumnIndexes_(sh, startRow, numRows, lastCol, columnIndexes) {
+  const indexes = Array.from(new Set((columnIndexes || []).filter(i => i !== undefined && i >= 0 && i < lastCol))).sort((a, b) => a - b);
+  const rows = Array.from({ length: numRows }, () => Array(lastCol).fill(''));
+  if (!indexes.length || numRows <= 0) return rows;
+
+  const groups = [];
+  let start = indexes[0];
+  let end = indexes[0];
+  for (let i = 1; i < indexes.length; i++) {
+    if (indexes[i] === end + 1) {
+      end = indexes[i];
+    } else {
+      groups.push({ start: start, end: end });
+      start = end = indexes[i];
+    }
+  }
+  groups.push({ start: start, end: end });
+
+  groups.forEach(g => {
+    const width = g.end - g.start + 1;
+    const vals = sh.getRange(startRow, g.start + 1, numRows, width).getValues();
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < width; c++) rows[r][g.start + c] = vals[r][c];
+    }
+  });
+  return rows;
+}
+
+function buildItemObject_(row, col, rowIndex, auth, storeRecords, includeDetailImages) {
+  const id = readCell_(row, col, 'ID Item') || ('ROW-' + rowIndex);
+  const namaItem = readCell_(row, col, 'Nama Item');
+  const statusRaw = readCell_(row, col, 'Status');
+  const outletName = readCell_(row, col, 'Outlet');
+  const detailMode = includeDetailImages ? 'detail' : 'list';
+
+  return {
+    rowIndex: rowIndex,
+    id: id,
+    timestamp: formatDateValue_(row[col['Timestamp']], '', 'yyyy-MM-dd HH:mm:ss'),
+    tanggalKejadian: formatDateValue_(row[col['Tanggal Kejadian']], '', 'yyyy-MM-dd'),
+    jamKejadian: formatTimeValue_(row[col['Jam Kejadian']], ''),
+    outlet: outletName,
+    outletCode: resolveOutletCodeFromRecords_(storeRecords, outletName),
+    nomorMeja: readCell_(row, col, 'Nomor Meja'),
+    noBill: readCell_(row, col, 'No Bill'),
+    namaTamu: readCell_(row, col, 'Nama Tamu'),
+    noTelpTamu: readCell_(row, col, 'No Telp Tamu'),
+    noMember: readCell_(row, col, 'No Member'),
+    qty: readCell_(row, col, 'QTY') || '1',
+    jenisItem: normalizeJenis_(readCell_(row, col, 'Jenis Item')),
+    namaItem: namaItem,
+    merk: readCell_(row, col, 'Merk'),
+    type: readCell_(row, col, 'Type'),
+    warna: readCell_(row, col, 'Warna'),
+    infoLain: readCell_(row, col, 'Info Lain'),
+    fotoItemUrl: imageForClient_(readCell_(row, col, 'Foto Item URL'), detailMode),
+    status: normalizeStatus_(statusRaw),
+    tanggalAksi: formatDateValue_(row[col['Tanggal Aksi']], '', 'yyyy-MM-dd'),
+    namaEksekutor: readCell_(row, col, 'Nama Eksekutor'),
+    noTelpPenerima: readCell_(row, col, 'No Telp Penerima'),
+    daftarSaksi: readCell_(row, col, 'Daftar Saksi'),
+    instruksiNama: readCell_(row, col, 'Instruksi Oleh Nama'),
+    instruksiJabatan: readCell_(row, col, 'Instruksi Oleh Jabatan'),
+    actionFoto1Url: includeDetailImages ? imageForClient_(readCell_(row, col, 'Action Foto 1 URL'), 'detail') : '',
+    actionFoto2Url: includeDetailImages ? imageForClient_(readCell_(row, col, 'Action Foto 2 URL'), 'detail') : ''
+  };
+}
+
+function fetchItemsList(loginCode, userRole) {
+  const ss = openSpreadsheet_();
+  const storeRecords = getStoreRecords_(ss);
+  const auth = authenticateUserFromStoreRecords_(loginCode, storeRecords);
+  if (!auth.success) throw new Error(auth.message || 'Sesi login tidak valid.');
+
+  const sh = getItemsSheet_(ss);
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow <= 1 || lastCol <= 0) return [];
+
+  // Read kolom yang diperlukan saja. Kolom Foto Item URL ikut dibaca untuk preview ringan.
+  // Catatan: imageForClient_(mode list) hanya mengirim thumbnail Drive / base64 kecil, bukan file besar.
+  const headers = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  const col = buildItemColumnMap_(headers);
+  const listHeaders = [
+    'ID Item','Timestamp','Tanggal Kejadian','Jam Kejadian','Outlet','Nomor Meja','No Bill','Nama Tamu','No Telp Tamu','No Member',
+    'QTY','Jenis Item','Nama Item','Merk','Type','Warna','Info Lain','Foto Item URL','Status','Tanggal Aksi','Nama Eksekutor','No Telp Penerima',
+    'Daftar Saksi','Instruksi Oleh Nama','Instruksi Oleh Jabatan'
+  ];
+  const values = getValuesForColumnIndexes_(sh, 2, lastRow - 1, lastCol, listHeaders.map(h => col[h]));
+  const items = [];
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    const row = values[i];
+    const rowIndex = i + 2;
+    const id = readCell_(row, col, 'ID Item') || ('ROW-' + rowIndex);
+    const namaItem = readCell_(row, col, 'Nama Item');
+    const statusRaw = readCell_(row, col, 'Status');
+    const outletName = readCell_(row, col, 'Outlet');
+
+    if (!String(id + namaItem + statusRaw + outletName).replace('ROW-' + rowIndex, '').trim()) continue;
+    if (auth.role !== 'HQ' && !isSameOutlet_(outletName, auth.outletName) && !isSameOutlet_(outletName, auth.outletCode)) continue;
+
+    items.push(buildItemObject_(row, col, rowIndex, auth, storeRecords, false));
+  }
+
+  return items;
+}
+
+function fetchItemDetail(loginCode, itemId) {
+  const ss = openSpreadsheet_();
+  const storeRecords = getStoreRecords_(ss);
+  const auth = authenticateUserFromStoreRecords_(loginCode, storeRecords);
+  if (!auth.success) throw new Error(auth.message || 'Sesi login tidak valid.');
+
+  const sh = getItemsSheet_(ss);
+  const lastCol = sh.getLastColumn();
+  const headers = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  const col = buildItemColumnMap_(headers);
+  const rowIndex = findItemRowById_(sh, itemId);
+  if (!rowIndex) throw new Error('ID Item tidak ditemukan: ' + itemId);
+
+  const row = sh.getRange(rowIndex, 1, 1, lastCol).getValues()[0];
+  const outletName = readCell_(row, col, 'Outlet');
+  if (auth.role !== 'HQ' && !isSameOutlet_(outletName, auth.outletName) && !isSameOutlet_(outletName, auth.outletCode)) {
+    throw new Error('Anda tidak memiliki akses ke item ini.');
+  }
+
+  return buildItemObject_(row, col, rowIndex, auth, storeRecords, true);
+}
+
+function setRowValuesByHeader_(sh, rowIndex, values) {
+  ensureItemColumns_(sh);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+  const col = buildItemColumnMap_(headers);
+  Object.keys(values).forEach(h => {
+    if (col[h] !== undefined) sh.getRange(rowIndex, col[h] + 1).setValue(values[h]);
+  });
+}
+
+function findItemRowById_(sh, itemId) {
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+  const col = buildItemColumnMap_(headers);
+  const idCol = col['ID Item'] + 1;
+  const ids = sh.getRange(2, idCol, Math.max(sh.getLastRow() - 1, 1), 1).getDisplayValues();
+  for (let i = 0; i < ids.length; i++) if (String(ids[i][0]).trim() === String(itemId || '').trim()) return i + 2;
+  return 0;
+}
+
+function assertItemOutletAccess_(sh, rowIndex, auth) {
+  if (auth.role === 'HQ') return;
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+  const col = buildItemColumnMap_(headers);
+  const row = sh.getRange(rowIndex, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+  const outletName = readCell_(row, col, 'Outlet');
+  if (!isSameOutlet_(outletName, auth.outletName) && !isSameOutlet_(outletName, auth.outletCode)) {
+    throw new Error('Anda tidak memiliki akses ke item outlet lain.');
+  }
+}
+
+function submitNewItem(loginCode, form) {
+  const auth = authenticateUser(loginCode);
+  if (!auth.success) return { success: false, message: auth.message || 'Sesi login tidak valid.' };
+  try {
+    const ss = openSpreadsheet_();
+    const sh = getItemsSheet_(ss);
+    ensureItemColumns_(sh);
+    const id = 'LF-' + Utilities.formatDate(new Date(), 'GMT+7', 'yyyyMMdd') + '-' + Math.floor(1000 + Math.random() * 9000);
+    const row = sh.getLastRow() + 1;
+    const outletName = auth.role === 'HQ' ? (form.outletManual || '') : auth.outletName;
+    const foto = storeImageValue_(form.fotoItemBase64, form.fotoItemName || ('Lost_Item_' + Date.now() + '.jpg'), 'LostAndFound_Items');
+    setRowValuesByHeader_(sh, row, {
+      'ID Item': id, 'Timestamp': new Date(), 'Tanggal Kejadian': form.tanggalKejadian, 'Jam Kejadian': form.jamKejadian,
+      'Outlet': outletName, 'Nomor Meja': form.nomorMeja || '', 'No Bill': form.noBill || '', 'Nama Tamu': form.namaTamu || '',
+      'No Telp Tamu': form.noTelpTamu || '', 'No Member': form.noMember || '', 'QTY': form.qty || 1, 'Jenis Item': form.jenisItem || '',
+      'Nama Item': form.namaItem || '', 'Merk': form.merk || '', 'Type': form.type || '', 'Warna': form.warna || '', 'Info Lain': form.infoLain || '',
+      'Foto Item URL': foto, 'Status': 'Dilaporkan'
+    });
+    return { success: true, itemId: id, message: 'Laporan berhasil disimpan dengan ID ' + id };
+  } catch (err) {
+    return { success: false, message: 'Gagal menyimpan data: ' + err.message };
+  }
+}
+
+function updateItemData(loginCode, form) {
+  const auth = authenticateUser(loginCode);
+  if (!auth.success) return { success: false, message: auth.message || 'Sesi login tidak valid.' };
+  try {
+    const ss = openSpreadsheet_();
+    const sh = getItemsSheet_(ss);
+    ensureItemColumns_(sh);
+    const row = findItemRowById_(sh, form.itemId);
+    if (!row) return { success: false, message: 'ID Item tidak ditemukan: ' + form.itemId };
+    assertItemOutletAccess_(sh, row, auth);
+    const values = {
+      'Tanggal Kejadian': form.tanggalKejadian, 'Jam Kejadian': form.jamKejadian,
+      'Outlet': auth.role === 'HQ' ? (form.outletManual || '') : undefined,
+      'Nomor Meja': form.nomorMeja || '', 'No Bill': form.noBill || '', 'Nama Tamu': form.namaTamu || '', 'No Telp Tamu': form.noTelpTamu || '',
+      'No Member': form.noMember || '', 'QTY': form.qty || 1, 'Jenis Item': form.jenisItem || '', 'Nama Item': form.namaItem || '',
+      'Merk': form.merk || '', 'Type': form.type || '', 'Warna': form.warna || '', 'Info Lain': form.infoLain || ''
+    };
+    if (!values['Outlet']) delete values['Outlet'];
+    if (form.fotoItemBase64) values['Foto Item URL'] = storeImageValue_(form.fotoItemBase64, 'Edit_Item_' + form.itemId + '.jpg', 'LostAndFound_Items');
+    setRowValuesByHeader_(sh, row, values);
+    return { success: true, message: 'Data item berhasil diperbarui.' };
+  } catch (err) {
+    return { success: false, message: 'Gagal edit data: ' + err.message };
+  }
+}
+
+function processItemAction(loginCode, actionType, formData) {
+  const auth = authenticateUser(loginCode);
+  if (!auth.success) return { success: false, message: auth.message || 'Sesi login tidak valid.' };
+  try {
+    const ss = openSpreadsheet_();
+    const sh = getItemsSheet_(ss);
+    ensureItemColumns_(sh);
+    const row = findItemRowById_(sh, formData.itemId);
+    if (!row) return { success: false, message: 'ID Item tidak ditemukan: ' + formData.itemId };
+    assertItemOutletAccess_(sh, row, auth);
+    const now = new Date();
+    let values = { 'Tanggal Aksi': now };
+    let finalStatus = '';
+
+    if (actionType === 'diambil') {
+      finalStatus = 'Sudah Diambil';
+      values['Status'] = finalStatus;
+      values['Nama Eksekutor'] = formData.diambilOleh || '';
+      values['No Telp Penerima'] = formData.noTelpPenerima || '';
+      values['Action Foto 1 URL'] = storeImageValue_(formData.fotoTandaTerimaB64, 'TandaTerima_' + formData.itemId + '.jpg', 'LostAndFound_Receipts');
+      values['Action Foto 2 URL'] = storeImageValue_(formData.fotoPenyerahanB64, 'FotoPenyerahan_' + formData.itemId + '.jpg', 'LostAndFound_Proofs');
+    } else if (actionType === 'dimusnahkan') {
+      finalStatus = 'Dimusnahkan';
+      values['Status'] = finalStatus;
+      values['Nama Eksekutor'] = formData.dimusnahkanOleh || '';
+      values['No Telp Penerima'] = formData.noTelpPemusnah || '';
+      values['Daftar Saksi'] = formData.saksiSaksi || '';
+      values['Action Foto 1 URL'] = storeImageValue_(formData.fotoPemusnahanB64, 'FotoPemusnahan_' + formData.itemId + '.jpg', 'LostAndFound_Destructions');
+    } else if (actionType === 'diserahkan') {
+      finalStatus = 'Diserahkan';
+      values['Status'] = finalStatus;
+      values['Nama Eksekutor'] = formData.diserahkanKepada || '';
+      values['No Telp Penerima'] = formData.noTelpPenerima || '';
+      values['Instruksi Oleh Nama'] = formData.instruksiNama || '';
+      values['Instruksi Oleh Jabatan'] = formData.instruksiJabatan || '';
+      values['Action Foto 1 URL'] = storeImageValue_(formData.fotoTandaTerimaB64, 'TandaTerimaKurir_' + formData.itemId + '.jpg', 'LostAndFound_Receipts');
+      values['Action Foto 2 URL'] = storeImageValue_(formData.fotoPenyerahanB64, 'FotoPenyerahanKurir_' + formData.itemId + '.jpg', 'LostAndFound_Proofs');
+    } else {
+      return { success: false, message: 'Action tidak dikenal: ' + actionType };
+    }
+
+    setRowValuesByHeader_(sh, row, values);
+    return { success: true, message: 'Barang dengan ID ' + formData.itemId + ' berhasil diubah status menjadi ' + finalStatus + '.' };
+  } catch (err) {
+    return { success: false, message: 'Gagal proses aksi: ' + err.message };
+  }
+}
+
+function saveFileToDrive(base64Data, filename, folderName) {
+  try {
+    const data = String(base64Data || '');
+    if (!data) return '';
+    const parts = data.split(',');
+    const meta = parts[0] || '';
+    const contentType = (meta.match(/:(.*?);/) || [null, 'image/jpeg'])[1];
+    const bytes = Utilities.base64Decode(parts.length > 1 ? parts[1] : parts[0]);
+    const blob = Utilities.newBlob(bytes, contentType, filename || ('Image_' + Date.now() + '.jpg'));
+    let folder;
+    const folders = DriveApp.getFoldersByName(folderName || 'LostAndFound_Photos');
+    folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName || 'LostAndFound_Photos');
+    try { folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch(e) {}
+    const file = folder.createFile(blob);
+    try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch(e) {}
+    return file.getUrl();
+  } catch (err) {
+    console.log('saveFileToDrive failed: ' + err.message);
+    return '';
+  }
+}
+
+function auditLostFoundSystem(loginCode) {
+  const ss = openSpreadsheet_();
+  const auth = authenticateUser(loginCode || 'BIHQ');
+  const store = getStoreSheet_(ss);
+  const picked = pickItemsSheet_(ss);
+  const sheets = ss.getSheets().map(sh => analyzeItemSheet_(sh)).map(a => ({ sheetName: a.sheetName, lastRow: a.lastRow, lastCol: a.lastCol, score: a.score, dataRows: a.dataRows, detectedHeaders: Object.keys(a.found || {}) }));
+  let items = [];
+  try { if (auth.success) items = fetchItemsList(loginCode || 'BIHQ', auth.role); } catch(e) { items = [{ error: e.message }]; }
+  const result = {
+    spreadsheetName: ss.getName(),
+    loginTest: auth,
+    storeSheet: store ? store.getName() : 'NOT FOUND',
+    storeRows: store ? store.getLastRow() : 0,
+    pickedItemsSheet: picked ? picked.sheetName : 'NOT FOUND',
+    sheetAudit: sheets.sort((a,b) => b.score - a.score),
+    returnedItems: Array.isArray(items) ? items.length : 0,
+    firstItem: Array.isArray(items) ? (items[0] || null) : items
+  };
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+  return Object.freeze({
+    authenticateUser: authenticateUser,
+    fetchOutletList: fetchOutletList,
+    fetchItemsList: fetchItemsList,
+    fetchItemDetail: fetchItemDetail,
+    submitNewItem: submitNewItem,
+    updateItemData: updateItemData,
+    processItemAction: processItemAction
+  });
+}());
+
+function lostFoundContext_(token) {
+  const session = requireSession_(token);
+  const employee = findEmployee_(session.nik);
+  assertEmployeeActive_(employee);
+  const auth = LOST_FOUND.authenticateUser(employee.outlet);
+  if (!auth || !auth.success) throw new Error(auth && auth.message ? auth.message : 'Outlet belum tersedia pada database Lost And Found.');
+  auth.code = employee.outlet;
+  auth.employeeName = employee.name;
+  auth.position = employee.position;
+  return { employee: employee, auth: auth };
+}
+
+function getLostFoundBootstrap(token) {
+  return safe_(function () { return lostFoundContext_(token).auth; });
+}
+
+function getLostFoundOutlets(token) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return context.auth.role === 'HQ' ? LOST_FOUND.fetchOutletList() : [];
+  });
+}
+
+function getLostFoundItems(token) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return LOST_FOUND.fetchItemsList(context.auth.code, context.auth.role);
+  });
+}
+
+function getLostFoundItemDetail(token, itemId) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return LOST_FOUND.fetchItemDetail(context.auth.code, itemId);
+  });
+}
+
+function saveLostFoundItem(token, form) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return LOST_FOUND.submitNewItem(context.auth.code, form || {});
+  });
+}
+
+function updateLostFoundItem(token, form) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return LOST_FOUND.updateItemData(context.auth.code, form || {});
+  });
+}
+
+function processLostFoundItem(token, actionType, formData) {
+  return safe_(function () {
+    const context = lostFoundContext_(token);
+    return LOST_FOUND.processItemAction(context.auth.code, actionType, formData || {});
+  });
 }
