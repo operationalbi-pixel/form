@@ -48,6 +48,22 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
   if (duplicateFunctions.length) failures.push(`${path} memiliki fungsi duplikat: ${duplicateFunctions.join(', ')}`);
 }
 
+const lostFoundHtml = await text('docs/lost-and-found.html');
+if (!lostFoundHtml.includes('name="viewport"') || !lostFoundHtml.includes('viewport-fit=cover')) failures.push('Lost And Found belum memiliki viewport WebView yang aman');
+if (!lostFoundHtml.includes('src="config.js"') || !lostFoundHtml.includes('src="api-client.js"')) failures.push('Lost And Found belum terhubung ke API BI-Space');
+if (!lostFoundHtml.includes('localStorage.getItem("bakerzin_session")')) failures.push('Lost And Found belum memakai sesi login BI-Space');
+if (!lostFoundHtml.includes('window.location.href = "index.html"')) failures.push('Lost And Found belum memiliki navigasi kembali ke BI-Space');
+const lostFoundStaticHtml = lostFoundHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+const lostFoundIds = [...lostFoundStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
+const lostFoundDuplicateIds = [...new Set(lostFoundIds.filter((id, index) => lostFoundIds.indexOf(id) !== index))];
+if (lostFoundDuplicateIds.length) failures.push(`docs/lost-and-found.html memiliki ID duplikat: ${lostFoundDuplicateIds.join(', ')}`);
+let lostFoundInlineIndex = 0;
+for (const match of lostFoundHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  lostFoundInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/lost-and-found.html#inline-${lostFoundInlineIndex}` }); }
+  catch (error) { failures.push(`docs/lost-and-found.html inline script ${lostFoundInlineIndex}: ${error.message}`); }
+}
+
 const css = await text('docs/ui-modern.css');
 if (!/@media\s*\(max-width:\s*760px\)/.test(css)) failures.push('Breakpoint tablet/mobile belum tersedia');
 if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion belum tersedia');
@@ -222,6 +238,10 @@ if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)
 }
 const actionBlock = backend.match(/function apiActions_\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:/gm)].map(match => match[1]));
+for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
+  if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
+  if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
+}
 const clientActions = new Set();
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   for (const match of (await text(path)).matchAll(/(?:server|call)\(\s*['"]([^'"]+)['"]/g)) clientActions.add(match[1]);
