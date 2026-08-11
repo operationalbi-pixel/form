@@ -1327,13 +1327,17 @@
       if (code.indexOf('NotReadable') >= 0 || code.indexOf('TrackStart') >= 0) {
         setScanMessage('Kamera sudah diizinkan, tapi sedang dipakai/terkunci. Tutup Camera/WhatsApp/Instagram, lalu refresh dan coba lagi.');
       } else if (code.indexOf('NotAllowed') >= 0 || code.indexOf('Permission') >= 0) {
-        setScanMessage('Izin kamera belum aktif. Klik ikon gembok di address bar → Camera → Allow, lalu refresh.');
+        setScanMessage(/BI-Space-Android/i.test(navigator.userAgent)
+          ? 'Izin kamera BI-Space belum aktif. Buka Pengaturan HP → Aplikasi → BI-Space → Izin → Kamera → Izinkan, lalu coba lagi.'
+          : 'Izin kamera belum aktif. Klik ikon gembok di address bar → Camera → Allow, lalu refresh.');
       } else if (code.indexOf('NotFound') >= 0 || code.indexOf('NO_CAMERA') >= 0) {
         setScanMessage('Kamera tidak ditemukan oleh browser. Coba tutup tab lain, refresh, lalu scan lagi.');
       } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
         setScanMessage('Kamera hanya bisa dibuka lewat HTTPS. Gunakan link github.io.');
       } else {
-        setScanMessage('Kamera belum bisa dibuka. Pastikan Chrome Camera = Allow, tutup aplikasi lain yang memakai kamera, lalu refresh.');
+        setScanMessage(/BI-Space-Android/i.test(navigator.userAgent)
+          ? 'Kamera belum bisa dibuka. Pastikan aplikasi BI-Space versi terbaru sudah terpasang dan izin Kamera di Pengaturan HP sudah diaktifkan.'
+          : 'Kamera belum bisa dibuka. Pastikan Chrome Camera = Allow, tutup aplikasi lain yang memakai kamera, lalu refresh.');
       }
     });
   }
