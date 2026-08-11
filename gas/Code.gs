@@ -1868,8 +1868,11 @@ function recalculateStockFifoFefo(token, payload) {
       const history = readStockHistoryForFifoRecalculation_(context.outlet, context.location, item);
       if (!history.length) throw new Error('Riwayat Stock Card item ini masih kosong.');
       const today = todayIso_();
-      const baselineDate = stockDateOffset_(today, -days);
-      const startDate = stockDateOffset_(baselineDate, 1);
+      const startDate = stockDateOffset_(today, -days);
+      // Baseline must be one day before the selected period. Putting it on
+      // startDate makes the later-created LOT override run after that day's
+      // IN/OUT movements and overwrite the very history being recalculated.
+      const baselineDate = stockDateOffset_(startDate, -1);
       const snapshots = calculateFifoSnapshots_(history);
       const snapshotDates = Object.keys(snapshots).sort();
       const baselineSnapshotDate = snapshotDates.filter(function (date) { return date <= baselineDate; }).pop() || '';
@@ -5946,6 +5949,23 @@ function stockBalanceAtDate_(history, date) {
   }, 0);
 }
 
+function compareStockLots_(a, b) {
+  const aExpiry = String(a && a.expiryDate || '').slice(0, 10);
+  const bExpiry = String(b && b.expiryDate || '').slice(0, 10);
+  // Undated lots are an explicit FIFO queue and must be cleared before newer
+  // dated receipts. Dated lots are then ordered by FEFO and FIFO as tie-break.
+  if (Boolean(aExpiry) !== Boolean(bExpiry)) return aExpiry ? 1 : -1;
+  if (aExpiry && bExpiry) {
+    const expiryCompare = aExpiry.localeCompare(bExpiry);
+    if (expiryCompare) return expiryCompare;
+  }
+  const arrivalCompare = String(a && a.sourceDate || '').localeCompare(String(b && b.sourceDate || ''));
+  if (arrivalCompare) return arrivalCompare;
+  const stockInCompare = String(a && a.showcaseDate || '').localeCompare(String(b && b.showcaseDate || ''));
+  if (stockInCompare) return stockInCompare;
+  return String(aExpiry || '9999-12-31').localeCompare(String(bExpiry || '9999-12-31'));
+}
+
 function applyKnownExpiryToBaselineLots_(baselineLots, currentLots) {
   const pools = {};
   (currentLots || []).forEach(function (lot) {
@@ -5979,11 +5999,7 @@ function applyKnownExpiryToBaselineLots_(baselineLots, currentLots) {
     }
     if (remaining > 0.0000001) result.push({ qty: remaining, expiryDate: '', sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
   });
-  result.sort(function (a, b) {
-    return String(a.expiryDate || '9999-12-31').localeCompare(String(b.expiryDate || '9999-12-31')) ||
-      String(a.sourceDate || '').localeCompare(String(b.sourceDate || '')) ||
-      String(a.showcaseDate || '').localeCompare(String(b.showcaseDate || ''));
-  });
+  result.sort(compareStockLots_);
   return result;
 }
 
@@ -6676,6 +6692,18 @@ function addBalancesToGroupedHistory_(groups, currentQty) {
 }
 
 function calculateFifoSnapshots_(history) {
+  let activeRecalculation = null, activeRecalculationCreated = -1;
+  (history || []).forEach(function (movement) {
+    const override = stockLotOverrideInfo_(movement);
+    if (!override || !override.recalculation) return;
+    const created = stockMovementCreatedMillis_(movement);
+    if (!activeRecalculation || created > activeRecalculationCreated ||
+        (created === activeRecalculationCreated && String(movement.recordId || '').localeCompare(String(activeRecalculation.recordId || '')) > 0)) {
+      activeRecalculation = movement;
+      activeRecalculationCreated = created;
+    }
+  });
+  const activeRecalculationBaseline = activeRecalculation ? String(activeRecalculation.date || '').slice(0, 10) : '';
   const movements = history.slice().sort(function (a, b) {
     const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
     if (dateCompare) return dateCompare;
@@ -6687,11 +6715,7 @@ function calculateFifoSnapshots_(history) {
   });
   const lots = [], uncoveredQueue = [], snapshots = {};
   function sortLots() {
-    lots.sort(function (a, b) {
-      return String(a.expiryDate || '9999-12-31').localeCompare(String(b.expiryDate || '9999-12-31')) ||
-        String(a.sourceDate || '').localeCompare(String(b.sourceDate || '')) ||
-        String(a.showcaseDate || '').localeCompare(String(b.showcaseDate || ''));
-    });
+    lots.sort(compareStockLots_);
   }
   movements.forEach(function (movement) {
     const qty = Number(movement.qty || 0);
@@ -6700,6 +6724,8 @@ function calculateFifoSnapshots_(history) {
     if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
       let override = null;
       try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
+      if (override && override.recalculation && activeRecalculation && movement !== activeRecalculation &&
+          String(movement.date || '').slice(0, 10) >= activeRecalculationBaseline) return;
       if (override && Array.isArray(override.lots)) {
         lots.length = 0;
         uncoveredQueue.length = 0;
