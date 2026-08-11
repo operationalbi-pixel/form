@@ -64,6 +64,23 @@ for (const match of lostFoundHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*
   catch (error) { failures.push(`docs/lost-and-found.html inline script ${lostFoundInlineIndex}: ${error.message}`); }
 }
 
+const salesAnalysisHtml = await text('docs/sales-analysis.html');
+if (!salesAnalysisHtml.includes('name="viewport"') || !salesAnalysisHtml.includes('viewport-fit=cover')) failures.push('Analisa Sales belum memiliki viewport WebView yang aman');
+if (!salesAnalysisHtml.includes('src="config.js"') || !salesAnalysisHtml.includes('src="api-client.js"')) failures.push('Analisa Sales belum terhubung ke API BI-Space');
+if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Analisa Sales belum memakai sesi login BI-Space');
+if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
+if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
+const salesAnalysisStaticHtml = salesAnalysisHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+const salesAnalysisIds = [...salesAnalysisStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
+const salesAnalysisDuplicateIds = [...new Set(salesAnalysisIds.filter((id, index) => salesAnalysisIds.indexOf(id) !== index))];
+if (salesAnalysisDuplicateIds.length) failures.push(`docs/sales-analysis.html memiliki ID duplikat: ${salesAnalysisDuplicateIds.join(', ')}`);
+let salesAnalysisInlineIndex = 0;
+for (const match of salesAnalysisHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  salesAnalysisInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/sales-analysis.html#inline-${salesAnalysisInlineIndex}` }); }
+  catch (error) { failures.push(`docs/sales-analysis.html inline script ${salesAnalysisInlineIndex}: ${error.message}`); }
+}
+
 const css = await text('docs/ui-modern.css');
 if (!/@media\s*\(max-width:\s*760px\)/.test(css)) failures.push('Breakpoint tablet/mobile belum tersedia');
 if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion belum tersedia');
@@ -241,6 +258,10 @@ const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
+}
+for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisSaveTargets', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
+  if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
+  if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
 }
 const clientActions = new Set();
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {

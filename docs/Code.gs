@@ -125,6 +125,16 @@ function apiActions_() {
     lostFoundSave: saveLostFoundItem,
     lostFoundUpdate: updateLostFoundItem,
     lostFoundProcess: processLostFoundItem,
+    salesAnalysisBootstrap: getSalesAnalysisBootstrap,
+    salesAnalysisDashboard: getSalesAnalysisDashboard,
+    salesAnalysisTargets: getSalesAnalysisTargets,
+    salesAnalysisSaveTargets: saveSalesAnalysisTargets,
+    salesAnalysisSaveDaily: saveSalesAnalysisDaily,
+    salesAnalysisSaveWeekly: saveSalesAnalysisWeekly,
+    salesAnalysisSaveMonthly: saveSalesAnalysisMonthly,
+    salesAnalysisSaveGlobal: saveSalesAnalysisGlobal,
+    salesAnalysisAddGlobal: addSalesAnalysisGlobalItem,
+    salesAnalysisDeleteGlobal: deleteSalesAnalysisGlobalItem,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
@@ -9010,5 +9020,1577 @@ function processLostFoundItem(token, actionType, formData) {
   return safe_(function () {
     const context = lostFoundContext_(token);
     return LOST_FOUND.processItemAction(context.auth.code, actionType, formData || {});
+  });
+}
+
+// ---------- Analisa Sales ----------
+// Modul asli ditempatkan dalam scope tersendiri agar helper dan konfigurasi
+// BigQuery-nya tidak bertabrakan dengan backend utama BI-Space.
+const SALES_ANALYSIS = (function () {
+/**
+ * ============================================================
+ *  SALES ANALYSIS CALENDAR — Google Apps Script Backend — BIGQUERY ONLY V9.2 GLOBAL ANALYSIS ITEMS
+ *  Multi-outlet (Bakerzin) + Login + HQ Aggregate Mode
+ *
+ *  BIGQUERY-ONLY MODE V9.2:
+ *  - Dashboard membaca langsung dari BigQuery.
+ *  - Simpan Daily / Weekly / Monthly / Target langsung ke BigQuery.
+ *  - Spreadsheet tidak lagi dipakai untuk runtime aplikasi.
+ *
+ *  SETUP:
+ *  1. Apps Script → Services → aktifkan BigQuery API.
+ *  2. Paste isi file ini ke Code.gs.
+ *  3. Paste Index.html.
+ *  4. Run `testBigQueryConnection` → authorize.
+ *  5. Deploy → Web app → Anyone.
+ * ============================================================
+ */
+
+// SHEET_ID tidak dipakai lagi di runtime V8. Biarkan kosong untuk menghindari dependency Spreadsheet.
+const SHEET_ID  = '';
+const TZ        = 'Asia/Jakarta';
+const APP_TITLE = 'Bakerzin · Sales Analysis Calendar';
+
+// ---- BigQuery config ----
+// Pastikan Apps Script → Services → BigQuery API sudah aktif.
+const BQ_PROJECT_ID = 'berita-acara-digital';
+const BQ_DATASET_ID = 'bakerzin_sales_analysis';
+const BQ_LOCATION   = 'asia-southeast2';
+const BQ_USE_FOR_DASHBOARD = true;
+const BQ_WRITE_ENABLED     = true;
+const BQ_ONLY_MODE         = true;
+
+// Konfigurasi runtime tanpa Spreadsheet.
+const APP_CONFIG = {
+  brand_name: 'Bakerzin',
+  monthly_target: 420000000,
+  week_start: 'monday',
+  currency: 'IDR',
+  min_analysis_chars: 20,
+  session_ttl_hours: 12
+};
+
+// ---- master outlet list ----
+const OUTLETS = [
+  { code: 'BIHQ',  name: 'Head Office (Summary)',          role: 'admin' },
+  { code: 'BIPS',  name: 'Bakerzin Plaza Senayan',         role: 'store' },
+  { code: 'BIPIM', name: 'Bakerzin Pondok Indah Mall',     role: 'store' },
+  { code: 'BIKK',  name: 'Bakerzin Kota Kasablanka',       role: 'store' },
+  { code: 'BICP',  name: 'Bakerzin Central Park',          role: 'store' },
+  { code: 'BITU',  name: 'Bakerzin Terminal Ultimate',     role: 'store' },
+  { code: 'BISS',  name: 'Bakerzin Senayan Park',          role: 'store' },
+  { code: 'BILW',  name: 'Bakerzin Living World',          role: 'store' },
+  { code: 'BILK',  name: 'Bakerzin Lippo Kemang',          role: 'store' },
+  { code: 'BIMC',  name: 'Bakerzin Margo City',            role: 'store' },
+  { code: 'BIPWB', name: 'Bakerzin Pakuwon Mall Bekasi',   role: 'store' },
+  { code: 'BIPR',  name: 'Bakerzin Puri Indah Mall',       role: 'store' }
+];
+const DEFAULT_PASSWORD = 'bakerzin2026';
+
+// ---- nama tab + skema kolom ----
+const SHEETS = {
+  CONFIG: {
+    name: 'Config',
+    headers: ['key','value','description'],
+    seed: [
+      ['brand_name',        'Bakerzin',                                'Nama brand'],
+      ['monthly_target',    420000000,                                 'Target sales bulanan default (Rp)'],
+      ['week_start',        'monday',                                  'monday | sunday'],
+      ['currency',          'IDR',                                     'Mata uang'],
+      ['min_analysis_chars',20,                                        'Minimum karakter kolom analisa'],
+      ['session_ttl_hours', 12,                                        'Durasi sesi login (jam)']
+    ]
+  },
+  USERS: {
+    name: 'Users',
+    headers: ['outlet_code','outlet_name','password','role','active','last_login']
+  },
+  DAILY: {
+    name: 'DailySales',
+    headers: [
+      'outlet_code','date','year','month','week','day_of_week',
+      'sales','analisa_harian','analisa_status',
+      'submitted_by','submitted_at','updated_at'
+    ]
+  },
+  WEEKLY: {
+    name: 'WeeklyAnalysis',
+    headers: [
+      'outlet_code','period_key','year','month','week',
+      'period_start','period_end','total_sales',
+      'analisa_mingguan','status',
+      'submitted_by','submitted_at','updated_at'
+    ]
+  },
+  MONTHLY: {
+    name: 'MonthlyAnalysis',
+    headers: [
+      'outlet_code','period_key','year','month',
+      'total_sales','target','achievement_pct',
+      'analisa_bulanan','status',
+      'submitted_by','submitted_at','updated_at'
+    ]
+  },
+  TARGETS: {
+    name: 'Targets',
+    headers: ['outlet_code','year','month','target']
+  },
+  LOG: {
+    name: 'AuditLog',
+    headers: ['timestamp','outlet_code','user','action','scope','period_key','payload_json']
+  }
+};
+
+/* ============================================================
+ *  WEB APP ENTRY
+ * ============================================================ */
+function doGet(e) {
+  const tpl = HtmlService.createTemplateFromFile('Index');
+  tpl.bootData = JSON.stringify(getBootstrap_());
+  return tpl.evaluate()
+    .setTitle(APP_TITLE)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport','width=1440');
+}
+function include(name){ return HtmlService.createHtmlOutputFromFile(name).getContent(); }
+
+/* ============================================================
+ *  MENU
+ * ============================================================ */
+function onOpen() {
+  // BigQuery-only mode: tidak membuat menu Spreadsheet.
+}
+
+
+/* ============================================================
+ *  DIAGNOSTIK
+ * ============================================================ */
+function testActiveSheet() {
+  Logger.log('BigQuery-only mode: Spreadsheet tidak digunakan.');
+  return 'BigQuery-only mode: Spreadsheet tidak digunakan.';
+}
+
+function testAccess() {
+  Logger.log('BigQuery-only mode: Spreadsheet tidak digunakan. Jalankan testBigQueryConnection().');
+  return 'BigQuery-only mode: Spreadsheet tidak digunakan. Jalankan testBigQueryConnection().';
+}
+
+function testBigQueryConnection() {
+  try {
+    bqEnsureGlobalDailyAnalysisTable_();
+    bqEnsureGlobalDailyAnalysisItemsTable_();
+    var rows = bqQuery_("SELECT COUNT(1) AS rows_count FROM " + bqTable_('daily_sales'));
+    var msg = 'OK BigQuery. Dataset: ' + BQ_PROJECT_ID + '.' + BQ_DATASET_ID + '\nRows daily_sales: ' + (rows[0] ? rows[0].rows_count : 0);
+    Logger.log(msg);
+    return { ok:true, message:msg, rows: rows[0] ? rows[0].rows_count : 0 };
+  } catch (e) {
+    var msg = 'GAGAL BigQuery: ' + e.message;
+    Logger.log(msg);
+    return { ok:false, error:msg };
+  }
+}
+
+
+/* ============================================================
+ *  SETUP (BIGQUERY-ONLY MODE)
+ * ============================================================ */
+function setupSheetsMinimal() {
+  throw new Error('BigQuery-only mode: setup Spreadsheet tidak diperlukan.');
+}
+function setupSheets() {
+  throw new Error('BigQuery-only mode: setup Spreadsheet tidak diperlukan.');
+}
+function seedUsers() {
+  throw new Error('BigQuery-only mode: Users memakai konstanta OUTLETS, bukan Spreadsheet.');
+}
+function seedUsers_(ss) {
+  throw new Error('BigQuery-only mode: Users memakai konstanta OUTLETS, bukan Spreadsheet.');
+}
+function seedSampleData() {
+  throw new Error('BigQuery-only mode: seed sample data ke Spreadsheet tidak diperlukan.');
+}
+
+/* ============================================================
+ *  AUTH
+ * ============================================================ */
+function getBootstrap_() {
+  return {
+    today: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'),
+    outlets: OUTLETS,
+    brand: 'Bakerzin'
+  };
+}
+function getBootstrap(){ return getBootstrap_(); }
+
+/**
+ * Login dengan outlet_code saja (passwordless).
+ * @return {{ok, outlet_code, outlet_name, role, token, expires_at}|{ok:false, error}}
+ */
+function login(outletCode, password) {
+  try {
+    outletCode = String(outletCode || '').trim().toUpperCase();
+    if (!outletCode) return { ok:false, error:'Kode outlet wajib diisi.' };
+
+    var outlet = OUTLETS.find(function(o){ return String(o.code).toUpperCase() === outletCode; });
+    if (!outlet) return { ok:false, error:'Kode outlet tidak ditemukan.' };
+
+    var token = Utilities.getUuid();
+    var cfg = readConfig_();
+    var ttl = Number(cfg.session_ttl_hours) || 12;
+    var expires = new Date(Date.now() + ttl*3600*1000);
+
+    CacheService.getScriptCache().put('sess_' + token, outletCode, ttl*3600);
+    audit_(outletCode, outletCode, 'login', 'auth', '', { mode:'BigQueryOnly' });
+
+    return {
+      ok:true,
+      token: token,
+      outlet_code: outlet.code,
+      outlet_name: outlet.name,
+      role: outlet.role || 'store',
+      expires_at: expires.toISOString(),
+      dataSource: 'BigQuery'
+    };
+  } catch (e) {
+    return { ok:false, error:'Server error: ' + e.message };
+  }
+}
+
+function logout(token) {
+  if (token) CacheService.getScriptCache().remove('sess_' + token);
+  return { ok:true };
+}
+
+/** Validasi token → kembalikan {outlet_code, role}. Throws kalau invalid. */
+function validateSession_(token) {
+  if (!token) throw new Error('NO_SESSION');
+  var cached = CacheService.getScriptCache().get('sess_' + token);
+  if (!cached) throw new Error('SESSION_EXPIRED');
+
+  cached = String(cached).toUpperCase();
+  var outlet = OUTLETS.find(function(o){ return String(o.code).toUpperCase() === cached; });
+  if (!outlet) throw new Error('USER_NOT_FOUND');
+
+  return {
+    outlet_code: outlet.code,
+    role: outlet.role || 'store',
+    outlet_name: outlet.name
+  };
+}
+
+
+
+/* ============================================================
+ *  DASHBOARD CACHE HELPERS — BIGQUERY ONLY V9 GLOBAL DAILY ANALYSIS.1
+ *  Fix ReferenceError: cacheKeyDashboard_ / getCacheJson_ / putCacheJson_ / clearDashboardCache_
+ * ============================================================ */
+function dashCacheVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  var v = props.getProperty('DASH_CACHE_VERSION_V9_2');
+  if (!v) {
+    v = String(Date.now());
+    props.setProperty('DASH_CACHE_VERSION_V9_2', v);
+  }
+  return v;
+}
+function clearDashboardCache_() {
+  // CacheService tidak punya remove-by-prefix. Naikkan versi agar cache lama otomatis diabaikan.
+  PropertiesService.getScriptProperties().setProperty('DASH_CACHE_VERSION_V9_2', String(Date.now()));
+}
+function cacheKeyDashboard_(sess, year, month, outletFilter) {
+  var scope = (sess && sess.role === 'admin')
+    ? String(outletFilter || 'ALL').toUpperCase()
+    : String((sess && sess.outlet_code) || outletFilter || '').toUpperCase();
+  return ['DASHV9_2', dashCacheVersion_(), scope, year, pad2_(month)].join('_');
+}
+function getCacheJson_(key) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var metaRaw = cache.get(key + '_meta');
+    if (!metaRaw) return null;
+    var meta = JSON.parse(metaRaw);
+    if (!meta || !meta.parts) return null;
+
+    var joined = '';
+    for (var i = 0; i < meta.parts; i++) {
+      var part = cache.get(key + '_' + i);
+      if (part == null) return null;
+      joined += part;
+    }
+
+    var bytes = Utilities.base64Decode(joined);
+    var blob = Utilities.newBlob(bytes, 'application/x-gzip', 'cache.gz');
+    var text = Utilities.ungzip(blob).getDataAsString('UTF-8');
+    return JSON.parse(text);
+  } catch (e) {
+    Logger.log('cache read skip: ' + e.message);
+    return null;
+  }
+}
+function putCacheJson_(key, obj, seconds) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var text = JSON.stringify(obj);
+    var gz = Utilities.gzip(Utilities.newBlob(text, 'application/json', 'cache.json'));
+    var b64 = Utilities.base64Encode(gz.getBytes());
+    var chunkSize = 85000;
+    var parts = Math.ceil(b64.length / chunkSize);
+
+    // Hindari quota/cache item terlalu besar. Kalau dashboard terlalu besar, skip cache saja.
+    if (parts > 8) {
+      Logger.log('cache skip: payload terlalu besar, parts=' + parts);
+      return;
+    }
+
+    var ttl = seconds || 600;
+    for (var i = 0; i < parts; i++) {
+      cache.put(key + '_' + i, b64.slice(i * chunkSize, (i + 1) * chunkSize), ttl);
+    }
+    cache.put(key + '_meta', JSON.stringify({ parts: parts, ts: Date.now() }), ttl);
+  } catch (e) {
+    Logger.log('cache write skip: ' + e.message);
+  }
+}
+
+
+/* ============================================================
+ *  API — dashboard data
+ * ============================================================ */
+
+/**
+ * Get dashboard untuk satu outlet (atau ALL / aggregate untuk admin BIHQ).
+ * V7: menggunakan BigQuery sebagai sumber utama agar BIHQ / ALL Outlet jauh lebih ringan.
+ * Jika BigQuery service belum aktif atau query gagal, aplikasi akan menampilkan error agar data source tetap tunggal.
+ * @param {string} token
+ * @param {number} year
+ * @param {number} month  1..12
+ * @param {string} outletFilter  'ALL' or outlet_code (admin only). Store user: dipaksa ke outlet sendiri.
+ */
+function getMonthDashboard(token, year, month, outletFilter) {
+  if (!bqIsAvailable_()) {
+    throw new Error('BigQuery API belum aktif / konfigurasi BigQuery belum lengkap. Aktifkan Services → BigQuery API, lalu cek BQ_PROJECT_ID dan BQ_DATASET_ID.');
+  }
+  return getMonthDashboardBigQuery_(token, year, month, outletFilter);
+}
+
+function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
+  var sess = validateSession_(token);
+  year = Number(year); month = Number(month);
+  outletFilter = (outletFilter || sess.outlet_code).toUpperCase();
+  if (sess.role !== 'admin') outletFilter = sess.outlet_code;
+
+  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_BQ';
+  var cached = getCacheJson_(cacheKey);
+  if (cached) {
+    cached.fromCache = true;
+    cached.dataSource = 'BigQuery';
+    cached.user = { outlet_code: sess.outlet_code, outlet_name: sess.outlet_name, role: sess.role };
+    cached.today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+    return cached;
+  }
+
+  var cfg = readConfig_();
+  var defaultTarget = Number(cfg.monthly_target) || 0;
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  var outletList = (outletFilter === 'ALL')
+    ? OUTLETS.filter(function(o){ return o.role !== 'admin'; }).map(function(o){ return o.code; })
+    : [outletFilter];
+
+  var firstDayDt = new Date(year, month-1, 1);
+  var lastDayDt  = new Date(year, month-1, daysInMonth);
+  var firstDayOffset = (firstDayDt.getDay()+6)%7; // Mon-start: 0=Mon, 6=Sun
+  var firstRowStart = new Date(year, month-1, 1 - firstDayOffset);
+  var prevWeekStart = new Date(firstRowStart); prevWeekStart.setDate(prevWeekStart.getDate() - 7);
+  var lastDayDow = (lastDayDt.getDay()+6)%7;
+  var lastOffset = lastDayDow < 6 ? 6-lastDayDow : 0;
+  var lastRowEnd = new Date(year, month-1, daysInMonth + lastOffset);
+
+  // Ambil semua daily sales yang dibutuhkan dalam 1 query: current month, cross-month calendar row,
+  // previous week comparison, dan previous same-weekday comparison.
+  var dailyRows = bqFetchDailyRows_(outletList, prevWeekStart, lastRowEnd);
+  var weeklyRows = bqFetchWeeklyRows_(outletList, year, month);
+  var monthlyRows = bqFetchMonthlyRows_(outletList, year, month);
+  var targetsMap = bqGetTargetsMap_(year, month);
+  var comparison = bqFetchComparisonSums_(outletList, year, month);
+  var globalRows = bqFetchGlobalDailyRows_(firstRowStart, lastRowEnd);
+
+  var globalByDate = {};
+  globalRows.forEach(function(g){
+    if (g && g.date) globalByDate[String(g.date).slice(0,10)] = g;
+  });
+
+  var salesByDate = {};
+  var salesByOutletDate = {};
+  var dailyByOutletDate = {};
+  dailyRows.forEach(function(r){
+    var oc = String(r.outlet_code || '').toUpperCase();
+    var key = r.date;
+    var sales = Number(r.sales) || 0;
+    if (!key || outletList.indexOf(oc) === -1) return;
+    if (!salesByDate[key]) salesByDate[key] = 0;
+    salesByDate[key] += sales;
+    salesByOutletDate[oc + '|' + key] = sales;
+    dailyByOutletDate[oc + '|' + key] = {
+      date: key,
+      sales: sales,
+      analisa_harian: r.analisa_harian || '',
+      analisa_status: r.analisa_status || ''
+    };
+  });
+
+  var weeklyByW = {};
+  weeklyRows.forEach(function(r){
+    var wk = Number(r.week) || 0;
+    var oc = String(r.outlet_code || '').toUpperCase();
+    if (!wk) return;
+    if (!weeklyByW[wk]) weeklyByW[wk] = { w:wk, analysis:'', status:'na', total:0, contributors:[] };
+    weeklyByW[wk].contributors.push({
+      outlet: oc,
+      outletName: outletName_(oc),
+      text: r.analisa_mingguan || '',
+      status: r.status || 'na'
+    });
+    if (outletList.length === 1) {
+      weeklyByW[wk].analysis = r.analisa_mingguan || '';
+      weeklyByW[wk].status = r.status || 'pending';
+    }
+  });
+  Object.keys(weeklyByW).forEach(function(wk){
+    if (outletList.length > 1) {
+      var contributors = weeklyByW[wk].contributors || [];
+      var anyPend = contributors.some(function(c){ return c.status === 'pending'; });
+      var anyDone = contributors.some(function(c){ return c.status === 'done'; });
+      weeklyByW[wk].status = anyPend ? 'pending' : (anyDone ? 'done' : 'na');
+    }
+  });
+
+  var monthRow = null;
+  if (monthlyRows.length) {
+    monthRow = { analysis:'', status:'na', contributors:[] };
+    monthlyRows.forEach(function(r){
+      var oc = String(r.outlet_code || '').toUpperCase();
+      monthRow.contributors.push({
+        outlet: oc,
+        outletName: outletName_(oc),
+        text: r.analisa_bulanan || '',
+        status: r.status || 'na'
+      });
+      if (outletList.length === 1) {
+        monthRow.analysis = r.analisa_bulanan || '';
+        monthRow.status = r.status || 'pending';
+      }
+    });
+  }
+
+  var perOutlet = {};
+  outletList.forEach(function(oc){ perOutlet[oc] = { code:oc, name:outletName_(oc), total:0 }; });
+
+  var days = [];
+  for (var d=1; d<=daysInMonth; d++) {
+    var dt = new Date(year, month-1, d);
+    var key = Utilities.formatDate(dt, TZ, 'yyyy-MM-dd');
+    var prevDt = new Date(dt); prevDt.setDate(prevDt.getDate() - 7);
+    var prevKey = Utilities.formatDate(prevDt, TZ, 'yyyy-MM-dd');
+
+    var rec = {
+      date: key, day: d, dow: dt.getDay(), week: weekOfMonth_(dt),
+      sales: 0,
+      prevDate: prevKey,
+      prevSales: salesByDate[prevKey] || 0,
+      global: globalByDate[key] || defaultGlobalDailyAnalysis_(key),
+      daily: { status:'na', text:'' },
+      contributors: []
+    };
+
+    outletList.forEach(function(oc){
+      var row = dailyByOutletDate[oc + '|' + key];
+      var sales = row ? (Number(row.sales)||0) : 0;
+      var prevSales = salesByOutletDate[oc + '|' + prevKey] || 0;
+      rec.sales += sales;
+      if (perOutlet[oc]) perOutlet[oc].total += sales;
+      rec.contributors.push({
+        outlet: oc,
+        outletName: outletName_(oc),
+        sales: sales,
+        prevDate: prevKey,
+        prevSales: prevSales,
+        deltaNominal: sales - prevSales,
+        deltaPct: prevSales > 0 ? ((sales - prevSales) / prevSales * 100) : null,
+        status: row ? (row.analisa_status || 'pending') : 'na',
+        text: row ? (row.analisa_harian || '') : ''
+      });
+      if (outletList.length === 1) {
+        rec.daily = {
+          status: row && row.analisa_status === 'done' ? 'done' : (row && row.sales ? 'pending' : 'na'),
+          text: row ? (row.analisa_harian || '') : ''
+        };
+      }
+    });
+
+    if (outletList.length > 1) {
+      var anyPending = rec.contributors.some(function(c){ return c.status === 'pending'; });
+      var anyDone = rec.contributors.some(function(c){ return c.status === 'done'; });
+      rec.daily.status = anyPending ? 'pending' : (anyDone ? 'done' : 'na');
+    }
+    days.push(rec);
+  }
+
+  var weeksMap = {};
+  days.forEach(function(d){
+    if (!weeksMap[d.week]) weeksMap[d.week] = { w:d.week, start:d.date, end:d.date, total:0 };
+    weeksMap[d.week].end = d.date;
+    weeksMap[d.week].total += d.sales;
+  });
+
+  var crossPrev = [];
+  if (firstDayOffset > 0) {
+    var pmYear = month===1?year-1:year, pmMonth = month===1?12:month-1;
+    var pmDim = new Date(pmYear, pmMonth, 0).getDate();
+    for (var ci=0; ci<firstDayOffset; ci++) {
+      var cdt = new Date(pmYear, pmMonth-1, pmDim-firstDayOffset+1+ci);
+      var ck = Utilities.formatDate(cdt, TZ, 'yyyy-MM-dd');
+      var cs = salesByDate[ck] || 0;
+      crossPrev.push({ date:ck, day:cdt.getDate(), month:cdt.getMonth()+1, year:cdt.getFullYear(), dow:cdt.getDay(), sales:cs, global: globalByDate[ck] || defaultGlobalDailyAnalysis_(ck) });
+    }
+    var firstWkNum = days.length>0?days[0].week:1;
+    if (weeksMap[firstWkNum]) {
+      crossPrev.forEach(function(x){ weeksMap[firstWkNum].total += x.sales; });
+      if (crossPrev.length) weeksMap[firstWkNum].start = crossPrev[0].date;
+    }
+  }
+
+  var crossNext = [];
+  if (lastOffset > 0) {
+    var nmYear = month===12?year+1:year, nmMonth = month===12?1:month+1;
+    for (var ni=1; ni<=lastOffset; ni++) {
+      var ndt = new Date(nmYear, nmMonth-1, ni);
+      var nk = Utilities.formatDate(ndt, TZ, 'yyyy-MM-dd');
+      var ns = salesByDate[nk] || 0;
+      crossNext.push({ date:nk, day:ndt.getDate(), month:ndt.getMonth()+1, year:ndt.getFullYear(), dow:ndt.getDay(), sales:ns, global: globalByDate[nk] || defaultGlobalDailyAnalysis_(nk) });
+    }
+    var lastWkNum = days.length>0?days[days.length-1].week:1;
+    if (weeksMap[lastWkNum]) {
+      crossNext.forEach(function(x){ weeksMap[lastWkNum].total += x.sales; });
+      if (crossNext.length) weeksMap[lastWkNum].end = crossNext[crossNext.length-1].date;
+    }
+  }
+
+  var prevWeekEnd = new Date(firstRowStart); prevWeekEnd.setDate(firstRowStart.getDate() - 1);
+  var prevWeekTotalForW1 = sumSalesByDateRange_(salesByDate, prevWeekStart, prevWeekEnd);
+  var weekNums = Object.keys(weeksMap).map(Number).sort(function(a,b){ return a-b; });
+  var weeks = weekNums.map(function(wkNum, i){
+    var w = weeksMap[wkNum];
+    var meta = weeklyByW[wkNum] || { analysis:'', status:'pending', contributors:[] };
+    var prevTotal = (i===0) ? prevWeekTotalForW1 : (weeksMap[weekNums[i-1]] ? weeksMap[weekNums[i-1]].total : 0);
+    return {
+      w:w.w, start:w.start, end:w.end, total:w.total, prevTotal:prevTotal,
+      analysis:meta.analysis, status:meta.status, contributors:meta.contributors || []
+    };
+  });
+
+  var monthTotal = days.reduce(function(sum, d){ return sum + (Number(d.sales)||0); }, 0);
+  var aggregateTarget = outletList.reduce(function(sum, oc){
+    return sum + (targetsMap[oc] != null ? Number(targetsMap[oc])||0 : defaultTarget);
+  }, 0);
+  var singleTarget = targetsMap[outletFilter] != null ? Number(targetsMap[outletFilter])||0 : defaultTarget;
+  var finalTarget = outletFilter === 'ALL' ? aggregateTarget : singleTarget;
+
+  var result = {
+    year:year, monthNumber:month, daysInMonth:daysInMonth,
+    outlet: outletFilter,
+    outletName: outletFilter==='ALL' ? 'Semua Outlet (Aggregate)' : outletName_(outletFilter),
+    isAggregate: outletFilter === 'ALL',
+    monthTarget: finalTarget,
+    today: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'),
+    days: days,
+    weeks: weeks,
+    crossDays: { prev: crossPrev, next: crossNext },
+    globalAnalysisByDate: globalByDate,
+    ytdTotal: comparison.ytdTotal || 0,
+    prevYtdTotal: comparison.prevYtdTotal || 0,
+    prevMonthTotal: comparison.prevMonthTotal || 0,
+    month: {
+      total: monthTotal,
+      target: finalTarget,
+      pct: finalTarget ? (monthTotal / finalTarget * 100) : 0,
+      analysis: monthRow ? monthRow.analysis : '',
+      status: monthRow ? monthRow.status : 'pending',
+      contributors: monthRow ? monthRow.contributors : []
+    },
+    perOutlet: Object.values(perOutlet).sort(function(a,b){ return b.total - a.total; }),
+    user: { outlet_code: sess.outlet_code, outlet_name: sess.outlet_name, role: sess.role },
+    fromCache: false,
+    dataSource: 'BigQuery'
+  };
+  putCacheJson_(cacheKey, result, 600);
+  return result;
+}
+
+/**
+ * Legacy stub: fallback Spreadsheet dinonaktifkan di V8.
+ */
+function getMonthDashboardSheet_(token, year, month, outletFilter) {
+  throw new Error('BigQuery-only mode: Spreadsheet fallback dinonaktifkan.');
+}
+
+
+
+/* ============================================================
+ *  BIGQUERY HELPERS — V7
+ * ============================================================ */
+function bqIsAvailable_() {
+  return typeof BigQuery !== 'undefined' && BQ_PROJECT_ID && BQ_DATASET_ID;
+}
+function bqTable_(tableId) {
+  return '`' + BQ_PROJECT_ID + '.' + BQ_DATASET_ID + '.' + tableId + '`';
+}
+function bqQuote_(value) {
+  if (value === null || value === undefined) return 'NULL';
+  // BigQuery Standard SQL tidak boleh menerima newline mentah di dalam quoted string.
+  // Analisa harian sering berisi enter, tanda petik, slash, emoji, dll.
+  // Maka semua text dikirim sebagai base64 lalu didecode di SQL agar aman.
+  var s = String(value).replace(/\u0000/g, '');
+  var b64 = Utilities.base64Encode(Utilities.newBlob(s, 'text/plain').getBytes());
+  return "CAST(FROM_BASE64('" + b64 + "') AS STRING)";
+}
+function bqDateLiteral_(dateOrKey) {
+  if (!dateOrKey) return 'NULL';
+  var key = (dateOrKey instanceof Date) ? Utilities.formatDate(dateOrKey, TZ, 'yyyy-MM-dd') : String(dateOrKey).slice(0,10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return 'NULL';
+  return "DATE '" + key + "'";
+}
+function bqNum_(value) {
+  var n = Number(value);
+  return isNaN(n) ? 'NULL' : String(n);
+}
+function bqBool_(value) {
+  return value ? 'TRUE' : 'FALSE';
+}
+function bqInt_(value) {
+  var n = parseInt(value, 10);
+  return isNaN(n) ? 'NULL' : String(n);
+}
+function bqInList_(list) {
+  return list.map(function(x){ return bqQuote_(String(x).toUpperCase()); }).join(',');
+}
+function bqCellValue_(cell) {
+  if (!cell || cell.v === undefined || cell.v === null) return null;
+  return cell.v;
+}
+function bqQuery_(sql) {
+  if (!bqIsAvailable_()) throw new Error('BigQuery API belum aktif di Apps Script Services.');
+  var request = { query: sql, useLegacySql: false, location: BQ_LOCATION };
+  var res = BigQuery.Jobs.query(request, BQ_PROJECT_ID);
+  var jobId = res.jobReference.jobId;
+  var args = { location: BQ_LOCATION, maxResults: 10000 };
+  var waitMs = 150;
+  while (!res.jobComplete) {
+    Utilities.sleep(waitMs);
+    res = BigQuery.Jobs.getQueryResults(BQ_PROJECT_ID, jobId, args);
+    waitMs = Math.min(waitMs * 2, 1200);
+  }
+  if (res.errors && res.errors.length) throw new Error(JSON.stringify(res.errors));
+  var fields = (res.schema && res.schema.fields) ? res.schema.fields : [];
+  var out = [];
+  function pushRows_(r) {
+    (r.rows || []).forEach(function(row){
+      var obj = {};
+      fields.forEach(function(f, i){ obj[f.name] = bqCellValue_(row.f[i]); });
+      out.push(obj);
+    });
+  }
+  pushRows_(res);
+  var pageToken = res.pageToken;
+  while (pageToken) {
+    var pageArgs = { location: BQ_LOCATION, maxResults: 10000, pageToken: pageToken };
+    var page = BigQuery.Jobs.getQueryResults(BQ_PROJECT_ID, jobId, pageArgs);
+    if (!fields.length && page.schema && page.schema.fields) fields = page.schema.fields;
+    pushRows_(page);
+    pageToken = page.pageToken;
+  }
+  return out;
+}
+function bqRunDml_(sql) {
+  return bqQuery_(sql);
+}
+function dateKey_(date) {
+  return Utilities.formatDate(date, TZ, 'yyyy-MM-dd');
+}
+function addDays_(date, days) {
+  var d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+function minDate_() {
+  var arr = Array.prototype.slice.call(arguments);
+  return arr.reduce(function(a,b){ return a.getTime() <= b.getTime() ? a : b; });
+}
+function maxDate_() {
+  var arr = Array.prototype.slice.call(arguments);
+  return arr.reduce(function(a,b){ return a.getTime() >= b.getTime() ? a : b; });
+}
+function sumSalesByDateRange_(salesByDate, startDate, endDate) {
+  var total = 0;
+  var d = new Date(startDate);
+  var endKey = dateKey_(endDate);
+  while (dateKey_(d) <= endKey) {
+    total += Number(salesByDate[dateKey_(d)] || 0);
+    d.setDate(d.getDate() + 1);
+  }
+  return total;
+}
+function bqFetchDailyRows_(outletList, startDate, endDate) {
+  if (!outletList || !outletList.length) return [];
+  var sql = "" +
+    "SELECT outlet_code, FORMAT_DATE('%F', date) AS date, " +
+    "CAST(IFNULL(sales,0) AS FLOAT64) AS sales, " +
+    "IFNULL(analisa_harian,'') AS analisa_harian, IFNULL(analisa_status,'') AS analisa_status " +
+    "FROM " + bqTable_('daily_sales') + " " +
+    "WHERE UPPER(outlet_code) IN (" + bqInList_(outletList) + ") " +
+    "AND date BETWEEN " + bqDateLiteral_(startDate) + " AND " + bqDateLiteral_(endDate) + " " +
+    "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), date ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST) = 1";
+  return bqQuery_(sql);
+}
+function bqFetchWeeklyRows_(outletList, year, month) {
+  if (!outletList || !outletList.length) return [];
+  var sql = "" +
+    "SELECT outlet_code, CAST(week AS INT64) AS week, IFNULL(analisa_mingguan,'') AS analisa_mingguan, IFNULL(status,'') AS status " +
+    "FROM " + bqTable_('weekly_analysis') + " " +
+    "WHERE UPPER(outlet_code) IN (" + bqInList_(outletList) + ") " +
+    "AND CAST(year AS INT64) = " + bqInt_(year) + " AND CAST(month AS INT64) = " + bqInt_(month) + " " +
+    "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), CAST(week AS INT64) ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST) = 1";
+  return bqQuery_(sql);
+}
+function bqFetchMonthlyRows_(outletList, year, month) {
+  if (!outletList || !outletList.length) return [];
+  var sql = "" +
+    "SELECT outlet_code, IFNULL(analisa_bulanan,'') AS analisa_bulanan, IFNULL(status,'') AS status " +
+    "FROM " + bqTable_('monthly_analysis') + " " +
+    "WHERE UPPER(outlet_code) IN (" + bqInList_(outletList) + ") " +
+    "AND CAST(year AS INT64) = " + bqInt_(year) + " AND CAST(month AS INT64) = " + bqInt_(month) + " " +
+    "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), CAST(year AS INT64), CAST(month AS INT64) ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST) = 1";
+  return bqQuery_(sql);
+}
+function bqGetTargetsMap_(year, month) {
+  var out = {};
+  try {
+    var sql = "" +
+      "SELECT UPPER(outlet_code) AS outlet_code, CAST(target AS FLOAT64) AS target " +
+      "FROM " + bqTable_('targets') + " " +
+      "WHERE CAST(year AS INT64) = " + bqInt_(year) + " AND CAST(month AS INT64) = " + bqInt_(month) + " " +
+      "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), CAST(year AS INT64), CAST(month AS INT64) ORDER BY outlet_code) = 1";
+    bqQuery_(sql).forEach(function(r){ out[String(r.outlet_code).toUpperCase()] = Number(r.target)||0; });
+  } catch (e) {
+    Logger.log('bqGetTargetsMap_ fallback empty: ' + e.message);
+  }
+  return out;
+}
+function bqFetchComparisonSums_(outletList, year, month) {
+  var currentEnd = new Date(year, month, 0);
+  var prevEnd = new Date(year-1, month, 0);
+  var prevMonthStart = new Date(year-1, month-1, 1);
+  var sql = "" +
+    "WITH src AS (" +
+    "SELECT outlet_code, date, CAST(IFNULL(sales,0) AS FLOAT64) AS sales " +
+    "FROM " + bqTable_('daily_sales') + " " +
+    "WHERE UPPER(outlet_code) IN (" + bqInList_(outletList) + ") " +
+    "AND date BETWEEN DATE '" + (year-1) + "-01-01' AND " + bqDateLiteral_(currentEnd) + " " +
+    "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), date ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST) = 1" +
+    ") SELECT " +
+    "SUM(IF(date BETWEEN DATE '" + year + "-01-01' AND " + bqDateLiteral_(currentEnd) + ", sales, 0)) AS ytdTotal, " +
+    "SUM(IF(date BETWEEN DATE '" + (year-1) + "-01-01' AND " + bqDateLiteral_(prevEnd) + ", sales, 0)) AS prevYtdTotal, " +
+    "SUM(IF(date BETWEEN " + bqDateLiteral_(prevMonthStart) + " AND " + bqDateLiteral_(prevEnd) + ", sales, 0)) AS prevMonthTotal " +
+    "FROM src";
+  var rows = bqQuery_(sql);
+  var r = rows[0] || {};
+  return {
+    ytdTotal: Number(r.ytdTotal) || 0,
+    prevYtdTotal: Number(r.prevYtdTotal) || 0,
+    prevMonthTotal: Number(r.prevMonthTotal) || 0
+  };
+}
+
+function bqEnsureGlobalDailyAnalysisTable_() {
+  if (!bqIsAvailable_()) return;
+  var props = PropertiesService.getScriptProperties();
+  var propKey = 'BQ_GLOBAL_DAILY_ANALYSIS_TABLE_READY_V1';
+  if (props.getProperty(propKey) === 'yes') return;
+  var sql = "" +
+    "CREATE TABLE IF NOT EXISTS " + bqTable_('global_daily_analysis') + " (" +
+    "date DATE NOT NULL, " +
+    "is_national_holiday BOOL, " +
+    "national_holiday_note STRING, " +
+    "has_promo BOOL, " +
+    "promo_note STRING, " +
+    "has_event BOOL, " +
+    "event_note STRING, " +
+    "other_analysis STRING, " +
+    "submitted_by STRING, " +
+    "submitted_at TIMESTAMP, " +
+    "updated_at TIMESTAMP" +
+    ") PARTITION BY date";
+  bqRunDml_(sql);
+  props.setProperty(propKey, 'yes');
+}
+
+function bqEnsureGlobalDailyAnalysisItemsTable_() {
+  if (!bqIsAvailable_()) return;
+  var props = PropertiesService.getScriptProperties();
+  var propKey = 'BQ_GLOBAL_DAILY_ANALYSIS_ITEMS_TABLE_READY_V1';
+  if (props.getProperty(propKey) === 'yes') return;
+  var sql = "" +
+    "CREATE TABLE IF NOT EXISTS " + bqTable_('global_daily_analysis_items') + " (" +
+    "item_id STRING NOT NULL, " +
+    "date DATE NOT NULL, " +
+    "analysis_type STRING NOT NULL, " +
+    "note STRING, " +
+    "active BOOL, " +
+    "submitted_by STRING, " +
+    "submitted_at TIMESTAMP, " +
+    "updated_at TIMESTAMP" +
+    ") PARTITION BY date";
+  bqRunDml_(sql);
+  props.setProperty(propKey, 'yes');
+}
+
+function defaultGlobalDailyAnalysis_(key) {
+  return {
+    date: key || '',
+    items: [],
+    is_national_holiday: false,
+    national_holiday_note: '',
+    has_promo: false,
+    promo_note: '',
+    has_event: false,
+    event_note: '',
+    other_analysis: '',
+    hasAny: false
+  };
+}
+
+function normalizeBool_(value) {
+  if (value === true) return true;
+  if (value === false || value === null || value === undefined) return false;
+  var s = String(value).trim().toLowerCase();
+  return s === 'true' || s === 'yes' || s === 'ya' || s === '1';
+}
+
+function normalizeGlobalAnalysisType_(value) {
+  var s = String(value || '').trim().toUpperCase();
+  if (s === 'PUBLIC_HOLIDAY' || s === 'HOLIDAY' || s === 'LIBUR_NASIONAL' || s === 'NATIONAL_HOLIDAY') return 'PH';
+  if (s === 'P' || s === 'PROMO') return 'PROMO';
+  if (s === 'E' || s === 'EVENT') return 'EVENT';
+  if (s === 'A' || s === 'ANALISA_LAIN' || s === 'OTHER_ANALYSIS' || s === 'LAIN') return 'OTHER';
+  if (s === 'PH') return 'PH';
+  if (s === 'OTHER') return 'OTHER';
+  return '';
+}
+
+function globalTypeLabel_(type) {
+  type = normalizeGlobalAnalysisType_(type);
+  if (type === 'PH') return 'Public Holiday';
+  if (type === 'PROMO') return 'Promo';
+  if (type === 'EVENT') return 'Event';
+  if (type === 'OTHER') return 'Analisa Lain';
+  return type || 'Analisa';
+}
+
+function normalizeGlobalItems_(items) {
+  if (!items) return [];
+  if (typeof items === 'string') {
+    try { items = JSON.parse(items); } catch(e) { items = []; }
+  }
+  if (!Array.isArray(items)) return [];
+  return items.map(function(it){
+    var type = normalizeGlobalAnalysisType_(it.analysis_type || it.type || it.kind);
+    var note = String(it.note || it.text || it.description || '').trim();
+    if (!type || !note) return null;
+    return {
+      item_id: String(it.item_id || it.id || ''),
+      type: type,
+      analysis_type: type,
+      label: globalTypeLabel_(type),
+      note: note,
+      submitted_by: String(it.submitted_by || ''),
+      updated_at: String(it.updated_at || '')
+    };
+  }).filter(function(x){ return !!x; });
+}
+
+function notesByType_(items, type) {
+  type = normalizeGlobalAnalysisType_(type);
+  return items.filter(function(it){ return normalizeGlobalAnalysisType_(it.type || it.analysis_type) === type; })
+    .map(function(it){ return it.note; })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function legacyGlobalToItems_(r) {
+  var items = [];
+  var key = r && r.date ? String(r.date).slice(0,10) : '';
+  if (normalizeBool_(r && r.is_national_holiday)) items.push({ item_id:'legacy-ph-' + key, type:'PH', analysis_type:'PH', label:'Public Holiday', note:String((r && r.national_holiday_note) || 'Public Holiday').trim() || 'Public Holiday' });
+  if (normalizeBool_(r && r.has_promo)) items.push({ item_id:'legacy-promo-' + key, type:'PROMO', analysis_type:'PROMO', label:'Promo', note:String((r && r.promo_note) || 'Ada promo global').trim() || 'Ada promo global' });
+  if (normalizeBool_(r && r.has_event)) items.push({ item_id:'legacy-event-' + key, type:'EVENT', analysis_type:'EVENT', label:'Event', note:String((r && r.event_note) || 'Ada event global').trim() || 'Ada event global' });
+  if (r && r.other_analysis) items.push({ item_id:'legacy-other-' + key, type:'OTHER', analysis_type:'OTHER', label:'Analisa Lain', note:String(r.other_analysis).trim() });
+  return items.filter(function(it){ return !!it.note; });
+}
+
+function normalizeGlobalDailyRow_(r) {
+  var key = r && r.date ? String(r.date).slice(0,10) : '';
+  var items = normalizeGlobalItems_(r && r.items);
+
+  // Backward compatibility untuk table lama global_daily_analysis.
+  if (!items.length) items = legacyGlobalToItems_(r);
+
+  var phNote = notesByType_(items, 'PH');
+  var promoNote = notesByType_(items, 'PROMO');
+  var eventNote = notesByType_(items, 'EVENT');
+  var otherNote = notesByType_(items, 'OTHER');
+  var obj = {
+    date: key,
+    items: items,
+    is_national_holiday: !!phNote,
+    national_holiday_note: phNote,
+    has_promo: !!promoNote,
+    promo_note: promoNote,
+    has_event: !!eventNote,
+    event_note: eventNote,
+    other_analysis: otherNote,
+    submitted_by: (r && r.submitted_by) || '',
+    updated_at: (r && r.updated_at) || ''
+  };
+  obj.hasAny = items.length > 0;
+  return obj;
+}
+
+function bqFetchGlobalDailyRows_(startDate, endDate) {
+  try {
+    bqEnsureGlobalDailyAnalysisTable_();
+    bqEnsureGlobalDailyAnalysisItemsTable_();
+    var byDate = {};
+
+    var sqlItems = "" +
+      "SELECT FORMAT_DATE('%F', date) AS date, item_id, UPPER(analysis_type) AS analysis_type, IFNULL(note,'') AS note, " +
+      "IFNULL(submitted_by,'') AS submitted_by, CAST(updated_at AS STRING) AS updated_at " +
+      "FROM " + bqTable_('global_daily_analysis_items') + " " +
+      "WHERE date BETWEEN " + bqDateLiteral_(startDate) + " AND " + bqDateLiteral_(endDate) + " " +
+      "AND IFNULL(active, TRUE) = TRUE " +
+      "ORDER BY date, submitted_at, updated_at";
+    bqQuery_(sqlItems).forEach(function(r){
+      var key = String(r.date || '').slice(0,10);
+      if (!key) return;
+      if (!byDate[key]) byDate[key] = { date:key, items:[] };
+      byDate[key].items.push({
+        item_id: r.item_id || '',
+        type: normalizeGlobalAnalysisType_(r.analysis_type),
+        analysis_type: normalizeGlobalAnalysisType_(r.analysis_type),
+        label: globalTypeLabel_(r.analysis_type),
+        note: r.note || '',
+        submitted_by: r.submitted_by || '',
+        updated_at: r.updated_at || ''
+      });
+    });
+
+    // Legacy table tetap dibaca agar data PH/Promo/Event yang sudah pernah disimpan tidak hilang.
+    var sqlLegacy = "" +
+      "SELECT FORMAT_DATE('%F', date) AS date, " +
+      "IFNULL(is_national_holiday, FALSE) AS is_national_holiday, IFNULL(national_holiday_note,'') AS national_holiday_note, " +
+      "IFNULL(has_promo, FALSE) AS has_promo, IFNULL(promo_note,'') AS promo_note, " +
+      "IFNULL(has_event, FALSE) AS has_event, IFNULL(event_note,'') AS event_note, " +
+      "IFNULL(other_analysis,'') AS other_analysis, IFNULL(submitted_by,'') AS submitted_by, CAST(updated_at AS STRING) AS updated_at " +
+      "FROM " + bqTable_('global_daily_analysis') + " " +
+      "WHERE date BETWEEN " + bqDateLiteral_(startDate) + " AND " + bqDateLiteral_(endDate) + " " +
+      "QUALIFY ROW_NUMBER() OVER (PARTITION BY date ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST) = 1";
+    bqQuery_(sqlLegacy).forEach(function(r){
+      var key = String(r.date || '').slice(0,10);
+      if (!key) return;
+      if (!byDate[key]) byDate[key] = { date:key, items:[] };
+      var legacyItems = legacyGlobalToItems_(r);
+      legacyItems.forEach(function(it){
+        var duplicate = byDate[key].items.some(function(existing){
+          return normalizeGlobalAnalysisType_(existing.type || existing.analysis_type) === normalizeGlobalAnalysisType_(it.type) && String(existing.note || '').trim() === String(it.note || '').trim();
+        });
+        if (!duplicate) byDate[key].items.push(it);
+      });
+    });
+
+    return Object.keys(byDate).map(function(key){ return normalizeGlobalDailyRow_(byDate[key]); });
+  } catch (e) {
+    Logger.log('bqFetchGlobalDailyRows_ kosong/gagal: ' + e.message);
+    return [];
+  }
+}
+
+function bqInsertGlobalDailyAnalysisItem_(key, type, note, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return '';
+  bqEnsureGlobalDailyAnalysisItemsTable_();
+  var itemId = Utilities.getUuid();
+  var sql = "" +
+    "INSERT INTO " + bqTable_('global_daily_analysis_items') + " " +
+    "(item_id,date,analysis_type,note,active,submitted_by,submitted_at,updated_at) VALUES (" +
+    bqQuote_(itemId) + ", " + bqDateLiteral_(key) + ", " + bqQuote_(type) + ", " + bqQuote_(note || '') + ", TRUE, " +
+    bqQuote_(submittedBy || 'BIHQ') + ", CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())";
+  bqRunDml_(sql);
+  return itemId;
+}
+
+function bqDeactivateGlobalDailyAnalysisItem_(key, itemId) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  bqEnsureGlobalDailyAnalysisItemsTable_();
+  var sql = "" +
+    "UPDATE " + bqTable_('global_daily_analysis_items') + " " +
+    "SET active=FALSE, updated_at=CURRENT_TIMESTAMP() " +
+    "WHERE date=" + bqDateLiteral_(key) + " AND item_id=" + bqQuote_(itemId || '');
+  bqRunDml_(sql);
+}
+
+function bqFetchOneGlobalDaily_(key) {
+  var rows = bqFetchGlobalDailyRows_(key, key);
+  return rows[0] || defaultGlobalDailyAnalysis_(key);
+}
+
+// Legacy writer tetap ada supaya tidak mematahkan fungsi lama, tetapi UI V9.2 memakai addGlobalDailyAnalysisItem().
+function bqSyncGlobalDailyAnalysis_(key, isHoliday, holidayNote, hasPromo, promoNote, hasEvent, eventNote, otherAnalysis, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  if (isHoliday && holidayNote) bqInsertGlobalDailyAnalysisItem_(key, 'PH', holidayNote, submittedBy);
+  if (hasPromo && promoNote) bqInsertGlobalDailyAnalysisItem_(key, 'PROMO', promoNote, submittedBy);
+  if (hasEvent && eventNote) bqInsertGlobalDailyAnalysisItem_(key, 'EVENT', eventNote, submittedBy);
+  if (otherAnalysis) bqInsertGlobalDailyAnalysisItem_(key, 'OTHER', otherAnalysis, submittedBy);
+}
+
+function bqSyncDaily_(oc, key, year, month, week, dow, sales, analisa, status, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  var sql = "" +
+    "MERGE " + bqTable_('daily_sales') + " T USING (SELECT " +
+    bqQuote_(oc) + " AS outlet_code, " + bqDateLiteral_(key) + " AS date, " +
+    bqInt_(year) + " AS year, " + bqInt_(month) + " AS month, " + bqInt_(week) + " AS week, " +
+    bqQuote_(dow) + " AS day_of_week, CAST(" + bqNum_(sales) + " AS NUMERIC) AS sales, " +
+    bqQuote_(analisa || '') + " AS analisa_harian, " + bqQuote_(status || '') + " AS analisa_status, " +
+    bqQuote_(submittedBy || oc) + " AS submitted_by, CURRENT_TIMESTAMP() AS ts) S " +
+    "ON UPPER(T.outlet_code)=UPPER(S.outlet_code) AND T.date=S.date " +
+    "WHEN MATCHED THEN UPDATE SET year=S.year, month=S.month, week=S.week, day_of_week=S.day_of_week, sales=S.sales, " +
+    "analisa_harian=S.analisa_harian, analisa_status=S.analisa_status, submitted_by=S.submitted_by, updated_at=S.ts " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,date,year,month,week,day_of_week,sales,analisa_harian,analisa_status,submitted_by,submitted_at,updated_at) " +
+    "VALUES (S.outlet_code,S.date,S.year,S.month,S.week,S.day_of_week,S.sales,S.analisa_harian,S.analisa_status,S.submitted_by,S.ts,S.ts)";
+  bqRunDml_(sql);
+}
+function bqSyncWeekly_(oc, periodKey, year, month, week, periodStart, periodEnd, total, analisa, status, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  var sql = "" +
+    "MERGE " + bqTable_('weekly_analysis') + " T USING (SELECT " +
+    bqQuote_(oc) + " AS outlet_code, " + bqQuote_(periodKey) + " AS period_key, " + bqInt_(year) + " AS year, " +
+    bqInt_(month) + " AS month, " + bqInt_(week) + " AS week, " + bqDateLiteral_(periodStart) + " AS period_start, " +
+    bqDateLiteral_(periodEnd) + " AS period_end, CAST(" + bqNum_(total) + " AS NUMERIC) AS total_sales, " +
+    bqQuote_(analisa || '') + " AS analisa_mingguan, " + bqQuote_(status || '') + " AS status, " +
+    bqQuote_(submittedBy || oc) + " AS submitted_by, CURRENT_TIMESTAMP() AS ts) S " +
+    "ON T.period_key=S.period_key " +
+    "WHEN MATCHED THEN UPDATE SET year=S.year, month=S.month, week=S.week, period_start=S.period_start, period_end=S.period_end, total_sales=S.total_sales, " +
+    "analisa_mingguan=S.analisa_mingguan, status=S.status, submitted_by=S.submitted_by, updated_at=S.ts " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,period_key,year,month,week,period_start,period_end,total_sales,analisa_mingguan,status,submitted_by,submitted_at,updated_at) " +
+    "VALUES (S.outlet_code,S.period_key,S.year,S.month,S.week,S.period_start,S.period_end,S.total_sales,S.analisa_mingguan,S.status,S.submitted_by,S.ts,S.ts)";
+  bqRunDml_(sql);
+}
+function bqSyncMonthly_(oc, periodKey, year, month, total, target, achievementPct, analisa, status, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  var sql = "" +
+    "MERGE " + bqTable_('monthly_analysis') + " T USING (SELECT " +
+    bqQuote_(oc) + " AS outlet_code, " + bqQuote_(periodKey) + " AS period_key, " + bqInt_(year) + " AS year, " +
+    bqInt_(month) + " AS month, CAST(" + bqNum_(total) + " AS NUMERIC) AS total_sales, CAST(" + bqNum_(target) + " AS NUMERIC) AS target, " +
+    "CAST(" + bqNum_(achievementPct) + " AS FLOAT64) AS achievement_pct, " + bqQuote_(analisa || '') + " AS analisa_bulanan, " +
+    bqQuote_(status || '') + " AS status, " + bqQuote_(submittedBy || oc) + " AS submitted_by, CURRENT_TIMESTAMP() AS ts) S " +
+    "ON T.period_key=S.period_key " +
+    "WHEN MATCHED THEN UPDATE SET year=S.year, month=S.month, total_sales=S.total_sales, target=S.target, achievement_pct=S.achievement_pct, " +
+    "analisa_bulanan=S.analisa_bulanan, status=S.status, submitted_by=S.submitted_by, updated_at=S.ts " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,period_key,year,month,total_sales,target,achievement_pct,analisa_bulanan,status,submitted_by,submitted_at,updated_at) " +
+    "VALUES (S.outlet_code,S.period_key,S.year,S.month,S.total_sales,S.target,S.achievement_pct,S.analisa_bulanan,S.status,S.submitted_by,S.ts,S.ts)";
+  bqRunDml_(sql);
+}
+function bqSyncTarget_(oc, year, month, target) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  if (target == null) {
+    var del = "DELETE FROM " + bqTable_('targets') + " WHERE UPPER(outlet_code)=UPPER(" + bqQuote_(oc) + ") AND CAST(year AS INT64)=" + bqInt_(year) + " AND CAST(month AS INT64)=" + bqInt_(month);
+    bqRunDml_(del);
+    return;
+  }
+  var sql = "" +
+    "MERGE " + bqTable_('targets') + " T USING (SELECT " +
+    bqQuote_(oc) + " AS outlet_code, " + bqInt_(year) + " AS year, " + bqInt_(month) + " AS month, CAST(" + bqNum_(target) + " AS NUMERIC) AS target) S " +
+    "ON UPPER(T.outlet_code)=UPPER(S.outlet_code) AND CAST(T.year AS INT64)=S.year AND CAST(T.month AS INT64)=S.month " +
+    "WHEN MATCHED THEN UPDATE SET target=S.target " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,year,month,target) VALUES (S.outlet_code,S.year,S.month,S.target)";
+  bqRunDml_(sql);
+}
+
+/* ============================================================
+ *  SAVE APIs (require session)
+ * ============================================================ */
+
+function addGlobalDailyAnalysisItem(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh menambah analisa global.' };
+  payload = payload || {};
+  var key = String(payload.date || '').slice(0,10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return { ok:false, error:'Tanggal tidak valid.' };
+
+  var type = normalizeGlobalAnalysisType_(payload.analysis_type || payload.type);
+  if (!type) return { ok:false, error:'Jenis analisa wajib dipilih.' };
+
+  var note = String(payload.note || payload.text || payload.description || '').trim();
+  if (!note) return { ok:false, error:'Keterangan wajib diisi.' };
+
+  try {
+    var itemId = bqInsertGlobalDailyAnalysisItem_(key, type, note, sess.outlet_code);
+    clearDashboardCache_();
+    var saved = bqFetchOneGlobalDaily_(key);
+    audit_(sess.outlet_code, sess.outlet_code, 'add_global_daily_analysis_item', 'global_day', key, { item_id:itemId, type:type, note:note });
+    return { ok:true, date:key, item_id:itemId, global:saved, syncedTo:'BigQuery', dataSource:'BigQuery' };
+  } catch (e) {
+    Logger.log('BQ add global item gagal: ' + e.message);
+    return { ok:false, error:'Gagal menambah analisa global ke BigQuery: ' + e.message };
+  }
+}
+
+function deleteGlobalDailyAnalysisItem(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh menghapus analisa global.' };
+  payload = payload || {};
+  var key = String(payload.date || '').slice(0,10);
+  var itemId = String(payload.item_id || payload.id || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return { ok:false, error:'Tanggal tidak valid.' };
+  if (!itemId) return { ok:false, error:'Item analisa tidak valid.' };
+  if (itemId.indexOf('legacy-') === 0) return { ok:false, error:'Item lama tidak bisa dihapus dari panel ini. Tambahkan item baru sebagai pengganti.' };
+
+  try {
+    bqDeactivateGlobalDailyAnalysisItem_(key, itemId);
+    clearDashboardCache_();
+    var saved = bqFetchOneGlobalDaily_(key);
+    audit_(sess.outlet_code, sess.outlet_code, 'delete_global_daily_analysis_item', 'global_day', key, { item_id:itemId });
+    return { ok:true, date:key, global:saved, syncedTo:'BigQuery', dataSource:'BigQuery' };
+  } catch (e) {
+    Logger.log('BQ delete global item gagal: ' + e.message);
+    return { ok:false, error:'Gagal menghapus analisa global di BigQuery: ' + e.message };
+  }
+}
+
+function saveDaily(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input sales.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+
+  var dt = parseDateKey_(payload.date);
+  var key = dateKey_(dt);
+  var oc = sess.outlet_code;
+  var analisa = (payload.analisa || '').trim();
+  var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
+  var sales = Number(payload.sales) || 0;
+
+  try {
+    bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, status, sess.outlet_code);
+  } catch (e) {
+    Logger.log('BQ save daily gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan ke BigQuery: ' + e.message };
+  }
+
+  audit_(oc, sess.outlet_code, 'save_daily', 'day', key, payload);
+  clearDashboardCache_();
+  return { ok:true, date:key, status:status, sales:sales, syncedTo:'BigQuery', dataSource:'BigQuery' };
+}
+
+
+function saveGlobalDailyAnalysis(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh menyimpan analisa global.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+
+  var dt = parseDateKey_(payload.date);
+  var key = dateKey_(dt);
+  var isHoliday = normalizeBool_(payload.is_national_holiday || payload.libur_nasional || payload.is_ph || payload.ph);
+  var hasPromo = normalizeBool_(payload.has_promo || payload.promo);
+  var hasEvent = normalizeBool_(payload.has_event || payload.event);
+  var holidayNote = isHoliday ? String(payload.national_holiday_note || payload.libur_nasional_note || payload.ph_note || '').trim() : '';
+  var promoNote = hasPromo ? String(payload.promo_note || '').trim() : '';
+  var eventNote = hasEvent ? String(payload.event_note || '').trim() : '';
+  var otherAnalysis = String(payload.other_analysis || payload.analisa_lain || '').trim();
+
+  try {
+    bqSyncGlobalDailyAnalysis_(key, isHoliday, holidayNote, hasPromo, promoNote, hasEvent, eventNote, otherAnalysis, sess.outlet_code);
+  } catch (e) {
+    Logger.log('BQ save global daily gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan analisa global ke BigQuery: ' + e.message };
+  }
+
+  var saved = normalizeGlobalDailyRow_({
+    date: key,
+    is_national_holiday: isHoliday,
+    national_holiday_note: holidayNote,
+    has_promo: hasPromo,
+    promo_note: promoNote,
+    has_event: hasEvent,
+    event_note: eventNote,
+    other_analysis: otherAnalysis,
+    submitted_by: sess.outlet_code,
+    updated_at: new Date().toISOString()
+  });
+  audit_(sess.outlet_code, sess.outlet_code, 'save_global_daily_analysis', 'global_day', key, saved);
+  clearDashboardCache_();
+  return { ok:true, date:key, global:saved, syncedTo:'BigQuery', dataSource:'BigQuery' };
+}
+
+function saveWeekly(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input analisa outlet.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+
+  var oc = sess.outlet_code;
+  var year = Number(payload.year);
+  var month = Number(payload.month);
+  var week = Number(payload.week);
+  var periodKey = oc + '-' + year + '-' + pad2_(month) + '-W' + week;
+  var analisa = (payload.analisa || '').trim();
+  var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
+
+  var dash = getMonthDashboard(token, year, month, oc);
+  var wk = (dash.weeks || []).find(function(w){ return Number(w.w) === week; });
+  var total = wk ? Number(wk.total) || 0 : 0;
+  var range = wk ? [wk.start, wk.end] : ['', ''];
+
+  try {
+    bqSyncWeekly_(oc, periodKey, year, month, week, range[0], range[1], total, analisa, status, sess.outlet_code);
+  } catch (e) {
+    Logger.log('BQ save weekly gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan ke BigQuery: ' + e.message };
+  }
+
+  audit_(oc, sess.outlet_code, 'save_weekly', 'week', periodKey, payload);
+  clearDashboardCache_();
+  return { ok:true, period:periodKey, status:status, total:total, syncedTo:'BigQuery', dataSource:'BigQuery' };
+}
+
+function saveMonthly(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input analisa outlet.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+
+  var oc = sess.outlet_code;
+  var year = Number(payload.year);
+  var month = Number(payload.month);
+  var periodKey = oc + '-' + year + '-' + pad2_(month);
+  var analisa = (payload.analisa || '').trim();
+  var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
+
+  var dash = getMonthDashboard(token, year, month, oc);
+  var total = dash.month ? Number(dash.month.total) || 0 : 0;
+  var target = dash.month ? Number(dash.month.target) || 0 : 0;
+  var pct = dash.month ? Number(dash.month.pct) || 0 : 0;
+
+  try {
+    bqSyncMonthly_(oc, periodKey, year, month, total, target, pct, analisa, status, sess.outlet_code);
+  } catch (e) {
+    Logger.log('BQ save monthly gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan ke BigQuery: ' + e.message };
+  }
+
+  audit_(oc, sess.outlet_code, 'save_monthly', 'month', periodKey, payload);
+  clearDashboardCache_();
+  return { ok:true, period:periodKey, status:status, total:total, syncedTo:'BigQuery', dataSource:'BigQuery' };
+}
+
+/* ============================================================
+ *  HELPERS
+ * ============================================================ */
+function readConfig_() {
+  // BigQuery-only mode: konfigurasi runtime disimpan di konstanta APP_CONFIG,
+  // supaya aplikasi tidak perlu membuka Spreadsheet untuk login/load/save.
+  return Object.assign({}, APP_CONFIG);
+}
+function getTargetFor_(outletCode, year, month) {
+  var targets = bqGetTargetsMap_(year, month);
+  return targets[String(outletCode).toUpperCase()] || null;
+}
+
+function readDaily_(outletCode, year, month) {
+  return {};
+}
+
+function readWeekly_(outletCode, year, month) {
+  return {};
+}
+
+function readMonthly_(outletCode, year, month) {
+  return null;
+}
+
+function headerIdx_(headerRow) { var idx={}; headerRow.forEach(function(h,i){ idx[h]=i; }); return idx; }
+
+/**
+ * Convert berbagai bentuk tanggal dari Sheet (Date object / string yyyy-MM-dd)
+ * menjadi key stabil yyyy-MM-dd tanpa bias timezone.
+ */
+function dateKeyFromCell_(value) {
+  if (!value) return '';
+  if (value instanceof Date) return Utilities.formatDate(value, TZ, 'yyyy-MM-dd');
+  var s = String(value).trim();
+  var m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  var d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  return Utilities.formatDate(d, TZ, 'yyyy-MM-dd');
+}
+
+/** Parse yyyy-MM-dd as local calendar date. */
+function parseDateKey_(key) {
+  var p = String(key).split('-').map(Number);
+  return new Date(p[0], p[1]-1, p[2]);
+}
+
+/**
+ * Read daily sales for outletList within an arbitrary date range.
+ * Returns { 'yyyy-MM-dd': { date, sales } }
+ * Perbandingan menggunakan date key, bukan getTime(), supaya tanggal akhir range
+ * tidak terpotong oleh perbedaan timezone/jam dari Google Sheet.
+ */
+function readDailyCrossMonth_(outletList, startDate, endDate) {
+  return {};
+}
+
+
+
+function sumDailyCrossMonth_(outletList, startDate, endDate) {
+  var data = readDailyCrossMonth_(outletList, startDate, endDate);
+  return Object.keys(data).reduce(function(sum, k){
+    return sum + (Number(data[k].sales) || 0);
+  }, 0);
+}
+
+/**
+ * Sum all daily sales for outletList in a given year, months 1..throughMonth.
+ */
+function getYtdSales_(outletList, year, throughMonth) {
+  return 0;
+}
+
+
+function weekOfMonth_(date) {
+  var first = new Date(date.getFullYear(), date.getMonth(), 1);
+  var offset = (first.getDay()+6) % 7;
+  return Math.floor((date.getDate()-1 + offset)/7) + 1;
+}
+function dowName_(dow){ return ['Min','Sen','Sel','Rab','Kam','Jum','Sab'][dow]; }
+function pad2_(n){ n=Number(n); return n<10?'0'+n:''+n; }
+function outletName_(code) {
+  for (var i=0; i<OUTLETS.length; i++) if (OUTLETS[i].code===code) return OUTLETS[i].name;
+  return code;
+}
+function audit_(outletCode, user, action, scope, periodKey, payload) {
+  try {
+    Logger.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      outlet_code: outletCode,
+      user: user,
+      action: action,
+      scope: scope,
+      period_key: periodKey,
+      payload: payload || {}
+    }));
+  } catch (e) {}
+}
+
+function showWebAppUrl_() {
+  var url = ScriptApp.getService().getUrl();
+  Logger.log(url ? 'Web App URL: ' + url : 'Belum deploy. Deploy → New deployment → Web app.');
+  return url || '';
+}
+
+
+/* ============================================================
+ *  TARGET MANAGEMENT (admin only)
+ * ============================================================ */
+
+/**
+ * Get all custom targets for a given period.
+ * Returns { OUTLET_CODE: target_value } (only outlets that have custom target).
+ */
+function getTargets(token, year, month) {
+  validateSession_(token); // any logged-in user can read targets
+  year = Number(year); month = Number(month);
+  var defaultTarget = Number(readConfig_().monthly_target) || 0;
+  if (!bqIsAvailable_()) return { defaultTarget: defaultTarget, targets: {}, dataSource:'BigQueryUnavailable' };
+  return { defaultTarget: defaultTarget, targets: bqGetTargetsMap_(year, month), dataSource:'BigQuery' };
+}
+
+/**
+ * Bulk save / reset targets. Admin (BIHQ) only.
+ * @param updates { OUTLET_CODE: number | null }  (null = remove custom row, fall back to default)
+ */
+function saveTargets(token, year, month, updates) {
+  var sess = validateSession_(token);
+  if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh ubah target.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+
+  year = Number(year); month = Number(month);
+  updates = updates || {};
+  var saved = 0, removed = 0;
+
+  try {
+    Object.keys(updates).forEach(function(oc){
+      oc = String(oc).toUpperCase();
+      if (updates[oc] == null) removed++;
+      else saved++;
+      bqSyncTarget_(oc, year, month, updates[oc]);
+    });
+  } catch (e) {
+    Logger.log('BQ save targets gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan target ke BigQuery: ' + e.message };
+  }
+
+  audit_('ALL', sess.outlet_code, 'save_targets', 'targets', year+'-'+pad2_(month), { saved:saved, removed:removed, updates:updates });
+  clearDashboardCache_();
+  return { ok:true, saved:saved, removed:removed, syncedTo:'BigQuery', dataSource:'BigQuery' };
+}
+
+function syncOutlets_(records) {
+  (records || []).forEach(function (record) {
+    var code = String(record.code || '').trim().toUpperCase();
+    if (!code) return;
+    var existing = OUTLETS.find(function (row) { return String(row.code).toUpperCase() === code; });
+    if (existing) {
+      existing.name = record.name || existing.name || code;
+      existing.role = record.role || existing.role || 'store';
+    } else {
+      OUTLETS.push({ code: code, name: record.name || code, role: record.role || 'store' });
+    }
+  });
+}
+
+function issueBiSpaceSession_(outletCode, outletName, role) {
+  outletCode = String(outletCode || '').trim().toUpperCase();
+  syncOutlets_([{ code: outletCode, name: outletName || outletCode, role: role || 'store' }]);
+  var token = Utilities.getUuid();
+  var ttl = Number(APP_CONFIG.session_ttl_hours) || 12;
+  CacheService.getScriptCache().put('sess_' + token, outletCode, ttl * 3600);
+  return {
+    ok: true,
+    token: token,
+    outlet_code: outletCode,
+    outlet_name: outletName || outletCode,
+    role: role || 'store',
+    expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
+    dataSource: 'BigQuery'
+  };
+}
+
+return Object.freeze({
+  syncOutlets: syncOutlets_,
+  issueSession: issueBiSpaceSession_,
+  getBootstrap: getBootstrap,
+  getMonthDashboard: getMonthDashboard,
+  getTargets: getTargets,
+  saveTargets: saveTargets,
+  saveDaily: saveDaily,
+  saveWeekly: saveWeekly,
+  saveMonthly: saveMonthly,
+  saveGlobalDailyAnalysis: saveGlobalDailyAnalysis,
+  addGlobalDailyAnalysisItem: addGlobalDailyAnalysisItem,
+  deleteGlobalDailyAnalysisItem: deleteGlobalDailyAnalysisItem
+});
+}());
+
+function salesAnalysisOutletDirectory_() {
+  var codes = readActiveOutlets_();
+  var directory = null;
+  try { directory = readStoreCodeDirectory_(); } catch (error) { console.warn(error.message); }
+  var rows = [{ code: 'BIHQ', name: 'Head Office (Summary)', role: 'admin' }];
+  codes.forEach(function (code) {
+    code = String(code || '').trim().toUpperCase();
+    if (!code || code === 'BIHQ') return;
+    var entry = directory && directory.byCode ? directory.byCode[code] : null;
+    rows.push({ code: code, name: entry && entry.name ? entry.name : code, role: 'store' });
+  });
+  return rows;
+}
+
+function salesAnalysisContext_(token) {
+  var mainSession = requireSession_(token);
+  var employee = findEmployee_(mainSession.nik);
+  assertEmployeeActive_(employee);
+  var outlets = salesAnalysisOutletDirectory_();
+  SALES_ANALYSIS.syncOutlets(outlets);
+  var role = employee.outlet === 'BIHQ' ? 'admin' : 'store';
+  var outlet = outlets.filter(function (row) { return row.code === employee.outlet; })[0] || { code: employee.outlet, name: employee.outlet, role: role };
+  var analysisSession = SALES_ANALYSIS.issueSession(outlet.code, outlet.name, role);
+  return { employee: employee, outlets: outlets, session: analysisSession };
+}
+
+function getSalesAnalysisBootstrap(token) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    var result = context.session;
+    result.boot = SALES_ANALYSIS.getBootstrap();
+    result.boot.outlets = context.outlets;
+    return result;
+  });
+}
+
+function getSalesAnalysisDashboard(token, year, month, outletFilter) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.getMonthDashboard(context.session.token, year, month, outletFilter);
+  });
+}
+
+function getSalesAnalysisTargets(token, year, month) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.getTargets(context.session.token, year, month);
+  });
+}
+
+function saveSalesAnalysisTargets(token, year, month, updates) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveTargets(context.session.token, year, month, updates || {});
+  });
+}
+
+function saveSalesAnalysisDaily(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveDaily(context.session.token, payload || {});
+  });
+}
+
+function saveSalesAnalysisWeekly(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveWeekly(context.session.token, payload || {});
+  });
+}
+
+function saveSalesAnalysisMonthly(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveMonthly(context.session.token, payload || {});
+  });
+}
+
+function saveSalesAnalysisGlobal(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveGlobalDailyAnalysis(context.session.token, payload || {});
+  });
+}
+
+function addSalesAnalysisGlobalItem(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.addGlobalDailyAnalysisItem(context.session.token, payload || {});
+  });
+}
+
+function deleteSalesAnalysisGlobalItem(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.deleteGlobalDailyAnalysisItem(context.session.token, payload || {});
   });
 }
