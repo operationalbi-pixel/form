@@ -76,18 +76,22 @@ function include(filename) {
 /** Gateway JSON untuk antarmuka GitHub Pages. */
 function doPost(e) {
   let request = {};
+  const isMobileRequest = Boolean(e && e.parameter && e.parameter.mobilePayload);
   try {
-    const raw = e && e.parameter && e.parameter.payload || e && e.postData && e.postData.contents || '{}';
+    const raw = isMobileRequest ? e.parameter.mobilePayload : e && e.parameter && e.parameter.payload || e && e.postData && e.postData.contents || '{}';
     request = JSON.parse(String(raw));
     const actions = apiActions_();
     const action = String(request.action || '');
     if (!Object.prototype.hasOwnProperty.call(actions, action)) {
-      return htmlBridgeOutput_(request.requestId, { ok: false, error: 'Aksi API tidak diizinkan: ' + action });
+      const denied = { ok: false, error: 'Aksi API tidak diizinkan: ' + action };
+      return isMobileRequest ? mobileJsonOutput_(denied) : htmlBridgeOutput_(request.requestId, denied);
     }
     const args = Array.isArray(request.args) ? request.args : [];
-    return htmlBridgeOutput_(request.requestId, actions[action].apply(null, args));
+    const response = actions[action].apply(null, args);
+    return isMobileRequest ? mobileJsonOutput_(response) : htmlBridgeOutput_(request.requestId, response);
   } catch (error) {
-    return htmlBridgeOutput_(request.requestId, { ok: false, error: error && error.message ? error.message : String(error) });
+    const response = { ok: false, error: error && error.message ? error.message : String(error) };
+    return isMobileRequest ? mobileJsonOutput_(response) : htmlBridgeOutput_(request.requestId, response);
   }
 }
 
@@ -100,6 +104,7 @@ function apiActions_() {
     resumeSession: resumeSession,
     logout: logout,
     getAppData: getAppData,
+    mobileNotifications: getMobileNotifications,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
     adminAddNews: adminAddNews,
@@ -272,6 +277,11 @@ function logout(token) {
   });
 }
 
+function mobileJsonOutput_(response) {
+  return ContentService.createTextOutput(JSON.stringify(response))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
 function getAppData(token, requestedOutlet) {
   return safe_(function () {
     const session = requireSession_(token);
@@ -345,6 +355,63 @@ function adminAddNews(token, payload) {
       sheet.appendRow([newsId, title, content, imageUrl, linkUrl, new Date(), true, employee.nik]);
       return { news: readNews_(false), newsId: newsId };
     } finally { lock.releaseLock(); }
+  });
+}
+
+/** Lightweight notification feed used by the signed BI-Space Android application. */
+function getMobileNotifications(token) {
+  return safe_(function () {
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    const notifications = [];
+
+    readNews_(false).slice(0, 30).forEach(function (item) {
+      notifications.push({
+        id: 'NEWS:' + item.id,
+        type: 'NEWS',
+        title: item.title || 'Informasi terbaru',
+        body: item.content || 'Ada informasi terbaru di BI-Space.',
+        createdAt: item.publishedAt || new Date().toISOString(),
+        url: item.linkUrl || 'https://operationalbi-pixel.github.io/form/'
+      });
+    });
+
+    if (employee.outlet !== 'BIHQ') {
+      ensureStockCardInfrastructure_();
+      readPendingStockTransfers_(employee.outlet).slice(0, 30).forEach(function (transfer) {
+        notifications.push({
+          id: 'TRANSFER:' + transfer.transferId,
+          type: 'TRANSFER',
+          title: 'Transfer masuk dari ' + transfer.fromOutlet,
+          body: String((transfer.items || []).length) + ' item menunggu diterima di ' + transfer.toOutlet + '.',
+          createdAt: transfer.createdAt || new Date().toISOString(),
+          url: 'https://operationalbi-pixel.github.io/form/stock-card.html'
+        });
+      });
+
+      const periodKey = currentPeriodKey_('DAILY');
+      const completionMap = readCompletionMap_(employee.outlet);
+      const incomplete = readTasksForEmployee_(employee).filter(function (task) {
+        return task.active && task.frequency === 'DAILY' && !completionMap[task.id + '|' + periodKey];
+      });
+      if (incomplete.length) {
+        notifications.push({
+          id: 'DAILY:' + employee.outlet + ':' + periodKey,
+          type: 'REMINDER',
+          title: incomplete.length + ' pekerjaan Daily belum selesai',
+          body: 'Buka BI-Space untuk melihat pekerjaan yang masih perlu diselesaikan.',
+          createdAt: new Date().toISOString(),
+          url: 'https://operationalbi-pixel.github.io/form/'
+        });
+      }
+    }
+
+    return {
+      notifications: notifications,
+      generatedAt: new Date().toISOString(),
+      user: userView_(employee)
+    };
   });
 }
 
