@@ -94,6 +94,10 @@ $nodeDirectory = Split-Path -Parent $npx
 $env:PATH = "$nodeDirectory;$env:PATH"
 $claspCredentials = Join-Path $env:USERPROFILE '.clasprc.json'
 
+Write-Host 'Menyiapkan clasp (unduhan pertama dapat memerlukan 10-60 detik)...' -ForegroundColor Yellow
+& $npx --yes '@google/clasp@3.1.3' --version
+if ($LASTEXITCODE -ne 0) { throw 'clasp gagal disiapkan. Periksa koneksi internet lalu coba lagi.' }
+
 Write-Host 'Login Google untuk clasp. Ikuti URL dan instruksi yang tampil.' -ForegroundColor Cyan
 & $npx --yes '@google/clasp@3.1.3' login --no-localhost
 if ($LASTEXITCODE -ne 0) { throw 'Login clasp gagal.' }
