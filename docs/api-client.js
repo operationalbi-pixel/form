@@ -17,7 +17,11 @@
   }
 
   function timeoutForAction(action) {
-    return /^(verify|upload|salesAnalysis)|^lostFound(?:Save|Update|Process)$/.test(String(action || '')) ? 300000 : 90000;
+    action = String(action || '');
+    // Sales Usage dapat membawa ribuan baris dan butuh waktu lebih lama.
+    // Beri ruang lebih besar di sisi browser, tetapi backend tetap harus diproses secara batch.
+    if (action === 'uploadUsage') return 540000;
+    return /^(verify|upload|salesAnalysis)|^lostFound(?:Save|Update|Process)$/.test(action) ? 300000 : 90000;
   }
 
   function call(action, args) {
