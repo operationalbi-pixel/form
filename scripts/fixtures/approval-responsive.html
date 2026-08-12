@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Approval Dashboard Responsive Fixture</title>
+</head>
+<body>
+  <p>Menyiapkan fixture Approval Dashboard...</p>
+  <script>
+    Promise.all([
+      fetch('../../berita-acara-gas/ApprovalDashboard.html').then(response => response.text()),
+      fetch('../../berita-acara-gas/MobileResponsiveStyles.html').then(response => response.text())
+    ]).then(([approvalSource, responsiveSource]) => {
+      const rows = `
+        <tr class="hover:bg-slate-50 transition border-b">
+          <td class="px-6 py-4 font-bold text-xs">Void</td>
+          <td class="px-6 py-4 font-mono text-xs">VD-20260812-BG028493-568</td>
+          <td class="px-6 py-4 text-xs">SBIPM178645420951</td>
+          <td class="px-6 py-4 text-xs font-bold">BIPM</td>
+          <td class="px-6 py-4 text-xs">NURUL WAHYUNI</td>
+          <td class="px-6 py-4 text-xs">12/8/2026</td>
+          <td class="px-6 py-4 text-center"><button class="text-blue-600 font-bold text-xs bg-blue-50 px-3 py-1.5 rounded-lg">Detail</button></td>
+          <td class="ba-approval-status px-6 py-4 text-center min-w-[10rem]"><button class="ba-approve-button bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold inline-flex items-center justify-center gap-1 whitespace-nowrap min-w-[7.25rem]"><span>APPROVE</span></button></td>
+        </tr>
+        <tr>
+          <td class="px-6 py-4 font-bold text-xs">Disc. Karyawan</td>
+          <td class="px-6 py-4 font-mono text-xs">DK-20260811-BG006376-753</td>
+          <td class="px-6 py-4 text-xs">M.HILMAN</td>
+          <td class="px-6 py-4 text-xs font-bold">BICP</td>
+          <td class="px-6 py-4 text-xs">JURNAFIDA</td>
+          <td class="px-6 py-4 text-xs">11/8/2026</td>
+          <td class="px-6 py-4 text-center"><button class="text-blue-600 font-bold text-xs bg-blue-50 px-3 py-1.5 rounded-lg">Detail</button></td>
+          <td class="ba-approval-status px-6 py-4 text-center min-w-[10rem]"><button class="ba-approve-button bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold inline-flex items-center justify-center gap-1 whitespace-nowrap min-w-[7.25rem]"><span>APPROVE</span></button></td>
+        </tr>`;
+      const approval = approvalSource
+        .replace(/<\?!=[\s\S]*?\?>/g, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/(<tbody id="approvalBody"[^>]*>)[\s\S]*?(<\/tbody>)/i, `$1${rows}$2`);
+      document.open();
+      document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"><\/script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">${responsiveSource}</head><body><div id="appContainer">${approval}</div></body></html>`);
+      document.close();
+    });
+  </script>
+</body>
+</html>

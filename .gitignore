@@ -1,0 +1,8 @@
+# Google Apps Script credentials and project mapping come from GitHub Secrets.
+.clasprc.json
+.clasp.json
+**/.clasprc.json
+**/.clasp.json
+
+node_modules/
+*.log

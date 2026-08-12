@@ -1,6 +1,6 @@
 # Integrasi Berita Acara ke BI-Space
 
-Folder ini adalah sumber lengkap untuk project Google Apps Script Berita Acara yang memakai deployment:
+Folder ini adalah sumber lengkap project Google Apps Script Berita Acara yang memakai deployment:
 
 `https://script.google.com/macros/s/AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg/exec`
 
@@ -10,20 +10,36 @@ Folder ini adalah sumber lengkap untuk project Google Apps Script Berita Acara y
 - BI-Space membuat kode handoff acak yang berlaku lima menit dan hanya dapat digunakan satu kali.
 - Backend Berita Acara menukarkan kode tersebut ke backend BI-Space.
 - Identitas NIK, nama, outlet, posisi, grade, dan status aktif dibaca dari `EMP_LIST`.
-- Penyimpanan Berita Acara tetap memakai `berita-acara-digital.berita_acara_app.submissions`.
+- Penyimpanan tetap memakai `berita-acara-digital.berita_acara_app.submissions`.
 - Posisi `AREA MANAGER` dan `FNB` diarahkan ke Approval Dashboard. Posisi lain diarahkan ke Outlet Dashboard.
-- `AREA MANAGER` dan `FNB` dapat berpindah ke User Mode untuk membuat dokumen, lalu kembali ke Approval Mode.
-- Dokumen yang dibuat `FNB` otomatis melewati tahap FNB dan tetap menunggu persetujuan `AREA MANAGER`.
-- Dokumen yang dibuat `AREA MANAGER` otomatis disetujui pada seluruh tahap yang dibutuhkan.
+- `AREA MANAGER` dan `FNB` dapat berpindah antara User Mode dan Approval Mode.
+- Dokumen buatan `FNB` tetap membutuhkan persetujuan `AREA MANAGER`.
+- Dokumen buatan `AREA MANAGER` otomatis disetujui pada seluruh tahap.
 
-## Urutan penerapan
+## GitHub sebagai sumber utama
 
-1. Terapkan `gas/Code.gs` dari repository utama ke Apps Script BI-Space dan perbarui deployment-nya.
-2. Salin seluruh file dalam folder ini ke project Apps Script Berita Acara. Nama file harus dipertahankan.
-3. Ganti manifest project dengan `appsscript.json` dari folder ini.
-4. Pada Apps Script Berita Acara, pilih **Deploy → Manage deployments → Edit** pada deployment yang sudah ada.
-5. Pilih **New version**, lalu deploy. Jangan membuat deployment terpisah agar URL lama tetap sama.
-6. Buka menu Berita Acara dari BI-Space. Membuka URL Berita Acara secara langsung memang akan ditolak karena tidak memiliki handoff.
+Branch `main` GitHub adalah satu-satunya sumber kode. Jangan mengedit file langsung pada Apps Script karena perubahan tersebut akan ditimpa pada deployment berikutnya.
+
+Alur perubahan:
+
+1. Perubahan dibuat melalui branch dan pull request.
+2. GitHub Actions menjalankan `npm test` untuk memvalidasi backend, kontrak API, dan seluruh HTML.
+3. Setelah pull request di-merge ke `main`, workflow `Deploy Berita Acara GAS` menjalankan `clasp push --force`.
+4. Workflow membuat versi baru dan memperbarui deployment yang sama sehingga URL lama tetap digunakan.
+
+## Setup otomatis satu kali
+
+Jalankan dari PowerShell pada folder repository:
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-gas-auto-deploy.ps1`
+
+Skrip akan meminta Script ID Apps Script Berita Acara dan menyimpan tiga GitHub Secrets:
+
+- `CLASPRC_JSON`: autentikasi clasp.
+- `CLASP_JSON`: Script ID project Berita Acara.
+- `GAS_DEPLOYMENT_ID`: deployment produksi yang mempertahankan URL lama.
+
+Credential tidak disimpan di repository. Apps Script API harus diaktifkan di `https://script.google.com/home/usersettings`.
 
 ## Database yang dipertahankan
 
@@ -31,4 +47,4 @@ Folder ini adalah sumber lengkap untuk project Google Apps Script Berita Acara y
 - Dataset: `berita_acara_app`
 - Table: `submissions`
 
-Tidak ada migrasi atau penghapusan data pada proses integrasi ini.
+Deployment otomatis tidak melakukan migrasi atau penghapusan data.
