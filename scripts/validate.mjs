@@ -258,6 +258,11 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baResponsive.includes('input[type="file"]::file-selector-button')) failures.push('Input foto/file belum dioptimalkan untuk mobile');
   if (!baResponsive.includes('#appContainer #modalActions')) failures.push('Tombol modal belum dapat membungkus pada mobile');
   if (!baResponsive.includes('max-width: 900px')) failures.push('Breakpoint responsif belum mencakup HP landscape dan tablet kecil');
+  if (!approvalDashboard.includes('Memuat dokumen Berita Acara')) failures.push('Approval Dashboard belum memiliki status awal saat data dimuat');
+  if (!approvalDashboard.includes('Data membutuhkan waktu lebih lama')) failures.push('Approval Dashboard belum memiliki timeout yang terlihat');
+  if (!outletDashboard.includes('Memuat riwayat dokumen')) failures.push('Outlet Dashboard belum memiliki status awal saat data dimuat');
+  if (!outletDashboard.includes('.withFailureHandler(function(error)')) failures.push('Outlet Dashboard belum menampilkan kegagalan pemuatan data');
+  if (!baBackend.includes("throw new Error('Data Berita Acara gagal dimuat: '")) failures.push('Backend Berita Acara masih menyembunyikan error pemuatan sebagai daftar kosong');
   const approvalFixture = await text('scripts/fixtures/approval-responsive.html');
   if (!approvalFixture.includes('Approval Dashboard Responsive Fixture')) failures.push('Fixture visual Approval Dashboard belum tersedia');
   const formFixture = await text('scripts/fixtures/form-responsive.html');
