@@ -195,7 +195,7 @@
             
             <!-- TABLE CONTENT -->
             <div class="ba-approval-table-wrap overflow-x-auto min-h-[450px]">
-                <table class="ba-approval-table w-full text-sm text-left border-collapse">
+                <table class="ba-approval-table ba-responsive-table w-full text-sm text-left border-collapse">
                     <thead class="text-xs text-slate-500 uppercase bg-slate-50/80 border-b border-slate-200 table-head-fixed backdrop-blur-sm">
                         <tr>
                             <th class="px-6 py-4 font-bold tracking-wider">Tipe BA</th>
@@ -512,19 +512,19 @@
 
             return `
             <tr class="hover:bg-slate-50 transition border-b border-slate-50 last:border-0 group">
-                <td class="px-6 py-4 font-bold text-slate-700 text-xs">${displayType}</td>
-                <td class="px-6 py-4 font-mono text-xs text-slate-500 group-hover:text-blue-700 transition">${row.Submission_ID || '-'}</td>
+                <td data-mobile-label="Tipe BA" class="px-6 py-4 font-bold text-slate-700 text-xs">${displayType}</td>
+                <td data-mobile-label="No Dokumen" class="px-6 py-4 font-mono text-xs text-slate-500 group-hover:text-blue-700 transition">${row.Submission_ID || '-'}</td>
                 
                 <!-- NEW COLUMN: INFO -->
-                <td class="px-6 py-4 text-xs text-slate-600 font-medium break-words max-w-[200px] bg-slate-50/50 border-x border-slate-50">${row.info || '-'}</td>
+                <td data-mobile-label="Info" class="px-6 py-4 text-xs text-slate-600 font-medium break-words max-w-[200px] bg-slate-50/50 border-x border-slate-50">${row.info || '-'}</td>
 
-                <td class="px-6 py-4 text-slate-600 font-bold text-xs">${row.Outlet}</td>
-                <td class="px-6 py-4 text-slate-500 text-xs">${row.NAME}</td>
-                <td class="px-6 py-4 text-slate-400 text-xs font-mono">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
-                <td class="px-6 py-4 text-center">
+                <td data-mobile-label="Outlet" class="px-6 py-4 text-slate-600 font-bold text-xs">${row.Outlet}</td>
+                <td data-mobile-label="Pembuat" class="px-6 py-4 text-slate-500 text-xs">${row.NAME}</td>
+                <td data-mobile-label="Tanggal" class="px-6 py-4 text-slate-400 text-xs font-mono">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
+                <td data-mobile-label="Detail" class="px-6 py-4 text-center">
                     <button onclick="showAppDetail(${absoluteIndex})" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
                 </td>
-                <td class="ba-approval-status px-6 py-4 text-center min-w-[10rem]">${statusBadge}</td>
+                <td data-mobile-label="Status" class="ba-approval-status px-6 py-4 text-center min-w-[10rem]">${statusBadge}</td>
             </tr>
             `;
         }).join('');
