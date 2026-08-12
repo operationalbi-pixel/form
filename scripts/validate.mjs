@@ -281,6 +281,15 @@ for (const [ok, message] of transferAuditRequirements) {
   }
   try { JSON.parse(await text('berita-acara-gas/appsscript.json')); }
   catch (error) { failures.push(`berita-acara-gas/appsscript.json: ${error.message}`); }
+
+  const gasDeployWorkflow = await text('.github/workflows/deploy-berita-acara-gas.yml');
+  if (!gasDeployWorkflow.includes('branches: [main]')) failures.push('Deployment GAS belum dibatasi ke branch main');
+  if (!gasDeployWorkflow.includes('needs: validate')) failures.push('Deployment GAS belum menunggu validasi');
+  if (!gasDeployWorkflow.includes('CLASPRC_JSON')) failures.push('Workflow GAS belum memakai credential clasp dari GitHub Secrets');
+  if (!gasDeployWorkflow.includes('create-deployment --deploymentId')) failures.push('Workflow GAS belum memperbarui deployment lama');
+  if (!gasDeployWorkflow.includes('clasp@3.1.3 push --force')) failures.push('Workflow GAS belum menyinkronkan seluruh source dari main');
+  const gasIgnore = await text('berita-acara-gas/.claspignore');
+  if (!gasIgnore.includes('!**/*.html') || !gasIgnore.includes('!**/*.gs')) failures.push('Daftar file clasp belum mencakup HTML dan Code.gs');
 }
 if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
   failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');
