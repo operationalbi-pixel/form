@@ -248,12 +248,22 @@ for (const [ok, message] of transferAuditRequirements) {
   const approvalDashboard = await text('berita-acara-gas/ApprovalDashboard.html');
   const outletDashboard = await text('berita-acara-gas/OutletDashboard.html');
   if (!approvalDashboard.includes('SWITCH TO USER MODE')) failures.push('Approval Dashboard belum memiliki tombol Switch to User Mode');
+  if (!approvalDashboard.includes('ba-mode-label-mobile">USER MODE')) failures.push('Switch to User Mode belum jelas pada layar mobile');
+  if (!outletDashboard.includes('ba-mode-label-mobile">APPROVAL')) failures.push('Switch to Approval Mode belum jelas pada layar mobile');
   if (!approvalDashboard.includes('ba-approval-table-wrap')) failures.push('Approval Dashboard belum memiliki pembungkus tabel khusus mobile');
   if (!approvalDashboard.includes('ba-approve-button')) failures.push('Tombol Approve belum dilindungi dari pemenggalan teks');
   if (!baResponsive.includes('.ba-approval-toolbar')) failures.push('Filter Approval belum memiliki tata letak mobile khusus');
   if (!baResponsive.includes('white-space: nowrap !important')) failures.push('Teks aksi Approval masih dapat melipat');
+  if (!baResponsive.includes('#appContainer .ba-mode-switch')) failures.push('Tombol pergantian mode belum memiliki layout mobile khusus');
+  if (!baResponsive.includes('input[type="file"]::file-selector-button')) failures.push('Input foto/file belum dioptimalkan untuk mobile');
+  if (!baResponsive.includes('#appContainer #modalActions')) failures.push('Tombol modal belum dapat membungkus pada mobile');
+  if (!baResponsive.includes('max-width: 900px')) failures.push('Breakpoint responsif belum mencakup HP landscape dan tablet kecil');
   const approvalFixture = await text('scripts/fixtures/approval-responsive.html');
   if (!approvalFixture.includes('Approval Dashboard Responsive Fixture')) failures.push('Fixture visual Approval Dashboard belum tersedia');
+  const formFixture = await text('scripts/fixtures/form-responsive.html');
+  if (!formFixture.includes('Berita Acara Form Responsive Fixture')) failures.push('Fixture visual seluruh form Berita Acara belum tersedia');
+  const outletFixture = await text('scripts/fixtures/outlet-responsive.html');
+  if (!outletFixture.includes('Outlet Dashboard Responsive Fixture')) failures.push('Fixture visual Outlet Dashboard belum tersedia');
   if (!outletDashboard.includes('SWITCH TO APPROVAL MODE')) failures.push('User Mode approver belum memiliki tombol kembali ke Approval Mode');
 
   const baHtmlFiles = (await readdir('berita-acara-gas')).filter(name => /\.html$/i.test(name));

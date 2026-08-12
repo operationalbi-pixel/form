@@ -54,8 +54,10 @@
     overflow-wrap: normal !important;
   }
   #appContainer .ba-approval-status { min-width: 10rem; }
+  #appContainer .ba-mode-label-mobile { display: none; }
 
-  @media screen and (max-width: 767px) {
+  /* Covers phones, phone landscape, compact tablets, and narrow WebViews. */
+  @media screen and (max-width: 900px) {
     body { padding: var(--ba-safe-top) var(--ba-safe-right) var(--ba-safe-bottom) var(--ba-safe-left); }
 
     #appContainer [class*="min-w-["],
@@ -63,6 +65,17 @@
 
     #appContainer [class*="max-w-"] { max-width: 100% !important; }
     #appContainer .overflow-x-auto { overflow-x: visible !important; }
+
+    #appContainer .ba-mode-switch {
+      display: inline-flex !important;
+      flex: 0 0 auto;
+      min-height: 2.45rem;
+      padding: .55rem .7rem !important;
+      white-space: nowrap !important;
+      overflow-wrap: normal !important;
+    }
+    #appContainer .ba-mode-label-desktop { display: none !important; }
+    #appContainer .ba-mode-label-mobile { display: inline !important; font-size: .62rem; letter-spacing: .025em; }
 
     #appContainer header {
       width: 100%;
@@ -82,6 +95,10 @@
     #appContainer #formContent { padding: 1rem !important; }
     #appContainer #detailContent,
     #appContainer #appDetailContent { padding: 1rem !important; }
+
+    #appContainer #formContainer { margin-bottom: 0 !important; }
+    #appContainer #formContainer > div { width: 100% !important; max-width: 100% !important; }
+    #appContainer #formContainer [class*="min-h-[297mm]"] { min-height: 0 !important; }
 
     #appContainer .ba-approval-dashboard nav > div { padding-left: .75rem !important; padding-right: .75rem !important; }
     #appContainer .ba-approval-dashboard nav .gap-4 { gap: .35rem !important; }
@@ -136,6 +153,22 @@
     #appContainer #formContent .text-right { text-align: left !important; }
     #appContainer #formContent h1,
     #appContainer #formContent .doc-title { font-size: 1.55rem !important; line-height: 1.2 !important; }
+
+    #appContainer #formContent .flex.justify-between,
+    #appContainer #formContent .flex.items-center,
+    #appContainer #detailContent .flex.justify-between,
+    #appContainer #appDetailContent .flex.justify-between {
+      flex-wrap: wrap !important;
+      row-gap: .65rem !important;
+    }
+
+    #appContainer #formContent input[type="file"] {
+      display: block;
+      width: 100% !important;
+      font-size: .75rem !important;
+      white-space: normal !important;
+    }
+    #appContainer #formContent input[type="file"]::file-selector-button { max-width: 52%; }
 
     #appContainer #formContent input:not([type="checkbox"]):not([type="radio"]),
     #appContainer #formContent select,
@@ -238,7 +271,26 @@
       max-width: calc(100vw - 1.5rem) !important;
       max-height: calc(100dvh - var(--ba-safe-top) - var(--ba-safe-bottom) - 1.5rem) !important;
       margin: auto !important;
+      overflow-y: auto !important;
     }
+
+    #appContainer [class*="fixed"][class*="inset-0"] {
+      padding-top: calc(.75rem + var(--ba-safe-top)) !important;
+      padding-right: calc(.75rem + var(--ba-safe-right)) !important;
+      padding-bottom: calc(.75rem + var(--ba-safe-bottom)) !important;
+      padding-left: calc(.75rem + var(--ba-safe-left)) !important;
+      overflow-y: auto !important;
+    }
+
+    #appContainer #modalActions,
+    #appContainer [id$="Modal"] .border-t.flex,
+    #appContainer [role="dialog"] .border-t.flex {
+      flex-wrap: wrap !important;
+      gap: .55rem !important;
+    }
+    #appContainer #modalActions button,
+    #appContainer [id$="Modal"] .border-t.flex button,
+    #appContainer [role="dialog"] .border-t.flex button { flex: 1 1 8rem; }
 
     #toast-container {
       left: .75rem !important;

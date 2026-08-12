@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Outlet Dashboard Responsive Fixture</title>
+</head>
+<body>
+  <p>Menyiapkan fixture Outlet Dashboard...</p>
+  <script>
+    Promise.all([
+      fetch('../../berita-acara-gas/OutletDashboard.html').then(response => response.text()),
+      fetch('../../berita-acara-gas/MobileResponsiveStyles.html').then(response => response.text())
+    ]).then(([dashboardSource, responsiveSource]) => {
+      const rows = `<tr><td class="px-6 py-4">Void</td><td class="px-6 py-4">VD-20260812-568</td><td class="px-6 py-4">Void transaksi</td><td class="px-6 py-4">BIPM</td><td class="px-6 py-4">12/8/2026</td><td class="px-6 py-4">Approved</td><td class="px-6 py-4"><button>Detail</button></td></tr>`;
+      const cleaned = dashboardSource
+        .replace(/<\?!=[\s\S]*?\?>/g, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace('id="switchApprovalMode" class="ba-mode-switch hidden', 'id="switchApprovalMode" class="ba-mode-switch flex')
+        .replace(/(<tbody id="submissionTableBody"[^>]*>)[\s\S]*?(<\/tbody>)/i, `$1${rows}$2`);
+      document.open();
+      document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"><\/script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">${responsiveSource}</head><body><div id="appContainer">${cleaned}</div></body></html>`);
+      document.close();
+    });
+  </script>
+</body>
+</html>

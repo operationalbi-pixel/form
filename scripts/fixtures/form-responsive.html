@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Berita Acara Form Responsive Fixture</title>
+</head>
+<body>
+  <p>Menyiapkan fixture form Berita Acara...</p>
+  <script>
+    const allowedFiles = new Set([
+      'BeritaAcaraPenjualanDisposeAssetForm.html', 'CancelOnlineForm.html',
+      'ComplainHandlingForm.html', 'CustomerEntertainForm.html',
+      'DiscountKaryawanForm.html', 'InternalMemo.html', 'InvoiceForm.html',
+      'KOLFoodiesForm.html', 'KonsumsiGeneralCleaningForm.html',
+      'MinuteOfMeetingForm.html', 'PurchasingNonSupplierForm.html',
+      'QuotationForm.html', 'RefundCustomerForm.html',
+      'RevisiStockOpnameForm.html', 'TestFoodForm.html', 'VoidForm.html',
+      'WastePcsToPcsForm.html'
+    ]);
+    const file = new URLSearchParams(location.search).get('file');
+    if (!allowedFiles.has(file)) throw new Error('File fixture tidak diizinkan.');
+
+    Promise.all([
+      fetch(`../../berita-acara-gas/${file}`).then(response => response.text()),
+      fetch('../../berita-acara-gas/MobileResponsiveStyles.html').then(response => response.text())
+    ]).then(([formSource, responsiveSource]) => {
+      const sourceWithoutScripts = formSource
+        .replace(/<\?!=[\s\S]*?\?>/g, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '');
+      const parsed = new DOMParser().parseFromString(sourceWithoutScripts, 'text/html');
+      const localStyles = Array.from(parsed.querySelectorAll('style')).map(style => style.outerHTML).join('');
+      parsed.querySelectorAll('style').forEach(style => style.remove());
+      const formMarkup = parsed.body.innerHTML || sourceWithoutScripts;
+      document.open();
+      document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>${file}</title><script src="https://cdn.tailwindcss.com"><\/script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">${localStyles}${responsiveSource}</head><body class="bg-gray-100"><div id="appContainer"><main id="mainContent"><div id="formContainer"><div class="w-full max-w-[210mm]"><div class="bg-white min-h-[297mm]"><div id="formContent">${formMarkup}</div></div></div></div></main></div></body></html>`);
+      document.close();
+    });
+  </script>
+</body>
+</html>
