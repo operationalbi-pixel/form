@@ -88,6 +88,10 @@ $deploymentId = Read-Host "Masukkan Deployment ID, atau Enter untuk memakai $def
 if ([string]::IsNullOrWhiteSpace($deploymentId)) { $deploymentId = $defaultDeploymentId }
 
 $npx = Find-Npx
+$nodeDirectory = Split-Path -Parent $npx
+# npx.cmd memanggil `node` tanpa path absolut. Pastikan Node portable juga
+# terlihat oleh proses turunan seperti clasp, bukan hanya oleh script ini.
+$env:PATH = "$nodeDirectory;$env:PATH"
 $claspCredentials = Join-Path $env:USERPROFILE '.clasprc.json'
 
 Write-Host 'Login Google untuk clasp. Ikuti URL dan instruksi yang tampil.' -ForegroundColor Cyan
