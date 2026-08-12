@@ -7822,8 +7822,10 @@ function uploadSalesCogs(token, payload) {
       const scope = sale.outlet + '|Store';
       if (!currentMaps[scope]) currentMaps[scope] = readCurrentStockCodeQtyMap_(sale.outlet, 'Store');
       const current = currentMaps[scope], traceId = 'SALE|' + sale.rowHash;
+      let existingWipQtyForSale = null;
       if (sale.targetType === 'WIP') {
         const available = Math.max(0, Number(current[sale.item.code] || 0)), shortage = Math.max(0, sale.qtyDefault - available);
+        existingWipQtyForSale = Math.min(sale.qtyDefault, available);
         if (shortage > 0.0000001) {
           const variants = wipCatalog.byCode[sale.item.code] || [], variant = variants.filter(function (v) { return normalizeStoreName_(v.name) === normalizeStoreName_(sale.target.name); })[0] || variants[0];
           if (!variant) throw new Error(sale.item.code + ': resep WIP tidak ditemukan.');
@@ -7832,20 +7834,34 @@ function uploadSalesCogs(token, payload) {
           const productionId = traceId + '|WIP', formulaQty = shortage * outputToFormula;
           const outputRecord = Utilities.getUuid();
           rows.push({ insertId: outputRecord, json: { record_id: outputRecord, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store', item_code: sale.item.code, category: sale.item.category, item_name: sale.item.name, unit: sale.item.unit, direction: 'IN', qty: shortage, movement_type: 'Production', info: cleanText_('Produksi otomatis untuk Sold · ' + sale.menu + ' · Sales ' + sale.salesNumber, 500), expiry_date: null, event_date: sale.transactionDate, created_at: now.getTime()/1000, created_by: employee.nik, source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: productionId } });
+          const materialMaster = {};
+          readStockMaster_(true).forEach(function (item) { materialMaster[item.code] = item; });
           variant.materials.forEach(function (recipe) {
-            const material = readStockMaster_(true).filter(function (item) { return item.code === recipe.code; })[0];
+            const material = materialMaster[recipe.code];
             if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': bahan WIP belum ada pada STOCK_ITEMS.');
             const factor = wipConversionFactor_(material.code, recipe.unit, material.unit, provided, savedConversions);
             if (!factor) throw new Error(material.code + ': konversi unit bahan WIP belum tersedia.');
-            const qty = recipe.qty * formulaQty * factor, id = Utilities.getUuid();
-            rows.push({ insertId: id, json: { record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store', item_code: material.code, category: material.category, item_name: material.name, unit: material.unit, direction: 'OUT', qty: qty, movement_type: 'WIP Material Usage', info: cleanText_('Keluar untuk Produk: ' + sale.item.name + ' · Sold ' + sale.menu + ' · Sales ' + sale.salesNumber, 500), expiry_date: null, event_date: sale.transactionDate, created_at: now.getTime()/1000, created_by: employee.nik, source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: productionId } });
+            const qty = recipe.qty * formulaQty * factor;
+            allocateTransferLots_(sale.outlet, 'Store', material, qty).forEach(function (lot) {
+              const id = Utilities.getUuid();
+              rows.push({ insertId: id, json: { record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store', item_code: material.code, category: material.category, item_name: material.name, unit: material.unit, direction: 'OUT', qty: lot.qty, movement_type: 'WIP Material Usage', info: cleanText_('Keluar untuk Produk: ' + sale.item.name + ' · Sold ' + sale.menu + ' · Sales ' + sale.salesNumber, 500), production_date: lot.productionDate || null, expiry_date: lot.expiryDate || null, source_arrival_date: lot.sourceDate || null, event_date: sale.transactionDate, created_at: now.getTime()/1000, created_by: employee.nik, source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: productionId } });
+            });
             current[material.code] = Number(current[material.code] || 0) - qty;
           });
           current[sale.item.code] = available + shortage;
         }
       }
-      const id = Utilities.getUuid();
-      rows.push({ insertId: id, json: { record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store', item_code: sale.item.code, category: sale.item.category, item_name: sale.item.name, unit: sale.item.unit, direction: 'OUT', qty: sale.qtyDefault, movement_type: 'Sold', info: cleanText_('Sold · ' + sale.menu + ' · Sales Number ' + sale.salesNumber, 500), expiry_date: null, event_date: sale.transactionDate, created_at: now.getTime()/1000, created_by: employee.nik, source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: traceId } });
+      let soldLots;
+      if (sale.targetType === 'WIP') {
+        const fromExisting = Number(existingWipQtyForSale || 0);
+        soldLots = allocateTransferLots_(sale.outlet, 'Store', sale.item, fromExisting);
+        const automaticQty = sale.qtyDefault - fromExisting;
+        if (automaticQty > 0.0000001) soldLots.push({ qty: automaticQty, productionDate: sale.transactionDate, expiryDate: '', sourceDate: sale.transactionDate });
+      } else soldLots = allocateTransferLots_(sale.outlet, 'Store', sale.item, sale.qtyDefault);
+      soldLots.forEach(function (lot) {
+        const id = Utilities.getUuid();
+        rows.push({ insertId: id, json: { record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store', item_code: sale.item.code, category: sale.item.category, item_name: sale.item.name, unit: sale.item.unit, direction: 'OUT', qty: lot.qty, movement_type: 'Sold', info: cleanText_('Sold · ' + sale.menu + ' · Sales Number ' + sale.salesNumber, 500), production_date: lot.productionDate || null, expiry_date: lot.expiryDate || null, source_arrival_date: lot.sourceDate || null, event_date: sale.transactionDate, created_at: now.getTime()/1000, created_by: employee.nik, source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: traceId } });
+      });
       current[sale.item.code] = Number(current[sale.item.code] || 0) - sale.qtyDefault;
     });
     prepared.showcaseRows.forEach(function (sale) {
