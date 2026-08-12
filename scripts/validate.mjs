@@ -224,6 +224,22 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baBackend.includes("creatorPosition === 'FNB'")) failures.push('Dokumen buatan FNB belum melewati tahap approval FNB otomatis');
   if (/SpreadsheetApp\.openById|USER_SHEET_NAME|USER_SS_ID/.test(baBackend)) failures.push('Backend Berita Acara masih memakai database login lama');
 
+  const baMobileIndex = await text('berita-acara-gas/Index.html');
+  const baResponsive = await text('berita-acara-gas/MobileResponsiveStyles.html');
+  if (!baMobileIndex.includes('viewport-fit=cover')) failures.push('Shell Berita Acara belum aman untuk notch WebView');
+  if (!baMobileIndex.includes("include('MobileResponsiveStyles')")) failures.push('Shell Berita Acara belum memuat lapisan mobile bersama');
+  if (!baMobileIndex.includes('refreshBeritaAcaraResponsiveLayout(container)')) failures.push('Form dinamis Berita Acara belum disegarkan setelah dimuat');
+  if (!baResponsive.includes('.ba-responsive-table')) failures.push('Tabel Berita Acara belum memiliki tampilan kartu mobile');
+  if (!baResponsive.includes("table.setAttribute") && !baResponsive.includes("cell.setAttribute('data-mobile-label'")) failures.push('Label kolom tabel mobile Berita Acara belum dibuat otomatis');
+  if (!baResponsive.includes('ba-mobile-sidebar-open')) failures.push('Sidebar mobile Berita Acara belum dapat dibuka');
+  if (!baResponsive.includes('safe-area-inset-top')) failures.push('Lapisan mobile Berita Acara belum memperhitungkan safe area');
+  let baResponsiveScriptIndex = 0;
+  for (const match of baResponsive.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    baResponsiveScriptIndex += 1;
+    try { new vm.Script(match[1], { filename: `berita-acara-gas/MobileResponsiveStyles.html#inline-${baResponsiveScriptIndex}` }); }
+    catch (error) { failures.push(`MobileResponsiveStyles inline script ${baResponsiveScriptIndex}: ${error.message}`); }
+  }
+
   const baIndexPath = 'berita-acara-gas/Index.html';
   const baIndex = await text(baIndexPath);
   if (!baIndex.includes('initialBiSpaceUser')) failures.push('Berita Acara belum memuat identitas dari sesi BI-Space');
@@ -235,7 +251,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!outletDashboard.includes('SWITCH TO APPROVAL MODE')) failures.push('User Mode approver belum memiliki tombol kembali ke Approval Mode');
 
   const baHtmlFiles = (await readdir('berita-acara-gas')).filter(name => /\.html$/i.test(name));
-  if (baHtmlFiles.length !== 21) failures.push(`Folder Berita Acara seharusnya berisi 21 HTML, ditemukan ${baHtmlFiles.length}`);
+  if (baHtmlFiles.length !== 22) failures.push(`Folder Berita Acara seharusnya berisi 22 HTML termasuk lapisan responsif bersama, ditemukan ${baHtmlFiles.length}`);
   for (const fileName of baHtmlFiles) {
     const path = `berita-acara-gas/${fileName}`;
     const html = await text(path);

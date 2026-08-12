@@ -1,0 +1,322 @@
+<!-- Responsiveness shared by every Berita Acara dashboard and injected form. -->
+<style id="baMobileResponsiveStyles">
+  :root {
+    --ba-safe-top: env(safe-area-inset-top, 0px);
+    --ba-safe-right: env(safe-area-inset-right, 0px);
+    --ba-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --ba-safe-left: env(safe-area-inset-left, 0px);
+  }
+
+  html, body {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100%;
+    overflow-x: hidden !important;
+    overscroll-behavior-x: none;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  #appContainer,
+  #appContainer > *,
+  #appContainer main,
+  #appContainer #mainContent,
+  #appContainer #formContainer,
+  #appContainer #formContent,
+  #appContainer #listView {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  #appContainer img,
+  #appContainer video,
+  #appContainer canvas,
+  #appContainer svg { max-width: 100%; height: auto; }
+
+  #appContainer input,
+  #appContainer select,
+  #appContainer textarea,
+  #appContainer button { max-width: 100%; min-width: 0; }
+
+  #appContainer td,
+  #appContainer th,
+  #appContainer p,
+  #appContainer span,
+  #appContainer div { overflow-wrap: anywhere; }
+
+  @media screen and (max-width: 767px) {
+    body { padding: var(--ba-safe-top) var(--ba-safe-right) var(--ba-safe-bottom) var(--ba-safe-left); }
+
+    #appContainer [class*="min-w-["],
+    #appContainer [style*="min-width"] { min-width: 0 !important; }
+
+    #appContainer [class*="max-w-"] { max-width: 100% !important; }
+    #appContainer .overflow-x-auto { overflow-x: visible !important; }
+
+    #appContainer header {
+      width: 100%;
+      height: auto !important;
+      min-height: 3.75rem;
+      padding: .65rem .8rem !important;
+      gap: .65rem;
+    }
+
+    #appContainer header .space-x-6 > :not([hidden]) ~ :not([hidden]) { margin-left: .45rem !important; }
+    #appContainer header .text-right { min-width: 0; }
+    #appContainer header #userNameDisplay,
+    #appContainer header #approverName { max-width: 42vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    #appContainer main,
+    #appContainer #mainContent { padding: .75rem !important; }
+    #appContainer #formContent { padding: 1rem !important; }
+    #appContainer #detailContent,
+    #appContainer #appDetailContent { padding: 1rem !important; }
+
+    #appContainer .paper-canvas {
+      width: 100% !important;
+      min-height: 0 !important;
+      padding: 1.25rem 1rem !important;
+      box-shadow: none !important;
+    }
+
+    #appContainer [class~="grid-cols-2"],
+    #appContainer [class~="grid-cols-3"],
+    #appContainer [class~="grid-cols-4"],
+    #appContainer [class*="md:grid-cols-"],
+    #appContainer [class*="lg:grid-cols-"] {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    #appContainer [class*="col-span-"] { grid-column: auto !important; }
+
+    #appContainer #formContent > div > .flex.justify-between,
+    #appContainer #formContent .border-b-2.flex,
+    #appContainer #detailContent .grid.grid-cols-2,
+    #appContainer #appDetailContent .grid.grid-cols-2 {
+      flex-direction: column !important;
+      align-items: flex-start !important;
+      gap: .75rem !important;
+    }
+
+    #appContainer #formContent .text-right { text-align: left !important; }
+    #appContainer #formContent h1,
+    #appContainer #formContent .doc-title { font-size: 1.55rem !important; line-height: 1.2 !important; }
+
+    #appContainer #formContent input:not([type="checkbox"]):not([type="radio"]),
+    #appContainer #formContent select,
+    #appContainer #formContent textarea { width: 100% !important; }
+
+    #appContainer #formContent button[type="submit"],
+    #appContainer #formContent .form-submit,
+    #appContainer #formContent > div > button:last-child { width: 100%; justify-content: center; }
+
+    #appContainer .ba-responsive-table {
+      display: block !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      table-layout: fixed;
+      border: 0 !important;
+      background: transparent !important;
+    }
+
+    #appContainer .ba-responsive-table thead {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+
+    #appContainer .ba-responsive-table tbody,
+    #appContainer .ba-responsive-table tfoot { display: block !important; width: 100% !important; }
+
+    #appContainer .ba-responsive-table tbody tr,
+    #appContainer .ba-responsive-table tfoot tr {
+      display: block !important;
+      width: 100% !important;
+      margin: 0 0 .8rem !important;
+      padding: .35rem .7rem !important;
+      border: 1px solid #e5e7eb !important;
+      border-radius: .75rem !important;
+      background: #fff !important;
+      box-shadow: 0 3px 12px rgba(31, 41, 55, .05);
+    }
+
+    #appContainer .ba-responsive-table td {
+      display: grid !important;
+      grid-template-columns: minmax(5.75rem, 38%) minmax(0, 62%) !important;
+      align-items: start;
+      width: 100% !important;
+      min-width: 0 !important;
+      padding: .6rem 0 !important;
+      border: 0 !important;
+      border-bottom: 1px solid #f1f5f9 !important;
+      text-align: left !important;
+      white-space: normal !important;
+      gap: .65rem;
+    }
+
+    #appContainer .ba-responsive-table td:last-child { border-bottom: 0 !important; }
+    #appContainer .ba-responsive-table td::before {
+      content: attr(data-mobile-label);
+      color: #6b7280;
+      font-size: .67rem;
+      font-weight: 800;
+      line-height: 1.35;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+    }
+
+    #appContainer .ba-responsive-table td[data-mobile-label=""]::before { display: none; }
+    #appContainer .ba-responsive-table td[colspan] { grid-template-columns: minmax(0, 1fr) !important; }
+    #appContainer .ba-responsive-table td[colspan]::before { display: none; }
+    #appContainer .ba-responsive-table td > * { max-width: 100%; min-width: 0; }
+    #appContainer .ba-responsive-table td input,
+    #appContainer .ba-responsive-table td select,
+    #appContainer .ba-responsive-table td textarea,
+    #appContainer .ba-responsive-table td button { width: 100% !important; }
+
+    #appContainer .chrome-tabs-container {
+      width: 100% !important;
+      padding: .5rem !important;
+      overflow-x: auto !important;
+      scroll-snap-type: x proximity;
+      scrollbar-width: none;
+    }
+    #appContainer .chrome-tabs-container::-webkit-scrollbar { display: none; }
+    #appContainer .chrome-tab { flex: 0 0 auto; scroll-snap-align: start; padding: .65rem .9rem !important; }
+
+    #appContainer [role="dialog"],
+    #appContainer .modal-animate {
+      width: calc(100vw - 1.5rem) !important;
+      max-width: calc(100vw - 1.5rem) !important;
+      max-height: calc(100dvh - var(--ba-safe-top) - var(--ba-safe-bottom) - 1.5rem) !important;
+      margin: auto !important;
+    }
+
+    #toast-container {
+      left: .75rem !important;
+      right: .75rem !important;
+      bottom: calc(.75rem + var(--ba-safe-bottom)) !important;
+    }
+    #toast-container .toast { width: 100%; max-width: none; }
+
+    body.ba-mobile-sidebar-open { overflow: hidden !important; }
+    body.ba-mobile-sidebar-open #appContainer aside {
+      display: flex !important;
+      position: fixed !important;
+      inset: var(--ba-safe-top) auto var(--ba-safe-bottom) var(--ba-safe-left) !important;
+      z-index: 10001 !important;
+      width: min(86vw, 20rem) !important;
+      height: auto !important;
+      animation: baSidebarIn .2s ease-out;
+    }
+    #baMobileSidebarBackdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: none;
+      background: rgba(17, 24, 39, .48);
+      backdrop-filter: blur(2px);
+    }
+    body.ba-mobile-sidebar-open #baMobileSidebarBackdrop { display: block; }
+  }
+
+  @media screen and (max-width: 390px) {
+    #appContainer header #userNameDisplay,
+    #appContainer header #approverName { max-width: 34vw; }
+    #appContainer .ba-responsive-table td { grid-template-columns: minmax(4.8rem, 34%) minmax(0, 66%) !important; }
+  }
+
+  @keyframes baSidebarIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+
+  @media print {
+    #baMobileSidebarBackdrop { display: none !important; }
+  }
+</style>
+
+<script>
+(function installBeritaAcaraResponsiveLayer() {
+  if (window.__baResponsiveInstalled) return;
+  window.__baResponsiveInstalled = true;
+
+  function cleanLabel(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function decorateTable(table) {
+    if (!table || table.classList.contains('ba-mobile-keep-table')) return;
+    table.classList.add('ba-responsive-table');
+    var headers = Array.from(table.querySelectorAll('thead th')).map(function (th) {
+      return cleanLabel(th.textContent);
+    });
+    Array.from(table.querySelectorAll('tbody tr, tfoot tr')).forEach(function (row) {
+      Array.from(row.children).forEach(function (cell, index) {
+        if (cell.tagName !== 'TD') return;
+        if (!cell.hasAttribute('data-mobile-label')) {
+          cell.setAttribute('data-mobile-label', headers[index] || cell.getAttribute('aria-label') || 'Detail');
+        }
+      });
+    });
+  }
+
+  function decorate(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    if (scope.matches && scope.matches('table')) decorateTable(scope);
+    if (scope.closest) {
+      var parentTable = scope.closest('table');
+      if (parentTable) decorateTable(parentTable);
+    }
+    Array.from(scope.querySelectorAll('table')).forEach(decorateTable);
+  }
+
+  function installMobileSidebar() {
+    if (document.getElementById('baMobileSidebarBackdrop')) return;
+    var app = document.getElementById('appContainer');
+    var aside = app && app.querySelector('aside');
+    if (!aside) return;
+    var headerButton = app.querySelector('header button.md\\:hidden');
+    if (!headerButton) return;
+    headerButton.setAttribute('aria-label', 'Buka menu Berita Acara');
+    headerButton.setAttribute('aria-expanded', 'false');
+    var backdrop = document.createElement('button');
+    backdrop.id = 'baMobileSidebarBackdrop';
+    backdrop.type = 'button';
+    backdrop.setAttribute('aria-label', 'Tutup menu Berita Acara');
+    document.body.appendChild(backdrop);
+
+    function setOpen(open) {
+      document.body.classList.toggle('ba-mobile-sidebar-open', open);
+      headerButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    headerButton.addEventListener('click', function () { setOpen(!document.body.classList.contains('ba-mobile-sidebar-open')); });
+    backdrop.addEventListener('click', function () { setOpen(false); });
+    aside.addEventListener('click', function (event) {
+      if (event.target.closest('.sidebar-subitem, a.sidebar-item') && window.matchMedia('(max-width: 767px)').matches) setOpen(false);
+    });
+    document.addEventListener('keydown', function (event) { if (event.key === 'Escape') setOpen(false); });
+  }
+
+  function refresh(root) {
+    decorate(root || document);
+    installMobileSidebar();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    refresh(document);
+    new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        Array.from(mutation.addedNodes || []).forEach(function (node) {
+          if (node.nodeType === 1) refresh(node);
+        });
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  window.refreshBeritaAcaraResponsiveLayout = refresh;
+}());
+</script>
