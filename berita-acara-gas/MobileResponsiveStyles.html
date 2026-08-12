@@ -45,6 +45,16 @@
   #appContainer span,
   #appContainer div { overflow-wrap: anywhere; }
 
+  /* Approval actions must remain legible on desktop and narrow WebViews. */
+  #appContainer .ba-approve-button {
+    width: auto !important;
+    min-width: 7.25rem !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    overflow-wrap: normal !important;
+  }
+  #appContainer .ba-approval-status { min-width: 10rem; }
+
   @media screen and (max-width: 767px) {
     body { padding: var(--ba-safe-top) var(--ba-safe-right) var(--ba-safe-bottom) var(--ba-safe-left); }
 
@@ -72,6 +82,30 @@
     #appContainer #formContent { padding: 1rem !important; }
     #appContainer #detailContent,
     #appContainer #appDetailContent { padding: 1rem !important; }
+
+    #appContainer .ba-approval-dashboard nav > div { padding-left: .75rem !important; padding-right: .75rem !important; }
+    #appContainer .ba-approval-dashboard nav .gap-4 { gap: .35rem !important; }
+    #appContainer .ba-approval-dashboard main { padding: .75rem !important; }
+    #appContainer .ba-approval-toolbar { display: block !important; padding: .85rem !important; }
+    #appContainer .ba-approval-toolbar > .grid {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: .75rem !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    #appContainer .ba-approval-toolbar input,
+    #appContainer .ba-approval-toolbar select,
+    #appContainer .ba-approval-toolbar button { min-height: 2.75rem; width: 100% !important; }
+    #appContainer .ba-approval-table-wrap {
+      display: block !important;
+      min-height: 0 !important;
+      overflow: visible !important;
+      padding: .75rem !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    #appContainer .ba-approval-table tbody { min-height: 0 !important; }
 
     #appContainer .paper-canvas {
       width: 100% !important;
@@ -180,6 +214,13 @@
     #appContainer .ba-responsive-table td select,
     #appContainer .ba-responsive-table td textarea,
     #appContainer .ba-responsive-table td button { width: 100% !important; }
+
+    #appContainer .ba-approval-table td.ba-approval-status { min-width: 0 !important; }
+    #appContainer .ba-approval-table .ba-approve-button {
+      width: 100% !important;
+      min-width: 0 !important;
+      min-height: 2.6rem;
+    }
 
     #appContainer .chrome-tabs-container {
       width: 100% !important;

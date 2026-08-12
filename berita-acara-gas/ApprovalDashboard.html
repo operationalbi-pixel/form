@@ -2,7 +2,7 @@
 <!-- Fitur Lengkap: Info Column, Advanced Search, PDF Integration, Fix Reject Button, Toast Notification -->
 <?!= include('PDFGenerator'); ?>
 
-<div class="min-h-screen bg-slate-50 font-sans text-slate-800">
+<div class="ba-approval-dashboard min-h-screen bg-slate-50 font-sans text-slate-800">
     
     <!-- STYLE KHUSUS (PREMIUM UPGRADE) -->
     <style>
@@ -114,7 +114,7 @@
         <div class="bg-white rounded-b-xl shadow-lg border border-slate-200 overflow-hidden relative">
             
             <!-- FILTER TOOLBAR (Clean Layout) -->
-            <div class="p-6 bg-white border-b border-slate-100">
+            <div class="ba-approval-toolbar p-6 bg-white border-b border-slate-100">
                 <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     
                     <!-- Outlet Filter -->
@@ -194,8 +194,8 @@
             </div>
             
             <!-- TABLE CONTENT -->
-            <div class="overflow-x-auto min-h-[450px]">
-                <table class="w-full text-sm text-left border-collapse">
+            <div class="ba-approval-table-wrap overflow-x-auto min-h-[450px]">
+                <table class="ba-approval-table w-full text-sm text-left border-collapse">
                     <thead class="text-xs text-slate-500 uppercase bg-slate-50/80 border-b border-slate-200 table-head-fixed backdrop-blur-sm">
                         <tr>
                             <th class="px-6 py-4 font-bold tracking-wider">Tipe BA</th>
@@ -481,7 +481,7 @@
             } else if (row.currentStatus === 'Rejected') {
                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-100 font-bold text-[10px] tracking-wide uppercase"><i class="fa-solid fa-xmark mr-1"></i> REJECTED</span>`;
             } else if (canApprove) {
-                statusBadge = `<button onclick="doApprove(${absoluteIndex})" class="bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 text-xs font-bold shadow-md hover:shadow-blue-200 transform transition hover:-translate-y-0.5 border border-blue-700 flex items-center justify-center gap-1 w-full"><i class="fa-solid fa-pen-nib"></i> APPROVE</button>`;
+                statusBadge = `<button onclick="doApprove(${absoluteIndex})" class="ba-approve-button bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 text-xs font-bold shadow-md hover:shadow-blue-200 transform transition hover:-translate-y-0.5 border border-blue-700 inline-flex items-center justify-center gap-1 whitespace-nowrap min-w-[7.25rem]"><i class="fa-solid fa-pen-nib shrink-0"></i><span>APPROVE</span></button>`;
             } else {
                 statusBadge = `<span class="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100 font-bold text-[10px] tracking-wide italic"><i class="fa-regular fa-clock mr-1"></i> ${row.currentStatus}</span>`;
             }
@@ -515,7 +515,7 @@
                 <td class="px-6 py-4 text-center">
                     <button onclick="showAppDetail(${absoluteIndex})" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
                 </td>
-                <td class="px-6 py-4 text-center w-32">${statusBadge}</td>
+                <td class="ba-approval-status px-6 py-4 text-center min-w-[10rem]">${statusBadge}</td>
             </tr>
             `;
         }).join('');
