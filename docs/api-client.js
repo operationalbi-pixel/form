@@ -17,7 +17,7 @@
   }
 
   function timeoutForAction(action) {
-    return /^(verify|upload)|^lostFound(?:Save|Update|Process)$/.test(String(action || '')) ? 300000 : 90000;
+    return /^(verify|upload|salesAnalysis)|^lostFound(?:Save|Update|Process)$/.test(String(action || '')) ? 300000 : 90000;
   }
 
   function call(action, args) {
