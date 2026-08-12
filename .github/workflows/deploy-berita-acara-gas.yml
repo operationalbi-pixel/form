@@ -1,0 +1,85 @@
+name: Deploy Berita Acara GAS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - berita-acara-gas/**
+      - scripts/validate.mjs
+      - package.json
+      - .github/workflows/deploy-berita-acara-gas.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-berita-acara-gas-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
+      - name: Validate source
+        run: npm test
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
+      - name: Check deployment secrets
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+          GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+        run: |
+          test -n "$CLASPRC_JSON" || { echo "Secret CLASPRC_JSON belum tersedia."; exit 1; }
+          test -n "$CLASP_JSON" || { echo "Secret CLASP_JSON belum tersedia."; exit 1; }
+          test -n "$GAS_DEPLOYMENT_ID" || { echo "Secret GAS_DEPLOYMENT_ID belum tersedia."; exit 1; }
+
+      - name: Prepare clasp credentials
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+        run: |
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          printf '%s' "$CLASP_JSON" > berita-acara-gas/.clasp.json
+          chmod 600 "$HOME/.clasprc.json" berita-acara-gas/.clasp.json
+
+      - name: Push source to Apps Script
+        working-directory: berita-acara-gas
+        run: npx --yes @google/clasp@3.1.3 push --force
+
+      - name: Update production deployment
+        working-directory: berita-acara-gas
+        env:
+          GAS_DEPLOYMENT_ID: ${{ secrets.GAS_DEPLOYMENT_ID }}
+        run: npx --yes @google/clasp@3.1.3 create-deployment --deploymentId "$GAS_DEPLOYMENT_ID" --description "GitHub main ${GITHUB_SHA::7}"
+
+      - name: Remove temporary credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$HOME/.clasprc.json" berita-acara-gas/.clasp.json
