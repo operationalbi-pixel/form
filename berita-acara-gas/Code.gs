@@ -415,7 +415,7 @@ function getAllSubmissions(userData) {
 
   } catch (e) {
     console.error(e);
-    return [];
+    throw new Error('Data Berita Acara gagal dimuat: ' + e.message);
   }
 }
 

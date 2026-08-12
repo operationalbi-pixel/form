@@ -210,7 +210,7 @@
                         </tr>
                     </thead>
                     <tbody id="approvalBody" class="divide-y divide-slate-100 bg-white">
-                        <!-- Content Injected Here -->
+                        <tr><td colspan="8" class="px-8 py-16 text-center text-slate-500"><div class="flex flex-col items-center"><i class="fas fa-circle-notch fa-spin mb-3 text-2xl text-blue-600"></i><span class="font-semibold">Memuat dokumen Berita Acara...</span></div></td></tr>
                     </tbody>
                 </table>
             </div>
@@ -330,10 +330,19 @@
     // --- DATA FETCHING (SAFE LOAD) ---
     function loadData() {
         document.getElementById('approvalBody').innerHTML = '<tr><td colspan="8" class="text-center py-20"><div class="flex flex-col items-center justify-center"><i class="fas fa-circle-notch fa-spin text-blue-600 text-3xl mb-4"></i><span class="text-slate-500 font-medium">Sedang memuat data...</span></div></td></tr>';
-        
+        const loadTimer = window.setTimeout(function() {
+            const body = document.getElementById('approvalBody');
+            if (body && /Sedang memuat data/i.test(body.textContent || '')) {
+                body.innerHTML = '<tr><td colspan="8" class="px-6 py-12 text-center text-amber-800"><div class="rounded-xl border border-amber-200 bg-amber-50 p-5"><strong>Data membutuhkan waktu lebih lama.</strong><br><span class="mt-2 inline-block text-xs">Periksa koneksi, lalu tekan tombol muat ulang di bawah.</span><br><button type="button" onclick="loadData()" class="mt-4 rounded-lg bg-amber-700 px-4 py-2 text-xs font-bold text-white">Muat Ulang</button></div></td></tr>';
+            }
+        }, 20000);
         google.script.run
-            .withSuccessHandler(processData)
+            .withSuccessHandler(function(data) {
+                window.clearTimeout(loadTimer);
+                processData(data);
+            })
             .withFailureHandler(function(error) {
+                window.clearTimeout(loadTimer);
                 console.error("Load Error:", error);
                 document.getElementById('approvalBody').innerHTML = `<tr><td colspan="8" class="text-center py-10 text-red-600 font-bold bg-red-50 rounded-lg border border-red-200 m-4"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><br>Gagal memuat data.<br><span class="text-sm font-normal text-gray-600">${error.message}</span></td></tr>`;
             })
