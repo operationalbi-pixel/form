@@ -290,6 +290,9 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!gasDeployWorkflow.includes('clasp@3.1.3 push --force')) failures.push('Workflow GAS belum menyinkronkan seluruh source dari main');
   const gasIgnore = await text('berita-acara-gas/.claspignore');
   if (!gasIgnore.includes('!**/*.html') || !gasIgnore.includes('!**/*.gs')) failures.push('Daftar file clasp belum mencakup HTML dan Code.gs');
+  const gasSetupScript = await text('setup-gas-auto-deploy.ps1');
+  if (!gasSetupScript.includes('function Test-NpxCandidate')) failures.push('Setup GAS belum memvalidasi instalasi Node.js/npx');
+  if (!gasSetupScript.includes('c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a')) failures.push('Unduhan Node.js portable belum dilindungi verifikasi SHA-256');
 }
 if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
   failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');

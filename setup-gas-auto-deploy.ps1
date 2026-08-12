@@ -1,24 +1,44 @@
+param(
+  [switch]$CheckNodeOnly
+)
+
 $ErrorActionPreference = 'Stop'
 
 $repository = 'operationalbi-pixel/form'
 $defaultDeploymentId = 'AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg'
 
+function Test-NpxCandidate([string]$NpxPath) {
+  if (-not (Test-Path -LiteralPath $NpxPath)) { return $false }
+  $nodePath = Join-Path (Split-Path -Parent $NpxPath) 'node.exe'
+  if (-not (Test-Path -LiteralPath $nodePath)) { return $false }
+  try {
+    $nodeVersion = (& $nodePath --version 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v(\d+)\.') { return $false }
+    if ([int]$Matches[1] -lt 22) { return $false }
+    $npxVersion = (& $NpxPath --version 2>$null).Trim()
+    return $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($npxVersion)
+  } catch {
+    return $false
+  }
+}
+
 function Find-Npx {
-  $command = Get-Command npx.cmd -ErrorAction SilentlyContinue
-  if ($command) { return $command.Source }
+  $portableNpx = Join-Path $env:LOCALAPPDATA 'BI-Space-Tools\node-v22.22.0-win-x64\npx.cmd'
+  if (Test-NpxCandidate $portableNpx) { return $portableNpx }
 
   $candidates = @(
     "$env:LOCALAPPDATA\Programs\nodejs\npx.cmd",
-    "$env:ProgramFiles\nodejs\npx.cmd"
+    "$env:ProgramFiles\nodejs\npx.cmd",
+    "${env:ProgramFiles(x86)}\nodejs\npx.cmd"
   )
   foreach ($candidate in $candidates) {
-    if (Test-Path -LiteralPath $candidate) { return $candidate }
+    if (Test-NpxCandidate $candidate) { return $candidate }
   }
 
   $downloaded = Get-ChildItem -LiteralPath "$env:USERPROFILE\Downloads" -Filter npx.cmd -File -Recurse -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
-  if ($downloaded) { return $downloaded.FullName }
+  if ($downloaded -and (Test-NpxCandidate $downloaded.FullName)) { return $downloaded.FullName }
 
   $nodeVersion = '22.22.0'
   $archiveName = "node-v$nodeVersion-win-x64.zip"
@@ -40,8 +60,16 @@ function Find-Npx {
     Expand-Archive -LiteralPath $archivePath -DestinationPath $toolsRoot -Force
     Remove-Item -LiteralPath $archivePath -Force
   }
-  if (Test-Path -LiteralPath $portableNpx) { return $portableNpx }
+  if (Test-NpxCandidate $portableNpx) { return $portableNpx }
   throw 'Node.js portable gagal disiapkan.'
+}
+
+if ($CheckNodeOnly) {
+  $checkedNpx = Find-Npx
+  $checkedNode = Join-Path (Split-Path -Parent $checkedNpx) 'node.exe'
+  Write-Host "Node.js siap: $(& $checkedNode --version)" -ForegroundColor Green
+  Write-Host "npx siap: $(& $checkedNpx --version)" -ForegroundColor Green
+  exit 0
 }
 
 if (-not (Get-Command gh.exe -ErrorAction SilentlyContinue)) {
