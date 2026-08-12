@@ -258,6 +258,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baResponsive.includes('input[type="file"]::file-selector-button')) failures.push('Input foto/file belum dioptimalkan untuk mobile');
   if (!baResponsive.includes('#appContainer #modalActions')) failures.push('Tombol modal belum dapat membungkus pada mobile');
   if (!baResponsive.includes('max-width: 900px')) failures.push('Breakpoint responsif belum mencakup HP landscape dan tablet kecil');
+  if (!baResponsive.includes('height: auto !important;') || !baResponsive.includes('overflow: visible !important;')) failures.push('Kartu mobile Berita Acara masih dapat tertutup area tabel yang terlalu tinggi');
   if (!approvalDashboard.includes('Memuat dokumen Berita Acara')) failures.push('Approval Dashboard belum memiliki status awal saat data dimuat');
   if (!approvalDashboard.includes('Data membutuhkan waktu lebih lama')) failures.push('Approval Dashboard belum memiliki timeout yang terlihat');
   if (!outletDashboard.includes('Memuat riwayat dokumen')) failures.push('Outlet Dashboard belum memiliki status awal saat data dimuat');

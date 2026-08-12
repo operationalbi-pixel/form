@@ -120,12 +120,17 @@
     #appContainer .ba-approval-table-wrap {
       display: block !important;
       min-height: 0 !important;
+      height: auto !important;
       overflow: visible !important;
       padding: .75rem !important;
       visibility: visible !important;
       opacity: 1 !important;
     }
-    #appContainer .ba-approval-table tbody { min-height: 0 !important; }
+    #appContainer .ba-approval-table tbody {
+      min-height: 0 !important;
+      height: auto !important;
+      overflow: visible !important;
+    }
 
     #appContainer .paper-canvas {
       width: 100% !important;
@@ -209,6 +214,9 @@
     #appContainer .ba-responsive-table tfoot tr {
       display: block !important;
       width: 100% !important;
+      height: auto !important;
+      min-height: 0 !important;
+      overflow: visible !important;
       margin: 0 0 .8rem !important;
       padding: .35rem .7rem !important;
       border: 1px solid #e5e7eb !important;
@@ -222,6 +230,8 @@
       grid-template-columns: minmax(5.75rem, 38%) minmax(0, 62%) !important;
       align-items: start;
       width: 100% !important;
+      height: auto !important;
+      min-height: 0 !important;
       min-width: 0 !important;
       padding: .6rem 0 !important;
       border: 0 !important;
