@@ -7997,9 +7997,252 @@ function previewItemJournalUpload(token,payload){return safe_(function(){const s
 
 function uploadItemJournal(token,payload){return safe_(function(){const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const p=prepareItemJournalImport_(e,payload||{},false),now=new Date(),rows=p.rows.map(function(line){const id=Utilities.getUuid(),direction=line.qtyDefault<0?'OUT':'IN';return{insertId:id,json:{record_id:id,logical_id:Utilities.getUuid(),version:1,record_type:'MOVEMENT',outlet:line.outlet,location:'Store',item_code:line.item.code,category:line.item.category,item_name:line.item.name,unit:line.item.unit,direction:direction,qty:Math.abs(line.qtyDefault),movement_type:'Item Journal',info:cleanText_('Item Journal Number '+line.journalNumber+(line.additionalInfo?' - '+line.additionalInfo:''),500),expiry_date:null,event_date:line.transactionDate,created_at:now.getTime()/1000,created_by:e.nik,source_file:'ITEM_JOURNAL|'+p.fileName,source_hash:line.rowHash,source_row:line.sourceRow}};});const lock=acquireStockWriteLock_();try{insertStockCardRows_(rows);}finally{lock.releaseLock();}return{uploaded:true,itemCount:rows.length,duplicateRowsSkipped:p.duplicateRowsSkipped,unauthorizedRowsSkipped:p.unauthorizedRowsSkipped};});}
 
-function getMockRecallList(token,payload){return safe_(function(){payload=payload||{};const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const date=normalizeDate_(payload.date,true),outlet=e.outlet==='BIHQ'?cleanText_(payload.outlet,30).toUpperCase():e.outlet;let where='event_date=CAST(@date AS DATE) AND movement_type=\'Sold\' AND source_file LIKE \'SALES_COGS|%\'';const params={date:date};if(outlet){where+=' AND outlet=@outlet';params.outlet=outlet;}const sql='SELECT transfer_id,outlet,ANY_VALUE(info) AS info,ANY_VALUE(item_name) AS item_name FROM '+stockCardTable_()+' WHERE '+where+' GROUP BY transfer_id,outlet ORDER BY outlet,item_name';const items=runNamedQuery_(sql,params,{useQueryCache:false}).map(function(row){const info=String(row.info||''),menu=(/Sold(?: Showcase \(tanpa potong stock\))? · (.*?) · Sales Number/.exec(info)||[])[1]||row.item_name,sales=(/Sales Number (.*)$/.exec(info)||[])[1]||'';return{traceId:String(row.transfer_id||''),menu:menu,salesNumber:sales,outlet:String(row.outlet||'')};});return{date:date,items:items};});}
 
-function getMockRecallDetail(token,payload){return safe_(function(){payload=payload||{};const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const trace=cleanText_(payload.traceId,120);if(!trace)throw new Error('Identitas penjualan tidak ditemukan.');const saleHash=trace.replace(/^SALE\|/,'');let sql='SELECT item_code,item_name,unit,qty,movement_type,info,source_arrival_date,production_date,expiry_date,transfer_id,outlet FROM '+stockCardTable_()+' WHERE source_hash=@hash AND record_type=\'MOVEMENT\' ORDER BY movement_type,item_name';const rows=runNamedQuery_(sql,{hash:saleHash},{useQueryCache:false});if(e.outlet!=='BIHQ'&&rows.some(function(r){return String(r.outlet)!==e.outlet;}))throw new Error('Anda tidak memiliki akses ke data outlet ini.');return{traceId:trace,materials:rows.filter(function(r){return r.movement_type==='WIP Material Usage'||r.movement_type==='Sold';}).map(function(r){return{code:String(r.item_code||''),material:String(r.item_name||''),unit:String(r.unit||''),qty:Number(r.qty||0),arrivalDate:String(r.source_arrival_date||''),productionDate:String(r.production_date||''),expiryDate:String(r.expiry_date||''),kind:String(r.movement_type||'')};})};});}
+function parseMockRecallSoldInfo_(info) {
+  const match = /^Sold(?: Showcase \(tanpa potong stock\))? · (.*?) · Sales Number (.*)$/.exec(String(info || '').trim());
+  return match ? { menu: String(match[1] || '').trim(), salesNumber: String(match[2] || '').trim() } : null;
+}
+
+function parseMockRecallWipUsageInfo_(info) {
+  const match = /^Keluar untuk Produk: (.*?) · Sold (.*?) · Sales (.*)$/.exec(String(info || '').trim());
+  return match ? { parent: String(match[1] || '').trim(), menu: String(match[2] || '').trim(), salesNumber: String(match[3] || '').trim() } : null;
+}
+
+function aggregateMockRecallLots_(rows, childOf) {
+  const map = {}, order = [];
+  (rows || []).forEach(function (row) {
+    const key = [String(row.item_code || ''), String(row.item_name || ''), String(row.unit || ''), String(row.source_arrival_date || ''), String(row.production_date || ''), String(row.expiry_date || '')].join('|');
+    if (!map[key]) {
+      map[key] = {
+        rowType: 'material', code: String(row.item_code || ''), material: String(row.item_name || ''), unit: String(row.unit || ''), qty: 0,
+        arrivalDate: String(row.source_arrival_date || ''), productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+        childOf: childOf || '', kind: String(row.movement_type || '')
+      };
+      order.push(key);
+    }
+    map[key].qty += Number(row.qty || 0);
+  });
+  return order.map(function (key) { return map[key]; });
+}
+
+
+function expandMockRecallWipUsageLots_(outlet, usageRows) {
+  usageRows = usageRows || [];
+  if (!usageRows.length) return [];
+  const byCode = {}, expanded = [], chunkSize = 12;
+  usageRows.forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    if (code) byCode[code] = true;
+  });
+  const codes = Object.keys(byCode), movementMap = {};
+
+  for (let offset = 0; offset < codes.length; offset += chunkSize) {
+    const chunk = codes.slice(offset, offset + chunkSize);
+    const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type=\'MOVEMENT\' AND outlet=@outlet AND location=\'Store\' AND item_code IN UNNEST(@codes)), ' +
+      'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id,\'\'),record_id) ORDER BY COALESCE(version,1) DESC,created_at DESC)=1), ' +
+      'ranked AS (SELECT *,ROW_NUMBER() OVER (PARTITION BY item_code ORDER BY event_date DESC,created_at DESC) AS item_rank FROM latest) ' +
+      'SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,COALESCE(version,1) AS version,item_code,item_name,event_date,direction,qty,movement_type,info,' +
+      'production_date,expiry_date,source_arrival_date,transfer_id,supplier,source_file,source_row,created_by,created_at FROM ranked WHERE item_rank<=650 ORDER BY item_code,event_date,created_at';
+    const histories = {};
+    runNamedQuery_(sql, { outlet: outlet, codes: chunk }, { useQueryCache: false }).forEach(function (raw) {
+      const code = String(raw.item_code || '').trim().toUpperCase();
+      if (!histories[code]) histories[code] = [];
+      histories[code].push(salesHistoryRowFromQuery_(raw));
+    });
+    Object.keys(histories).forEach(function (code) {
+      const history = histories[code];
+      calculateFifoSnapshots_(history);
+      history.forEach(function (movement) {
+        if (movement.recordId) movementMap['R|' + movement.recordId] = movement;
+        if (movement.logicalId) movementMap['L|' + movement.logicalId] = movement;
+      });
+    });
+  }
+
+  usageRows.forEach(function (row) {
+    const movement = movementMap['R|' + String(row.record_id || '')] || movementMap['L|' + String(row.logical_id || '')], scale = Number(row._mockRecallScale || 1);
+    const lots = movement && Array.isArray(movement.fifoUsageLots) ? movement.fifoUsageLots : [];
+    if (lots.length) {
+      lots.forEach(function (lot) {
+        const clone = Object.assign({}, row);
+        clone.qty = Number(lot.qty || 0) * scale;
+        clone.source_arrival_date = String(lot.sourceDate || '');
+        clone.production_date = String(lot.productionDate || '');
+        clone.expiry_date = String(lot.expiryDate || '');
+        expanded.push(clone);
+      });
+    } else {
+      const clone = Object.assign({}, row);
+      clone.qty = Number(row.qty || 0) * scale;
+      expanded.push(clone);
+    }
+  });
+  return expanded;
+}
+
+function loadMockRecallHistoricalWipUsage_(outlet, code, soldGroup) {
+  const sql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
+    'production_date,expiry_date,source_arrival_date,transfer_id,event_date,created_at FROM latest WHERE outlet=@outlet AND location=\'Store\' ' +
+    'AND movement_type=\'Production\' AND item_code=@code ORDER BY event_date DESC,created_at DESC LIMIT 200';
+  const productions = runNamedQuery_(sql, { outlet: outlet, code: code }, { useQueryCache: false });
+  if (!productions.length) return [];
+
+  const soldLots = {};
+  (soldGroup || []).forEach(function (row) {
+    const key = [String(row.production_date || ''), String(row.source_arrival_date || ''), String(row.expiry_date || '')].join('|');
+    if (!soldLots[key]) soldLots[key] = { productionDate: String(row.production_date || ''), arrivalDate: String(row.source_arrival_date || ''), expiryDate: String(row.expiry_date || ''), qty: 0 };
+    soldLots[key].qty += Number(row.qty || 0);
+  });
+
+  const allocatedByTransfer = {}, productionQtyByTransfer = {};
+  Object.keys(soldLots).forEach(function (key) {
+    const lot = soldLots[key];
+    let candidates = productions.filter(function (row) {
+      const prodDate = String(row.production_date || ''), eventDate = String(row.event_date || ''), expiry = String(row.expiry_date || '');
+      if (lot.productionDate && prodDate !== lot.productionDate) return false;
+      if (!lot.productionDate && lot.arrivalDate && eventDate !== lot.arrivalDate) return false;
+      if (lot.expiryDate && expiry && expiry !== lot.expiryDate) return false;
+      return Boolean(row.transfer_id);
+    });
+    if (!candidates.length && lot.arrivalDate) candidates = productions.filter(function (row) { return String(row.event_date || '') === lot.arrivalDate && Boolean(row.transfer_id); });
+    candidates = candidates.slice().reverse();
+    let remaining = Number(lot.qty || 0);
+    candidates.forEach(function (row) {
+      if (remaining <= 0.0000001) return;
+      const transferId = String(row.transfer_id || ''), productionQty = Math.max(0, Number(row.qty || 0));
+      if (!transferId || productionQty <= 0.0000001) return;
+      const taken = Math.min(remaining, productionQty);
+      allocatedByTransfer[transferId] = Number(allocatedByTransfer[transferId] || 0) + taken;
+      productionQtyByTransfer[transferId] = productionQty;
+      remaining -= taken;
+    });
+  });
+
+  const transferIds = Object.keys(allocatedByTransfer);
+  if (!transferIds.length) return [];
+  const usageSql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
+    'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,created_at FROM latest WHERE outlet=@outlet AND location=\'Store\' ' +
+    'AND movement_type=\'WIP Material Usage\' AND transfer_id IN UNNEST(@transferIds) ORDER BY event_date,created_at,item_name';
+  const usageRows = runNamedQuery_(usageSql, { outlet: outlet, transferIds: transferIds }, { useQueryCache: false });
+  usageRows.forEach(function (row) {
+    const transferId = String(row.transfer_id || ''), produced = Number(productionQtyByTransfer[transferId] || 0), used = Number(allocatedByTransfer[transferId] || 0);
+    row._mockRecallScale = produced > 0.0000001 ? Math.min(1, used / produced) : 1;
+  });
+  return usageRows;
+}
+
+function getMockRecallList(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const s = requireSession_(token), e = findEmployee_(s.nik); assertEmployeeActive_(e);
+    const date = normalizeDate_(payload.date, true), outlet = e.outlet === 'BIHQ' ? cleanText_(payload.outlet, 30).toUpperCase() : e.outlet;
+    let where = 'event_date=CAST(@date AS DATE) AND movement_type=\'Sold\' AND source_file LIKE \'SALES_COGS|%\'';
+    const params = { date: date };
+    if (outlet) { where += ' AND outlet=@outlet'; params.outlet = outlet; }
+    const sql = 'SELECT transfer_id,outlet,info,item_name,source_row,created_at FROM ' + stockCardTable_() + ' WHERE ' + where + ' ORDER BY outlet,source_row,created_at,item_name';
+    const seen = {}, items = [];
+    runNamedQuery_(sql, params, { useQueryCache: false }).forEach(function (row) {
+      const parsed = parseMockRecallSoldInfo_(row.info);
+      if (!parsed || !parsed.menu || !parsed.salesNumber) return;
+      const key = [String(row.outlet || ''), parsed.salesNumber, normalizeStoreName_(parsed.menu)].join('|');
+      if (seen[key]) return;
+      seen[key] = true;
+      items.push({
+        traceId: String(row.transfer_id || ''), menu: parsed.menu, salesNumber: parsed.salesNumber,
+        outlet: String(row.outlet || ''), date: date
+      });
+    });
+    return { date: date, items: items };
+  });
+}
+
+function getMockRecallDetail(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const s = requireSession_(token), e = findEmployee_(s.nik); assertEmployeeActive_(e);
+    const date = normalizeDate_(payload.date, true), menu = cleanText_(payload.menu, 180), salesNumber = cleanText_(payload.salesNumber, 120);
+    const requestedOutlet = cleanText_(payload.outlet, 30).toUpperCase(), outlet = e.outlet === 'BIHQ' ? requestedOutlet : e.outlet;
+    if (!date || !menu || !salesNumber || !outlet) throw new Error('Identitas menu Mock Recall tidak lengkap.');
+    if (e.outlet !== 'BIHQ' && requestedOutlet && requestedOutlet !== e.outlet) throw new Error('Anda tidak memiliki akses ke data outlet ini.');
+
+    const sql = 'SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
+      'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,created_at FROM ' + stockCardTable_() +
+      ' WHERE record_type=\'MOVEMENT\' AND event_date=CAST(@date AS DATE) AND outlet=@outlet AND source_file LIKE \'SALES_COGS|%\' ' +
+      'AND movement_type IN (\'Sold\',\'WIP Material Usage\') ORDER BY source_row,created_at,item_name';
+    const allRows = runNamedQuery_(sql, { date: date, outlet: outlet }, { useQueryCache: false });
+    const soldRows = [], wipUsageRows = [];
+    allRows.forEach(function (row) {
+      if (String(row.movement_type || '') === 'Sold') {
+        const parsed = parseMockRecallSoldInfo_(row.info);
+        if (parsed && parsed.salesNumber === salesNumber && normalizeStoreName_(parsed.menu) === normalizeStoreName_(menu)) soldRows.push(row);
+        return;
+      }
+      if (String(row.movement_type || '') === 'WIP Material Usage') {
+        const parsed = parseMockRecallWipUsageInfo_(row.info);
+        if (parsed && parsed.salesNumber === salesNumber && normalizeStoreName_(parsed.menu) === normalizeStoreName_(menu)) {
+          row._mockRecallParent = parsed.parent;
+          wipUsageRows.push(row);
+        }
+      }
+    });
+    if (!soldRows.length) throw new Error('Detail menu tidak ditemukan untuk Sales Number tersebut.');
+
+    const wipCatalog = readWipRecipeCatalog_(), sourceGroups = {}, sourceOrder = [], stockMasterByCode = {}, savedConversions = readStockUnitConversions_();
+    readStockMaster_(true).forEach(function (item) { stockMasterByCode[String(item.code || '').toUpperCase()] = item; });
+    soldRows.forEach(function (row) {
+      const sourceKey = String(row.source_row || '') + '|' + String(row.item_code || '') + '|' + String(row.item_name || '');
+      if (!sourceGroups[sourceKey]) { sourceGroups[sourceKey] = []; sourceOrder.push(sourceKey); }
+      sourceGroups[sourceKey].push(row);
+    });
+
+    const materials = [];
+    sourceOrder.forEach(function (sourceKey) {
+      const group = sourceGroups[sourceKey], first = group[0] || {}, code = String(first.item_code || '').toUpperCase(), name = String(first.item_name || '');
+      const isWip = Boolean(wipCatalog.byCode[code] && wipCatalog.byCode[code].length);
+      if (!isWip) {
+        aggregateMockRecallLots_(group, '').forEach(function (row) { materials.push(row); });
+        return;
+      }
+
+      // Produk WIP menjadi judul grup. Kolom lain memang sengaja kosong.
+      materials.push({ rowType: 'wipHeader', code: code, material: name, unit: '', qty: null, arrivalDate: '', productionDate: '', expiryDate: '', childOf: '', kind: 'WIP' });
+      materials.push({ rowType: 'wipSubheader', code: '', material: 'Bahan-Bahan ' + name, unit: '', qty: null, arrivalDate: '', productionDate: '', expiryDate: '', childOf: name, kind: 'WIP' });
+
+      const sameSource = wipUsageRows.filter(function (child) {
+        return String(child.source_row || '') === String(first.source_row || '') && normalizeStoreName_(child._mockRecallParent) === normalizeStoreName_(name);
+      });
+      let fallback = sameSource.length ? sameSource : wipUsageRows.filter(function (child) {
+        return normalizeStoreName_(child._mockRecallParent) === normalizeStoreName_(name);
+      });
+      if (!fallback.length) fallback = loadMockRecallHistoricalWipUsage_(outlet, code, group);
+      if (fallback.length) {
+        const expanded = expandMockRecallWipUsageLots_(outlet, fallback);
+        aggregateMockRecallLots_(expanded.length ? expanded : fallback, name).forEach(function (row) { materials.push(row); });
+      } else {
+        // Fallback terakhir: resep tetap ditampilkan jika batch produksi lama tidak dapat dilacak.
+        const variants = wipCatalog.byCode[code] || [], variant = variants.filter(function (v) {
+          return normalizeStoreName_(v.name) === normalizeStoreName_(name);
+        })[0] || variants[0];
+        if (variant) {
+          const soldQty = group.reduce(function (sum, row) { return sum + Number(row.qty || 0); }, 0);
+          const outputFactor = wipConversionFactor_(code, String(first.unit || ''), variant.unit, {}, savedConversions) || 1;
+          const formulaQty = soldQty * outputFactor;
+          variant.materials.forEach(function (recipe) {
+            const material = stockMasterByCode[String(recipe.code || '').toUpperCase()], targetUnit = material ? material.unit : recipe.unit;
+            const factor = material ? (wipConversionFactor_(material.code, recipe.unit, targetUnit, {}, savedConversions) || 1) : 1;
+            materials.push({
+              rowType: 'material', code: String(recipe.code || ''), material: material ? material.name : String(recipe.name || ''),
+              unit: String(targetUnit || recipe.unit || ''), qty: Number(recipe.qty || 0) * formulaQty * factor,
+              arrivalDate: '', productionDate: '', expiryDate: '', childOf: name, kind: 'WIP Recipe'
+            });
+          });
+        }
+      }
+    });
+
+    return { date: date, menu: menu, salesNumber: salesNumber, outlet: outlet, materials: materials };
+  });
+}
 
 function sessionPayload_(employee, token) {
   return { token: token, expiresIn: null, persistent: true, user: userView_(employee) };
