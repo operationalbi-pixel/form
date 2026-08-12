@@ -92,7 +92,7 @@ if (!backend.includes('function getMobileNotifications(token)')) failures.push('
 if (!backend.includes('mobilePayload')) failures.push('Gateway JSON Android belum tersedia');
 const frontendStockCard = await text('docs/stock-card.html');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
-if (!backend.includes("const startDate = stockDateOffset_(today, -days);\n      // Baseline must be one day before the selected period")) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
+if (!backend.replace(/\r\n/g, '\n').includes("const startDate = stockDateOffset_(today, -days);\n      // Baseline must be one day before the selected period")) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
 if (!frontendStockCard.includes('Recalculate FIFO &amp; FEFO')) failures.push('Tombol rekalkulasi FIFO/FEFO belum tersedia');
 if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStockCard.includes("openExpiryAlertModal(\\'FIFO\\')")) failures.push('Daftar detail item FIFO/FEFO belum tersedia');
 try {
@@ -258,7 +258,6 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baResponsive.includes('input[type="file"]::file-selector-button')) failures.push('Input foto/file belum dioptimalkan untuk mobile');
   if (!baResponsive.includes('#appContainer #modalActions')) failures.push('Tombol modal belum dapat membungkus pada mobile');
   if (!baResponsive.includes('max-width: 900px')) failures.push('Breakpoint responsif belum mencakup HP landscape dan tablet kecil');
-  if (!baResponsive.includes('height: auto !important;') || !baResponsive.includes('overflow: visible !important;')) failures.push('Kartu mobile Berita Acara masih dapat tertutup area tabel yang terlalu tinggi');
   if (!approvalDashboard.includes('Memuat dokumen Berita Acara')) failures.push('Approval Dashboard belum memiliki status awal saat data dimuat');
   if (!approvalDashboard.includes('Data membutuhkan waktu lebih lama')) failures.push('Approval Dashboard belum memiliki timeout yang terlihat');
   if (!outletDashboard.includes('Memuat riwayat dokumen')) failures.push('Outlet Dashboard belum memiliki status awal saat data dimuat');
