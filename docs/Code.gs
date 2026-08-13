@@ -1280,10 +1280,14 @@ function readStockUploadProgress_(outlet) {
   const monthKey = parts[0] + '-' + parts[1];
   const startDate = monthKey + '-01';
   const endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
+  // Count unique source rows instead of physical movement rows. A single report row
+  // can be split into several FIFO lots, but the progress tooltip should still say
+  // "1 baris di-upload", not the number of lot fragments written to Stock Card.
+  const sourceRowKey = 'CONCAT(COALESCE(source_file, \'\'), \'|\', COALESCE(source_hash, \'\'), \'|\', CAST(COALESCE(source_row, 0) AS STRING))';
   const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
-    'MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) AS goods_receipt, ' +
-    'MAX(IF(movement_type IN (\'Terjual\', \'Sold\'), 1, 0)) AS sales_usage, ' +
-    'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
+    'COUNT(DISTINCT IF(movement_type = \'Goods Receipt\', ' + sourceRowKey + ', NULL)) AS goods_receipt_rows, ' +
+    'COUNT(DISTINCT IF(movement_type IN (\'Terjual\', \'Sold\'), ' + sourceRowKey + ', NULL)) AS sales_usage_rows, ' +
+    'COUNT(DISTINCT IF(movement_type = \'Transfer Out Antar Outlet\', ' + sourceRowKey + ', NULL)) AS goods_delivery_rows ' +
     'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
     'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
@@ -1291,20 +1295,29 @@ function readStockUploadProgress_(outlet) {
     'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') ' +
     'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
   const statusByDate = {};
-  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }).forEach(function (row) {
+  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
+    const goodsReceiptRows = Number(row.goods_receipt_rows || 0);
+    const salesUsageRows = Number(row.sales_usage_rows || 0);
+    const goodsDeliveryRows = Number(row.goods_delivery_rows || 0);
     statusByDate[String(row.event_date || '').slice(0, 10)] = {
-      goodsReceipt: Number(row.goods_receipt || 0) > 0,
-      salesUsage: Number(row.sales_usage || 0) > 0,
-      goodsDelivery: Number(row.goods_delivery || 0) > 0
+      goodsReceipt: goodsReceiptRows > 0, goodsReceiptRows: goodsReceiptRows,
+      salesUsage: salesUsageRows > 0, salesUsageRows: salesUsageRows,
+      goodsDelivery: goodsDeliveryRows > 0, goodsDeliveryRows: goodsDeliveryRows
     };
   });
   const days = [];
   for (let day = 1; day <= lastDay; day++) {
     const date = monthKey + '-' + String(day).padStart(2, '0');
-    const state = statusByDate[date] || { goodsReceipt: false, salesUsage: false, goodsDelivery: false };
+    const state = statusByDate[date] || {
+      goodsReceipt: false, goodsReceiptRows: 0,
+      salesUsage: false, salesUsageRows: 0,
+      goodsDelivery: false, goodsDeliveryRows: 0
+    };
     days.push({
       day: day, date: date, future: date > today,
-      goodsReceipt: state.goodsReceipt, salesUsage: state.salesUsage, goodsDelivery: state.goodsDelivery,
+      goodsReceipt: state.goodsReceipt, goodsReceiptRows: state.goodsReceiptRows,
+      salesUsage: state.salesUsage, salesUsageRows: state.salesUsageRows,
+      goodsDelivery: state.goodsDelivery, goodsDeliveryRows: state.goodsDeliveryRows,
       complete: state.goodsReceipt && state.salesUsage
     });
   }
@@ -6481,15 +6494,20 @@ function mirrorStockCardRows_(rows) {
 
 function rebuildStockUploadDailySummary_(state, expectedRaw) {
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const movementFilter = state.uploadType === 'salesUsage'
+    ? "movement_type IN ('Terjual', 'Sold')"
+    : state.uploadType === 'goodsReceipt'
+      ? "movement_type = 'Goods Receipt'"
+      : "movement_type = 'Transfer Out Antar Outlet'";
+  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
   const sql = 'BEGIN TRANSACTION; DELETE FROM ' + summary + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND upload_type = @uploadType; ' +
     'INSERT INTO ' + summary + ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
     'SELECT CAST(@eventDate AS DATE), @outlet, @uploadType, ' +
-    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND movement_type = @movementType; COMMIT TRANSACTION;';
+    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND ' + movementFilter + '; COMMIT TRANSACTION;';
   runNamedQuery_(sql, {
-    outlet: state.outlet, eventDate: state.eventDate,
-    uploadType: state.uploadType, movementType: state.movementType
+    outlet: state.outlet, eventDate: state.eventDate, uploadType: state.uploadType
   }, { useQueryCache: false });
   const properties = PropertiesService.getScriptProperties(), key = stockUploadSummaryDirtyKey_(state.outlet, state.eventDate, state.uploadType);
   if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
@@ -6500,12 +6518,14 @@ function rebuildStockUploadDailySummary_(state, expectedRaw) {
 function backfillStockUploadDailySummary() {
   ensureStockCardInfrastructure_();
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
+  const uploadType = "CASE WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt' WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage' ELSE 'goodsDelivery' END";
   const sql = 'TRUNCATE TABLE ' + summary + '; INSERT INTO ' + summary +
     ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
-    'SELECT event_date, outlet, CASE WHEN movement_type = \'Goods Receipt\' THEN \'goodsReceipt\' WHEN movement_type IN (\'Terjual\', \'Sold\') THEN \'salesUsage\' ELSE \'goodsDelivery\' END, ' +
-    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'SELECT event_date, outlet, ' + uploadType + ', ' +
+    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, movement_type';
+    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, ' + uploadType;
   runNamedQuery_(sql, {}, { useQueryCache: false });
   removeScriptCacheKeys_(['stock-upload-monitor-v1-' + todayIso_().slice(0, 7)]);
   return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
@@ -7627,7 +7647,85 @@ function readSalesProductMappings_() {
   return map;
 }
 
+function syncWipRecipeOutputsToStockItems_() {
+  const catalog = readWipRecipeCatalog_();
+  if (!catalog || !catalog.variants || !catalog.variants.length) return { added: 0, activated: 0, conflicts: [] };
+
+  // Satu FORMULA_CODE boleh mempunyai lebih dari satu baris bahan, tetapi output WIP-nya
+  // hanya aman dibuat otomatis bila nama + finished unit untuk kode tersebut konsisten.
+  const grouped = {};
+  catalog.variants.forEach(function (variant) {
+    const code = String(variant.code || '').trim().toUpperCase();
+    if (!code) return;
+    if (!grouped[code]) grouped[code] = { code: code, names: {}, units: {}, variants: [] };
+    const name = cleanText_(variant.name, 180), unit = normalizeUnit_(variant.unit);
+    if (name) grouped[code].names[normalizeStoreName_(name)] = name;
+    if (unit) grouped[code].units[unit] = true;
+    grouped[code].variants.push(variant);
+  });
+
+  const sheet = ensureStockMasterSheet_(), existingByCode = {}, existingByName = {};
+  if (sheet.getLastRow() >= 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getDisplayValues().forEach(function (row, index) {
+      const code = String(row[0] || '').trim().toUpperCase();
+      const name = cleanText_(row[2], 180);
+      if (!code) return;
+      const entry = { row: index + 2, code: code, category: row[1], name: name, unit: normalizeUnit_(row[3]), active: String(row[4] || '').trim() === '' || truthy_(row[4]) };
+      existingByCode[code] = entry;
+      const nameKey = normalizeStoreName_(name);
+      if (nameKey) {
+        if (!existingByName[nameKey]) existingByName[nameKey] = [];
+        existingByName[nameKey].push(entry);
+      }
+    });
+  }
+
+  const additions = [], conflicts = [];
+  let activated = 0;
+  Object.keys(grouped).forEach(function (code) {
+    const group = grouped[code];
+    const nameKeys = Object.keys(group.names), units = Object.keys(group.units);
+    if (nameKeys.length !== 1 || units.length !== 1) {
+      conflicts.push({ code: code, reason: 'Output WIP mempunyai lebih dari satu nama/unit.' });
+      return;
+    }
+    const name = group.names[nameKeys[0]], unit = units[0];
+    const existing = existingByCode[code];
+    if (existing) {
+      // Kode sudah ada: jangan ubah identitas master secara diam-diam. Cukup aktifkan bila identitasnya cocok.
+      if (normalizeStoreName_(existing.name) !== normalizeStoreName_(name) || (existing.unit && normalizeUnit_(existing.unit) !== unit)) {
+        conflicts.push({ code: code, name: name, reason: 'Kode sudah ada di STOCK_ITEMS dengan nama/unit berbeda.' });
+        return;
+      }
+      let touched = false;
+      if (!existing.name) { sheet.getRange(existing.row, 3).setValue(name); touched = true; }
+      if (!existing.unit) { sheet.getRange(existing.row, 4).setValue(unit); touched = true; }
+      if (!existing.active) { sheet.getRange(existing.row, 5).setValue(true); touched = true; }
+      if (touched) activated++;
+      return;
+    }
+
+    // Bila nama yang sama sudah dipakai kode stock lain, jangan membuat duplikat nama otomatis.
+    const sameName = existingByName[normalizeStoreName_(name)] || [];
+    if (sameName.length) {
+      conflicts.push({ code: code, name: name, reason: 'Nama WIP sudah ada di STOCK_ITEMS dengan kode berbeda.' });
+      return;
+    }
+    additions.push([code, 'WIP', name, unit, true]);
+  });
+
+  if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
+  if (additions.length || activated) {
+    SpreadsheetApp.flush();
+    removeScriptCacheKeys_(['stock-master-active', 'stock-master-all']);
+  }
+  return { added: additions.length, activated: activated, conflicts: conflicts };
+}
+
 function salesMappingCatalog_() {
+  // WIP_RECIPES adalah master definisi WIP. Jika output WIP mempunyai kode, nama dan unit
+  // yang unik/konsisten, daftarkan otomatis ke STOCK_ITEMS agar tidak meminta mapping palsu.
+  syncWipRecipeOutputsToStockItems_();
   const stockItems = readStockMaster_(true), stockByCode = {};
   const products = stockItems.map(function (item) {
     stockByCode[String(item.code || '').toUpperCase()] = item;
