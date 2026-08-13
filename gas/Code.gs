@@ -1280,10 +1280,14 @@ function readStockUploadProgress_(outlet) {
   const monthKey = parts[0] + '-' + parts[1];
   const startDate = monthKey + '-01';
   const endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
+  // Count unique source rows instead of physical movement rows. A single report row
+  // can be split into several FIFO lots, but the progress tooltip should still say
+  // "1 baris di-upload", not the number of lot fragments written to Stock Card.
+  const sourceRowKey = 'CONCAT(COALESCE(source_file, \'\'), \'|\', COALESCE(source_hash, \'\'), \'|\', CAST(COALESCE(source_row, 0) AS STRING))';
   const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
-    'MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) AS goods_receipt, ' +
-    'MAX(IF(movement_type IN (\'Terjual\', \'Sold\'), 1, 0)) AS sales_usage, ' +
-    'MAX(IF(movement_type = \'Transfer Out Antar Outlet\', 1, 0)) AS goods_delivery ' +
+    'COUNT(DISTINCT IF(movement_type = \'Goods Receipt\', ' + sourceRowKey + ', NULL)) AS goods_receipt_rows, ' +
+    'COUNT(DISTINCT IF(movement_type IN (\'Terjual\', \'Sold\'), ' + sourceRowKey + ', NULL)) AS sales_usage_rows, ' +
+    'COUNT(DISTINCT IF(movement_type = \'Transfer Out Antar Outlet\', ' + sourceRowKey + ', NULL)) AS goods_delivery_rows ' +
     'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
     'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
@@ -1291,20 +1295,29 @@ function readStockUploadProgress_(outlet) {
     'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') ' +
     'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
   const statusByDate = {};
-  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }).forEach(function (row) {
+  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
+    const goodsReceiptRows = Number(row.goods_receipt_rows || 0);
+    const salesUsageRows = Number(row.sales_usage_rows || 0);
+    const goodsDeliveryRows = Number(row.goods_delivery_rows || 0);
     statusByDate[String(row.event_date || '').slice(0, 10)] = {
-      goodsReceipt: Number(row.goods_receipt || 0) > 0,
-      salesUsage: Number(row.sales_usage || 0) > 0,
-      goodsDelivery: Number(row.goods_delivery || 0) > 0
+      goodsReceipt: goodsReceiptRows > 0, goodsReceiptRows: goodsReceiptRows,
+      salesUsage: salesUsageRows > 0, salesUsageRows: salesUsageRows,
+      goodsDelivery: goodsDeliveryRows > 0, goodsDeliveryRows: goodsDeliveryRows
     };
   });
   const days = [];
   for (let day = 1; day <= lastDay; day++) {
     const date = monthKey + '-' + String(day).padStart(2, '0');
-    const state = statusByDate[date] || { goodsReceipt: false, salesUsage: false, goodsDelivery: false };
+    const state = statusByDate[date] || {
+      goodsReceipt: false, goodsReceiptRows: 0,
+      salesUsage: false, salesUsageRows: 0,
+      goodsDelivery: false, goodsDeliveryRows: 0
+    };
     days.push({
       day: day, date: date, future: date > today,
-      goodsReceipt: state.goodsReceipt, salesUsage: state.salesUsage, goodsDelivery: state.goodsDelivery,
+      goodsReceipt: state.goodsReceipt, goodsReceiptRows: state.goodsReceiptRows,
+      salesUsage: state.salesUsage, salesUsageRows: state.salesUsageRows,
+      goodsDelivery: state.goodsDelivery, goodsDeliveryRows: state.goodsDeliveryRows,
       complete: state.goodsReceipt && state.salesUsage
     });
   }
@@ -6481,15 +6494,20 @@ function mirrorStockCardRows_(rows) {
 
 function rebuildStockUploadDailySummary_(state, expectedRaw) {
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const movementFilter = state.uploadType === 'salesUsage'
+    ? "movement_type IN ('Terjual', 'Sold')"
+    : state.uploadType === 'goodsReceipt'
+      ? "movement_type = 'Goods Receipt'"
+      : "movement_type = 'Transfer Out Antar Outlet'";
+  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
   const sql = 'BEGIN TRANSACTION; DELETE FROM ' + summary + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND upload_type = @uploadType; ' +
     'INSERT INTO ' + summary + ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
     'SELECT CAST(@eventDate AS DATE), @outlet, @uploadType, ' +
-    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND movement_type = @movementType; COMMIT TRANSACTION;';
+    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND ' + movementFilter + '; COMMIT TRANSACTION;';
   runNamedQuery_(sql, {
-    outlet: state.outlet, eventDate: state.eventDate,
-    uploadType: state.uploadType, movementType: state.movementType
+    outlet: state.outlet, eventDate: state.eventDate, uploadType: state.uploadType
   }, { useQueryCache: false });
   const properties = PropertiesService.getScriptProperties(), key = stockUploadSummaryDirtyKey_(state.outlet, state.eventDate, state.uploadType);
   if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
@@ -6500,12 +6518,14 @@ function rebuildStockUploadDailySummary_(state, expectedRaw) {
 function backfillStockUploadDailySummary() {
   ensureStockCardInfrastructure_();
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
+  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
+  const uploadType = "CASE WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt' WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage' ELSE 'goodsDelivery' END";
   const sql = 'TRUNCATE TABLE ' + summary + '; INSERT INTO ' + summary +
     ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
-    'SELECT event_date, outlet, CASE WHEN movement_type = \'Goods Receipt\' THEN \'goodsReceipt\' WHEN movement_type IN (\'Terjual\', \'Sold\') THEN \'salesUsage\' ELSE \'goodsDelivery\' END, ' +
-    'COUNTIF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\'), ' +
+    'SELECT event_date, outlet, ' + uploadType + ', ' +
+    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, movement_type';
+    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, ' + uploadType;
   runNamedQuery_(sql, {}, { useQueryCache: false });
   removeScriptCacheKeys_(['stock-upload-monitor-v1-' + todayIso_().slice(0, 7)]);
   return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
@@ -7627,15 +7647,101 @@ function readSalesProductMappings_() {
   return map;
 }
 
-function salesMappingCatalog_() {
-  const products = readStockMaster_(true).map(function (item) { return { code: item.code, name: item.name, unit: item.unit }; });
-  const showcase = readShowcaseItems_().map(function (item) { return { code: item.code, name: item.productName || item.name, menuName: item.name, unit: item.productUnit || item.unit }; });
-  const seen = {}, wip = [];
-  readWipRecipeCatalog_().variants.forEach(function (item) {
-    const key = item.code + '|' + item.name.toUpperCase();
-    if (!seen[key]) { seen[key] = true; wip.push({ code: item.code, name: item.name, unit: item.unit, variantKey: item.key }); }
+function syncWipRecipeOutputsToStockItems_() {
+  const catalog = readWipRecipeCatalog_();
+  if (!catalog || !catalog.variants || !catalog.variants.length) return { added: 0, activated: 0, conflicts: [] };
+
+  // Satu FORMULA_CODE boleh mempunyai lebih dari satu baris bahan, tetapi output WIP-nya
+  // hanya aman dibuat otomatis bila nama + finished unit untuk kode tersebut konsisten.
+  const grouped = {};
+  catalog.variants.forEach(function (variant) {
+    const code = String(variant.code || '').trim().toUpperCase();
+    if (!code) return;
+    if (!grouped[code]) grouped[code] = { code: code, names: {}, units: {}, variants: [] };
+    const name = cleanText_(variant.name, 180), unit = normalizeUnit_(variant.unit);
+    if (name) grouped[code].names[normalizeStoreName_(name)] = name;
+    if (unit) grouped[code].units[unit] = true;
+    grouped[code].variants.push(variant);
   });
-  return { products: products, showcase: showcase, wip: wip };
+
+  const sheet = ensureStockMasterSheet_(), existingByCode = {}, existingByName = {};
+  if (sheet.getLastRow() >= 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getDisplayValues().forEach(function (row, index) {
+      const code = String(row[0] || '').trim().toUpperCase();
+      const name = cleanText_(row[2], 180);
+      if (!code) return;
+      const entry = { row: index + 2, code: code, category: row[1], name: name, unit: normalizeUnit_(row[3]), active: String(row[4] || '').trim() === '' || truthy_(row[4]) };
+      existingByCode[code] = entry;
+      const nameKey = normalizeStoreName_(name);
+      if (nameKey) {
+        if (!existingByName[nameKey]) existingByName[nameKey] = [];
+        existingByName[nameKey].push(entry);
+      }
+    });
+  }
+
+  const additions = [], conflicts = [];
+  let activated = 0;
+  Object.keys(grouped).forEach(function (code) {
+    const group = grouped[code];
+    const nameKeys = Object.keys(group.names), units = Object.keys(group.units);
+    if (nameKeys.length !== 1 || units.length !== 1) {
+      conflicts.push({ code: code, reason: 'Output WIP mempunyai lebih dari satu nama/unit.' });
+      return;
+    }
+    const name = group.names[nameKeys[0]], unit = units[0];
+    const existing = existingByCode[code];
+    if (existing) {
+      // Kode sudah ada: jangan ubah identitas master secara diam-diam. Cukup aktifkan bila identitasnya cocok.
+      if (normalizeStoreName_(existing.name) !== normalizeStoreName_(name) || (existing.unit && normalizeUnit_(existing.unit) !== unit)) {
+        conflicts.push({ code: code, name: name, reason: 'Kode sudah ada di STOCK_ITEMS dengan nama/unit berbeda.' });
+        return;
+      }
+      let touched = false;
+      if (!existing.name) { sheet.getRange(existing.row, 3).setValue(name); touched = true; }
+      if (!existing.unit) { sheet.getRange(existing.row, 4).setValue(unit); touched = true; }
+      if (!existing.active) { sheet.getRange(existing.row, 5).setValue(true); touched = true; }
+      if (touched) activated++;
+      return;
+    }
+
+    // Bila nama yang sama sudah dipakai kode stock lain, jangan membuat duplikat nama otomatis.
+    const sameName = existingByName[normalizeStoreName_(name)] || [];
+    if (sameName.length) {
+      conflicts.push({ code: code, name: name, reason: 'Nama WIP sudah ada di STOCK_ITEMS dengan kode berbeda.' });
+      return;
+    }
+    additions.push([code, 'WIP', name, unit, true]);
+  });
+
+  if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
+  if (additions.length || activated) {
+    SpreadsheetApp.flush();
+    removeScriptCacheKeys_(['stock-master-active', 'stock-master-all']);
+  }
+  return { added: additions.length, activated: activated, conflicts: conflicts };
+}
+
+function salesMappingCatalog_() {
+  // WIP_RECIPES adalah master definisi WIP. Jika output WIP mempunyai kode, nama dan unit
+  // yang unik/konsisten, daftarkan otomatis ke STOCK_ITEMS agar tidak meminta mapping palsu.
+  syncWipRecipeOutputsToStockItems_();
+  const stockItems = readStockMaster_(true), stockByCode = {};
+  const products = stockItems.map(function (item) {
+    stockByCode[String(item.code || '').toUpperCase()] = item;
+    return { code: item.code, name: item.name, unit: item.unit };
+  });
+  const showcase = readShowcaseItems_().map(function (item) { return { code: item.code, name: item.productName || item.name, menuName: item.name, unit: item.productUnit || item.unit }; });
+  const seenAll = {}, seenUsable = {}, wipAll = [], wip = [];
+  readWipRecipeCatalog_().variants.forEach(function (item) {
+    const key = String(item.code || '').toUpperCase() + '|' + String(item.name || '').toUpperCase();
+    const entry = { code: String(item.code || '').toUpperCase(), name: item.name, unit: item.unit, variantKey: item.key };
+    if (!seenAll[key]) { seenAll[key] = true; wipAll.push(entry); }
+    // Hanya WIP yang mempunyai STOCK_ITEMS yang boleh dipilih sebagai target mapping.
+    // WIP resep tanpa item stock tetap dideteksi, tetapi user harus memetakannya ke item yang benar.
+    if (stockByCode[entry.code] && !seenUsable[key]) { seenUsable[key] = true; wip.push(entry); }
+  });
+  return { products: products, showcase: showcase, wip: wip, wipAll: wipAll };
 }
 
 function saveSalesProductMappings(token, payload) {
@@ -7694,19 +7800,101 @@ function parseSalesCogsReport_(base64, fileName) {
 
 function resolveSalesTarget_(productName, catalogs, savedMappings) {
   const key = normalizeStoreName_(productName), saved = savedMappings[key];
-  function byCode(list, code) { return list.filter(function (item) { return item.code === code; }); }
+  function byCode(list, code) { return (list || []).filter(function (item) { return String(item.code || '').toUpperCase() === String(code || '').toUpperCase(); }); }
   if (saved) {
     const source = saved.targetType === 'PRODUCT' ? catalogs.products : saved.targetType === 'SHOWCASE' ? catalogs.showcase : catalogs.wip;
     const found = byCode(source, saved.targetCode);
     if (found.length) return { type: saved.targetType, target: found[0], saved: true };
   }
-  const showcase = catalogs.showcase.filter(function (item) { return normalizeStoreName_(item.name) === key; });
+  const showcase = (catalogs.showcase || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
   if (showcase.length) return { type: 'SHOWCASE', target: showcase[0] };
-  const wip = catalogs.wip.filter(function (item) { return normalizeStoreName_(item.name) === key; });
-  if (wip.length === 1) return { type: 'WIP', target: wip[0] };
-  const products = catalogs.products.filter(function (item) { return normalizeStoreName_(item.name) === key; });
+
+  // Deteksi WIP berdasarkan seluruh resep, termasuk WIP yang belum punya STOCK_ITEMS.
+  // Jika resepnya ada tetapi item stock tidak ada, jangan ditolak: minta user memilih mapping.
+  const wipAll = (catalogs.wipAll || catalogs.wip || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
+  if (wipAll.length === 1) {
+    const usable = byCode(catalogs.wip || [], wipAll[0].code).filter(function (item) { return normalizeStoreName_(item.name) === key; });
+    if (usable.length) return { type: 'WIP', target: usable[0] };
+    return { type: '', target: null, missingStock: true, missingCode: wipAll[0].code, missingName: wipAll[0].name };
+  }
+
+  const products = (catalogs.products || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
   if (products.length === 1) return { type: 'PRODUCT', target: products[0] };
-  return { type: '', target: null, ambiguous: products.length + wip.length > 1 };
+  const usableWip = (catalogs.wip || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
+  return { type: '', target: null, ambiguous: products.length + usableWip.length + wipAll.length > 1 };
+}
+
+function salesMappingRequest_(sourceProduct, options) {
+  options = options || {};
+  const allowed = Array.isArray(options.allowedTypes) && options.allowedTypes.length ? options.allowedTypes : ['PRODUCT', 'SHOWCASE', 'WIP'];
+  return {
+    sourceProduct: cleanText_(sourceProduct || options.sourceCode || 'Item tanpa nama', 180),
+    sourceCode: cleanText_(options.sourceCode || '', 80).toUpperCase(),
+    ambiguous: Boolean(options.ambiguous),
+    reason: cleanText_(options.reason || '', 300),
+    allowedTypes: allowed
+  };
+}
+
+function findSalesSavedMapping_(sourceName, sourceCode, mappings) {
+  mappings = mappings || {};
+  const keys = [normalizeStoreName_(sourceName), normalizeStoreName_(sourceCode)].filter(Boolean);
+  for (let i = 0; i < keys.length; i++) if (mappings[keys[i]]) return mappings[keys[i]];
+  return null;
+}
+
+/** Resolve bahan resep WIP ke STOCK_ITEMS. Mapping manual menang atas kode resep yang tidak tersedia. */
+function resolveSalesRecipeMaterial_(recipe, masterByCode, mappings) {
+  const sourceCode = String(recipe && recipe.code || '').toUpperCase();
+  if (sourceCode && masterByCode[sourceCode]) return { item: masterByCode[sourceCode], mapped: false, targetType: '' };
+  const saved = findSalesSavedMapping_(recipe && recipe.name, sourceCode, mappings);
+  if (saved && (saved.targetType === 'PRODUCT' || saved.targetType === 'WIP')) {
+    const target = masterByCode[String(saved.targetCode || '').toUpperCase()];
+    if (target) return { item: target, mapped: true, targetType: saved.targetType, mapping: saved };
+  }
+  return { item: null, mapped: false, saved: saved || null };
+}
+
+function addSalesMappingRequest_(map, request) {
+  const key = normalizeStoreName_(request.sourceProduct || request.sourceCode);
+  if (!key) return;
+  if (!map[key]) map[key] = request;
+}
+
+function validateSalesWipRecipeTree_(item, preferredName, context, path, depth) {
+  depth = Number(depth || 0);
+  if (!item || depth > 10) return;
+  const code = String(item.code || '').toUpperCase();
+  path = path || {};
+  if (!code || path[code]) return;
+  const nextPath = Object.assign({}, path); nextPath[code] = true;
+  const variant = selectSalesWipVariant_(context.recipeCatalog, code, preferredName || item.name);
+  if (!variant) return;
+
+  if (!wipConversionFactor_(code, item.unit, variant.unit, context.provided, context.savedConversions)) {
+    wipConversionRequest_(Object.keys(context.conversionMap).map(function (key) { return context.conversionMap[key]; }), context.conversionMap, item, item.unit, variant.unit);
+  }
+
+  (variant.materials || []).forEach(function (recipe) {
+    const resolved = resolveSalesRecipeMaterial_(recipe, context.masterByCode, context.mappings);
+    if (!resolved.item) {
+      addSalesMappingRequest_(context.mappingMap, salesMappingRequest_(recipe.name || recipe.code, {
+        sourceCode: recipe.code,
+        allowedTypes: ['PRODUCT', 'WIP'],
+        reason: String(recipe.code || '') + ' · ' + String(recipe.name || '') + ': bahan WIP belum tersedia pada STOCK_ITEMS. Pilih item stock yang harus dipakai.'
+      }));
+      return;
+    }
+    const material = resolved.item;
+    if (!wipConversionFactor_(material.code, recipe.unit, material.unit, context.provided, context.savedConversions)) {
+      const key = stockConversionKey_(material.code, recipe.unit, material.unit);
+      context.conversionMap[key] = { key: key, itemCode: material.code, itemName: material.name, fromUnit: recipe.unit, toUnit: material.unit };
+    }
+    const materialCode = String(material.code || '').toUpperCase();
+    if (context.recipeCatalog.byCode[materialCode] && context.recipeCatalog.byCode[materialCode].length) {
+      validateSalesWipRecipeTree_(material, material.name, context, nextPath, depth + 1);
+    }
+  });
 }
 
 function salesRowHash_(row) {
@@ -7737,12 +7925,23 @@ function prepareSalesCogsImport_(employee, payload, allowPending) {
   const catalogs = salesMappingCatalog_(), mappings = readSalesProductMappings_(), unresolved = {}, resolved = [];
   rows.forEach(function (row) {
     const match = resolveSalesTarget_(row.product, catalogs, mappings);
-    if (!match.target) { unresolved[normalizeStoreName_(row.product)] = { sourceProduct: row.product, ambiguous: Boolean(match.ambiguous) }; return; }
+    if (!match.target) {
+      const request = salesMappingRequest_(row.product, {
+        sourceCode: match.missingCode || '',
+        ambiguous: Boolean(match.ambiguous),
+        reason: match.missingStock
+          ? ((match.missingCode ? match.missingCode + ' · ' : '') + row.product + ': WIP ditemukan pada resep tetapi belum tersedia pada STOCK_ITEMS. Pilih mapping ke item stock yang benar.')
+          : (row.product + ': nama item belum dapat dicocokkan otomatis dengan database.'),
+        allowedTypes: ['PRODUCT', 'SHOWCASE', 'WIP']
+      });
+      unresolved[normalizeStoreName_(row.product)] = request;
+      return;
+    }
     row.targetType = match.type; row.target = match.target; resolved.push(row);
   });
   const unresolvedRows = Object.keys(unresolved).map(function (key) { return unresolved[key]; });
   if (unresolvedRows.length) {
-    if (!allowPending) throw new Error('Item Tidak Cocok dengan database. Selesaikan pemetaan item terlebih dahulu.');
+    if (!allowPending) throw new Error('Pemetaan item belum lengkap. Pilih Mapping lalu verifikasi ulang.');
     return { requiresMapping: true, fileName: fileName, mappingRequests: unresolvedRows, mappingOptions: catalogs, sourceItemCount: rows.length };
   }
   const existingByScope = {}, duplicateRows = [], fresh = [];
@@ -7752,12 +7951,19 @@ function prepareSalesCogsImport_(employee, payload, allowPending) {
     if (existingByScope[scope][row.rowHash]) duplicateRows.push(row); else fresh.push(row);
   });
   if (!fresh.length) throw new Error('Semua kombinasi Sales Number + Menu + Product + Unit sudah pernah tersimpan.');
-  const masterByCode = {}, savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, conversionMap = {}, prepared = [], showcaseRows = [];
-  readStockMaster_(true).forEach(function (item) { masterByCode[item.code] = item; });
+  const masterByCode = {}, savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, conversionMap = {}, prepared = [], showcaseRows = [], mappingMap = {};
+  readStockMaster_(true).forEach(function (item) { masterByCode[String(item.code || '').toUpperCase()] = item; });
   fresh.forEach(function (row) {
     if (row.targetType === 'SHOWCASE') { showcaseRows.push(row); return; }
-    const item = masterByCode[row.target.code];
-    if (!item) throw new Error(row.target.code + ' · ' + row.target.name + ': item belum tersedia pada STOCK_ITEMS.');
+    const targetCode = String(row.target.code || '').toUpperCase(), item = masterByCode[targetCode];
+    if (!item) {
+      addSalesMappingRequest_(mappingMap, salesMappingRequest_(row.product, {
+        sourceCode: targetCode,
+        allowedTypes: ['PRODUCT', 'SHOWCASE', 'WIP'],
+        reason: targetCode + ' · ' + row.target.name + ': item tujuan belum tersedia pada STOCK_ITEMS. Pilih mapping ke item stock yang benar.'
+      }));
+      return;
+    }
     const factor = resolveUnitConversionFactor_(item.code, row.unit, item.unit, provided, savedConversions);
     if (!factor) {
       const key = stockConversionKey_(item.code, row.unit, item.unit);
@@ -7766,23 +7972,22 @@ function prepareSalesCogsImport_(employee, payload, allowPending) {
     }
     row.item = item; row.qtyDefault = row.qty * factor; row.converted = normalizeUnit_(row.unit) !== normalizeUnit_(item.unit); prepared.push(row);
   });
+
   const recipeCatalog = readWipRecipeCatalog_();
+  const validationContext = {
+    recipeCatalog: recipeCatalog, masterByCode: masterByCode, mappings: mappings,
+    provided: provided, savedConversions: savedConversions, conversionMap: conversionMap, mappingMap: mappingMap
+  };
   prepared.filter(function (row) { return row.targetType === 'WIP'; }).forEach(function (row) {
-    const variants = recipeCatalog.byCode[row.item.code] || [];
-    const variant = variants.filter(function (entry) { return normalizeStoreName_(entry.name) === normalizeStoreName_(row.target.name); })[0] || variants[0];
-    if (!variant) throw new Error(row.item.code + ' · ' + row.item.name + ': resep WIP tidak ditemukan.');
-    if (!wipConversionFactor_(row.item.code, row.item.unit, variant.unit, provided, savedConversions)) {
-      wipConversionRequest_(Object.keys(conversionMap).map(function (key) { return conversionMap[key]; }), conversionMap, row.item, row.item.unit, variant.unit);
-    }
-    variant.materials.forEach(function (recipe) {
-      const material = masterByCode[recipe.code];
-      if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': bahan WIP belum tersedia pada STOCK_ITEMS.');
-      if (!wipConversionFactor_(material.code, recipe.unit, material.unit, provided, savedConversions)) {
-        const key = stockConversionKey_(material.code, recipe.unit, material.unit);
-        conversionMap[key] = { key: key, itemCode: material.code, itemName: material.name, fromUnit: recipe.unit, toUnit: material.unit };
-      }
-    });
+    validateSalesWipRecipeTree_(row.item, row.target && row.target.name ? row.target.name : row.item.name, validationContext, {}, 0);
   });
+
+  const pendingMappings = Object.keys(mappingMap).map(function (key) { return mappingMap[key]; });
+  if (pendingMappings.length) {
+    if (!allowPending) throw new Error('Ada item Stock Card/WIP yang belum dipetakan. Pilih Mapping lalu verifikasi ulang.');
+    return { requiresMapping: true, fileName: fileName, mappingRequests: pendingMappings, mappingOptions: catalogs,
+      sourceItemCount: rows.length, showcaseRowsSkipped: showcaseRows.length };
+  }
   const missingConversions = Object.keys(conversionMap).map(function (key) { return conversionMap[key]; });
   if (missingConversions.length) {
     if (!allowPending) throw new Error('Lengkapi seluruh konversi unit sebelum upload.');
@@ -7825,7 +8030,7 @@ function salesHistoryRowFromQuery_(r) {
  * File 3.000+ baris dapat menghasilkan ribuan query dan melewati timeout browser/GAS.
  * Helper ini menurunkan jumlah query menjadi beberapa batch per outlet.
  */
-function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode) {
+function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings) {
   const rows = [], seen = {};
   function add(outlet, item, transactionDate) {
     if (!outlet || !item || !item.code || !transactionDate) return;
@@ -7848,7 +8053,8 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode) {
     if (!selected.length) selected = variants;
     selected.forEach(function (variant) {
       (variant.materials || []).forEach(function (recipe) {
-        const material = masterByCode[String(recipe.code || '').toUpperCase()];
+        const resolvedMaterial = resolveSalesRecipeMaterial_(recipe, masterByCode, salesMappings);
+        const material = resolvedMaterial.item;
         if (!material) return;
         add(outlet, material, transactionDate);
         if (wipCatalog.byCode[String(material.code || '').toUpperCase()]) {
@@ -7870,8 +8076,8 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode) {
  * tidak bisa dipakai untuk transaksi historis. Semua bahan WIP (termasuk WIP bertingkat)
  * ikut dipreload agar lot yang dipotong dapat dikunci pada row upload.
  */
-function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode) {
-  const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode);
+function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings) {
+  const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
   const byOutlet = {}, result = {}, chunkSize = 18;
   refs.forEach(function (ref) {
     if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
@@ -8052,8 +8258,9 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
   state.autoWipCount = Number(state.autoWipCount || 0) + 1;
 
   variant.materials.forEach(function (recipe) {
-    const material = state.masterByCode[String(recipe.code || '').toUpperCase()];
-    if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': bahan WIP belum ada pada STOCK_ITEMS.');
+    const resolvedMaterial = resolveSalesRecipeMaterial_(recipe, state.masterByCode, state.salesMappings);
+    const material = resolvedMaterial.item;
+    if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': bahan WIP belum dipetakan ke STOCK_ITEMS.');
     const factor = wipConversionFactor_(material.code, recipe.unit, material.unit, state.provided, state.savedConversions);
     if (!factor) throw new Error(material.code + ': konversi unit bahan WIP belum tersedia.');
     const qty = Number(recipe.qty || 0) * formulaQty * factor;
@@ -8093,11 +8300,11 @@ function uploadSalesCogs(token, payload) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
     const prepared = prepareSalesCogsImport_(employee, payload || {}, false), rows = [], now = new Date();
-    const wipCatalog = readWipRecipeCatalog_(), savedConversions = readStockUnitConversions_(), provided = payload.conversions || {};
+    const wipCatalog = readWipRecipeCatalog_(), savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, salesMappings = readSalesProductMappings_();
     const masterByCode = {}, writeClock = { sequence: 0 };
     let autoWipCount = 0;
     readStockMaster_(true).forEach(function (item) { masterByCode[String(item.code || '').toUpperCase()] = item; });
-    const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode);
+    const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings);
 
     prepared.rows.forEach(function (sale) {
       const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
@@ -8109,7 +8316,7 @@ function uploadSalesCogs(token, payload) {
         if (shortage > 0.0000001) {
           const state = {
             rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
-            masterByCode: masterByCode, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
+            masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
             now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0
           };
           autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
