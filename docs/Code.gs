@@ -2982,7 +2982,7 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
       if (!normalizeUnit_(material.unit)) throw new Error(recipe.code + ' · ' + material.name + ': Unit Default bahan pada STOCK_ITEMS masih kosong.');
       const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, providedConversions, savedConversions);
       if (!factor) wipConversionRequest_(conversionRequests, conversionMap, material, recipe.unit, material.unit);
-      const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
+      const rawQty = factor ? safeWipMaterialQty_(recipe.qty, formulaQty, factor, recipe.code + ' · ' + recipe.name) : 0;
       materials.push({ item: material, qty: rawQty, recipeQty: recipe.qty, recipeUnit: recipe.unit, sourceRow: recipe.sourceRow });
       if (factor) rawTotals[material.code] = Number(rawTotals[material.code] || 0) + rawQty;
     });
@@ -3358,11 +3358,57 @@ function reportDataRows_(cells, header, codeHeader) {
 
 function parseReportNumber_(value) {
   if (typeof value === 'number') return value;
-  const text = String(value === null || value === undefined ? '' : value).trim().replace(/\s/g, '');
+  let text = String(value === null || value === undefined ? '' : value).trim().replace(/[\s\u00A0]/g, '');
   if (!text) return NaN;
-  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
-  if (/^-?\d+,\d+$/.test(text)) return Number(text.replace(',', '.'));
-  return Number(text.replace(/\./g, '').replace(',', '.'));
+
+  // Excel kadang menyimpan angka kecil sebagai scientific notation. Jangan hapus titik
+  // pada 1.5E-2 karena itu akan berubah menjadi 15E-2 (10x lebih besar).
+  if (/^[+-]?\d+(?:[.,]\d+)?[eE][+-]?\d+$/.test(text)) {
+    return Number(text.replace(',', '.'));
+  }
+
+  const comma = text.lastIndexOf(','), dot = text.lastIndexOf('.');
+  if (comma >= 0 && dot >= 0) {
+    // Separator paling kanan dianggap decimal separator; separator lain thousands.
+    if (comma > dot) text = text.replace(/\./g, '').replace(',', '.');
+    else text = text.replace(/,/g, '');
+  } else if (comma >= 0) {
+    // Report ESB Indonesia lazim memakai koma sebagai decimal separator.
+    text = text.replace(',', '.');
+  } else if ((text.match(/\./g) || []).length > 1) {
+    // Jika ada banyak titik, titik terakhir adalah decimal bila group terakhir bukan 3 digit;
+    // selain itu perlakukan sebagai thousands separator.
+    const parts = text.split('.'), tail = parts[parts.length - 1];
+    text = tail.length === 3 ? parts.join('') : parts.slice(0, -1).join('') + '.' + tail;
+  }
+  return Number(text);
+}
+
+function safeSalesSourceQty_(qty, product, rowNumber) {
+  qty = Number(qty);
+  if (!isFinite(qty) || qty < 0) throw new Error((product || 'Product') + ' baris ' + rowNumber + ': QTY Sales COGS tidak valid.');
+  // Safety net untuk mencegah angka korup (mis. ratusan miliar) masuk BigQuery.
+  // Batas ini sangat jauh di atas penggunaan item per satu baris transaksi restoran.
+  if (qty > 1000000) throw new Error((product || 'Product') + ' baris ' + rowNumber + ': QTY terbaca tidak wajar (' + qty + '). Download ulang report ESB dan verifikasi format angka.');
+  return qty;
+}
+
+function safeSalesConvertedQty_(qty, factor, row, item) {
+  qty = safeSalesSourceQty_(qty, row && row.product, row && row.sourceRow);
+  factor = Number(factor);
+  if (!isFinite(factor) || factor <= 0 || factor > 1000000) {
+    throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': faktor konversi unit tidak wajar (' + factor + ').');
+  }
+  const converted = qty * factor;
+  if (!isFinite(converted) || converted < 0 || converted > 100000000) {
+    throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': hasil QTY setelah konversi tidak wajar (' + converted + ' ' + (item && item.unit || '') + '). Upload dihentikan agar stock tidak rusak.');
+  }
+  // Jika unit report sama dengan Unit Default, QTY wajib identik. Tidak ada saved conversion
+  // yang boleh mengubah nilai pada jalur ini.
+  if (normalizeUnit_(row && row.unit) === normalizeUnit_(item && item.unit) && Math.abs(converted - qty) > 0.0000001) {
+    throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': QTY berubah padahal unit sama (' + row.unit + '). Upload dihentikan.');
+  }
+  return converted;
 }
 
 function parseReportDate_(value, mode, rowNumber, label) {
@@ -3814,17 +3860,46 @@ function wipRecipeSeedRows_() {
   return JSON.parse(json);
 }
 
+function parseWipRecipeNumber_(value) {
+  if (typeof value === 'number') return value;
+  let text = String(value === null || value === undefined ? '' : value).trim().replace(/[\s\u00a0]/g, '');
+  if (!text) return NaN;
+  const comma = text.lastIndexOf(','), dot = text.lastIndexOf('.');
+  if (comma >= 0 && dot >= 0) {
+    // Terima format US (1,111.11) maupun Indonesia (1.111,11).
+    if (dot > comma) text = text.replace(/,/g, '');
+    else text = text.replace(/\./g, '').replace(',', '.');
+  } else if (comma >= 0) {
+    text = text.replace(',', '.');
+  }
+  return Number(text);
+}
+
+function safeWipMaterialQty_(recipeQty, formulaQty, factor, label) {
+  const recipe = Number(recipeQty), formula = Number(formulaQty), conversion = Number(factor);
+  if (!isFinite(recipe) || recipe <= 0 || !isFinite(formula) || formula < 0 || !isFinite(conversion) || conversion <= 0) {
+    throw new Error((label || 'WIP') + ': angka resep / formula / konversi tidak valid.');
+  }
+  const qty = recipe * formula * conversion;
+  if (!isFinite(qty) || qty < 0 || qty > 1000000000) {
+    throw new Error((label || 'WIP') + ': hasil perhitungan bahan tidak wajar (' + String(qty) + '). Periksa QTY resep dan Unit Konversi sebelum upload.');
+  }
+  return Math.round(qty * 1000000000000) / 1000000000000;
+}
+
 function readWipRecipeCatalog_() {
   const sheet = ensureWipRecipeSheet_(), result = { variants: [], byCode: {}, invalidRowsSkipped: 0 };
   if (sheet.getLastRow() < 2) return result;
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getDisplayValues();
+  // Gunakan raw value agar angka resep tidak berubah menjadi string berformat locale
+  // seperti 1,111.11 / 1.111,11 saat dibaca dari Google Sheets.
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues();
   const variants = {};
   rows.forEach(function (row, index) {
     const code = cleanText_(row[0], 80).toUpperCase(), name = cleanText_(row[1], 180), finishedUnit = normalizeUnit_(row[2]);
     const materialCode = cleanText_(row[3], 80).toUpperCase(), materialName = cleanText_(row[4], 180);
-    const qty = Number(String(row[5] || '').replace(',', '.')), materialUnit = normalizeUnit_(row[6]);
+    const qty = parseWipRecipeNumber_(row[5]), materialUnit = normalizeUnit_(row[6]);
     if (!code || !name || !finishedUnit || !materialCode || materialCode === '0' || !materialName || materialName === '0' ||
-        !isFinite(qty) || qty <= 0 || !materialUnit || materialUnit === '0' || materialUnit === '-') {
+        !isFinite(qty) || qty <= 0 || qty > 1000000 || !materialUnit || materialUnit === '0' || materialUnit === '-') {
       result.invalidRowsSkipped++;
       return;
     }
@@ -4034,7 +4109,7 @@ function prepareWipProductionLines_(context, payload, allowNegativeRaw) {
       if (!normalizeUnit_(material.unit)) throw new Error(recipe.code + ' · ' + material.name + ': Unit Default bahan pada STOCK_ITEMS masih kosong.');
       const factor = wipConversionFactor_(recipe.code, recipe.unit, material.unit, provided, saved);
       if (!factor) wipConversionRequest_(conversionRequests, requestMap, material, recipe.unit, material.unit);
-      const rawQty = factor ? recipe.qty * formulaQty * factor : 0;
+      const rawQty = factor ? safeWipMaterialQty_(recipe.qty, formulaQty, factor, recipe.code + ' · ' + recipe.name) : 0;
       materials.push({ item: material, qty: rawQty, recipeQty: recipe.qty, recipeUnit: recipe.unit, sourceRow: recipe.sourceRow });
       if (factor) rawTotals[material.code] = Number(rawTotals[material.code] || 0) + rawQty;
     });
@@ -7888,8 +7963,9 @@ function parseSalesCogsReport_(base64, fileName) {
     const salesNumber = cleanText_(reportCell_(cells, header, 'SALES NUMBER', rowNumber), 120);
     const product = cleanText_(reportCell_(cells, header, 'PRODUCT', rowNumber), 180);
     if (!salesNumber || !product) return;
-    const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber));
-    if (!isFinite(qty) || qty < 0) { invalid.push(product + ' baris ' + rowNumber); return; }
+    let qty;
+    try { qty = safeSalesSourceQty_(parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber)), product, rowNumber); }
+    catch (error) { invalid.push(product + ' baris ' + rowNumber + ' (' + cleanText_(error.message, 180) + ')'); return; }
     if (qty <= 0.0000001) { zero.push(rowNumber); return; }
     rows.push({ sourceRow: rowNumber, salesNumber: salesNumber,
       transactionDate: parseReportDate_(reportCell_(cells, header, 'SALES DATE', rowNumber), 'EVENT', rowNumber, 'Sales Date'),
@@ -8074,7 +8150,10 @@ function prepareSalesCogsImport_(employee, payload, allowPending) {
       conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: row.unit, toUnit: item.unit };
       return;
     }
-    row.item = item; row.qtyDefault = row.qty * factor; row.converted = normalizeUnit_(row.unit) !== normalizeUnit_(item.unit); prepared.push(row);
+    row.item = item;
+    row.qtyDefault = safeSalesConvertedQty_(row.qty, factor, row, item);
+    row.converted = normalizeUnit_(row.unit) !== normalizeUnit_(item.unit);
+    prepared.push(row);
   });
 
   const recipeCatalog = readWipRecipeCatalog_();
@@ -8272,6 +8351,10 @@ function salesConsolidateLots_(lots) {
  */
 function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qty) {
   code = String(code || '').toUpperCase();
+  qty = Number(qty);
+  if (!isFinite(qty) || qty < 0 || qty > 100000000) {
+    throw new Error(code + ': QTY pemotongan stock tidak wajar (' + qty + '). Upload dihentikan agar balance tidak rusak.');
+  }
   const currentLots = salesFifoLotsFor_(fifoState, outlet, code, transactionDate);
   const allocated = salesConsolidateLots_(consumeSalesFifoLots_(currentLots, qty));
   const byDate = fifoState[outlet] && fifoState[outlet][code] ? fifoState[outlet][code] : {};
@@ -8367,7 +8450,7 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     if (!material) throw new Error(recipe.code + ' · ' + recipe.name + ': bahan WIP belum dipetakan ke STOCK_ITEMS.');
     const factor = wipConversionFactor_(material.code, recipe.unit, material.unit, state.provided, state.savedConversions);
     if (!factor) throw new Error(material.code + ': konversi unit bahan WIP belum tersedia.');
-    const qty = Number(recipe.qty || 0) * formulaQty * factor;
+    const qty = safeWipMaterialQty_(recipe.qty, formulaQty, factor, recipe.code + ' · ' + recipe.name);
     const materialCode = String(material.code || '').toUpperCase();
     const materialIsWip = Boolean(state.wipCatalog.byCode[materialCode] && state.wipCatalog.byCode[materialCode].length);
 
@@ -8433,7 +8516,16 @@ function uploadSalesCogs(token, payload) {
         soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
       }
 
+      const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+      const allocationTolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
+      if (!isFinite(allocatedQty) || Math.abs(allocatedQty - Number(sale.qtyDefault || 0)) > allocationTolerance) {
+        throw new Error(sale.product + ' baris ' + sale.sourceRow + ': hasil alokasi FIFO (' + allocatedQty + ') tidak sama dengan QTY penjualan (' + sale.qtyDefault + '). Upload dibatalkan agar stock tetap konsisten.');
+      }
+
       soldLots.forEach(function (lot) {
+        if (!isFinite(Number(lot.qty)) || Number(lot.qty) < 0 || Number(lot.qty) > 100000000) {
+          throw new Error(sale.product + ' baris ' + sale.sourceRow + ': QTY lot FIFO tidak wajar (' + lot.qty + '). Upload dibatalkan.');
+        }
         const id = Utilities.getUuid();
         rows.push({ insertId: id, json: {
           record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
@@ -8477,15 +8569,34 @@ function uploadSalesCogs(token, payload) {
 
 function parseItemJournalReport_(base64, fileName) {
   const cells = extractReportCells_(base64, fileName, 'Item Journal');
-  const required = ['ITEM JOURNAL NUMBER','DATE','BRANCH','PRODUCT CODE','PRODUCT','UNIT','QTY','STATUS','ADDITIONAL INFORMATION'];
-  const header = findReportHeader_(cells, required), rows = [], skipped = 0;
+  // ESB saat ini memakai header "Item Journal Date". Tetap terima format lama "Date"
+  // agar file historis masih bisa di-upload.
+  const required = ['ITEM JOURNAL NUMBER','BRANCH','PRODUCT CODE','PRODUCT','UNIT','QTY','STATUS'];
+  let header;
+  try {
+    header = findReportHeader_(cells, required.concat(['ITEM JOURNAL DATE']));
+    header.columns.DATE = header.columns['ITEM JOURNAL DATE'];
+  } catch (currentHeaderError) {
+    header = findReportHeader_(cells, required.concat(['DATE']));
+  }
+  // Additional Information pada Item Journal Report ESB berada di kolom O.
+  // Kolom O dijadikan sumber utama sesuai format report aktual. Untuk kompatibilitas
+  // file historis, header Additional Information/Remark tetap dipakai sebagai fallback.
+  if (!header.columns['ADDITIONAL INFORMATION']) {
+    ['ADDITIONAL INFO','REMARK','REMARKS'].some(function (alias) {
+      if (!header.columns[alias]) return false;
+      header.columns['ADDITIONAL INFORMATION'] = header.columns[alias];
+      return true;
+    });
+  }
+  const rows = [], skipped = 0;
   reportDataRows_(cells, header, 'ITEM JOURNAL NUMBER').forEach(function (n) {
     if (normalizeHeader_(reportCell_(cells, header, 'STATUS', n)) !== 'AUTHORIZED') { skipped++; return; }
     const number = cleanText_(reportCell_(cells, header, 'ITEM JOURNAL NUMBER', n), 120), code = cleanText_(reportCell_(cells, header, 'PRODUCT CODE', n), 80).toUpperCase();
     if (!number || !code) return;
     const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', n));
     if (!isFinite(qty) || Math.abs(qty) <= 0.0000001) return;
-    rows.push({ sourceRow:n, journalNumber:number, transactionDate:parseReportDate_(reportCell_(cells, header, 'DATE', n),'EVENT',n,'Date'), outletName:cleanText_(reportCell_(cells, header, 'BRANCH', n),180), code:code, name:cleanText_(reportCell_(cells, header, 'PRODUCT', n),180), unit:normalizeUnit_(reportCell_(cells, header, 'UNIT', n)), qty:qty, additionalInfo:cleanText_(reportCell_(cells, header, 'ADDITIONAL INFORMATION', n),260) });
+    rows.push({ sourceRow:n, journalNumber:number, transactionDate:parseReportDate_(reportCell_(cells, header, 'DATE', n),'EVENT',n,'Item Journal Date'), outletName:cleanText_(reportCell_(cells, header, 'BRANCH', n),180), code:code, name:cleanText_(reportCell_(cells, header, 'PRODUCT', n),180), unit:normalizeUnit_(reportCell_(cells, header, 'UNIT', n)), qty:qty, additionalInfo:cleanText_(cells['O'+n] || reportCell_(cells, header, 'ADDITIONAL INFORMATION', n),260) });
   });
   if (!rows.length) throw new Error('Tidak ada baris Item Journal berstatus Authorized yang dapat diproses.');
   return { rows: rows, unauthorizedRowsSkipped: skipped };
@@ -8500,7 +8611,7 @@ function prepareItemJournalImport_(employee, payload, allowPending) {
 
 function previewItemJournalUpload(token,payload){return safe_(function(){const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const p=prepareItemJournalImport_(e,payload||{},true);if(p.requiresConversion)return p;return{verified:true,itemCount:p.rows.length,outlets:p.rows.map(function(r){return r.outlet;}).filter(function(v,i,a){return a.indexOf(v)===i;}),transactionDates:p.rows.map(function(r){return r.transactionDate;}).filter(function(v,i,a){return a.indexOf(v)===i;}),duplicateRowsSkipped:p.duplicateRowsSkipped,unauthorizedRowsSkipped:p.unauthorizedRowsSkipped};});}
 
-function uploadItemJournal(token,payload){return safe_(function(){const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const p=prepareItemJournalImport_(e,payload||{},false),now=new Date(),rows=p.rows.map(function(line){const id=Utilities.getUuid(),direction=line.qtyDefault<0?'OUT':'IN';return{insertId:id,json:{record_id:id,logical_id:Utilities.getUuid(),version:1,record_type:'MOVEMENT',outlet:line.outlet,location:'Store',item_code:line.item.code,category:line.item.category,item_name:line.item.name,unit:line.item.unit,direction:direction,qty:Math.abs(line.qtyDefault),movement_type:'Item Journal',info:cleanText_('Item Journal Number '+line.journalNumber+(line.additionalInfo?' - '+line.additionalInfo:''),500),expiry_date:null,event_date:line.transactionDate,created_at:now.getTime()/1000,created_by:e.nik,source_file:'ITEM_JOURNAL|'+p.fileName,source_hash:line.rowHash,source_row:line.sourceRow}};});const lock=acquireStockWriteLock_();try{insertStockCardRows_(rows);}finally{lock.releaseLock();}return{uploaded:true,itemCount:rows.length,duplicateRowsSkipped:p.duplicateRowsSkipped,unauthorizedRowsSkipped:p.unauthorizedRowsSkipped};});}
+function uploadItemJournal(token,payload){return safe_(function(){const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const p=prepareItemJournalImport_(e,payload||{},false),now=new Date(),rows=p.rows.map(function(line){const id=Utilities.getUuid(),direction=line.qtyDefault<0?'OUT':'IN';return{insertId:id,json:{record_id:id,logical_id:Utilities.getUuid(),version:1,record_type:'MOVEMENT',outlet:line.outlet,location:'Store',item_code:line.item.code,category:line.item.category,item_name:line.item.name,unit:line.item.unit,direction:direction,qty:Math.abs(line.qtyDefault),movement_type:'Item Journal',info:cleanText_('Item Journal Number: '+line.journalNumber+' | Additional Information: '+(line.additionalInfo||'-'),500),expiry_date:null,event_date:line.transactionDate,created_at:now.getTime()/1000,created_by:e.nik,source_file:'ITEM_JOURNAL|'+p.fileName,source_hash:line.rowHash,source_row:line.sourceRow}};});const lock=acquireStockWriteLock_();try{insertStockCardRows_(rows);}finally{lock.releaseLock();}return{uploaded:true,itemCount:rows.length,duplicateRowsSkipped:p.duplicateRowsSkipped,unauthorizedRowsSkipped:p.unauthorizedRowsSkipped};});}
 
 
 function parseMockRecallSoldInfo_(info) {
@@ -8654,7 +8765,7 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
     const material = state.stockMasterByCode[String(recipe.code || '').toUpperCase()];
     const targetUnit = material ? material.unit : recipe.unit;
     const factor = material ? (wipConversionFactor_(material.code, recipe.unit, targetUnit, {}, state.savedConversions) || 1) : 1;
-    const qty = Number(recipe.qty || 0) * formulaQty * factor;
+    const qty = safeWipMaterialQty_(recipe.qty, formulaQty, factor, recipe.code + ' · ' + recipe.name);
     const pseudo = {
       record_id: '', logical_id: '', item_code: String(recipe.code || '').toUpperCase(),
       item_name: material ? material.name : String(recipe.name || ''), unit: String(targetUnit || recipe.unit || ''),
