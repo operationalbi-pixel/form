@@ -3660,6 +3660,70 @@ function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, save
   return isFinite(inverseFactor) && inverseFactor > 0 ? 1 / inverseFactor : 0;
 }
 
+function stockHistoryMonthBounds_(requestedMonth) {
+  const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+  let month = String(requestedMonth || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month) || month > currentMonth) month = currentMonth;
+  const parts = month.split('-'), year = Number(parts[0]), monthIndex = Number(parts[1]) - 1;
+  if (!isFinite(year) || !isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) month = currentMonth;
+  const validParts = month.split('-'), validYear = Number(validParts[0]), validMonthIndex = Number(validParts[1]) - 1;
+  const next = new Date(validYear, validMonthIndex + 1, 1, 12, 0, 0);
+  return {
+    month: month,
+    start: month + '-01',
+    end: Utilities.formatDate(next, 'Asia/Jakarta', 'yyyy-MM-dd'),
+    currentMonth: currentMonth
+  };
+}
+
+function stockHistoryItemCondition_(location) {
+  return isShowcaseLocation_(location)
+    ? 'item_name = @item'
+    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
+}
+
+function mapStockHistoryQueryRow_(r) {
+  return {
+    recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
+    date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
+    movementType: String(r.movement_type || ''), info: String(r.info || ''), productionDate: String(r.production_date || ''), expiryDate: String(r.expiry_date || ''),
+    sourceArrivalDate: String(r.source_arrival_date || ''), supplier: String(r.supplier || ''),
+    sourceFile: String(r.source_file || ''), sourceRow: Number(r.source_row || 0),
+    transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
+    createdBy: String(r.created_by || ''), createdAt: String(r.created_at || '')
+  };
+}
+
+function stockHistorySelectFields_() {
+  return 'record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at';
+}
+
+function readStockHistoryMonthRows_(outlet, location, item, bounds) {
+  const sql = latestStockMovementCte_() + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ' +
+    'WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'AND event_date >= CAST(@monthStart AS DATE) AND event_date < CAST(@monthEnd AS DATE) ' +
+    'ORDER BY event_date DESC, created_at DESC';
+  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, monthStart: bounds.start, monthEnd: bounds.end })
+    .map(mapStockHistoryQueryRow_);
+}
+
+function readStockHistoryBeforeMonthRows_(outlet, location, item, monthStart) {
+  const sql = latestStockMovementCte_() + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ' +
+    'WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'AND event_date < CAST(@monthStart AS DATE) ORDER BY event_date DESC, created_at DESC LIMIT 500';
+  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, monthStart: monthStart })
+    .map(mapStockHistoryQueryRow_);
+}
+
+function readStockNetMovementFromDate_(outlet, location, item, startDate) {
+  const sql = latestStockMovementCte_() + ' SELECT COALESCE(SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), 0) AS net_qty ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'AND event_date >= CAST(@startDate AS DATE)';
+  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, startDate: startDate });
+  return rows.length ? Number(rows[0].net_qty || 0) : 0;
+}
+
 function getStockHistory(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -3671,15 +3735,55 @@ function getStockHistory(token, payload) {
     const outlet = resolveStockOutlet_(employee, payload.outlet, outlets);
     const location = normalizeLocation_(payload.location);
     const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
+    const bounds = stockHistoryMonthBounds_(payload.month);
+
+    // Current QTY may come from the fast Stock API, while detail rows are always scoped
+    // to the requested month so opening a Stock Card no longer ships the latest 500 rows to the browser.
     const fastHistory = isShowcaseLocation_(location) ? null : readFastStockHistory_(outlet, location, item);
-    let rows = fastHistory ? fastHistory.history : readLatestStockHistory_(outlet, location, item);
-    if (!fastHistory && isShowcaseLocation_(location)) rows = enrichShowcaseHistoryLots_(rows, outlet, item);
-    const employeeNames = readEmployeeNameMap_();
-    rows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
     const currentQty = fastHistory ? Number(fastHistory.currentQty || 0) : getCurrentStock_(outlet, location, item.code, item.name).qty;
+    let monthRows = readStockHistoryMonthRows_(outlet, location, item, bounds);
+    let priorRows = readStockHistoryBeforeMonthRows_(outlet, location, item, bounds.start);
+    let fifoInput = priorRows.concat(monthRows);
+    if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
+
+    const monthStart = bounds.start, monthEnd = bounds.end;
+    const visibleRows = fifoInput.filter(function (row) {
+      const date = String(row.date || '').slice(0, 10);
+      return date >= monthStart && date < monthEnd;
+    });
+    const netAfterPeriod = bounds.month === bounds.currentMonth ? 0 : readStockNetMovementFromDate_(outlet, location, item, bounds.end);
+    const periodClosingQty = currentQty - netAfterPeriod;
+    const snapshots = calculateFifoSnapshots_(fifoInput);
+    const dayNet = {};
+    visibleRows.forEach(function (row) {
+      if (row.direction !== 'IN' && row.direction !== 'OUT') return;
+      const date = String(row.date || '').slice(0, 10);
+      dayNet[date] = Number(dayNet[date] || 0) + (row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0));
+    });
+    const fifoLotsByDate = {}, visibleDates = Object.keys(dayNet).sort().reverse();
+    let runningBalance = periodClosingQty;
+    visibleDates.forEach(function (date) {
+      fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], runningBalance);
+      runningBalance -= Number(dayNet[date] || 0);
+    });
+
+    const employeeNames = readEmployeeNameMap_();
+    visibleRows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
+    let currentLots = null;
+    if (payload.includeCurrentLots) {
+      let currentHistory = fastHistory && Array.isArray(fastHistory.history) ? fastHistory.history : readLatestStockHistory_(outlet, location, item);
+      if (isShowcaseLocation_(location)) currentHistory = enrichShowcaseHistoryLots_(currentHistory, outlet, item);
+      const currentSnapshots = calculateFifoSnapshots_(currentHistory), currentDates = Object.keys(currentSnapshots).sort();
+      currentLots = reconcileFifoLots_(currentDates.length ? currentSnapshots[currentDates[currentDates.length - 1]] : [], currentQty);
+    }
+
     return {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
-      history: rows, fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_FALLBACK'
+      month: bounds.month, periodClosingQty: periodClosingQty,
+      history: visibleRows, fifoLotsByDate: fifoLotsByDate,
+      hasPrevious: priorRows.length > 0, hasNext: bounds.month < bounds.currentMonth,
+      currentLots: currentLots,
+      fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_MONTHLY'
     };
   });
 }
