@@ -3120,6 +3120,18 @@ function convertSalesUsageQty_(qty, factor) {
   return result;
 }
 
+function isBakerzinHqName_(value) {
+  const raw = cleanText_(value, 180);
+  if (!raw) return false;
+  const normalized = raw.toUpperCase().replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalized === 'BIHQ' || /^BAKERZIN\s+(HQ|HEAD\s*OFFICE)\b/.test(normalized);
+}
+
+function shouldSkipBakerzinGoodsReceiptOrigin_(origin) {
+  const raw = cleanText_(origin, 180);
+  return /^BAKERZIN\b/i.test(raw) && !isBakerzinHqName_(raw);
+}
+
 function parseGoodsReceiptReportLegacy_(base64, fileName) {
   if (!/\.xlsx$/i.test(fileName || '')) throw new Error('Pilih Goods Receipt Recapitulation Report dengan format .xlsx.');
   if (!base64) throw new Error('Data file tidak ditemukan. Pilih kembali file Goods Receipt.');
@@ -3169,7 +3181,7 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
     if (!code) return;
     const status = normalizeHeader_(cells['U' + rowNumber]);
     const origin = cleanText_(cells['E' + rowNumber], 180);
-    if (status !== 'AUTHORIZED' || /^BAKERZIN\b/i.test(origin)) return;
+    if (status !== 'AUTHORIZED' || shouldSkipBakerzinGoodsReceiptOrigin_(origin)) return;
     const qty = parseGoodsReceiptNumber_(cells['P' + rowNumber]);
     if (!isFinite(qty) || qty < 0) { invalidQty.push(code + ' baris ' + rowNumber); return; }
     if (qty <= 0.0000001) return;
@@ -3195,7 +3207,7 @@ function parseGoodsReceiptReportLegacy_(base64, fileName) {
   if (invalidQty.length) throw new Error('QTY tidak valid pada: ' + invalidQty.slice(0, 8).join(', ') + '.');
   const outletKeys = Object.keys(outlets);
   if (outletKeys.length !== 1) throw new Error('Semua baris kolom G wajib memiliki satu outlet yang sama. Ditemukan: ' + outletKeys.map(function (key) { return outlets[key]; }).join(', ') + '.');
-  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized dan Origin yang tidak diawali Bakerzin yang diproses.');
+  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized dan Origin non-Bakerzin yang diproses; Bakerzin HQ tetap dihitung.');
   return {
     outletName: outlets[outletKeys[0]], rows: rows, transactionDates: Object.keys(dates),
     receiptCount: Object.keys(receipts).length, supplierCount: Object.keys(suppliers).length
@@ -3219,7 +3231,8 @@ function parseGoodsReceiptReport_(base64, fileName, allowMultipleOutlets) {
     if (!code) return;
     const status = normalizeHeader_(cells['U' + rowNumber] || reportCell_(cells, header, 'STATUS', rowNumber));
     const fixedOrigin = cleanText_(cells['E' + rowNumber], 180);
-    if (status !== 'AUTHORIZED' || /^BAKERZIN\b/i.test(fixedOrigin)) return;
+    const resolvedOrigin = fixedOrigin || cleanText_(reportCell_(cells, header, 'ORIGIN', rowNumber), 180) || lastSupplier;
+    if (status !== 'AUTHORIZED' || shouldSkipBakerzinGoodsReceiptOrigin_(resolvedOrigin)) return;
     const qty = parseReportNumber_(reportCell_(cells, header, 'QTY', rowNumber));
     if (!isFinite(qty) || qty < 0) {
       invalidQty.push(code + ' · baris ' + rowNumber);
@@ -3229,7 +3242,7 @@ function parseGoodsReceiptReport_(base64, fileName, allowMultipleOutlets) {
     const destination = cleanText_(reportCell_(cells, header, 'DESTINATION', rowNumber), 160) || lastDestination;
     if (!destination) throw new Error('Destination tidak ditemukan pada baris ' + rowNumber + '.');
     lastDestination = destination;
-    const supplier = fixedOrigin || cleanText_(reportCell_(cells, header, 'ORIGIN', rowNumber), 180) || lastSupplier;
+    const supplier = resolvedOrigin;
     if (supplier) lastSupplier = supplier;
     const transactionDate = parseReportDate_(reportCell_(cells, header, 'GOODS RECEIPT DATE', rowNumber), 'TRANSACTION', rowNumber, 'Goods Receipt');
     const grNumber = cleanText_(reportCell_(cells, header, 'GOODS RECEIPT NUMBER', rowNumber), 100);
@@ -3256,7 +3269,7 @@ function parseGoodsReceiptReport_(base64, fileName, allowMultipleOutlets) {
   const outletKeys = Object.keys(outlets);
   if (!allowMultipleOutlets && outletKeys.length !== 1) throw new Error('Goods Receipt harus berisi tepat satu Destination. Ditemukan: ' +
     outletKeys.map(function (key) { return outlets[key]; }).join(', ') + '.');
-  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized pada kolom U dan Origin non-Bakerzin pada kolom E yang diproses.');
+  if (!rows.length) throw new Error('Tidak ada baris Goods Receipt yang dapat di-upload. Hanya Status Authorized yang diproses; Origin Bakerzin selain Bakerzin HQ dilewati.');
   return {
     outletName: outlets[outletKeys[0]], outletNames: outletKeys.map(function (key) { return outlets[key]; }), rows: rows, transactionDates: Object.keys(dates),
     receiptCount: Object.keys(receipts).length, supplierCount: Object.keys(suppliers).length,
@@ -5220,9 +5233,12 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, 
     }
     if (converted && !factor) return;
     const convertedQty = converted ? convertSalesUsageQty_(row.qty, factor) : row.qty;
-    const destinationEntry = storeDirectory.byName[normalizeStoreName_(row.destinationName)] || null;
+    const destinationEntry = storeDirectory.byName[normalizeStoreName_(row.destinationName)] ||
+      (isBakerzinHqName_(row.destinationName) ? (storeDirectory.byCode.BIHQ || null) : null);
     if (!destinationEntry) throw new Error('Outlet tujuan "' + row.destinationName + '" pada kolom G baris ' + row.sourceRow + ' belum terdaftar di sheet STORE CODE.');
-    if (activeOutlets.indexOf(destinationEntry.code) < 0) throw new Error('Outlet tujuan ' + destinationEntry.name + ' (' + destinationEntry.code + ') tidak aktif.');
+    // Bakerzin HQ (BIHQ) tetap merupakan tujuan Goods Delivery yang valid walaupun
+    // tidak muncul sebagai outlet aktif operasional pada EMP_LIST.
+    if (activeOutlets.indexOf(destinationEntry.code) < 0 && destinationEntry.code !== 'BIHQ') throw new Error('Outlet tujuan ' + destinationEntry.name + ' (' + destinationEntry.code + ') tidak aktif.');
     if (destinationEntry.code === reportOutlet) throw new Error('Outlet asal dan tujuan pada No. GD ' + row.gdNumber + ' tidak boleh sama.');
     if (gdDestinationMap[row.gdNumber] && gdDestinationMap[row.gdNumber] !== destinationEntry.code) throw new Error('No. GD ' + row.gdNumber + ' memiliki lebih dari satu outlet tujuan. Pisahkan report sebelum upload.');
     gdDestinationMap[row.gdNumber] = destinationEntry.code;
