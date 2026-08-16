@@ -155,6 +155,8 @@ function apiActions_() {
     expiryUploadStatus: getMissingExpiryUploadStatus,
     history: getStockHistory,
     verifyUsage: previewSalesCogsUpload,
+    previewSalesRepair: previewSalesCogsRepair,
+    repairSalesUpload: repairSalesCogsUpload,
     saveSalesProductMappings: saveSalesProductMappings,
     verifyItemJournal: previewItemJournalUpload,
     uploadItemJournal: uploadItemJournal,
@@ -1287,21 +1289,26 @@ function readStockUploadProgress_(outlet) {
   const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
     'COUNT(DISTINCT IF(movement_type = \'Goods Receipt\', ' + sourceRowKey + ', NULL)) AS goods_receipt_rows, ' +
     'COUNT(DISTINCT IF(movement_type IN (\'Terjual\', \'Sold\'), ' + sourceRowKey + ', NULL)) AS sales_usage_rows, ' +
+    'COUNT(DISTINCT IF(movement_type = \'Item Journal\', ' + sourceRowKey + ', NULL)) AS item_journal_rows, ' +
     'COUNT(DISTINCT IF(movement_type = \'Transfer Out Antar Outlet\', ' + sourceRowKey + ', NULL)) AS goods_delivery_rows ' +
     'FROM ' + stockCardTable_() + ' ' +
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
     'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
-    'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') ' +
-    'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date';
+    'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Item Journal\', \'Transfer Out Antar Outlet\') ' +
+    // SHOWCASE_LOG adalah input manual Showcase, bukan Upload Usage Penjualan.
+    'AND source_file IS NOT NULL AND source_file != \'\' ' +
+    'AND UPPER(COALESCE(source_file, \'\')) != \'SHOWCASE_LOG\' GROUP BY event_date';
   const statusByDate = {};
   runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
     const goodsReceiptRows = Number(row.goods_receipt_rows || 0);
     const salesUsageRows = Number(row.sales_usage_rows || 0);
+    const itemJournalRows = Number(row.item_journal_rows || 0);
     const goodsDeliveryRows = Number(row.goods_delivery_rows || 0);
     statusByDate[String(row.event_date || '').slice(0, 10)] = {
       goodsReceipt: goodsReceiptRows > 0, goodsReceiptRows: goodsReceiptRows,
       salesUsage: salesUsageRows > 0, salesUsageRows: salesUsageRows,
+      itemJournal: itemJournalRows > 0, itemJournalRows: itemJournalRows,
       goodsDelivery: goodsDeliveryRows > 0, goodsDeliveryRows: goodsDeliveryRows
     };
   });
@@ -1311,25 +1318,50 @@ function readStockUploadProgress_(outlet) {
     const state = statusByDate[date] || {
       goodsReceipt: false, goodsReceiptRows: 0,
       salesUsage: false, salesUsageRows: 0,
+      itemJournal: false, itemJournalRows: 0,
       goodsDelivery: false, goodsDeliveryRows: 0
     };
     days.push({
       day: day, date: date, future: date > today,
       goodsReceipt: state.goodsReceipt, goodsReceiptRows: state.goodsReceiptRows,
       salesUsage: state.salesUsage, salesUsageRows: state.salesUsageRows,
+      itemJournal: state.itemJournal, itemJournalRows: state.itemJournalRows,
       goodsDelivery: state.goodsDelivery, goodsDeliveryRows: state.goodsDeliveryRows,
-      complete: state.goodsReceipt && state.salesUsage
+      complete: state.goodsReceipt && state.salesUsage && state.itemJournal
     });
   }
   return { monthKey: monthKey, today: today, days: days };
+}
+
+function ensureStockUploadSummaryShowcaseIsolation_() {
+  const properties = PropertiesService.getScriptProperties();
+  const ready = function () {
+    return properties.getProperty('STOCK_UPLOAD_SUMMARY_SHOWCASE_ISOLATION_V1') === '1' &&
+      properties.getProperty('STOCK_UPLOAD_SUMMARY_ITEM_JOURNAL_V1') === '1';
+  };
+  if (ready()) return true;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(500)) return false;
+  try {
+    if (ready()) return true;
+    // Satu kali backfill agar histori Item Journal lama langsung ikut terbaca di monitoring BIHQ.
+    backfillStockUploadDailySummary();
+    return true;
+  } catch (error) {
+    console.error('Gagal memperbarui ringkasan progress upload: ' + error.message);
+    return false;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** BIHQ-only day-by-day monitoring, derived from actual item movements. */
 function getStockUploadMonitoring(token, monthKey) {
   return safe_(function () {
     const employee = requireAdmin_(token);
+    ensureStockUploadSummaryShowcaseIsolation_();
     monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
-    const cacheKey = 'stock-upload-monitor-v1-' + monthKey, cached = readScriptJsonCache_(cacheKey);
+    const cacheKey = 'stock-upload-monitor-v2-' + monthKey, cached = readScriptJsonCache_(cacheKey);
     if (cached) return cached;
     const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
     const startDate = monthKey + '-01', endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
@@ -1342,7 +1374,7 @@ function getStockUploadMonitoring(token, monthKey) {
       const key = String(row.outlet || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10);
       if (!map[key]) map[key] = {};
       const type = String(row.upload_type || '');
-      if (['goodsReceipt', 'salesUsage', 'goodsDelivery'].indexOf(type) < 0) return;
+      if (['goodsReceipt', 'salesUsage', 'itemJournal', 'goodsDelivery'].indexOf(type) < 0) return;
       const actualRows = Number(row.actual_rows || 0), markerRows = Number(row.marker_rows || 0);
       if (!actualRows && markerRows) problemCount.markerWithoutData++;
       map[key][type] = { done: actualRows > 0, actualRows: actualRows, markerWithoutData: !actualRows && markerRows > 0,
@@ -1357,8 +1389,9 @@ function getStockUploadMonitoring(token, monthKey) {
         rows.push({ outlet: outlet, date: date,
           goodsReceipt: state.goodsReceipt || { done: false, actualRows: 0, markerWithoutData: false },
           salesUsage: state.salesUsage || { done: false, actualRows: 0, markerWithoutData: false },
+          itemJournal: state.itemJournal || { done: false, actualRows: 0, markerWithoutData: false },
           goodsDelivery: state.goodsDelivery || { done: false, actualRows: 0, markerWithoutData: false },
-          complete: Boolean(state.goodsReceipt && state.goodsReceipt.done && state.salesUsage && state.salesUsage.done) });
+          complete: Boolean(state.goodsReceipt && state.goodsReceipt.done && state.salesUsage && state.salesUsage.done && state.itemJournal && state.itemJournal.done) });
       }
     });
     const response = { monthKey: monthKey, rows: rows, outlets: outlets, problems: problemCount, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
@@ -3399,6 +3432,18 @@ function safeSalesConvertedQty_(qty, factor, row, item) {
   if (!isFinite(factor) || factor <= 0 || factor > 1000000) {
     throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': faktor konversi unit tidak wajar (' + factor + ').');
   }
+
+  const reportUnit = normalizeUnit_(row && row.unit), defaultUnit = normalizeUnit_(item && item.unit);
+  const intrinsicFactor = intrinsicStockUnitConversionFactor_(reportUnit, defaultUnit);
+  if (reportUnit && defaultUnit && reportUnit !== defaultUnit && intrinsicFactor) {
+    const tolerance = Math.max(0.0000000001, Math.abs(intrinsicFactor) * 0.000001);
+    if (Math.abs(factor - intrinsicFactor) > tolerance) {
+      throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') +
+        ': konversi ' + reportUnit + ' ke ' + defaultUnit + ' tidak sesuai ukuran kemasan. Faktor wajib ' + intrinsicFactor +
+        ', bukan ' + factor + '. Upload dihentikan.');
+    }
+  }
+
   const converted = qty * factor;
   if (!isFinite(converted) || converted < 0 || converted > 100000000) {
     throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': hasil QTY setelah konversi tidak wajar (' + converted + ' ' + (item && item.unit || '') + '). Upload dihentikan agar stock tidak rusak.');
@@ -3688,13 +3733,65 @@ function normalizeUnit_(value) { return String(value || '').trim().replace(/\s+/
 
 function defaultUnitConversionFactor_(fromUnit, toUnit) {
   const pair = normalizeUnit_(fromUnit) + '|' + normalizeUnit_(toUnit);
-  const defaults = { 'KG|GR': 1000, 'GR|KG': 0.001, 'L|ML': 1000, 'ML|L': 0.001 };
+  const defaults = {
+    'KG|GR': 1000, 'GR|KG': 0.001,
+    'L|ML': 1000, 'LT|ML': 1000, 'LTR|ML': 1000,
+    'ML|L': 0.001, 'ML|LT': 0.001, 'ML|LTR': 0.001,
+    'L|LT': 1, 'LT|L': 1, 'L|LTR': 1, 'LTR|L': 1, 'LT|LTR': 1, 'LTR|LT': 1
+  };
   return Number(defaults[pair] || 0);
+}
+
+/**
+ * Unit seperti PCK@1LT / BTL@250ML membawa ukuran kemasan di nama unit.
+ * Nilainya dapat dikonversi secara deterministik tanpa mempercayai faktor manual.
+ * Base volume = ML, base mass = GR.
+ */
+function stockUnitMeasureProfile_(unit) {
+  const normalized = normalizeUnit_(unit);
+  if (!normalized) return null;
+  const measureBase = function (measure) {
+    measure = String(measure || '').toUpperCase();
+    if (measure === 'ML') return { dimension: 'VOLUME', baseQty: 1 };
+    if (measure === 'L' || measure === 'LT' || measure === 'LTR') return { dimension: 'VOLUME', baseQty: 1000 };
+    if (measure === 'GR' || measure === 'G') return { dimension: 'MASS', baseQty: 1 };
+    if (measure === 'KG') return { dimension: 'MASS', baseQty: 1000 };
+    return null;
+  };
+
+  const plain = measureBase(normalized);
+  if (plain) return { dimension: plain.dimension, baseQty: plain.baseQty, packaged: false, unit: normalized };
+
+  const match = /^([^@]+)@([0-9]+(?:[.,][0-9]+)?)(ML|L|LT|LTR|GR|G|KG)$/.exec(normalized);
+  if (!match) return null;
+  const amount = Number(String(match[2]).replace(',', '.'));
+  const measure = measureBase(match[3]);
+  if (!measure || !isFinite(amount) || amount <= 0) return null;
+  return {
+    dimension: measure.dimension,
+    baseQty: amount * measure.baseQty,
+    packaged: true,
+    packageUnit: match[1],
+    unit: normalized
+  };
+}
+
+function intrinsicStockUnitConversionFactor_(fromUnit, toUnit) {
+  const from = stockUnitMeasureProfile_(fromUnit), to = stockUnitMeasureProfile_(toUnit);
+  if (!from || !to || from.dimension !== to.dimension || !from.baseQty || !to.baseQty) return 0;
+  const factor = from.baseQty / to.baseQty;
+  return isFinite(factor) && factor > 0 ? factor : 0;
 }
 
 function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
   fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
   if (fromUnit === toUnit) return 1;
+
+  // Konversi yang bisa dibuktikan dari nama unit selalu lebih dipercaya daripada
+  // faktor manual/saved. Contoh: 120 ML -> PCK@1LT = 0,12 PCK@1LT.
+  const intrinsic = intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
+  if (intrinsic) return intrinsic;
+
   const standard = defaultUnitConversionFactor_(fromUnit, toUnit);
   if (standard) return standard;
   const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
@@ -6257,7 +6354,7 @@ function invalidateStockItemCachesForRows_(rows) {
     if (!row || !row.outlet || !row.location) return;
     keys[stockItemsCacheKey_(row.outlet, row.location)] = true;
     const date = String(row.event_date || '').slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) monitorKeys['stock-upload-monitor-v1-' + date.slice(0, 7)] = true;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) monitorKeys['stock-upload-monitor-v2-' + date.slice(0, 7)] = true;
   });
   removeScriptCacheKeys_(Object.keys(keys).concat(Object.keys(monitorKeys)));
 }
@@ -6618,7 +6715,7 @@ function markStockBalanceDirty_(rows) {
 
 function stockUploadTypeForMovement_(movementType) {
   const type = String(movementType || '');
-  return type === 'Goods Receipt' ? 'goodsReceipt' : (type === 'Terjual' || type === 'Sold') ? 'salesUsage' : type === 'Transfer Out Antar Outlet' ? 'goodsDelivery' : '';
+  return type === 'Goods Receipt' ? 'goodsReceipt' : (type === 'Terjual' || type === 'Sold') ? 'salesUsage' : type === 'Item Journal' ? 'itemJournal' : type === 'Transfer Out Antar Outlet' ? 'goodsDelivery' : '';
 }
 
 function stockUploadSummaryDirtyKey_(outlet, eventDate, uploadType) {
@@ -6632,6 +6729,8 @@ function markStockUploadSummaryDirty_(rows) {
     const uploadType = row && stockUploadTypeForMovement_(row.movement_type), eventDate = String(row && row.event_date || '').slice(0, 10);
     if (!uploadType || !row.outlet || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return;
     if (row.record_type === 'MOVEMENT' && !row.source_file) return;
+    // Sold/Terjual dari Showcase Log adalah input manual dan tidak boleh menandai Usage Penjualan sebagai uploaded.
+    if (uploadType === 'salesUsage' && String(row.source_file || '').trim().toUpperCase() === 'SHOWCASE_LOG') return;
     const key = stockUploadSummaryDirtyKey_(row.outlet, eventDate, uploadType);
     updates[key] = JSON.stringify({ token: token, outlet: String(row.outlet).toUpperCase(), eventDate: eventDate, uploadType: uploadType, movementType: row.movement_type });
   });
@@ -6677,20 +6776,25 @@ function rebuildStockUploadDailySummary_(state, expectedRaw) {
     ? "movement_type IN ('Terjual', 'Sold')"
     : state.uploadType === 'goodsReceipt'
       ? "movement_type = 'Goods Receipt'"
-      : "movement_type = 'Transfer Out Antar Outlet'";
+      : state.uploadType === 'itemJournal'
+        ? "movement_type = 'Item Journal'"
+        : "movement_type = 'Transfer Out Antar Outlet'";
   const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
+  const sourceFilter = state.uploadType === 'salesUsage'
+    ? " AND UPPER(COALESCE(source_file, '')) != 'SHOWCASE_LOG'"
+    : '';
   const sql = 'BEGIN TRANSACTION; DELETE FROM ' + summary + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND upload_type = @uploadType; ' +
     'INSERT INTO ' + summary + ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
     'SELECT CAST(@eventDate AS DATE), @outlet, @uploadType, ' +
     'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND ' + movementFilter + '; COMMIT TRANSACTION;';
+    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND ' + movementFilter + sourceFilter + '; COMMIT TRANSACTION;';
   runNamedQuery_(sql, {
     outlet: state.outlet, eventDate: state.eventDate, uploadType: state.uploadType
   }, { useQueryCache: false });
   const properties = PropertiesService.getScriptProperties(), key = stockUploadSummaryDirtyKey_(state.outlet, state.eventDate, state.uploadType);
   if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
-  removeScriptCacheKeys_(['stock-upload-monitor-v1-' + state.eventDate.slice(0, 7)]);
+  removeScriptCacheKeys_(['stock-upload-monitor-v2-' + state.eventDate.slice(0, 7)]);
 }
 
 /** Run once after deployment, then only the small dirty slices are refreshed. */
@@ -6698,15 +6802,18 @@ function backfillStockUploadDailySummary() {
   ensureStockCardInfrastructure_();
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
   const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
-  const uploadType = "CASE WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt' WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage' ELSE 'goodsDelivery' END";
+  const uploadType = "CASE WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt' WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage' WHEN movement_type = 'Item Journal' THEN 'itemJournal' ELSE 'goodsDelivery' END";
   const sql = 'TRUNCATE TABLE ' + summary + '; INSERT INTO ' + summary +
     ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
     'SELECT event_date, outlet, ' + uploadType + ', ' +
     'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
     'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Transfer Out Antar Outlet\') GROUP BY event_date, outlet, ' + uploadType;
+    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Item Journal\', \'Transfer Out Antar Outlet\') ' +
+    "AND NOT (movement_type IN ('Terjual', 'Sold') AND UPPER(COALESCE(source_file, '')) = 'SHOWCASE_LOG') " +
+    'GROUP BY event_date, outlet, ' + uploadType;
   runNamedQuery_(sql, {}, { useQueryCache: false });
-  removeScriptCacheKeys_(['stock-upload-monitor-v1-' + todayIso_().slice(0, 7)]);
+  PropertiesService.getScriptProperties().setProperties({ STOCK_UPLOAD_SUMMARY_SHOWCASE_ISOLATION_V1: '1', STOCK_UPLOAD_SUMMARY_ITEM_JOURNAL_V1: '1' }, false);
+  removeScriptCacheKeys_(['stock-upload-monitor-v2-' + todayIso_().slice(0, 7)]);
   return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
 }
 
@@ -8088,7 +8195,9 @@ function existingSalesRowHashes_(outlet, transactionDate) {
   return map;
 }
 
-function prepareSalesCogsImport_(employee, payload, allowPending) {
+function prepareSalesCogsImport_(employee, payload, allowPending, options) {
+  options = options || {};
+  const includeExisting = Boolean(options.includeExisting);
   const fileName = cleanText_(payload.fileName, 180), base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const report = parseSalesCogsReport_(base64, fileName), outletDirectory = readStoreCodeDirectory_();
   const grouped = {}, invalidOutlets = [];
@@ -8126,6 +8235,7 @@ function prepareSalesCogsImport_(employee, payload, allowPending) {
   }
   const existingByScope = {}, duplicateRows = [], fresh = [];
   resolved.forEach(function (row) {
+    if (includeExisting) { fresh.push(row); return; }
     const scope = row.outlet + '|' + row.transactionDate;
     if (!existingByScope[scope]) existingByScope[scope] = existingSalesRowHashes_(row.outlet, row.transactionDate);
     if (existingByScope[scope][row.rowHash]) duplicateRows.push(row); else fresh.push(row);
@@ -8259,7 +8369,8 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
  * tidak bisa dipakai untuk transaksi historis. Semua bahan WIP (termasuk WIP bertingkat)
  * ikut dipreload agar lot yang dipotong dapat dikunci pada row upload.
  */
-function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings) {
+function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes) {
+  excludedSourceHashes = (excludedSourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
   const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
   const byOutlet = {}, result = {}, chunkSize = 18;
   refs.forEach(function (ref) {
@@ -8283,8 +8394,12 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
       });
       if (!codes.length) continue;
 
+      const exclusionSql = excludedSourceHashes.length
+        ? 'AND (source_hash IS NULL OR source_hash NOT IN UNNEST(@excludedSourceHashes)) '
+        : '';
       const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' ' +
         'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND event_date <= CAST(@maxDate AS DATE) ' +
+        exclusionSql +
         'AND (item_code IN UNNEST(@codes) OR ((item_code IS NULL OR item_code = \'\') AND item_name IN UNNEST(@names)))), ' +
         'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
         'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
@@ -8294,7 +8409,9 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
         'transfer_id, supplier, source_file, source_row, created_by, created_at FROM ranked WHERE item_rank <= 500 ' +
         'ORDER BY item_code, item_name, event_date, created_at';
 
-      runNamedQuery_(sql, { outlet: outlet, location: 'Store', maxDate: maxDate, codes: codes, names: names }, { useQueryCache: false }).forEach(function (row) {
+      const queryParams = { outlet: outlet, location: 'Store', maxDate: maxDate, codes: codes, names: names };
+      if (excludedSourceHashes.length) queryParams.excludedSourceHashes = excludedSourceHashes;
+      runNamedQuery_(sql, queryParams, { useQueryCache: false }).forEach(function (row) {
         let code = String(row.item_code || '').trim().toUpperCase();
         if (!histories[code]) code = nameToCode[normalizeStoreName_(row.item_name)] || '';
         if (!code || !histories[code]) return;
@@ -8567,6 +8684,353 @@ function uploadSalesCogs(token, payload) {
   });
 }
 
+
+function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSourceHashes) {
+  payload = payload || {};
+  const rows = [], now = new Date();
+  const wipCatalog = readWipRecipeCatalog_(), savedConversions = readStockUnitConversions_(),
+    provided = payload.conversions || {}, salesMappings = readSalesProductMappings_();
+  const masterByCode = {}, writeClock = { sequence: 0 };
+  let autoWipCount = 0;
+  readStockMaster_(true).forEach(function (item) { masterByCode[String(item.code || '').toUpperCase()] = item; });
+  const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes || []);
+
+  prepared.rows.forEach(function (sale) {
+    const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
+    let soldLots = [];
+
+    if (sale.targetType === 'WIP') {
+      const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
+      const shortage = Math.max(0, sale.qtyDefault - available);
+      if (shortage > 0.0000001) {
+        const state = {
+          rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
+          masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
+          now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0
+        };
+        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
+        autoWipCount += Number(state.autoWipCount || 0);
+      }
+      soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+    } else {
+      soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+    }
+
+    const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+    const tolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
+    if (!isFinite(allocatedQty) || Math.abs(allocatedQty - Number(sale.qtyDefault || 0)) > tolerance) {
+      throw new Error(sale.product + ' baris ' + sale.sourceRow + ': hasil alokasi FIFO repair (' + allocatedQty +
+        ') tidak sama dengan QTY sumber (' + sale.qtyDefault + '). Repair dihentikan.');
+    }
+
+    soldLots.forEach(function (lot) {
+      if (!isFinite(Number(lot.qty)) || Number(lot.qty) < 0 || Number(lot.qty) > 100000000) {
+        throw new Error(sale.product + ' baris ' + sale.sourceRow + ': QTY lot hasil repair tidak wajar (' + lot.qty + ').');
+      }
+      const id = Utilities.getUuid();
+      rows.push({ insertId: id, json: {
+        record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
+        outlet: sale.outlet, location: 'Store', item_code: sale.item.code, category: sale.item.category, item_name: sale.item.name, unit: sale.item.unit,
+        direction: 'OUT', qty: lot.qty, movement_type: 'Sold',
+        info: cleanText_('Sold · ' + sale.menu + ' · Sales Number ' + sale.salesNumber, 500),
+        production_date: lot.productionDate || null, expiry_date: lot.expiryDate || null, source_arrival_date: lot.sourceDate || null,
+        event_date: sale.transactionDate, created_at: salesUploadCreatedAt_(writeClock, now), created_by: employee.nik,
+        source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: traceId
+      }});
+    });
+  });
+
+  return { rows: rows, autoWipProductionCount: autoWipCount };
+}
+
+function readActiveSalesRepairRows_(sourceHashes) {
+  const hashes = (sourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
+  const result = [], chunkSize = 50;
+  for (let offset = 0; offset < hashes.length; offset += chunkSize) {
+    const chunk = hashes.slice(offset, offset + chunkSize);
+    const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() +
+      ' WHERE record_type = \'MOVEMENT\' AND source_hash IN UNNEST(@hashes)), ' +
+      'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
+      'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+      'SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,COALESCE(version,1) AS version,' +
+      'outlet,location,item_code,category,item_name,unit,direction,qty,movement_type,info,production_date,expiry_date,' +
+      'source_arrival_date,transfer_id,event_date,created_at,created_by,source_file,source_hash,source_row ' +
+      'FROM latest WHERE direction IN (\'IN\',\'OUT\',\'LOT\') ' +
+      'AND movement_type IN (\'Sold\',\'Terjual\',\'WIP Material Usage\',\'Production\') ' +
+      'ORDER BY event_date,source_row,created_at,item_code';
+    runNamedQuery_(sql, { hashes: chunk }, { useQueryCache: false }).forEach(function (row) {
+      result.push({
+        recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
+        version: Number(row.version || 1), outlet: String(row.outlet || ''), location: String(row.location || 'Store'),
+        itemCode: String(row.item_code || ''), category: String(row.category || ''), itemName: String(row.item_name || ''),
+        unit: String(row.unit || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
+        movementType: String(row.movement_type || ''), info: String(row.info || ''),
+        productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+        sourceArrivalDate: String(row.source_arrival_date || ''), transferId: String(row.transfer_id || ''),
+        eventDate: String(row.event_date || ''), createdAt: String(row.created_at || ''), createdBy: String(row.created_by || ''),
+        sourceFile: String(row.source_file || ''), sourceHash: String(row.source_hash || ''), sourceRow: Number(row.source_row || 0)
+      });
+    });
+  }
+  return result;
+}
+
+function salesRepairRowView_(entry) {
+  const row = entry && entry.json ? entry.json : entry || {};
+  return {
+    itemCode: String(row.item_code !== undefined ? row.item_code : row.itemCode || ''),
+    unit: String(row.unit || ''),
+    direction: String(row.direction || ''),
+    qty: Number(row.qty || 0),
+    movementType: String(row.movement_type !== undefined ? row.movement_type : row.movementType || ''),
+    productionDate: String(row.production_date !== undefined ? row.production_date || '' : row.productionDate || ''),
+    expiryDate: String(row.expiry_date !== undefined ? row.expiry_date || '' : row.expiryDate || ''),
+    sourceArrivalDate: String(row.source_arrival_date !== undefined ? row.source_arrival_date || '' : row.sourceArrivalDate || ''),
+    sourceHash: String(row.source_hash !== undefined ? row.source_hash || '' : row.sourceHash || '')
+  };
+}
+
+function salesRepairNumberKey_(value) {
+  const number = Number(value || 0);
+  if (!isFinite(number)) return String(number);
+  if (Math.abs(number) < 0.000000000001) return '0';
+  return number.toPrecision(15);
+}
+
+function salesRepairMovementSignature_(entry) {
+  const row = salesRepairRowView_(entry);
+  return [
+    row.itemCode.toUpperCase(), row.unit.toUpperCase(), row.direction, row.movementType,
+    salesRepairNumberKey_(row.qty), row.productionDate, row.sourceArrivalDate, row.expiryDate
+  ].join('|');
+}
+
+function salesRepairSignatureList_(rows) {
+  return (rows || []).map(salesRepairMovementSignature_).sort();
+}
+
+function salesRepairDifferenceCount_(oldRows, expectedRows) {
+  const counts = {};
+  salesRepairSignatureList_(oldRows).forEach(function (key) { counts[key] = Number(counts[key] || 0) + 1; });
+  salesRepairSignatureList_(expectedRows).forEach(function (key) { counts[key] = Number(counts[key] || 0) - 1; });
+  return Object.keys(counts).reduce(function (sum, key) { return sum + Math.abs(Number(counts[key] || 0)); }, 0);
+}
+
+function salesRepairToken_(fileName, hashes, oldRows, expectedRows) {
+  const oldState = (oldRows || []).map(function (row) {
+    return [row.logicalId, row.version, row.recordId, row.sourceHash, salesRepairMovementSignature_(row)].join('|');
+  }).sort();
+  const expectedState = salesRepairSignatureList_(expectedRows);
+  return digest_([String(fileName || ''), (hashes || []).slice().sort().join(','), oldState.join('\n'), expectedState.join('\n')].join('\n---\n'));
+}
+
+function prepareSalesCogsRepairPlan_(employee, payload) {
+  payload = payload || {};
+  const prepared = prepareSalesCogsImport_(employee, payload, false, { includeExisting: true });
+  const candidateHashes = prepared.rows.map(function (row) { return row.rowHash; }).filter(function (value, index, list) { return value && list.indexOf(value) === index; });
+  if (!candidateHashes.length) throw new Error('File tidak memiliki baris Sales COGS yang dapat dicocokkan dengan histori.');
+
+  const oldRowsAll = readActiveSalesRepairRows_(candidateHashes), matched = {};
+  oldRowsAll.forEach(function (row) { if (row.sourceHash) matched[row.sourceHash] = true; });
+  const matchedRows = prepared.rows.filter(function (row) { return Boolean(matched[row.rowHash]); });
+  if (!matchedRows.length) {
+    throw new Error('Tidak ditemukan transaksi lama aktif yang cocok dengan file ini. Pastikan file berasal dari Sales Menu COGS Detail yang pernah di-upload.');
+  }
+  const matchedHashes = matchedRows.map(function (row) { return row.rowHash; }).filter(function (value, index, list) { return list.indexOf(value) === index; });
+  const matchedHashMap = {};
+  matchedHashes.forEach(function (hash) { matchedHashMap[hash] = true; });
+  const oldRows = oldRowsAll.filter(function (row) { return matchedHashMap[row.sourceHash]; });
+
+  // Simulasikan ulang seluruh source row yang ditemukan. Seluruh movement lama dari source row
+  // tersebut dikeluarkan dari snapshot FIFO lebih dulu, sehingga hasil tidak terpengaruh angka korup.
+  const simulationPrepared = {
+    fileName: prepared.fileName,
+    rows: matchedRows,
+    showcaseRows: [],
+    duplicateRowsSkipped: 0,
+    zeroRowsSkipped: prepared.zeroRowsSkipped,
+    outlets: matchedRows.map(function (row) { return row.outlet; }).filter(function (value, index, list) { return list.indexOf(value) === index; }),
+    dates: matchedRows.map(function (row) { return row.transactionDate; }).filter(function (value, index, list) { return list.indexOf(value) === index; })
+  };
+  const expectedBuild = buildSalesRepairExpectedRows_(simulationPrepared, employee, payload, matchedHashes);
+  const expectedRows = expectedBuild.rows;
+
+  const oldByHash = {}, expectedByHash = {}, sourceByHash = {};
+  oldRows.forEach(function (row) {
+    if (!oldByHash[row.sourceHash]) oldByHash[row.sourceHash] = [];
+    oldByHash[row.sourceHash].push(row);
+  });
+  expectedRows.forEach(function (entry) {
+    const hash = String(entry.json && entry.json.source_hash || '');
+    if (!expectedByHash[hash]) expectedByHash[hash] = [];
+    expectedByHash[hash].push(entry);
+  });
+  matchedRows.forEach(function (row) { sourceByHash[row.rowHash] = row; });
+
+  const changes = [], changedHashes = [];
+  matchedHashes.forEach(function (hash) {
+    const source = sourceByHash[hash], oldGroup = oldByHash[hash] || [], expectedGroup = expectedByHash[hash] || [];
+    const oldSignatures = salesRepairSignatureList_(oldGroup), newSignatures = salesRepairSignatureList_(expectedGroup);
+    const changed = oldSignatures.join('\n') !== newSignatures.join('\n');
+    if (!changed) return;
+    changedHashes.push(hash);
+    const oldDirectQty = oldGroup.filter(function (row) {
+      return row.direction === 'OUT' && (row.movementType === 'Sold' || row.movementType === 'Terjual') &&
+        String(row.itemCode || '').toUpperCase() === String(source.item.code || '').toUpperCase();
+    }).reduce(function (sum, row) { return sum + Number(row.qty || 0); }, 0);
+    const newDirectQty = expectedGroup.filter(function (entry) {
+      const row = salesRepairRowView_(entry);
+      return row.direction === 'OUT' && row.movementType === 'Sold' &&
+        row.itemCode.toUpperCase() === String(source.item.code || '').toUpperCase();
+    }).reduce(function (sum, entry) { return sum + Number(salesRepairRowView_(entry).qty || 0); }, 0);
+    const wipChanged = oldGroup.some(function (row) { return row.movementType === 'WIP Material Usage' || row.movementType === 'Production'; }) ||
+      expectedGroup.some(function (entry) {
+        const type = salesRepairRowView_(entry).movementType;
+        return type === 'WIP Material Usage' || type === 'Production';
+      });
+    changes.push({
+      sourceHash: hash, sourceRow: source.sourceRow, outlet: source.outlet, date: source.transactionDate,
+      salesNumber: source.salesNumber, menu: source.menu, product: source.product,
+      unit: source.item.unit, sourceQty: source.qtyDefault, storedSoldQty: oldDirectQty, correctedSoldQty: newDirectQty,
+      oldMovementCount: oldGroup.length, correctedMovementCount: expectedGroup.length,
+      differenceCount: salesRepairDifferenceCount_(oldGroup, expectedGroup), wipAffected: wipChanged
+    });
+  });
+
+  const changedHashMap = {};
+  changedHashes.forEach(function (hash) { changedHashMap[hash] = true; });
+  const changedOldRows = oldRows.filter(function (row) { return changedHashMap[row.sourceHash]; });
+  const changedExpectedRows = expectedRows.filter(function (entry) { return changedHashMap[String(entry.json && entry.json.source_hash || '')]; });
+  const token = salesRepairToken_(prepared.fileName, changedHashes, changedOldRows, changedExpectedRows);
+
+  return {
+    fileName: prepared.fileName, matchedRows: matchedRows, matchedHashes: matchedHashes,
+    oldRows: oldRows, expectedRows: expectedRows, changes: changes, changedHashes: changedHashes,
+    repairToken: token, autoWipProductionCount: expectedBuild.autoWipProductionCount,
+    outlets: simulationPrepared.outlets, dates: simulationPrepared.dates,
+    unmatchedRowCount: Math.max(0, prepared.rows.length - matchedRows.length)
+  };
+}
+
+function previewSalesCogsRepair(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token), plan = prepareSalesCogsRepairPlan_(employee, payload || {});
+    return {
+      verified: true, fileName: plan.fileName, sourceRowsFound: plan.matchedRows.length,
+      rowsChanged: plan.changes.length, rowsAlreadyCorrect: plan.matchedRows.length - plan.changes.length,
+      unmatchedRows: plan.unmatchedRowCount, repairToken: plan.repairToken,
+      affectedOutlets: plan.outlets, affectedDates: plan.dates,
+      movementRowsToReplace: plan.oldRows.filter(function (row) { return plan.changedHashes.indexOf(row.sourceHash) >= 0; }).length,
+      correctedMovementRows: plan.expectedRows.filter(function (entry) { return plan.changedHashes.indexOf(String(entry.json && entry.json.source_hash || '')) >= 0; }).length,
+      changes: plan.changes.slice(0, 120)
+    };
+  });
+}
+
+function salesRepairVoidRow_(oldRow, employee, now, sequence) {
+  const id = Utilities.getUuid();
+  return { insertId: id, json: {
+    record_id: id, logical_id: oldRow.logicalId || oldRow.recordId, version: Number(oldRow.version || 1) + 1,
+    record_type: 'MOVEMENT', outlet: oldRow.outlet, location: oldRow.location || 'Store',
+    item_code: oldRow.itemCode || null, category: oldRow.category || null, item_name: oldRow.itemName || null, unit: oldRow.unit || null,
+    direction: 'VOID', qty: 0, movement_type: 'Repair Void',
+    info: cleanText_('Repair Upload Lama · membatalkan ' + oldRow.movementType + ' v' + Number(oldRow.version || 1) +
+      ' · QTY lama ' + formatQty_(oldRow.qty), 500),
+    production_date: null, expiry_date: null, source_arrival_date: null,
+    event_date: oldRow.eventDate, created_at: now.getTime() / 1000 + (sequence / 1000000), created_by: employee.nik,
+    source_file: oldRow.sourceFile || null, source_hash: oldRow.sourceHash || null, source_row: oldRow.sourceRow || null,
+    transfer_id: oldRow.transferId || null
+  }};
+}
+
+function repairSalesCogsUpload(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const requestedToken = String(payload.repairToken || '');
+    if (!requestedToken) throw new Error('Preview repair belum tersedia. Verifikasi file terlebih dahulu.');
+
+    const plan = prepareSalesCogsRepairPlan_(employee, payload);
+    if (requestedToken !== plan.repairToken) {
+      throw new Error('Data Stock Card berubah setelah preview. Jalankan Verifikasi Repair ulang sebelum melanjutkan.');
+    }
+    if (!plan.changedHashes.length) {
+      return { repaired: false, noChanges: true, sourceRowsFound: plan.matchedRows.length, rowsChanged: 0 };
+    }
+
+    const changed = {};
+    plan.changedHashes.forEach(function (hash) { changed[hash] = true; });
+    const oldRows = plan.oldRows.filter(function (row) { return changed[row.sourceHash]; });
+    const correctedRows = plan.expectedRows.filter(function (entry) { return changed[String(entry.json && entry.json.source_hash || '')]; });
+    const now = new Date(), voidRows = oldRows.map(function (row, index) {
+      return salesRepairVoidRow_(row, employee, now, index + 1);
+    });
+
+    // Satu source row selalu diproses sebagai satu unit. Batch dibatasi agar request
+    // insertAll tidak membengkak; bila koneksi putus di tengah, preview ulang akan
+    // mengenali source row yang sudah benar dan hanya melanjutkan sisanya.
+    const voidByHash = {}, correctedByHash = {};
+    voidRows.forEach(function (entry) {
+      const hash = String(entry.json && entry.json.source_hash || '');
+      if (!voidByHash[hash]) voidByHash[hash] = [];
+      voidByHash[hash].push(entry);
+    });
+    correctedRows.forEach(function (entry) {
+      const hash = String(entry.json && entry.json.source_hash || '');
+      if (!correctedByHash[hash]) correctedByHash[hash] = [];
+      correctedByHash[hash].push(entry);
+    });
+
+    const lock = acquireStockWriteLock_();
+    let processedHashes = 0, pendingBatch = [];
+    function flushRepairBatch_() {
+      if (!pendingBatch.length) return;
+      insertStockCardRows_(pendingBatch);
+      pendingBatch = [];
+    }
+    try {
+      plan.changedHashes.forEach(function (hash) {
+        const group = (voidByHash[hash] || []).concat(correctedByHash[hash] || []);
+        if (pendingBatch.length && pendingBatch.length + group.length > 1500) flushRepairBatch_();
+        if (group.length > 1500) insertStockCardRows_(group);
+        else pendingBatch = pendingBatch.concat(group);
+        processedHashes++;
+      });
+      flushRepairBatch_();
+    } catch (error) {
+      throw new Error('Repair berhenti setelah ' + processedHashes + ' source row diproses. Sebagian data mungkin sudah tersimpan. ' +
+        'Buka kembali Repair Upload Lama dan verifikasi file yang sama untuk melanjutkan. Detail: ' + error.message);
+    } finally {
+      lock.releaseLock();
+    }
+
+    const scopes = {}, affectedItems = {};
+    oldRows.concat(correctedRows.map(function (entry) {
+      const row = entry.json || {};
+      return { outlet: row.outlet, location: row.location, itemCode: row.item_code, itemName: row.item_name };
+    })).forEach(function (row) {
+      if (row.outlet && row.location) scopes[String(row.outlet).toUpperCase() + '|' + normalizeLocation_(row.location)] = { outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location) };
+      const itemCode = String(row.itemCode || '').toUpperCase();
+      if (itemCode) affectedItems[itemCode] = true;
+    });
+
+    // Usahakan balance compact langsung sinkron. Dirty marker tetap ada sebagai fallback
+    // bila streaming row belum terlihat seketika oleh query BigQuery.
+    Object.keys(scopes).forEach(function (key) {
+      const scope = scopes[key], dirtyKey = stockBalanceStateKey_('dirty', scope.outlet, scope.location);
+      const expectedDirty = String(PropertiesService.getScriptProperties().getProperty(dirtyKey) || '');
+      try { rebuildStockBalanceSummary_(scope.outlet, scope.location, expectedDirty); }
+      catch (error) { console.error('Repair tersimpan; refresh balance background akan melanjutkan: ' + error.message); }
+    });
+
+    return {
+      repaired: true, sourceRowsRepaired: plan.changedHashes.length,
+      oldMovementRowsVoided: voidRows.length, correctedMovementRows: correctedRows.length,
+      affectedItemCount: Object.keys(affectedItems).length, affectedOutlets: plan.outlets, affectedDates: plan.dates
+    };
+  });
+}
+
 function parseItemJournalReport_(base64, fileName) {
   const cells = extractReportCells_(base64, fileName, 'Item Journal');
   // ESB saat ini memakai header "Item Journal Date". Tetap terima format lama "Date"
@@ -8640,21 +9104,121 @@ function mockRecallUniqueDates_(values) {
   return result.sort();
 }
 
-function mockRecallCreationMeta_(consumedRows, generatedRows, sourceRow, code) {
-  const generatedDates = mockRecallUniqueDates_((generatedRows || []).filter(function (row) {
-    return String(row.source_row || '') === String(sourceRow || '') &&
-      String(row.item_code || '').toUpperCase() === String(code || '').toUpperCase();
-  }).map(function (row) {
-    return String(row.production_date || row.event_date || '');
-  }));
+function mockRecallDateOnly_(value) {
+  return String(value || '').slice(0, 10);
+}
 
-  const generatedSet = {};
-  generatedDates.forEach(function (date) { generatedSet[date] = true; });
-  const stockDates = mockRecallUniqueDates_((consumedRows || []).map(function (row) {
-    return String(row.production_date || row.source_arrival_date || '');
-  })).filter(function (date) { return !generatedSet[date]; });
+function mockRecallSplitRowsByQty_(rows, firstQty) {
+  let remaining = Math.max(0, Number(firstQty || 0));
+  const first = [], rest = [];
+  (rows || []).forEach(function (row) {
+    const qty = Math.max(0, Number(row.qty || 0));
+    if (qty <= 0.0000001) return;
+    if (remaining > 0.0000001) {
+      const taken = Math.min(qty, remaining);
+      if (taken > 0.0000001) {
+        const clone = Object.assign({}, row); clone.qty = taken; first.push(clone);
+        remaining -= taken;
+      }
+      const leftover = qty - taken;
+      if (leftover > 0.0000001) {
+        const clone = Object.assign({}, row); clone.qty = leftover; rest.push(clone);
+      }
+    } else {
+      rest.push(Object.assign({}, row));
+    }
+  });
+  return { first: first, rest: rest };
+}
 
-  return { generatedDates: generatedDates, stockDates: stockDates };
+function mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe) {
+  consumedQty = Math.max(0, Number(consumedQty || 0));
+  if (forceRecipe) return { qty: consumedQty, dates: state.saleDate ? [state.saleDate] : [] };
+  if (!state.generatedRemaining) {
+    state.generatedRemaining = {};
+    state.generatedDatesByKey = {};
+    (state.generatedProductions || []).forEach(function (row) {
+      const key = String(row.source_row || '') + '|' + String(row.item_code || '').toUpperCase();
+      state.generatedRemaining[key] = Number(state.generatedRemaining[key] || 0) + Math.max(0, Number(row.qty || 0));
+      if (!state.generatedDatesByKey[key]) state.generatedDatesByKey[key] = [];
+      const date = mockRecallDateOnly_(row.production_date || row.event_date);
+      if (date && state.generatedDatesByKey[key].indexOf(date) < 0) state.generatedDatesByKey[key].push(date);
+    });
+  }
+  const key = String(sourceRow || '') + '|' + String(code || '').toUpperCase();
+  const available = Math.max(0, Number(state.generatedRemaining[key] || 0));
+  const qty = Math.min(consumedQty, available);
+  state.generatedRemaining[key] = Math.max(0, available - qty);
+  return { qty: qty, dates: qty > 0.0000001 ? (state.generatedDatesByKey[key] || []).slice().sort() : [] };
+}
+
+function mockRecallWipSourceRows_(state, code) {
+  code = String(code || '').toUpperCase();
+  state.wipSourceCache = state.wipSourceCache || {};
+  if (Object.prototype.hasOwnProperty.call(state.wipSourceCache, code)) return state.wipSourceCache[code];
+  const table = stockCardTable_();
+  const sql = 'WITH scoped AS (SELECT * FROM ' + table + ' WHERE record_type=\'MOVEMENT\' AND outlet=@outlet AND location=\'Store\' ' +
+    'AND item_code=@code AND direction=\'IN\' AND movement_type IN (\'Production\',\'Transfer In\')), ' +
+    'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id,\'\'),record_id) ' +
+    'ORDER BY COALESCE(version,1) DESC,created_at DESC)=1) ' +
+    'SELECT event_date,movement_type,production_date,expiry_date,source_arrival_date,source_file,transfer_id,created_at FROM latest ORDER BY event_date,created_at';
+  const rows = runNamedQuery_(sql, { outlet: state.outlet, code: code }, { useQueryCache: false });
+  state.wipSourceCache[code] = rows;
+  return rows;
+}
+
+function mockRecallWipExistingLots_(state, code, rows) {
+  const grouped = {}, order = [];
+  (rows || []).forEach(function (row) {
+    const arrivalDate = mockRecallDateOnly_(row.source_arrival_date);
+    const productionDate = mockRecallDateOnly_(row.production_date);
+    const expiryDate = mockRecallDateOnly_(row.expiry_date);
+    const unit = String(row.unit || '');
+    const key = [arrivalDate, productionDate, expiryDate, unit].join('|');
+    if (!grouped[key]) {
+      grouped[key] = { qty: 0, unit: unit, arrivalDate: arrivalDate, productionDate: productionDate, expiryDate: expiryDate, sourceType: 'stock' };
+      order.push(key);
+    }
+    grouped[key].qty += Math.max(0, Number(row.qty || 0));
+  });
+  if (!order.length) return [];
+
+  const sources = mockRecallWipSourceRows_(state, code);
+  function expiryMatches(source, lot) {
+    const sourceExpiry = mockRecallDateOnly_(source.expiry_date);
+    return !lot.expiryDate || !sourceExpiry || sourceExpiry === lot.expiryDate;
+  }
+  function productionMatches(source, lot) {
+    const sourceProduction = mockRecallDateOnly_(source.production_date);
+    return !lot.productionDate || !sourceProduction || sourceProduction === lot.productionDate;
+  }
+
+  return order.map(function (key) {
+    const lot = grouped[key];
+    const transfer = sources.filter(function (source) {
+      return String(source.movement_type || '') === 'Transfer In' &&
+        mockRecallDateOnly_(source.event_date) === lot.arrivalDate && expiryMatches(source, lot) && productionMatches(source, lot);
+    })[0];
+    if (transfer) {
+      lot.sourceType = 'transfer';
+      return lot;
+    }
+    const production = sources.filter(function (source) {
+      if (String(source.movement_type || '') !== 'Production') return false;
+      if (/^SALES_COGS\|/i.test(String(source.source_file || ''))) return false;
+      const eventDate = mockRecallDateOnly_(source.event_date), sourceProduction = mockRecallDateOnly_(source.production_date);
+      const dateMatch = lot.productionDate ? (sourceProduction === lot.productionDate || eventDate === lot.arrivalDate) : eventDate === lot.arrivalDate;
+      return dateMatch && expiryMatches(source, lot);
+    })[0];
+    if (production) {
+      lot.sourceType = 'production';
+      if (!lot.productionDate) lot.productionDate = mockRecallDateOnly_(production.production_date || production.event_date);
+      return lot;
+    }
+    // Fallback hanya untuk histori lama yang belum memiliki metadata asal lengkap.
+    lot.sourceType = lot.productionDate ? 'production' : 'arrival';
+    return lot;
+  });
 }
 
 function appendMockRecallMaterialLots_(materials, rows, childOf, depth) {
@@ -8698,12 +9262,22 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
   path = path || {};
   if (depth > 10) return;
 
-  const creation = mockRecallCreationMeta_(consumedRows, state.generatedProductions, sourceRow, code);
+  const consumedQty = (consumedRows || []).reduce(function (sum, row) { return sum + Math.max(0, Number(row.qty || 0)); }, 0);
+  const generated = mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe);
+  const generatedQty = Math.min(consumedQty, Math.max(0, Number(generated.qty || 0)));
+  const existingQty = Math.max(0, consumedQty - generatedQty);
+  // FIFO memakai stok yang sudah tersedia terlebih dahulu. Sisa di belakang adalah WIP yang baru generated oleh upload.
+  const split = mockRecallSplitRowsByQty_(consumedRows, existingQty);
+  const existingLots = mockRecallWipExistingLots_(state, code, split.first);
+
   state.materials.push({
-    rowType: 'wipHeader', code: code, material: name, unit: '', qty: null,
+    rowType: 'wipHeader', code: code, material: name, unit: (consumedRows[0] && consumedRows[0].unit) || '', qty: consumedQty,
     arrivalDate: '', productionDate: '', expiryDate: '', childOf: '', kind: 'WIP', depth: depth,
-    generatedDates: creation.generatedDates, stockDates: creation.stockDates
+    existingLots: existingLots, generatedDates: generated.dates || [], generatedQty: generatedQty
   });
+
+  // WIP existing dari produksi manual / transfer berhenti di level WIP. Bahan hanya dibuka untuk bagian yang generated saat upload Sales COGS.
+  if (generatedQty <= 0.0000001 && !forceRecipe) return;
 
   if (path[code]) {
     state.materials.push({
@@ -8714,15 +9288,13 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
   }
 
   state.materials.push({
-    rowType: 'wipSubheader', code: '', material: 'Bahan-Bahan ' + name, unit: '', qty: null,
+    rowType: 'wipSubheader', code: '', material: 'Bahan-Bahan ' + name + ' · Generated Upload', unit: '', qty: null,
     arrivalDate: '', productionDate: '', expiryDate: '', childOf: name, kind: 'WIP', depth: depth
   });
 
   const nextPath = Object.assign({}, path); nextPath[code] = true;
   let usageRows = [];
-  if (!forceRecipe) usageRows = loadMockRecallHistoricalWipUsage_(state.outlet, code, consumedRows);
-
-  if (!usageRows.length && !forceRecipe) {
+  if (!forceRecipe) {
     usageRows = state.sameDayUsage.filter(function (child) {
       return String(child.source_row || '') === String(sourceRow || '') &&
         normalizeStoreName_(child._mockRecallParent) === normalizeStoreName_(name);
@@ -8752,14 +9324,13 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
     return;
   }
 
-  // Fallback: bila batch lama tidak cukup untuk dilacak, resep tetap dibuka sampai WIP paling dasar.
+  // Fallback hanya untuk generated upload lama yang belum menyimpan WIP Material Usage lengkap.
   const variant = selectSalesWipVariant_(state.wipCatalog, code, name);
   if (!variant) return;
   const outputItem = state.stockMasterByCode[code];
-  const consumedQty = (consumedRows || []).reduce(function (sum, row) { return sum + Number(row.qty || 0); }, 0);
   const stockUnit = outputItem ? outputItem.unit : (consumedRows[0] && consumedRows[0].unit) || variant.unit;
   const outputFactor = wipConversionFactor_(code, stockUnit, variant.unit, {}, state.savedConversions) || 1;
-  const formulaQty = consumedQty * outputFactor;
+  const formulaQty = generatedQty * outputFactor;
 
   variant.materials.forEach(function (recipe) {
     const material = state.stockMasterByCode[String(recipe.code || '').toUpperCase()];
@@ -8781,7 +9352,6 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
     }
   });
 }
-
 
 function aggregateMockRecallLots_(rows, childOf) {
   const map = {}, order = [];
@@ -8929,7 +9499,7 @@ function getMockRecallList(token, payload) {
     let where = 'event_date=CAST(@date AS DATE) AND movement_type=\'Sold\' AND source_file LIKE \'SALES_COGS|%\'';
     const params = { date: date };
     if (outlet) { where += ' AND outlet=@outlet'; params.outlet = outlet; }
-    const sql = 'SELECT transfer_id,outlet,info,item_name,source_row,created_at FROM ' + stockCardTable_() + ' WHERE ' + where + ' ORDER BY outlet,source_row,created_at,item_name';
+    const sql = latestStockMovementCte_() + ' SELECT transfer_id,outlet,info,item_name,source_row,created_at FROM latest WHERE ' + where + ' ORDER BY outlet,source_row,created_at,item_name';
     const seen = {}, items = [];
     runNamedQuery_(sql, params, { useQueryCache: false }).forEach(function (row) {
       const parsed = parseMockRecallSoldInfo_(row.info);
@@ -8955,9 +9525,9 @@ function getMockRecallDetail(token, payload) {
     if (!date || !menu || !salesNumber || !outlet) throw new Error('Identitas menu Mock Recall tidak lengkap.');
     if (e.outlet !== 'BIHQ' && requestedOutlet && requestedOutlet !== e.outlet) throw new Error('Anda tidak memiliki akses ke data outlet ini.');
 
-    const sql = 'SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
-      'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,source_file,source_hash,event_date,created_at FROM ' + stockCardTable_() +
-      ' WHERE record_type=\'MOVEMENT\' AND event_date=CAST(@date AS DATE) AND outlet=@outlet AND source_file LIKE \'SALES_COGS|%\' ' +
+    const sql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
+      'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,source_file,source_hash,event_date,created_at FROM latest ' +
+      'WHERE event_date=CAST(@date AS DATE) AND outlet=@outlet AND source_file LIKE \'SALES_COGS|%\' ' +
       'AND movement_type IN (\'Sold\',\'WIP Material Usage\',\'Production\') ORDER BY source_row,created_at,item_name';
     const allRows = runNamedQuery_(sql, { date: date, outlet: outlet }, { useQueryCache: false });
     const soldRows = [], wipUsageRows = [], generatedProductions = [];
@@ -8996,8 +9566,9 @@ function getMockRecallDetail(token, payload) {
 
     const materials = [];
     const treeState = {
-      outlet: outlet, materials: materials, wipCatalog: wipCatalog, sameDayUsage: wipUsageRows,
-      generatedProductions: generatedProductions, stockMasterByCode: stockMasterByCode, savedConversions: savedConversions
+      outlet: outlet, saleDate: date, materials: materials, wipCatalog: wipCatalog, sameDayUsage: wipUsageRows,
+      generatedProductions: generatedProductions, stockMasterByCode: stockMasterByCode, savedConversions: savedConversions,
+      generatedRemaining: null, generatedDatesByKey: null, wipSourceCache: {}
     };
 
     sourceOrder.forEach(function (sourceKey) {
