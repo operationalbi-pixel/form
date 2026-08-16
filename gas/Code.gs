@@ -8107,6 +8107,13 @@ function resolveSalesTarget_(productName, catalogs, savedMappings) {
   const key = normalizeStoreName_(productName), saved = savedMappings[key];
   function byCode(list, code) { return (list || []).filter(function (item) { return String(item.code || '').toUpperCase() === String(code || '').toUpperCase(); }); }
   if (saved) {
+    // Mapping lama bisa pernah tersimpan sebagai PRODUCT sebelum item tersebut dikenali sebagai WIP.
+    // Jika target code sekarang sudah terdaftar sebagai output WIP, WIP harus menang agar upload
+    // penjualan dapat auto-generate Production ketika stock WIP kosong/kurang.
+    if (saved.targetType === 'PRODUCT') {
+      const savedWip = byCode(catalogs.wip || [], saved.targetCode);
+      if (savedWip.length) return { type: 'WIP', target: savedWip[0], saved: true, promotedFromProduct: true };
+    }
     const source = saved.targetType === 'PRODUCT' ? catalogs.products : saved.targetType === 'SHOWCASE' ? catalogs.showcase : catalogs.wip;
     const found = byCode(source, saved.targetCode);
     if (found.length) return { type: saved.targetType, target: found[0], saved: true };
@@ -8618,6 +8625,12 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
 }
 
 
+function salesTargetIsWip_(sale, wipCatalog) {
+  const code = String(sale && sale.item && sale.item.code || '').toUpperCase();
+  return String(sale && sale.targetType || '').toUpperCase() === 'WIP' ||
+    Boolean(code && wipCatalog && wipCatalog.byCode && wipCatalog.byCode[code] && wipCatalog.byCode[code].length);
+}
+
 function uploadSalesCogs(token, payload) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
@@ -8632,7 +8645,7 @@ function uploadSalesCogs(token, payload) {
       const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
       let soldLots = [];
 
-      if (sale.targetType === 'WIP') {
+      if (salesTargetIsWip_(sale, wipCatalog)) {
         const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
         const shortage = Math.max(0, sale.qtyDefault - available);
         if (shortage > 0.0000001) {
@@ -8717,7 +8730,7 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
     let soldLots = [];
 
-    if (sale.targetType === 'WIP') {
+    if (salesTargetIsWip_(sale, wipCatalog)) {
       const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
       const shortage = Math.max(0, sale.qtyDefault - available);
       if (shortage > 0.0000001) {
@@ -9233,7 +9246,14 @@ function mockRecallWipExistingLots_(state, code, rows) {
       if (!lot.productionDate) lot.productionDate = mockRecallDateOnly_(production.production_date || production.event_date);
       return lot;
     }
-    // Fallback hanya untuk histori lama yang belum memiliki metadata asal lengkap.
+    // Jika row Sold WIP tidak mempunyai metadata lot dan tidak dapat ditautkan ke Production/Transfer,
+    // jangan menyebutnya sebagai "Stock tersedia". Kondisi ini biasanya berarti upload lama memotong
+    // WIP langsung tanpa membuat Production otomatis dan perlu diperbaiki lewat Repair Upload Lama.
+    if (!lot.arrivalDate && !lot.productionDate && !lot.expiryDate) {
+      lot.sourceType = 'untracked';
+      return lot;
+    }
+    // Fallback hanya untuk histori lama yang masih mempunyai sebagian metadata asal.
     lot.sourceType = lot.productionDate ? 'production' : 'arrival';
     return lot;
   });
