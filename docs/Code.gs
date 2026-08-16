@@ -3432,6 +3432,18 @@ function safeSalesConvertedQty_(qty, factor, row, item) {
   if (!isFinite(factor) || factor <= 0 || factor > 1000000) {
     throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': faktor konversi unit tidak wajar (' + factor + ').');
   }
+
+  const reportUnit = normalizeUnit_(row && row.unit), defaultUnit = normalizeUnit_(item && item.unit);
+  const intrinsicFactor = intrinsicStockUnitConversionFactor_(reportUnit, defaultUnit);
+  if (reportUnit && defaultUnit && reportUnit !== defaultUnit && intrinsicFactor) {
+    const tolerance = Math.max(0.0000000001, Math.abs(intrinsicFactor) * 0.000001);
+    if (Math.abs(factor - intrinsicFactor) > tolerance) {
+      throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') +
+        ': konversi ' + reportUnit + ' ke ' + defaultUnit + ' tidak sesuai ukuran kemasan. Faktor wajib ' + intrinsicFactor +
+        ', bukan ' + factor + '. Upload dihentikan.');
+    }
+  }
+
   const converted = qty * factor;
   if (!isFinite(converted) || converted < 0 || converted > 100000000) {
     throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') + ': hasil QTY setelah konversi tidak wajar (' + converted + ' ' + (item && item.unit || '') + '). Upload dihentikan agar stock tidak rusak.');
@@ -3721,13 +3733,65 @@ function normalizeUnit_(value) { return String(value || '').trim().replace(/\s+/
 
 function defaultUnitConversionFactor_(fromUnit, toUnit) {
   const pair = normalizeUnit_(fromUnit) + '|' + normalizeUnit_(toUnit);
-  const defaults = { 'KG|GR': 1000, 'GR|KG': 0.001, 'L|ML': 1000, 'ML|L': 0.001 };
+  const defaults = {
+    'KG|GR': 1000, 'GR|KG': 0.001,
+    'L|ML': 1000, 'LT|ML': 1000, 'LTR|ML': 1000,
+    'ML|L': 0.001, 'ML|LT': 0.001, 'ML|LTR': 0.001,
+    'L|LT': 1, 'LT|L': 1, 'L|LTR': 1, 'LTR|L': 1, 'LT|LTR': 1, 'LTR|LT': 1
+  };
   return Number(defaults[pair] || 0);
+}
+
+/**
+ * Unit seperti PCK@1LT / BTL@250ML membawa ukuran kemasan di nama unit.
+ * Nilainya dapat dikonversi secara deterministik tanpa mempercayai faktor manual.
+ * Base volume = ML, base mass = GR.
+ */
+function stockUnitMeasureProfile_(unit) {
+  const normalized = normalizeUnit_(unit);
+  if (!normalized) return null;
+  const measureBase = function (measure) {
+    measure = String(measure || '').toUpperCase();
+    if (measure === 'ML') return { dimension: 'VOLUME', baseQty: 1 };
+    if (measure === 'L' || measure === 'LT' || measure === 'LTR') return { dimension: 'VOLUME', baseQty: 1000 };
+    if (measure === 'GR' || measure === 'G') return { dimension: 'MASS', baseQty: 1 };
+    if (measure === 'KG') return { dimension: 'MASS', baseQty: 1000 };
+    return null;
+  };
+
+  const plain = measureBase(normalized);
+  if (plain) return { dimension: plain.dimension, baseQty: plain.baseQty, packaged: false, unit: normalized };
+
+  const match = /^([^@]+)@([0-9]+(?:[.,][0-9]+)?)(ML|L|LT|LTR|GR|G|KG)$/.exec(normalized);
+  if (!match) return null;
+  const amount = Number(String(match[2]).replace(',', '.'));
+  const measure = measureBase(match[3]);
+  if (!measure || !isFinite(amount) || amount <= 0) return null;
+  return {
+    dimension: measure.dimension,
+    baseQty: amount * measure.baseQty,
+    packaged: true,
+    packageUnit: match[1],
+    unit: normalized
+  };
+}
+
+function intrinsicStockUnitConversionFactor_(fromUnit, toUnit) {
+  const from = stockUnitMeasureProfile_(fromUnit), to = stockUnitMeasureProfile_(toUnit);
+  if (!from || !to || from.dimension !== to.dimension || !from.baseQty || !to.baseQty) return 0;
+  const factor = from.baseQty / to.baseQty;
+  return isFinite(factor) && factor > 0 ? factor : 0;
 }
 
 function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
   fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
   if (fromUnit === toUnit) return 1;
+
+  // Konversi yang bisa dibuktikan dari nama unit selalu lebih dipercaya daripada
+  // faktor manual/saved. Contoh: 120 ML -> PCK@1LT = 0,12 PCK@1LT.
+  const intrinsic = intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
+  if (intrinsic) return intrinsic;
+
   const standard = defaultUnitConversionFactor_(fromUnit, toUnit);
   if (standard) return standard;
   const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
@@ -9040,21 +9104,121 @@ function mockRecallUniqueDates_(values) {
   return result.sort();
 }
 
-function mockRecallCreationMeta_(consumedRows, generatedRows, sourceRow, code) {
-  const generatedDates = mockRecallUniqueDates_((generatedRows || []).filter(function (row) {
-    return String(row.source_row || '') === String(sourceRow || '') &&
-      String(row.item_code || '').toUpperCase() === String(code || '').toUpperCase();
-  }).map(function (row) {
-    return String(row.production_date || row.event_date || '');
-  }));
+function mockRecallDateOnly_(value) {
+  return String(value || '').slice(0, 10);
+}
 
-  const generatedSet = {};
-  generatedDates.forEach(function (date) { generatedSet[date] = true; });
-  const stockDates = mockRecallUniqueDates_((consumedRows || []).map(function (row) {
-    return String(row.production_date || row.source_arrival_date || '');
-  })).filter(function (date) { return !generatedSet[date]; });
+function mockRecallSplitRowsByQty_(rows, firstQty) {
+  let remaining = Math.max(0, Number(firstQty || 0));
+  const first = [], rest = [];
+  (rows || []).forEach(function (row) {
+    const qty = Math.max(0, Number(row.qty || 0));
+    if (qty <= 0.0000001) return;
+    if (remaining > 0.0000001) {
+      const taken = Math.min(qty, remaining);
+      if (taken > 0.0000001) {
+        const clone = Object.assign({}, row); clone.qty = taken; first.push(clone);
+        remaining -= taken;
+      }
+      const leftover = qty - taken;
+      if (leftover > 0.0000001) {
+        const clone = Object.assign({}, row); clone.qty = leftover; rest.push(clone);
+      }
+    } else {
+      rest.push(Object.assign({}, row));
+    }
+  });
+  return { first: first, rest: rest };
+}
 
-  return { generatedDates: generatedDates, stockDates: stockDates };
+function mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe) {
+  consumedQty = Math.max(0, Number(consumedQty || 0));
+  if (forceRecipe) return { qty: consumedQty, dates: state.saleDate ? [state.saleDate] : [] };
+  if (!state.generatedRemaining) {
+    state.generatedRemaining = {};
+    state.generatedDatesByKey = {};
+    (state.generatedProductions || []).forEach(function (row) {
+      const key = String(row.source_row || '') + '|' + String(row.item_code || '').toUpperCase();
+      state.generatedRemaining[key] = Number(state.generatedRemaining[key] || 0) + Math.max(0, Number(row.qty || 0));
+      if (!state.generatedDatesByKey[key]) state.generatedDatesByKey[key] = [];
+      const date = mockRecallDateOnly_(row.production_date || row.event_date);
+      if (date && state.generatedDatesByKey[key].indexOf(date) < 0) state.generatedDatesByKey[key].push(date);
+    });
+  }
+  const key = String(sourceRow || '') + '|' + String(code || '').toUpperCase();
+  const available = Math.max(0, Number(state.generatedRemaining[key] || 0));
+  const qty = Math.min(consumedQty, available);
+  state.generatedRemaining[key] = Math.max(0, available - qty);
+  return { qty: qty, dates: qty > 0.0000001 ? (state.generatedDatesByKey[key] || []).slice().sort() : [] };
+}
+
+function mockRecallWipSourceRows_(state, code) {
+  code = String(code || '').toUpperCase();
+  state.wipSourceCache = state.wipSourceCache || {};
+  if (Object.prototype.hasOwnProperty.call(state.wipSourceCache, code)) return state.wipSourceCache[code];
+  const table = stockCardTable_();
+  const sql = 'WITH scoped AS (SELECT * FROM ' + table + ' WHERE record_type=\'MOVEMENT\' AND outlet=@outlet AND location=\'Store\' ' +
+    'AND item_code=@code AND direction=\'IN\' AND movement_type IN (\'Production\',\'Transfer In\')), ' +
+    'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id,\'\'),record_id) ' +
+    'ORDER BY COALESCE(version,1) DESC,created_at DESC)=1) ' +
+    'SELECT event_date,movement_type,production_date,expiry_date,source_arrival_date,source_file,transfer_id,created_at FROM latest ORDER BY event_date,created_at';
+  const rows = runNamedQuery_(sql, { outlet: state.outlet, code: code }, { useQueryCache: false });
+  state.wipSourceCache[code] = rows;
+  return rows;
+}
+
+function mockRecallWipExistingLots_(state, code, rows) {
+  const grouped = {}, order = [];
+  (rows || []).forEach(function (row) {
+    const arrivalDate = mockRecallDateOnly_(row.source_arrival_date);
+    const productionDate = mockRecallDateOnly_(row.production_date);
+    const expiryDate = mockRecallDateOnly_(row.expiry_date);
+    const unit = String(row.unit || '');
+    const key = [arrivalDate, productionDate, expiryDate, unit].join('|');
+    if (!grouped[key]) {
+      grouped[key] = { qty: 0, unit: unit, arrivalDate: arrivalDate, productionDate: productionDate, expiryDate: expiryDate, sourceType: 'stock' };
+      order.push(key);
+    }
+    grouped[key].qty += Math.max(0, Number(row.qty || 0));
+  });
+  if (!order.length) return [];
+
+  const sources = mockRecallWipSourceRows_(state, code);
+  function expiryMatches(source, lot) {
+    const sourceExpiry = mockRecallDateOnly_(source.expiry_date);
+    return !lot.expiryDate || !sourceExpiry || sourceExpiry === lot.expiryDate;
+  }
+  function productionMatches(source, lot) {
+    const sourceProduction = mockRecallDateOnly_(source.production_date);
+    return !lot.productionDate || !sourceProduction || sourceProduction === lot.productionDate;
+  }
+
+  return order.map(function (key) {
+    const lot = grouped[key];
+    const transfer = sources.filter(function (source) {
+      return String(source.movement_type || '') === 'Transfer In' &&
+        mockRecallDateOnly_(source.event_date) === lot.arrivalDate && expiryMatches(source, lot) && productionMatches(source, lot);
+    })[0];
+    if (transfer) {
+      lot.sourceType = 'transfer';
+      return lot;
+    }
+    const production = sources.filter(function (source) {
+      if (String(source.movement_type || '') !== 'Production') return false;
+      if (/^SALES_COGS\|/i.test(String(source.source_file || ''))) return false;
+      const eventDate = mockRecallDateOnly_(source.event_date), sourceProduction = mockRecallDateOnly_(source.production_date);
+      const dateMatch = lot.productionDate ? (sourceProduction === lot.productionDate || eventDate === lot.arrivalDate) : eventDate === lot.arrivalDate;
+      return dateMatch && expiryMatches(source, lot);
+    })[0];
+    if (production) {
+      lot.sourceType = 'production';
+      if (!lot.productionDate) lot.productionDate = mockRecallDateOnly_(production.production_date || production.event_date);
+      return lot;
+    }
+    // Fallback hanya untuk histori lama yang belum memiliki metadata asal lengkap.
+    lot.sourceType = lot.productionDate ? 'production' : 'arrival';
+    return lot;
+  });
 }
 
 function appendMockRecallMaterialLots_(materials, rows, childOf, depth) {
@@ -9098,12 +9262,22 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
   path = path || {};
   if (depth > 10) return;
 
-  const creation = mockRecallCreationMeta_(consumedRows, state.generatedProductions, sourceRow, code);
+  const consumedQty = (consumedRows || []).reduce(function (sum, row) { return sum + Math.max(0, Number(row.qty || 0)); }, 0);
+  const generated = mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe);
+  const generatedQty = Math.min(consumedQty, Math.max(0, Number(generated.qty || 0)));
+  const existingQty = Math.max(0, consumedQty - generatedQty);
+  // FIFO memakai stok yang sudah tersedia terlebih dahulu. Sisa di belakang adalah WIP yang baru generated oleh upload.
+  const split = mockRecallSplitRowsByQty_(consumedRows, existingQty);
+  const existingLots = mockRecallWipExistingLots_(state, code, split.first);
+
   state.materials.push({
-    rowType: 'wipHeader', code: code, material: name, unit: '', qty: null,
+    rowType: 'wipHeader', code: code, material: name, unit: (consumedRows[0] && consumedRows[0].unit) || '', qty: consumedQty,
     arrivalDate: '', productionDate: '', expiryDate: '', childOf: '', kind: 'WIP', depth: depth,
-    generatedDates: creation.generatedDates, stockDates: creation.stockDates
+    existingLots: existingLots, generatedDates: generated.dates || [], generatedQty: generatedQty
   });
+
+  // WIP existing dari produksi manual / transfer berhenti di level WIP. Bahan hanya dibuka untuk bagian yang generated saat upload Sales COGS.
+  if (generatedQty <= 0.0000001 && !forceRecipe) return;
 
   if (path[code]) {
     state.materials.push({
@@ -9114,15 +9288,13 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
   }
 
   state.materials.push({
-    rowType: 'wipSubheader', code: '', material: 'Bahan-Bahan ' + name, unit: '', qty: null,
+    rowType: 'wipSubheader', code: '', material: 'Bahan-Bahan ' + name + ' · Generated Upload', unit: '', qty: null,
     arrivalDate: '', productionDate: '', expiryDate: '', childOf: name, kind: 'WIP', depth: depth
   });
 
   const nextPath = Object.assign({}, path); nextPath[code] = true;
   let usageRows = [];
-  if (!forceRecipe) usageRows = loadMockRecallHistoricalWipUsage_(state.outlet, code, consumedRows);
-
-  if (!usageRows.length && !forceRecipe) {
+  if (!forceRecipe) {
     usageRows = state.sameDayUsage.filter(function (child) {
       return String(child.source_row || '') === String(sourceRow || '') &&
         normalizeStoreName_(child._mockRecallParent) === normalizeStoreName_(name);
@@ -9152,14 +9324,13 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
     return;
   }
 
-  // Fallback: bila batch lama tidak cukup untuk dilacak, resep tetap dibuka sampai WIP paling dasar.
+  // Fallback hanya untuk generated upload lama yang belum menyimpan WIP Material Usage lengkap.
   const variant = selectSalesWipVariant_(state.wipCatalog, code, name);
   if (!variant) return;
   const outputItem = state.stockMasterByCode[code];
-  const consumedQty = (consumedRows || []).reduce(function (sum, row) { return sum + Number(row.qty || 0); }, 0);
   const stockUnit = outputItem ? outputItem.unit : (consumedRows[0] && consumedRows[0].unit) || variant.unit;
   const outputFactor = wipConversionFactor_(code, stockUnit, variant.unit, {}, state.savedConversions) || 1;
-  const formulaQty = consumedQty * outputFactor;
+  const formulaQty = generatedQty * outputFactor;
 
   variant.materials.forEach(function (recipe) {
     const material = state.stockMasterByCode[String(recipe.code || '').toUpperCase()];
@@ -9181,7 +9352,6 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
     }
   });
 }
-
 
 function aggregateMockRecallLots_(rows, childOf) {
   const map = {}, order = [];
@@ -9396,8 +9566,9 @@ function getMockRecallDetail(token, payload) {
 
     const materials = [];
     const treeState = {
-      outlet: outlet, materials: materials, wipCatalog: wipCatalog, sameDayUsage: wipUsageRows,
-      generatedProductions: generatedProductions, stockMasterByCode: stockMasterByCode, savedConversions: savedConversions
+      outlet: outlet, saleDate: date, materials: materials, wipCatalog: wipCatalog, sameDayUsage: wipUsageRows,
+      generatedProductions: generatedProductions, stockMasterByCode: stockMasterByCode, savedConversions: savedConversions,
+      generatedRemaining: null, generatedDatesByKey: null, wipSourceCache: {}
     };
 
     sourceOrder.forEach(function (sourceKey) {
