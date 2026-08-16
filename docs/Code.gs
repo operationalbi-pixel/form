@@ -926,12 +926,14 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee);
     ensureStockCardReadInfrastructure_();
-    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
-    const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
+    const isBihq = employee.outlet === 'BIHQ';
+    const outlets = isBihq ? readActiveOutlets_().filter(function (value) { return value !== 'BIHQ'; }) : [employee.outlet];
+    const requested = String(requestedOutlet || '').trim().toUpperCase();
+    const outlet = isBihq && !requested ? '' : resolveStockOutlet_(employee, requested, outlets);
     const eventDate = normalizeDate_(requestedDate, true);
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
-    const totals = readShowcaseLogTotals_(outlet, eventDate);
-    const items = readShowcaseItems_().map(function (item) {
+    const totals = outlet ? readShowcaseLogTotals_(outlet, eventDate) : {};
+    const items = outlet ? readShowcaseItems_().map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
       return {
         code: item.code, displayCode: item.sourceCode || item.code, category: item.category, name: item.name, unit: item.unit,
@@ -941,13 +943,13 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
       };
     }).sort(function (a, b) {
       return a.category.localeCompare(b.category) || a.name.localeCompare(b.name);
-    });
+    }) : [];
     const task = findShowcaseLogTask_();
     const tasks = readTasksForEmployee_(employee);
-    const completions = readCompletionMap_(outlet);
+    const completions = outlet ? readCompletionMap_(outlet) : {};
     return {
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
-      items: items, progress: readShowcaseLogProgress_(outlet, eventDate), taskId: task ? task.id : '',
+      items: items, progress: outlet ? readShowcaseLogProgress_(outlet, eventDate) : null, taskId: task ? task.id : '',
       tasks: tasks, pages: readPagesForEmployee_(employee), completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
