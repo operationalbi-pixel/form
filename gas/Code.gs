@@ -174,6 +174,7 @@ function apiActions_() {
     wipUploadPreview: previewWipProductionUpload,
     wipProduce: processWipProduction,
     wipProduction: getWipProductionDetail,
+    wipHistory: getWipProductionHistory,
     wipCancel: cancelWipProduction,
     transferOptions: getStockTransferOptions,
     transferLocal: transferStockWithinOutlet,
@@ -933,11 +934,17 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const eventDate = normalizeDate_(requestedDate, true);
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
     const totals = outlet ? readShowcaseLogTotals_(outlet, eventDate) : {};
+    // Aging hanya dibutuhkan untuk tampilan hari ini. Hari lampau tetap ringan dan tidak menjalankan query tambahan.
+    const aging = outlet && eventDate === todayIso_() ? readShowcaseAgingBreakdown_(outlet, eventDate) : {};
     const items = outlet ? readShowcaseItems_().map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
+      const age = aging[String(item.code || '').trim().toUpperCase()] || aging['NAME|' + String(item.name || '').trim().toLowerCase()] || {};
+      const emptyAging = { fresh: 0, green: 0, yellow: 0, red: 0 };
       return {
         code: item.code, displayCode: item.sourceCode || item.code, category: item.category, name: item.name, unit: item.unit,
         previousBalance: Number(day.previousBalance || 0), balance: Number(day.balance || 0),
+        previousAging: eventDate === todayIso_() ? (age.previous || emptyAging) : null,
+        balanceAging: eventDate === todayIso_() ? (age.balance || emptyAging) : null,
         totalIn: Number(day.totalIn || 0), totalSold: Number(day.totalSold || 0), totalWaste: Number(day.totalWaste || 0),
         inUsers: day.inUsers || '', soldUsers: day.soldUsers || '', wasteUsers: day.wasteUsers || ''
       };
@@ -1141,6 +1148,137 @@ function takeShowcaseProductLots_(pool, qty) {
   }
   if (remaining > 0.0000001) throw new Error('Lot FIFO Store berubah saat Showcase Log diproses. Muat ulang lalu coba lagi.');
   return taken;
+}
+
+/**
+ * Breakdown umur stok Showcase berdasarkan TANGGAL MASUK SHOWCASE (event_date movement IN),
+ * bukan tanggal kedatangan bahan di Store. Dipakai hanya untuk tanggal hari ini.
+ * Bucket:
+ * - fresh  : Hari H / masuk hari ini
+ * - green  : H+1 / masuk kemarin (hari ke-2 di Showcase)
+ * - yellow : H+2 / masuk 2 hari lalu (hari ke-3 di Showcase)
+ * - red    : >H+2 / masuk 3 hari lalu atau lebih
+ */
+function readShowcaseAgingBreakdown_(outlet, eventDate) {
+  const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' ' +
+    'AND outlet = @outlet AND location = \'Showcase\' AND event_date <= CAST(@eventDate AS DATE)), ' +
+    'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
+    'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+    'SELECT record_id,item_code,item_name,unit,CAST(event_date AS STRING) AS event_date,direction,qty,movement_type,info,' +
+    'CAST(expiry_date AS STRING) AS expiry_date,CAST(source_arrival_date AS STRING) AS source_arrival_date,' +
+    'CAST(production_date AS STRING) AS production_date,created_at FROM latest ' +
+    'WHERE direction IN (\'IN\',\'OUT\',\'LOT\') AND qty IS NOT NULL AND qty > 0 ' +
+    'ORDER BY item_code,item_name,event_date,created_at,record_id';
+  const states = {};
+
+  function stateFor(row) {
+    const code = String(row.item_code || '').trim().toUpperCase();
+    const name = String(row.item_name || '').trim();
+    const key = code ? 'CODE|' + code : 'NAME|' + name.toLowerCase();
+    if (!states[key]) states[key] = { code: code, name: name, lots: [], debt: 0, previous: null, todayStarted: false };
+    return states[key];
+  }
+  function sortLots(lots) {
+    lots.sort(function (a, b) {
+      return String(a.expiryDate || '9999-12-31').localeCompare(String(b.expiryDate || '9999-12-31')) ||
+        String(a.sourceDate || '').localeCompare(String(b.sourceDate || '')) ||
+        String(a.entryDate || '').localeCompare(String(b.entryDate || '')) ||
+        Number(a.createdAt || 0) - Number(b.createdAt || 0);
+    });
+  }
+  function cloneLots(lots) {
+    return (lots || []).filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }).map(function (lot) {
+      return { qty: Number(lot.qty || 0), entryDate: String(lot.entryDate || ''), expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.sourceDate || ''), createdAt: Number(lot.createdAt || 0) };
+    });
+  }
+  function ageDays(entryDate) {
+    const from = Date.parse(String(entryDate || '').slice(0, 10) + 'T00:00:00Z');
+    const to = Date.parse(String(eventDate || '').slice(0, 10) + 'T00:00:00Z');
+    if (!isFinite(from) || !isFinite(to)) return 3;
+    return Math.max(0, Math.floor((to - from) / 86400000));
+  }
+  function buckets(lots) {
+    const result = { fresh: 0, green: 0, yellow: 0, red: 0 };
+    (lots || []).forEach(function (lot) {
+      const qty = Math.max(0, Number(lot.qty || 0));
+      if (qty <= 0.0000001) return;
+      const age = ageDays(lot.entryDate);
+      if (age <= 0) result.fresh += qty;
+      else if (age === 1) result.green += qty;
+      else if (age === 2) result.yellow += qty;
+      else result.red += qty;
+    });
+    Object.keys(result).forEach(function (key) { result[key] = Math.round(result[key] * 1000000) / 1000000; });
+    return result;
+  }
+  function applyMovement(state, row) {
+    const qty = Math.max(0, Number(row.qty || 0));
+    if (qty <= 0.0000001) return;
+    const direction = String(row.direction || '').toUpperCase();
+    if (direction === 'LOT' && String(row.movement_type || '') === 'Lot Balance Override') {
+      let override = null;
+      try { override = JSON.parse(String(row.info || '')); } catch (error) {}
+      if (override && Array.isArray(override.lots)) {
+        state.lots = override.lots.filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; }).map(function (lot) {
+          return {
+            qty: Number(lot.qty || 0),
+            entryDate: String(lot.stockInDate || lot.showcaseDate || lot.arrivalDate || row.event_date || ''),
+            expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.arrivalDate || ''), createdAt: Number(row.created_at || 0)
+          };
+        });
+        state.debt = 0;
+        sortLots(state.lots);
+      }
+      return;
+    }
+    if (direction === 'IN') {
+      let remaining = qty;
+      if (state.debt > 0.0000001) {
+        const covered = Math.min(remaining, state.debt);
+        state.debt -= covered;
+        remaining -= covered;
+      }
+      if (remaining > 0.0000001) {
+        state.lots.push({
+          qty: remaining, entryDate: String(row.event_date || '').slice(0, 10), expiryDate: String(row.expiry_date || '').slice(0, 10),
+          sourceDate: String(row.source_arrival_date || row.event_date || '').slice(0, 10), createdAt: Number(row.created_at || 0)
+        });
+        sortLots(state.lots);
+      }
+      return;
+    }
+    if (direction === 'OUT') {
+      let remaining = qty;
+      sortLots(state.lots);
+      for (let i = 0; i < state.lots.length && remaining > 0.0000001; i++) {
+        const available = Math.max(0, Number(state.lots[i].qty || 0));
+        if (available <= 0.0000001) continue;
+        const taken = Math.min(available, remaining);
+        state.lots[i].qty = available - taken;
+        remaining -= taken;
+      }
+      state.lots = state.lots.filter(function (lot) { return Number(lot.qty || 0) > 0.0000001; });
+      if (remaining > 0.0000001) state.debt += remaining;
+    }
+  }
+
+  runNamedQuery_(sql, { outlet: outlet, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
+    const state = stateFor(row), rowDate = String(row.event_date || '').slice(0, 10);
+    if (rowDate === eventDate && !state.todayStarted) {
+      state.previous = buckets(cloneLots(state.lots));
+      state.todayStarted = true;
+    }
+    applyMovement(state, row);
+  });
+
+  const result = {};
+  Object.keys(states).forEach(function (key) {
+    const state = states[key];
+    const view = { previous: state.previous || buckets(cloneLots(state.lots)), balance: buckets(cloneLots(state.lots)) };
+    if (state.code) result[state.code] = view;
+    if (state.name) result['NAME|' + state.name.toLowerCase()] = view;
+  });
+  return result;
 }
 
 function readShowcaseLogTotals_(outlet, eventDate) {
@@ -1888,11 +2026,14 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         const receivedAt = new Date(String(receiptDetails.receivedAt || line.receivedAt || ''));
         const storageEnteredAt = new Date(String(receiptDetails.storageEnteredAt || line.storageEnteredAt || ''));
         const productTemperature = Number(line.productTemperature === '' || line.productTemperature === null || line.productTemperature === undefined ? receiptDetails.productTemperature : line.productTemperature);
+        const expiryProvided = Object.prototype.hasOwnProperty.call(line, 'expiryDate');
+        const expiryDate = expiryProvided ? normalizeDate_(line.expiryDate, false) : '';
         if (isNaN(receivedAt.getTime())) throw new Error('Waktu Terima wajib diisi.');
         if (isNaN(storageEnteredAt.getTime())) throw new Error('Waktu Masuk Storage wajib diisi.');
         if (storageEnteredAt.getTime() < receivedAt.getTime()) throw new Error('Waktu Masuk Storage tidak boleh lebih awal dari Waktu Terima.');
         if (!isFinite(productTemperature)) throw new Error('Suhu Produk wajib diisi dengan angka untuk setiap item.');
-        receivedMap[lineId] = { qty: qty, receivedAt: receivedAt, storageEnteredAt: storageEnteredAt, productTemperature: productTemperature };
+        receivedMap[lineId] = { qty: qty, receivedAt: receivedAt, storageEnteredAt: storageEnteredAt, productTemperature: productTemperature,
+          expiryProvided: expiryProvided, expiryDate: expiryDate };
       });
       const firstReceivedKey = Object.keys(receivedMap)[0];
       if (firstReceivedKey) eventDate = Utilities.formatDate(receivedMap[firstReceivedKey].receivedAt, 'Asia/Jakarta', 'yyyy-MM-dd');
@@ -1901,29 +2042,37 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         const receipt = receivedMap[line.lineId];
         if (!receipt) throw new Error('Lengkapi QTY, waktu penerimaan, waktu masuk storage, dan suhu untuk setiap item.');
         const receivedQty = receipt.qty;
+        const originalExpiryDate = normalizeDate_(line.expiryDate, false);
+        const receivedExpiryDate = receipt.expiryProvided ? receipt.expiryDate : originalExpiryDate;
+        if (originalExpiryDate && receipt.expiryProvided && !receivedExpiryDate) {
+          throw new Error(line.code + ' · ' + line.name + ': Expired Date yang sudah ada tidak boleh dikosongkan. Silakan edit tanggalnya bila perlu.');
+        }
         const item = { code: line.code, category: line.category, name: line.name, unit: line.unit };
         if (receivedQty > 0.0000001) {
-          const expiryWarning = incomingFefoWarning_(outlet, receiveLocation, item, line.expiryDate);
+          const expiryWarning = incomingFefoWarning_(outlet, receiveLocation, item, receivedExpiryDate);
           if (expiryWarning) expiryWarnings.push(expiryWarning);
           stockRows.push(stockTransferMovementRow_(transferId, outlet, receiveLocation, item, 'IN', receivedQty, 'Transfer In',
             'Transfer From ' + transfer.fromOutlet + ' / ' + transfer.fromLocation + ' · Ke ' + outlet + ' / ' + receiveLocation +
             ' · No Transfer ' + receiptNo + ' · QTY dikirim ' + formatQty_(line.qty) +
-            (line.note ? ' · ' + line.note : '') + (expiryWarning ? ' | FEFO ALERT: expiry masuk ' + expiryWarning.incomingExpiryDate + ' lebih cepat dari stok existing ' + expiryWarning.existingExpiryDate : ''), line.expiryDate, employee, now, eventDate, line.productionDate));
+            (receivedExpiryDate !== originalExpiryDate ? ' · Expired penerima ' + (receivedExpiryDate || 'belum dicatat') + (originalExpiryDate ? ' (asal ' + originalExpiryDate + ')' : '') : '') +
+            (line.note ? ' · ' + line.note : '') + (expiryWarning ? ' | FEFO ALERT: expiry masuk ' + expiryWarning.incomingExpiryDate + ' lebih cepat dari stok existing ' + expiryWarning.existingExpiryDate : ''), receivedExpiryDate, employee, now, eventDate, line.productionDate));
         }
         const eventId = Utilities.getUuid();
         acceptedRows.push({ insertId: eventId, json: {
           event_id: eventId, transfer_id: transferId, status: 'ACCEPTED', from_outlet: transfer.fromOutlet, from_location: transfer.fromLocation,
           to_outlet: outlet, to_location: receiveLocation, item_code: line.code, category: line.category, item_name: line.name,
-          unit: line.unit, qty: Number(line.qty || 0), received_qty: receivedQty, note: line.note || '', expiry_date: line.expiryDate || null,
+          unit: line.unit, qty: Number(line.qty || 0), received_qty: receivedQty, note: line.note || '', expiry_date: receivedExpiryDate || null,
           created_by: transfer.createdBy, created_by_name: transfer.createdByName, created_at: now.getTime() / 1000,
           accepted_by: employee.nik, accepted_by_name: employee.name, accepted_at: now.getTime() / 1000,
           received_at: receipt.receivedAt.getTime() / 1000, storage_entered_at: receipt.storageEnteredAt.getTime() / 1000,
-          product_temperature: receipt.productTemperature, receipt_no: receiptNo, delivery_date: transfer.deliveryDate || null
+          product_temperature: receipt.productTemperature, receipt_no: receiptNo, delivery_date: transfer.deliveryDate || null,
+          source_event_id: line.lineId || null
         }});
         line.receivedQty = receivedQty;
         line.receivedAt = receipt.receivedAt.toISOString();
         line.storageEnteredAt = receipt.storageEnteredAt.toISOString();
         line.productTemperature = receipt.productTemperature;
+        line.expiryDate = receivedExpiryDate;
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
       insertAll_('stock_transfers', acceptedRows);
@@ -4316,6 +4465,110 @@ function readLatestProductionRows_(outlet, location, productionId) {
   return runNamedQuery_(sql, { outlet: outlet, location: location, productionId: productionId }, { useQueryCache: false });
 }
 
+function wipProductionSourceType_(sourceFile) {
+  const source = String(sourceFile || '');
+  if (/^SALES_COGS\|/i.test(source)) return 'AUTO_SALES';
+  if (/^WIP_PRODUCTION\|/i.test(source)) return 'TEMPLATE';
+  return 'MANUAL';
+}
+
+function wipProductionSourceLabel_(sourceFile) {
+  const type = wipProductionSourceType_(sourceFile);
+  return type === 'AUTO_SALES' ? 'Auto Generated By Upload Penjualan' :
+    type === 'TEMPLATE' ? 'By Upload Template' : 'Manual Input';
+}
+
+function getWipProductionHistory(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    if (isShowcaseLocation_(context.location)) throw new Error('History Produksi WIP tidak tersedia untuk penyimpanan Showcase.');
+    const date = normalizeDate_(payload.date || todayIso_(), true);
+    const sql = latestStockMovementCte_() +
+      ' SELECT transfer_id,logical_id,record_id,item_code,item_name,unit,qty,production_date,expiry_date,event_date,source_file,source_hash,source_row,created_at ' +
+      'FROM latest WHERE outlet=@outlet AND location=@location AND movement_type=\'Production\' AND qty>0.0000001 ' +
+      'AND CAST(COALESCE(production_date,event_date) AS DATE)=CAST(@date AS DATE) ' +
+      'ORDER BY COALESCE(production_date,event_date) DESC,created_at DESC,item_name';
+    const rows = runNamedQuery_(sql, { outlet: context.outlet, location: context.location, date: date }, { useQueryCache: false }).map(function (row) {
+      const productionId = String(row.transfer_id || row.logical_id || row.record_id || '');
+      const sourceFile = String(row.source_file || '');
+      return {
+        productionId: productionId, code: String(row.item_code || ''), name: String(row.item_name || ''),
+        unit: String(row.unit || ''), qty: Number(row.qty || 0), productionDate: String(row.production_date || ''),
+        expiryDate: String(row.expiry_date || ''), eventDate: String(row.event_date || ''), sourceFile: sourceFile,
+        sourceType: wipProductionSourceType_(sourceFile), sourceLabel: wipProductionSourceLabel_(sourceFile)
+      };
+    });
+    return { date: date, outlet: context.outlet, location: context.location, rows: rows };
+  });
+}
+
+function wipProductionMaterialDetails_(outlet, location, usageRows) {
+  usageRows = (usageRows || []).filter(function (row) { return Number(row.qty || 0) > 0.0000001; });
+  if (!usageRows.length) return [];
+  const resolved = [], unresolved = [], byCode = {};
+  usageRows.forEach(function (row) {
+    if (row.source_arrival_date || row.production_date || row.expiry_date) {
+      resolved.push({
+        code: String(row.item_code || ''), name: String(row.item_name || ''), unit: String(row.unit || ''),
+        qty: Number(row.qty || 0), arrivalDate: String(row.source_arrival_date || ''),
+        productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || '')
+      });
+    } else {
+      unresolved.push(row);
+      const code = String(row.item_code || '').toUpperCase();
+      if (code) byCode[code] = true;
+    }
+  });
+  const codes = Object.keys(byCode), movementMap = {};
+  if (codes.length) {
+    const sql = latestStockMovementCte_() +
+      ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,COALESCE(version,1) AS version,' +
+      'item_code,item_name,event_date,direction,qty,movement_type,info,production_date,expiry_date,source_arrival_date,' +
+      'transfer_id,supplier,source_file,source_row,created_by,created_at FROM latest ' +
+      'WHERE outlet=@outlet AND location=@location AND item_code IN UNNEST(@codes) ORDER BY item_code,event_date,created_at';
+    const histories = {};
+    runNamedQuery_(sql, { outlet: outlet, location: location, codes: codes }, { useQueryCache: false }).forEach(function (raw) {
+      const code = String(raw.item_code || '').toUpperCase();
+      if (!histories[code]) histories[code] = [];
+      histories[code].push(salesHistoryRowFromQuery_(raw));
+    });
+    Object.keys(histories).forEach(function (code) {
+      const history = histories[code];
+      calculateFifoSnapshots_(history);
+      history.forEach(function (movement) {
+        if (movement.recordId) movementMap['R|' + movement.recordId] = movement;
+        if (movement.logicalId) movementMap['L|' + movement.logicalId] = movement;
+      });
+    });
+  }
+  unresolved.forEach(function (row) {
+    const movement = movementMap['R|' + String(row.record_id || '')] || movementMap['L|' + String(row.logical_id || '')];
+    const lots = movement && Array.isArray(movement.fifoUsageLots) ? movement.fifoUsageLots : [];
+    if (lots.length) {
+      lots.forEach(function (lot) {
+        resolved.push({
+          code: String(row.item_code || ''), name: String(row.item_name || ''), unit: String(row.unit || ''),
+          qty: Number(lot.qty || 0), arrivalDate: String(lot.sourceDate || ''),
+          productionDate: String(lot.productionDate || ''), expiryDate: String(lot.expiryDate || '')
+        });
+      });
+    } else {
+      resolved.push({
+        code: String(row.item_code || ''), name: String(row.item_name || ''), unit: String(row.unit || ''),
+        qty: Number(row.qty || 0), arrivalDate: '', productionDate: '', expiryDate: ''
+      });
+    }
+  });
+  const grouped = {}, order = [];
+  resolved.forEach(function (row) {
+    const key = [row.code, row.name, row.unit, row.arrivalDate, row.productionDate, row.expiryDate].join('|');
+    if (!grouped[key]) { grouped[key] = Object.assign({}, row, { qty: 0 }); order.push(key); }
+    grouped[key].qty += Number(row.qty || 0);
+  });
+  return order.map(function (key) { return grouped[key]; });
+}
+
 function getWipProductionDetail(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -4323,7 +4576,20 @@ function getWipProductionDetail(token, payload) {
     const rows = readLatestProductionRows_(context.outlet, context.location, productionId), output = rows.filter(function (row) { return row.movement_type === 'Production' && Number(row.qty || 0) > 0; })[0];
     if (!output) throw new Error('Data produksi tidak ditemukan atau sudah dibatalkan.');
     const recipeMatch = /Resep\s+(.+?)\s+·\s+Formula/i.exec(String(output.info || ''));
-    return { productionId: productionId, line: { code: String(output.item_code || ''), name: String(output.item_name || ''), qty: Number(output.qty || 0), unit: String(output.unit || ''), variantKey: recipeMatch ? recipeMatch[1].trim() : '', productionDate: String(output.production_date || ''), expiryDate: String(output.expiry_date || ''), eventDate: String(output.event_date || '') } };
+    const sourceFile = String(output.source_file || '');
+    return {
+      productionId: productionId,
+      sourceType: wipProductionSourceType_(sourceFile),
+      sourceLabel: wipProductionSourceLabel_(sourceFile),
+      line: {
+        code: String(output.item_code || ''), name: String(output.item_name || ''), qty: Number(output.qty || 0), unit: String(output.unit || ''),
+        variantKey: recipeMatch ? recipeMatch[1].trim() : '', productionDate: String(output.production_date || ''),
+        expiryDate: String(output.expiry_date || ''), eventDate: String(output.event_date || '')
+      },
+      materials: wipProductionMaterialDetails_(context.outlet, context.location, rows.filter(function (row) {
+        return row.movement_type === 'WIP Material Usage' && Number(row.qty || 0) > 0;
+      }))
+    };
   });
 }
 
@@ -4474,7 +4740,7 @@ function ensureStockCardReadInfrastructure_() {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v16') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v17') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -4532,9 +4798,9 @@ function ensureStockCardInfrastructure_() {
     bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
     bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING'),
     bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING'),
-    bqField_('delivery_date', 'DATE')
+    bqField_('delivery_date', 'DATE'), bqField_('source_event_id', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v16', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v17', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -5578,7 +5844,7 @@ function readStockTransferHistory_(outlet) {
 }
 
 function stockTransferSelectFields_() {
-  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, delivery_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids, photo_count';
+  return 'event_id, transfer_id, status, from_outlet, from_location, to_outlet, to_location, item_code, category, item_name, unit, qty, received_qty, note, expiry_date, delivery_date, created_by, created_by_name, created_at, accepted_by, accepted_by_name, accepted_at, received_at, storage_entered_at, product_temperature, rejected_by, rejected_by_name, rejected_at, rejection_reason, receipt_no, photo_file_ids, photo_count, source_event_id';
 }
 
 function buildStockTransferFromRows_(rows) {
@@ -5619,24 +5885,32 @@ function buildStockTransferFromRows_(rows) {
     transfer.storageEnteredAt = String(accepted[0].storage_entered_at || '');
     transfer.productTemperature = accepted[0].product_temperature === null || accepted[0].product_temperature === undefined ? null : Number(accepted[0].product_temperature);
     transfer.receiptNo = String(accepted[0].receipt_no || '');
-    const receivedQueues = {};
+    const receivedQueues = {}, receivedBySource = {};
     accepted.forEach(function (row) {
-      const key = stockTransferLineKey_(row.item_code, row.expiry_date);
-      if (!receivedQueues[key]) receivedQueues[key] = [];
-      receivedQueues[key].push({
+      const receipt = {
         qty: Number(row.received_qty === null || row.received_qty === undefined ? row.qty : row.received_qty),
         receivedAt: String(row.received_at || ''),
         storageEnteredAt: String(row.storage_entered_at || ''),
-        productTemperature: row.product_temperature === null || row.product_temperature === undefined ? null : Number(row.product_temperature)
-      });
+        productTemperature: row.product_temperature === null || row.product_temperature === undefined ? null : Number(row.product_temperature),
+        expiryDate: String(row.expiry_date || '').slice(0, 10)
+      };
+      const sourceEventId = String(row.source_event_id || '');
+      if (sourceEventId) receivedBySource[sourceEventId] = receipt;
+      const key = stockTransferLineKey_(row.item_code, row.expiry_date);
+      if (!receivedQueues[key]) receivedQueues[key] = [];
+      receivedQueues[key].push(receipt);
     });
     transfer.items.forEach(function (item) {
-      const queue = receivedQueues[stockTransferLineKey_(item.code, item.expiryDate)] || [];
-      const receipt = queue.length ? queue.shift() : null;
+      let receipt = receivedBySource[item.lineId] || null;
+      if (!receipt) {
+        const queue = receivedQueues[stockTransferLineKey_(item.code, item.expiryDate)] || [];
+        receipt = queue.length ? queue.shift() : null;
+      }
       item.receivedQty = receipt ? receipt.qty : Number(item.qty || 0);
       item.receivedAt = receipt ? receipt.receivedAt : transfer.receivedAt;
       item.storageEnteredAt = receipt ? receipt.storageEnteredAt : transfer.storageEnteredAt;
       item.productTemperature = receipt ? receipt.productTemperature : transfer.productTemperature;
+      if (receipt) item.expiryDate = receipt.expiryDate;
     });
   } else if (rejected.length) {
     transfer.status = 'REJECTED';
@@ -7053,7 +7327,7 @@ function prepareStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_PREPARED_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
   return syncStockCardV2Migration();
 }
 
@@ -7068,7 +7342,7 @@ function activateStockCardV2AfterAudit() {
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIGRATION_ACTIVATED_AT', new Date().toISOString());
   properties.deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
   return { activated: true, activeTable: 'stock_card_v2', rollbackMirror: 'stock_card', audit: audit };
 }
 
@@ -7078,7 +7352,7 @@ function rollbackStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_ROLLED_BACK_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v16');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
   return { rolledBack: true, activeTable: 'stock_card', mirrorTable: 'stock_card_v2' };
 }
 
