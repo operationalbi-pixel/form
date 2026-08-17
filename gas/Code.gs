@@ -2298,17 +2298,22 @@ function recalculateStockFifoFefo(token, payload) {
     const context = resolveStockContext_(token, payload.outlet, payload.location);
     const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
     const days = Number(payload.days);
-    if ([7, 30].indexOf(days) < 0) throw new Error('Pilih periode rekalkulasi 7 atau 30 hari ke belakang.');
+    const requestedStartDate = normalizeDate_(payload.startDate, false);
+    if (!requestedStartDate && [7, 30].indexOf(days) < 0) throw new Error('Pilih periode 7 hari, 30 hari, atau isi tanggal mulai rekalkulasi.');
 
     const lock = acquireStockWriteLock_();
     try {
       const history = readStockHistoryForFifoRecalculation_(context.outlet, context.location, item);
       if (!history.length) throw new Error('Riwayat Stock Card item ini masih kosong.');
       const today = todayIso_();
-      const startDate = stockDateOffset_(today, -days);
-      // Baseline must be one day before the selected period. Putting it on
-      // startDate makes the later-created LOT override run after that day's
-      // IN/OUT movements and overwrite the very history being recalculated.
+      const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);
+      if (startDate > today) throw new Error('Tanggal mulai Recalculate tidak boleh lebih besar dari hari ini.');
+      const statusBefore = stockFifoFefoStatus_(history, item);
+      if (!requestedStartDate && statusBefore.recommendedStartDate && statusBefore.recommendedStartDate < startDate) {
+        throw new Error('Ada perubahan histori sejak ' + statusBefore.recommendedStartDate + ' yang berada di luar periode ' + days + ' hari. Gunakan periode yang lebih panjang atau pilih Dari Tanggal Perubahan.');
+      }
+      // Baseline is one day before the selected start date. The marker is written there
+      // so every IN/OUT from startDate onward can be replayed in FEFO order.
       const baselineDate = stockDateOffset_(startDate, -1);
       const snapshots = calculateFifoSnapshots_(history);
       const snapshotDates = Object.keys(snapshots).sort();
@@ -2322,22 +2327,26 @@ function recalculateStockFifoFefo(token, payload) {
       const now = new Date();
       const recordId = Utilities.getUuid();
       const recalculation = {
-        days: days,
+        mode: 'FEFO',
+        days: requestedStartDate ? null : days,
         baselineDate: baselineDate,
         startDate: startDate,
         endDate: today,
-        calculatedAt: now.toISOString()
+        calculatedAt: now.toISOString(),
+        requestedFromChangeDate: Boolean(requestedStartDate)
       };
       const overrideLots = recalculatedLots.map(function (lot) {
         return {
           qty: Number(lot.qty || 0),
+          productionDate: String(lot.productionDate || '').slice(0, 10),
           arrivalDate: lot.sourceDate || baselineDate,
           stockInDate: lot.showcaseDate || lot.sourceDate || baselineDate,
           expiryDate: String(lot.expiryDate || '').slice(0, 10)
         };
-      });
+      }).sort(compareStockLotsFefo_);
+      const periodLabel = requestedStartDate ? 'Dari ' + startDate : days + ' Hari';
       const info = JSON.stringify({
-        note: 'Recalculate FIFO & FEFO ' + days + ' Hari',
+        note: 'Recalculate FIFO & FEFO ' + periodLabel,
         recalculation: recalculation,
         uncoveredQty: Math.max(0, -baselineBalance),
         lots: overrideLots
@@ -2348,13 +2357,15 @@ function recalculateStockFifoFefo(token, payload) {
         item_name: item.name, unit: item.unit, direction: 'LOT', qty: Math.max(0, baselineBalance),
         movement_type: 'Lot Balance Override', info: info, event_date: baselineDate,
         created_at: now.getTime() / 1000, created_by: context.employee.nik,
-        source_file: 'FIFO_FEFO_RECALC', source_row: days
+        source_file: 'FIFO_FEFO_RECALC', source_row: requestedStartDate ? 0 : days
       }}]);
       return {
         recalculated: true,
+        mode: 'FEFO',
         itemCode: item.code,
         itemName: item.name,
-        days: days,
+        days: requestedStartDate ? null : days,
+        periodLabel: periodLabel,
         baselineDate: baselineDate,
         startDate: startDate,
         endDate: today,
@@ -4084,12 +4095,14 @@ function getStockHistory(token, payload) {
       currentLots = reconcileFifoLots_(currentDates.length ? currentSnapshots[currentDates[currentDates.length - 1]] : [], currentQty);
     }
 
+    const fifoFefoStatus = stockFifoFefoStatus_(readStockHistoryForFifoRecalculation_(outlet, location, item), item);
     return {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
       month: bounds.month, periodClosingQty: periodClosingQty,
       history: visibleRows, fifoLotsByDate: fifoLotsByDate,
       hasPrevious: priorRows.length > 0, hasNext: bounds.month < bounds.currentMonth,
       currentLots: currentLots,
+      fifoFefoStatus: fifoFefoStatus,
       fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_MONTHLY'
     };
   });
@@ -6697,6 +6710,21 @@ function stockDateOffset_(isoDate, days) {
   return Utilities.formatDate(date, 'Asia/Jakarta', 'yyyy-MM-dd');
 }
 
+function stockIsoDateOffset_(isoDate, days) {
+  const raw = String(isoDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return '';
+  const date = new Date(raw + 'T00:00:00Z');
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+function stockDefaultRecalcStartDate_(today, days) {
+  const startDate = stockDateOffset_(today, -days);
+      // Baseline must be one day before the selected period. Putting it on
+  // startDate makes the later-created LOT override run after that day's flow.
+  return startDate;
+}
+
 function readStockHistoryForFifoRecalculation_(outlet, location, item) {
   const itemCondition = isShowcaseLocation_(location)
     ? 'item_name = @item'
@@ -6726,6 +6754,14 @@ function stockLotOverrideInfo_(movement) {
   }
 }
 
+function stockLotOverrideIsRecalculation_(override, movement) {
+  if (!override) return false;
+  if (override.recalculation) return true;
+  // Backward compatibility for legacy recalculation markers written before
+  // recalculation metadata was embedded. Expiry-completion overrides always carry a note.
+  return !String(override.note || '').trim() && movement && movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override';
+}
+
 function stockMovementCreatedMillis_(movement) {
   const raw = movement && movement.createdAt;
   const numeric = Number(raw);
@@ -6734,31 +6770,85 @@ function stockMovementCreatedMillis_(movement) {
   return isFinite(parsed) ? parsed : 0;
 }
 
-function stockFifoFefoIssue_(history, item) {
-  let latestExpiryCompletion = 0, latestRecalculation = 0, lastCompletedDate = '';
+function stockMovementCreatedDate_(movement) {
+  const millis = stockMovementCreatedMillis_(movement);
+  if (!millis) return '';
+  // Jakarta does not use DST; shifting +07:00 keeps this helper independent from GAS services.
+  return new Date(millis + (7 * 60 * 60 * 1000)).toISOString().slice(0, 10);
+}
+
+function stockFifoFefoStatus_(history, item) {
+  let latestRecalculation = null, latestRecalculationOverride = null, latestRecalculationCreated = -1;
   (history || []).forEach(function (movement) {
     const override = stockLotOverrideInfo_(movement);
-    if (!override) return;
+    if (!stockLotOverrideIsRecalculation_(override, movement)) return;
     const created = stockMovementCreatedMillis_(movement);
-    if (override.recalculation) {
-      latestRecalculation = Math.max(latestRecalculation, created);
-      return;
-    }
-    const hasDatedLot = override.lots.some(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
-    if (hasDatedLot && /Lengkapi Expired Date/i.test(String(override.note || ''))) {
-      if (created >= latestExpiryCompletion) {
-        latestExpiryCompletion = created;
-        lastCompletedDate = String(movement.date || '').slice(0, 10);
-      }
+    if (!latestRecalculation || created > latestRecalculationCreated) {
+      latestRecalculation = movement;
+      latestRecalculationOverride = override;
+      latestRecalculationCreated = created;
     }
   });
-  if (!latestExpiryCompletion || latestRecalculation > latestExpiryCompletion) return null;
+  const recalculation = latestRecalculationOverride && latestRecalculationOverride.recalculation || {};
+  const legacyActiveStartDate = latestRecalculation ? stockIsoDateOffset_(latestRecalculation.date, 1) : '';
+  const lastEndDate = String(recalculation.endDate || '9999-12-31').slice(0, 10);
+  let recommendedStartDate = '', expiryCorrection = false, backdateCorrection = false;
+  function remember(date) {
+    date = String(date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    if (!recommendedStartDate || date < recommendedStartDate) recommendedStartDate = date;
+  }
+  (history || []).forEach(function (movement) {
+    const created = stockMovementCreatedMillis_(movement);
+    const override = stockLotOverrideInfo_(movement);
+    if (stockLotOverrideIsRecalculation_(override, movement)) return;
+    // Expired Date completion changes the attributes of older physical lots. Recalculate
+    // from the earliest affected Arrival Date, not from the date the correction was entered.
+    if (override && /Lengkapi Expired Date/i.test(String(override.note || '')) &&
+        (!latestRecalculationCreated || created > latestRecalculationCreated)) {
+      const datedLots = (override.lots || []).filter(function (lot) { return Boolean(String(lot.expiryDate || '').slice(0, 10)); });
+      if (datedLots.length) {
+        expiryCorrection = true;
+        datedLots.forEach(function (lot) { remember(lot.arrivalDate || lot.stockInDate || movement.date); });
+      }
+      return;
+    }
+    if (!latestRecalculationCreated || created <= latestRecalculationCreated) return;
+    if (movement.direction !== 'IN' && movement.direction !== 'OUT') return;
+    const eventDate = String(movement.date || '').slice(0, 10), createdDate = stockMovementCreatedDate_(movement);
+    // Only a genuine backdate/edit invalidates the previous audit baseline. Normal future
+    // transactions keep using the active FEFO mode without requiring another recalculation.
+    if (eventDate && createdDate && eventDate < createdDate && (!lastEndDate || eventDate <= lastEndDate)) {
+      backdateCorrection = true;
+      remember(eventDate);
+    }
+  });
+  let reason = '';
+  if (expiryCorrection && backdateCorrection) reason = 'Ada koreksi Expired Date dan transaksi backdate setelah perhitungan terakhir.';
+  else if (expiryCorrection) reason = 'Expired Date lot lama baru dilengkapi atau dikoreksi.';
+  else if (backdateCorrection) reason = 'Ada transaksi backdate/edit pada periode yang sudah pernah dihitung.';
+  return {
+    mode: latestRecalculation ? 'FEFO' : 'FIFO',
+    activeStartDate: String(recalculation.startDate || legacyActiveStartDate || '').slice(0, 10),
+    activeBaselineDate: latestRecalculation ? String(latestRecalculation.date || '').slice(0, 10) : '',
+    lastRecalculatedAt: String(recalculation.calculatedAt || latestRecalculation && latestRecalculation.createdAt || ''),
+    recommendedStartDate: recommendedStartDate,
+    needsRecalculation: Boolean(recommendedStartDate),
+    reason: reason
+  };
+}
+
+function stockFifoFefoIssue_(history, item) {
+  const status = stockFifoFefoStatus_(history, item);
+  if (!status.needsRecalculation) return null;
   return {
     code: String(item.code || ''),
     name: String(item.name || ''),
     unit: String(item.unit || ''),
-    updatedDate: lastCompletedDate,
-    reason: 'Expired Date ditambahkan setelah transaksi sebelumnya. Jalankan rekalkulasi agar flow kembali FEFO lalu FIFO.'
+    updatedDate: status.recommendedStartDate,
+    recommendedStartDate: status.recommendedStartDate,
+    mode: status.mode,
+    reason: (status.reason || 'Ada perubahan lot yang perlu dihitung ulang.') + ' Recalculate mulai ' + status.recommendedStartDate + '.'
   };
 }
 
@@ -6771,21 +6861,37 @@ function stockBalanceAtDate_(history, date) {
   }, 0);
 }
 
-function compareStockLots_(a, b) {
+function stockLotArrivalKey_(lot) {
+  lot = lot || {};
+  return String(lot.sourceDate || lot.showcaseDate || lot.productionDate || '9999-12-31').slice(0, 10) || '9999-12-31';
+}
+
+/** Default operational flow: pure FIFO. Expired Date is informational until a Recalculate marker activates FEFO. */
+function compareStockLotsFifo_(a, b) {
+  const arrivalCompare = stockLotArrivalKey_(a).localeCompare(stockLotArrivalKey_(b));
+  if (arrivalCompare) return arrivalCompare;
+  const stockInCompare = String(a && a.showcaseDate || '9999-12-31').localeCompare(String(b && b.showcaseDate || '9999-12-31'));
+  if (stockInCompare) return stockInCompare;
+  const productionCompare = String(a && a.productionDate || '9999-12-31').localeCompare(String(b && b.productionDate || '9999-12-31'));
+  if (productionCompare) return productionCompare;
+  return String(a && a.expiryDate || '9999-12-31').localeCompare(String(b && b.expiryDate || '9999-12-31'));
+}
+
+/** Recalculated flow: FEFO first; lots without expiry stay after dated lots and remain FIFO among themselves. */
+function compareStockLotsFefo_(a, b) {
   const aExpiry = String(a && a.expiryDate || '').slice(0, 10);
   const bExpiry = String(b && b.expiryDate || '').slice(0, 10);
-  // Undated lots are an explicit FIFO queue and must be cleared before newer
-  // dated receipts. Dated lots are then ordered by FEFO and FIFO as tie-break.
-  if (Boolean(aExpiry) !== Boolean(bExpiry)) return aExpiry ? 1 : -1;
+  if (Boolean(aExpiry) !== Boolean(bExpiry)) return aExpiry ? -1 : 1;
   if (aExpiry && bExpiry) {
     const expiryCompare = aExpiry.localeCompare(bExpiry);
     if (expiryCompare) return expiryCompare;
   }
-  const arrivalCompare = String(a && a.sourceDate || '').localeCompare(String(b && b.sourceDate || ''));
-  if (arrivalCompare) return arrivalCompare;
-  const stockInCompare = String(a && a.showcaseDate || '').localeCompare(String(b && b.showcaseDate || ''));
-  if (stockInCompare) return stockInCompare;
-  return String(aExpiry || '9999-12-31').localeCompare(String(bExpiry || '9999-12-31'));
+  return compareStockLotsFifo_(a, b);
+}
+
+/** Kept as the system-wide default comparator so normal Sales/Transfer flow remains FIFO. */
+function compareStockLots_(a, b) {
+  return compareStockLotsFifo_(a, b);
 }
 
 function applyKnownExpiryToBaselineLots_(baselineLots, currentLots) {
@@ -6806,7 +6912,7 @@ function applyKnownExpiryToBaselineLots_(baselineLots, currentLots) {
     const sourceQty = Number(source.qty || 0);
     if (sourceQty <= 0.0000001) return;
     if (String(source.expiryDate || '').slice(0, 10)) {
-      result.push({ qty: sourceQty, expiryDate: source.expiryDate, sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
+      result.push({ qty: sourceQty, productionDate: source.productionDate || '', expiryDate: source.expiryDate, sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
       return;
     }
     const key = String(source.sourceDate || '') + '|' + String(source.showcaseDate || '');
@@ -6815,13 +6921,13 @@ function applyKnownExpiryToBaselineLots_(baselineLots, currentLots) {
     for (let i = 0; i < pool.length && remaining > 0.0000001; i++) {
       if (pool[i].qty <= 0.0000001) continue;
       const assigned = Math.min(remaining, pool[i].qty);
-      result.push({ qty: assigned, expiryDate: pool[i].expiryDate, sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
+      result.push({ qty: assigned, productionDate: source.productionDate || '', expiryDate: pool[i].expiryDate, sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
       pool[i].qty -= assigned;
       remaining -= assigned;
     }
-    if (remaining > 0.0000001) result.push({ qty: remaining, expiryDate: '', sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
+    if (remaining > 0.0000001) result.push({ qty: remaining, productionDate: source.productionDate || '', expiryDate: '', sourceDate: source.sourceDate || '', showcaseDate: source.showcaseDate || '' });
   });
-  result.sort(compareStockLots_);
+  result.sort(compareStockLotsFefo_);
   return result;
 }
 
@@ -7531,18 +7637,22 @@ function addBalancesToGroupedHistory_(groups, currentQty) {
 }
 
 function calculateFifoSnapshots_(history) {
-  let activeRecalculation = null, activeRecalculationCreated = -1;
+  let activeRecalculation = null, activeRecalculationInfo = null, activeRecalculationCreated = -1;
   (history || []).forEach(function (movement) {
     const override = stockLotOverrideInfo_(movement);
-    if (!override || !override.recalculation) return;
+    if (!stockLotOverrideIsRecalculation_(override, movement)) return;
     const created = stockMovementCreatedMillis_(movement);
     if (!activeRecalculation || created > activeRecalculationCreated ||
         (created === activeRecalculationCreated && String(movement.recordId || '').localeCompare(String(activeRecalculation.recordId || '')) > 0)) {
       activeRecalculation = movement;
+      activeRecalculationInfo = override.recalculation || { startDate: stockIsoDateOffset_(movement.date, 1), endDate: '9999-12-31', calculatedAt: movement.createdAt || '' };
       activeRecalculationCreated = created;
     }
   });
   const activeRecalculationBaseline = activeRecalculation ? String(activeRecalculation.date || '').slice(0, 10) : '';
+  const activeRecalculationStart = String(activeRecalculationInfo && activeRecalculationInfo.startDate ||
+    (activeRecalculationBaseline ? stockIsoDateOffset_(activeRecalculationBaseline, 1) : '')).slice(0, 10);
+  const activeRecalculationEnd = String(activeRecalculationInfo && activeRecalculationInfo.endDate || '9999-12-31').slice(0, 10);
   const movements = history.slice().sort(function (a, b) {
     const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
     if (dateCompare) return dateCompare;
@@ -7553,7 +7663,13 @@ function calculateFifoSnapshots_(history) {
     return String(a.logicalId || a.recordId || a.transferId || '').localeCompare(String(b.logicalId || b.recordId || b.transferId || ''));
   });
   const lots = [], uncoveredQueue = [], snapshots = {};
-  function sortLots() { lots.sort(compareStockLots_); }
+  function fefoActiveForDate(date) {
+    date = String(date || '').slice(0, 10);
+    return Boolean(activeRecalculationBaseline && date >= activeRecalculationBaseline);
+  }
+  function sortLots(date) {
+    lots.sort(fefoActiveForDate(date) ? compareStockLotsFefo_ : compareStockLotsFifo_);
+  }
   function pinnedLot(movement) {
     if (!movement || movement.direction !== 'OUT') return null;
     const pinned = {
@@ -7561,6 +7677,14 @@ function calculateFifoSnapshots_(history) {
       sourceDate: String(movement.sourceArrivalDate || ''), showcaseDate: ''
     };
     return pinned.productionDate || pinned.expiryDate || pinned.sourceDate ? pinned : null;
+  }
+  function shouldIgnorePinnedLot(movement) {
+    if (!activeRecalculation || !movement || movement.direction !== 'OUT') return false;
+    const date = String(movement.date || '').slice(0, 10);
+    if (!date || !activeRecalculationStart || date < activeRecalculationStart || date > activeRecalculationEnd) return false;
+    // Historical OUT rows that already existed when Recalculate was pressed must be
+    // re-allocated from the newly ordered FEFO queue instead of keeping the old FIFO pin.
+    return stockMovementCreatedMillis_(movement) <= activeRecalculationCreated;
   }
   function matchesPinned(lot, pinned) {
     if (pinned.productionDate && String(lot.productionDate || '') !== pinned.productionDate) return false;
@@ -7581,26 +7705,26 @@ function calculateFifoSnapshots_(history) {
     return remaining;
   }
   movements.forEach(function (movement) {
-    const qty = Number(movement.qty || 0);
+    const qty = Number(movement.qty || 0), movementDate = String(movement.date || '').slice(0, 10);
     movement.fifoUsageLots = [];
     movement.fifoUncovered = 0;
     if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
       let override = null;
       try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
       const supersededFlowOverride = override && activeRecalculation && movement !== activeRecalculation &&
-        String(movement.date || '').slice(0, 10) >= activeRecalculationBaseline &&
+        movementDate >= activeRecalculationBaseline &&
         stockMovementCreatedMillis_(movement) <= activeRecalculationCreated &&
-        (override.recalculation || /Lengkapi Expired Date/i.test(String(override.note || '')));
+        (stockLotOverrideIsRecalculation_(override, movement) || /Lengkapi Expired Date/i.test(String(override.note || '')));
       if (supersededFlowOverride) return;
       if (override && Array.isArray(override.lots)) {
         lots.length = 0; uncoveredQueue.length = 0;
         override.lots.forEach(function (lot) {
           const lotQty = Number(lot.qty || 0);
-          if (lotQty > 0.0000001) lots.push({ qty: lotQty, productionDate: '', expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.arrivalDate || ''), showcaseDate: String(lot.stockInDate || '') });
+          if (lotQty > 0.0000001) lots.push({ qty: lotQty, productionDate: String(lot.productionDate || ''), expiryDate: String(lot.expiryDate || ''), sourceDate: String(lot.arrivalDate || ''), showcaseDate: String(lot.stockInDate || '') });
         });
         const uncoveredQty = Math.max(0, Number(override.uncoveredQty || 0));
         if (uncoveredQty > 0.0000001) uncoveredQueue.push({ movement: { fifoUsageLots: [], fifoUncovered: uncoveredQty }, qty: uncoveredQty });
-        sortLots();
+        sortLots(movementDate);
       }
     } else if (movement.direction === 'IN') {
       const incomingLot = {
@@ -7615,11 +7739,11 @@ function calculateFifoSnapshots_(history) {
         if (debt.qty <= 0.0000001) uncoveredQueue.shift();
       }
       if (incomingRemaining > 0.0000001) lots.push({ qty: incomingRemaining, productionDate: incomingLot.productionDate, expiryDate: incomingLot.expiryDate, sourceDate: incomingLot.sourceDate, showcaseDate: incomingLot.showcaseDate });
-      sortLots();
+      sortLots(movementDate);
     } else if (movement.direction === 'OUT') {
-      sortLots();
+      sortLots(movementDate);
       let remaining = qty;
-      const pinned = pinnedLot(movement);
+      const pinned = shouldIgnorePinnedLot(movement) ? null : pinnedLot(movement);
       if (pinned) remaining = consumeFromLots(movement, remaining, function (lot) { return matchesPinned(lot, pinned); });
       if (remaining > 0.0000001) remaining = consumeFromLots(movement, remaining, null);
       movement.fifoUncovered = Math.max(0, remaining);
@@ -8785,7 +8909,6 @@ function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qt
 function salesAddGeneratedWipLot_(fifoState, outlet, code, transactionDate, qty) {
   const lots = salesFifoLotsFor_(fifoState, outlet, code, transactionDate);
   lots.push({ qty: Number(qty || 0), productionDate: transactionDate, expiryDate: '', sourceDate: transactionDate });
-  lots.sort(compareStockLots_);
 }
 
 /** Mengambil lot secara FIFO/FEFO dari state memory dan langsung mengurangi sisa lot. */
