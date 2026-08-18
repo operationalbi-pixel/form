@@ -136,6 +136,19 @@ function apiActions_() {
     salesAnalysisSaveGlobal: saveSalesAnalysisGlobal,
     salesAnalysisAddGlobal: addSalesAnalysisGlobalItem,
     salesAnalysisDeleteGlobal: deleteSalesAnalysisGlobalItem,
+    mppBootstrap: getMppBootstrap,
+    mppGetEmployees: getMppEmployees,
+    mppAddEmployee: addMppEmployee,
+    mppUpdateEmployee: updateMppEmployee,
+    mppUploadPhoto: uploadMppEmployeePhoto,
+    mppGetData: getMppData,
+    mppSaveBudget: saveMppBudget,
+    mppGetSchedule: getMppSchedule,
+    mppSaveSchedule: saveMppSchedule,
+    mppGetTipData: getMppTipData,
+    mppSaveTipTransaction: saveMppTipTransaction,
+    mppDeleteTipTransaction: deleteMppTipTransaction,
+    mppCalculateTipDistribution: calculateMppTipDistribution,
     bootstrap: getStockCardBootstrap,
     data: getStockCardData,
     supplementary: getStockCardSupplementary,
@@ -13016,4 +13029,790 @@ function deleteSalesAnalysisGlobalItem(token, payload) {
     var context = salesAnalysisContext_(token);
     return SALES_ANALYSIS.deleteGlobalDailyAnalysisItem(context.session.token, payload || {});
   });
+}
+
+
+// ---------- MPP · Schedule · Uang Tip (database legacy yang sama) ----------
+const MPP_SHEET_BUDGET = 'MPP_BUDGET';
+const MPP_SHEET_SCHEDULE = 'SCHEDULE_DATA';
+const MPP_SHEET_TIP_INCOME = 'TIP_INCOME';
+const MPP_SHEET_TIP_EXPENSE = 'TIP_EXPENSE';
+const MPP_SHEET_TIP_LOAN = 'TIP_LOAN';
+const MPP_SHEET_TIP_RW_PN = 'TIP_REWARD_PUNISH';
+
+function ensureMppSheets_() {
+  const definitions = [
+    [MPP_SHEET_BUDGET, ['Outlet', 'Position', 'Budget_Qty', 'Last_Updated_By', 'Timestamp']],
+    [MPP_SHEET_SCHEDULE, ['Outlet', 'Year', 'Month', 'NIK', 'Name', 'Position', 'Schedule_JSON', 'Last_Updated', 'By_User']],
+    [MPP_SHEET_TIP_INCOME, ['ID', 'Outlet', 'Date', 'Type', 'Nominal', 'Description', 'Created_By', 'Timestamp']],
+    [MPP_SHEET_TIP_EXPENSE, ['ID', 'Outlet', 'Date', 'Nominal', 'Description', 'Created_By', 'Timestamp']],
+    [MPP_SHEET_TIP_LOAN, ['ID', 'Outlet', 'Date', 'NIK', 'Name', 'Nominal', 'Description', 'Status', 'Created_By', 'Timestamp']],
+    [MPP_SHEET_TIP_RW_PN, ['ID', 'Outlet', 'Date', 'NIK', 'Name', 'Category', 'Type', 'Value', 'Description', 'Created_By', 'Timestamp']]
+  ];
+  definitions.forEach(function (definition) {
+    const sheet = ensureSheet_(definition[0], definition[1]);
+    if (sheet.getFrozenRows() < 1) sheet.setFrozenRows(1);
+  });
+}
+
+function mppSessionEmployee_(token) {
+  const session = requireSession_(token);
+  const employee = findEmployee_(normalizeNik_(session.nik));
+  assertEmployeeActive_(employee);
+  return employee;
+}
+
+function mppUserView_(employee) {
+  return {
+    nik: employee.nik,
+    name: employee.name,
+    outlet: employee.outlet,
+    role: employee.outlet === 'BIHQ' ? 'SUPERADMIN' : 'USER'
+  };
+}
+
+function mppAllowedOutlet_(employee, requestedOutlet, allowAll) {
+  const requested = String(requestedOutlet || '').trim().toUpperCase();
+  if (employee.outlet !== 'BIHQ') return employee.outlet;
+  if (allowAll && requested === 'ALL') return 'ALL';
+  return requested && requested !== 'ALL' ? requested : (allowAll ? 'ALL' : 'BIHQ');
+}
+
+function mppEmployeeRow_(rowIndex) {
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  const row = Number(rowIndex || 0);
+  if (!sheet || row < 2 || row > sheet.getLastRow()) throw new Error('Data karyawan tidak ditemukan.');
+  const values = sheet.getRange(row, 1, 1, Math.max(9, sheet.getLastColumn())).getDisplayValues()[0];
+  return { sheet: sheet, row: row, nik: normalizeNik_(values[0]), outlet: String(values[2] || '').trim().toUpperCase() };
+}
+
+function mppAssertRowAccess_(employee, rowIndex) {
+  const target = mppEmployeeRow_(rowIndex);
+  if (employee.outlet !== 'BIHQ' && target.outlet !== employee.outlet) throw new Error('Anda hanya dapat mengubah karyawan outlet sendiri.');
+  return target;
+}
+
+function mppAssertRecordAccess_(employee, sheetName, id) {
+  const sheet = getSpreadsheet_().getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('Transaksi tidak ditemukan.');
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getDisplayValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]) !== String(id)) continue;
+    const outlet = String(rows[i][1] || '').trim().toUpperCase();
+    if (employee.outlet !== 'BIHQ' && outlet !== employee.outlet) throw new Error('Anda hanya dapat menghapus transaksi outlet sendiri.');
+    return true;
+  }
+  throw new Error('Transaksi tidak ditemukan.');
+}
+
+function mppWithWriteLock_(callback) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error('Penyimpanan sedang sibuk. Tunggu beberapa detik lalu coba kembali.');
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getMppBootstrap(token) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    ensureMppSheets_();
+    return { user: mppUserView_(employee) };
+  });
+}
+
+function getMppEmployees(token) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    return mppLegacyGetEmployees_(mppUserView_(employee));
+  });
+}
+
+function addMppEmployee(token, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    payload = Object.assign({}, payload || {});
+    payload.outlet = mppAllowedOutlet_(employee, payload.outlet, false);
+    if (!payload.nik || !payload.name) throw new Error('NIK dan nama karyawan wajib diisi.');
+    const existing = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET).getDataRange().getDisplayValues();
+    if (existing.some(function (row, index) { return index > 0 && normalizeNik_(row[0]) === normalizeNik_(payload.nik); })) throw new Error('NIK sudah terdaftar.');
+    return mppWithWriteLock_(function () { return mppLegacyAddEmployee_(payload); });
+  });
+}
+
+function updateMppEmployee(token, actionType, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    payload = Object.assign({}, payload || {});
+    mppAssertRowAccess_(employee, payload.rowIndex);
+    const action = String(actionType || '').toUpperCase();
+    if (action === 'MUTATION') payload.newOutlet = mppAllowedOutlet_(employee, payload.newOutlet, false);
+    if (['MUTATION', 'EDIT', 'RESIGN'].indexOf(action) < 0) throw new Error('Jenis perubahan karyawan tidak valid.');
+    return mppWithWriteLock_(function () { return mppLegacyUpdateEmployee_(action, payload); });
+  });
+}
+
+function uploadMppEmployeePhoto(token, base64Data, fileName, mimeType, rowIndex) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    mppAssertRowAccess_(employee, rowIndex);
+    return mppWithWriteLock_(function () { return mppLegacyUploadPhoto_(base64Data, fileName, mimeType, rowIndex); });
+  });
+}
+
+function getMppData(token) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    ensureMppSheets_();
+    const data = mppLegacyGetData_(mppUserView_(employee));
+    if (employee.outlet !== 'BIHQ') data.outlets = [employee.outlet];
+    return data;
+  });
+}
+
+function saveMppBudget(token, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    payload = Object.assign({}, payload || {});
+    payload.outlet = mppAllowedOutlet_(employee, payload.outlet, false);
+    payload.user = employee.name;
+    payload.updates = Array.isArray(payload.updates) ? payload.updates : [];
+    return mppWithWriteLock_(function () { return mppLegacySaveBudget_(payload); });
+  });
+}
+
+function getMppSchedule(token, outlet, month, year) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    return mppLegacyGetSchedule_(mppAllowedOutlet_(employee, outlet, true), month, year);
+  });
+}
+
+function saveMppSchedule(token, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    payload = Object.assign({}, payload || {});
+    payload.outlet = mppAllowedOutlet_(employee, payload.outlet, false);
+    payload.user = employee.name;
+    payload.schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+    return mppWithWriteLock_(function () { return mppLegacySaveSchedule_(payload); });
+  });
+}
+
+function getMppTipData(token, outlet, month, year) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    return mppLegacyGetTipData_(mppAllowedOutlet_(employee, outlet, true), month, year);
+  });
+}
+
+function saveMppTipTransaction(token, mode, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    payload = Object.assign({}, payload || {});
+    payload.outlet = mppAllowedOutlet_(employee, payload.outlet, false);
+    payload.user = employee.name;
+    const normalizedMode = String(mode || '').toUpperCase();
+    if (['INCOME', 'EXPENSE', 'LOAN', 'REWARD_PUNISH'].indexOf(normalizedMode) < 0) throw new Error('Jenis transaksi tip tidak valid.');
+    return mppWithWriteLock_(function () { return mppLegacySaveTipTransaction_(normalizedMode, payload); });
+  });
+}
+
+function deleteMppTipTransaction(token, mode, id) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    const sheets = { INCOME: MPP_SHEET_TIP_INCOME, EXPENSE: MPP_SHEET_TIP_EXPENSE, LOAN: MPP_SHEET_TIP_LOAN, REWARD_PUNISH: MPP_SHEET_TIP_RW_PN };
+    const normalizedMode = String(mode || '').toUpperCase();
+    if (!sheets[normalizedMode]) throw new Error('Jenis transaksi tip tidak valid.');
+    mppAssertRecordAccess_(employee, sheets[normalizedMode], id);
+    return mppWithWriteLock_(function () { return mppLegacyDeleteTipTransaction_(normalizedMode, id); });
+  });
+}
+
+function calculateMppTipDistribution(token, outlet, month, year) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    return mppLegacyCalculateTipDistribution_(mppAllowedOutlet_(employee, outlet, true), month, year);
+  });
+}
+
+function mppLegacyGetEmployees_(requestingUser) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(CONFIG.EMP_SHEET);
+  const data = sheet.getDataRange().getValues();
+  data.shift();
+  let result = [];
+  data.forEach((row, index) => {
+    if (!row[0] && !row[1]) return;
+    if (requestingUser.role && requestingUser.role !== 'SUPERADMIN' && row[2] !== requestingUser.outlet) return;
+    const status = row[8] ? String(row[8]).toLowerCase() : 'active';
+    if (status === 'resign') return;
+    result.push({
+      rowIndex: index + 2, nik: String(row[0]), name: row[1] || 'No Name', outlet: row[2] || '-',
+      joinDate: mppFormatDate_(row[3]), position: row[4] || '-', grade: row[5] || 0, section: row[6] || '-',
+      photoUrl: row[7] || '', status: status
+    });
+  });
+  return result;
+}
+
+function mppLegacyAddEmployee_(payload) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(CONFIG.EMP_SHEET);
+  sheet.appendRow([payload.nik, payload.name, payload.outlet, payload.joinDate, payload.position, payload.grade, payload.section, '', 'Active']);
+  return { status: 'SUCCESS' };
+}
+
+function mppLegacyUpdateEmployee_(actionType, payload) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(CONFIG.EMP_SHEET);
+  const row = parseInt(payload.rowIndex);
+  if (actionType === 'MUTATION') sheet.getRange(row, 3).setValue(payload.newOutlet);
+  else if (actionType === 'RESIGN') { sheet.getRange(row, 9).setValue('Resign'); sheet.getRange(row, 10).setValue(payload.resignDate); }
+  else if (actionType === 'EDIT') {
+      sheet.getRange(row, 1).setValue(payload.nik);
+      sheet.getRange(row, 2).setValue(payload.name);
+      sheet.getRange(row, 4).setValue(payload.joinDate);
+      sheet.getRange(row, 5).setValue(payload.position);
+      sheet.getRange(row, 6).setValue(payload.grade);
+      sheet.getRange(row, 7).setValue(payload.section);
+  }
+  return { status: 'SUCCESS' };
+}
+
+function mppLegacyUploadPhoto_(base64Data, fileName, mimeType, rowIndex) {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(CONFIG.EMP_SHEET);
+    if (base64Data.length > 50000) return { status: 'ERROR', message: 'Ukuran foto terlalu besar.' };
+    sheet.getRange(rowIndex, 8).setValue(base64Data);
+    return { status: 'SUCCESS', url: base64Data };
+  } catch (e) { return { status: 'ERROR', message: e.toString() }; }
+}
+
+function mppLegacyGetData_(requestingUser) {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sheetEmp = ss.getSheetByName(CONFIG.EMP_SHEET);
+    const dataEmp = sheetEmp.getDataRange().getValues();
+    dataEmp.shift();
+    let outlets = new Set(); let positions = new Set(); let actualCounts = {};
+    dataEmp.forEach(row => {
+      const out = row[2]; const pos = row[4]; const status = row[8] ? String(row[8]).toLowerCase() : 'active';
+      if (out) outlets.add(out); if (pos) positions.add(pos);
+      if (status !== 'resign' && out && pos) actualCounts[`${out}_${pos}`] = (actualCounts[`${out}_${pos}`] || 0) + 1;
+    });
+    const sheetBudget = ss.getSheetByName(MPP_SHEET_BUDGET);
+    const dataBudget = sheetBudget.getDataRange().getValues();
+    dataBudget.shift();
+    let budgetMap = {};
+    dataBudget.forEach(row => { if(row[0] && row[1]) budgetMap[`${row[0]}_${row[1]}`] = Number(row[2]) || 0; });
+    return { status: 'SUCCESS', outlets: Array.from(outlets).sort(), positions: Array.from(positions).sort(), actuals: actualCounts, budgets: budgetMap };
+  } catch (e) { return { status: 'ERROR', message: e.toString() }; }
+}
+
+function mppLegacySaveBudget_(payload) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(MPP_SHEET_BUDGET);
+  payload.updates.forEach(u => sheet.appendRow([payload.outlet, u.position, u.budget, payload.user, new Date()]));
+  return { status: 'SUCCESS' };
+}
+
+function mppLegacyGetSchedule_(outlet, month, year) {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(MPP_SHEET_SCHEDULE);
+    if(!sheet) return {};
+    const data = sheet.getDataRange().getValues();
+    let result = {};
+    for(let i=1; i<data.length; i++) {
+      if ((outlet === 'ALL' || String(data[i][0]) === String(outlet)) && String(data[i][1]) === String(year) && String(data[i][2]) === String(month)) {
+          try { result[String(data[i][3])] = JSON.parse(data[i][6]); } catch(e) { result[String(data[i][3])] = {}; }
+      }
+    }
+    return result;
+  } catch (e) { return {}; }
+}
+
+function mppLegacySaveSchedule_(payload) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(MPP_SHEET_SCHEDULE);
+  if (!sheet) { ensureMppSheets_(); sheet = ss.getSheetByName(MPP_SHEET_SCHEDULE); }
+  const data = sheet.getDataRange().getValues();
+  let rowMap = {};
+  for(let i=1; i<data.length; i++) {
+    if (String(data[i][1]) === String(payload.year) && String(data[i][2]) === String(payload.month)) {
+        rowMap[String(data[i][3])] = i + 1;
+    }
+  }
+  payload.schedules.forEach(item => {
+    const jsonStr = JSON.stringify(item.days);
+    if (rowMap[item.nik]) {
+      const r = rowMap[item.nik];
+      sheet.getRange(r, 1).setValue(payload.outlet); sheet.getRange(r, 7).setValue(jsonStr);
+      sheet.getRange(r, 8).setValue(new Date()); sheet.getRange(r, 9).setValue(payload.user);
+    } else {
+      sheet.appendRow([payload.outlet, payload.year, payload.month, item.nik, item.name, item.position, jsonStr, new Date(), payload.user]);
+    }
+  });
+  return { status: 'SUCCESS' };
+}
+
+// --- MODUL UANG TIP (REVISED LOGIC) ---
+
+/**
+ * Mengambil semua data terkait Uang Tip termasuk Reward Punishment
+ */
+function mppLegacyGetTipData_(outlet, month, year) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+
+  const filterByPeriod = (rowDate, rowOutlet) => {
+    const d = new Date(rowDate);
+    const isOutlet = (outlet === 'ALL') || (String(rowOutlet) === String(outlet));
+    return isOutlet && d.getMonth() == month && d.getFullYear() == year;
+  };
+
+  // 1. Income
+  let income = [];
+  const shIn = ss.getSheetByName(MPP_SHEET_TIP_INCOME);
+  if(shIn) {
+    const data = shIn.getDataRange().getValues();
+    for(let i=1; i<data.length; i++) {
+      if(filterByPeriod(data[i][2], data[i][1])) {
+        income.push({
+          id: data[i][0], outlet: data[i][1], date: mppFormatDate_(data[i][2]),
+          type: data[i][3], nominal: data[i][4], desc: data[i][5]
+        });
+      }
+    }
+  }
+
+  // 2. Expense
+  let expense = [];
+  const shOut = ss.getSheetByName(MPP_SHEET_TIP_EXPENSE);
+  if(shOut) {
+    const data = shOut.getDataRange().getValues();
+    for(let i=1; i<data.length; i++) {
+      if(filterByPeriod(data[i][2], data[i][1])) {
+        expense.push({
+          id: data[i][0], outlet: data[i][1], date: mppFormatDate_(data[i][2]),
+          nominal: data[i][3], desc: data[i][4]
+        });
+      }
+    }
+  }
+
+  // 3. Loan
+  let loan = [];
+  const shLoan = ss.getSheetByName(MPP_SHEET_TIP_LOAN);
+  if(shLoan) {
+    const data = shLoan.getDataRange().getValues();
+    for(let i=1; i<data.length; i++) {
+      if(filterByPeriod(data[i][2], data[i][1])) {
+        loan.push({
+          id: data[i][0], outlet: data[i][1], date: mppFormatDate_(data[i][2]),
+          nik: data[i][3], name: data[i][4], nominal: data[i][5], desc: data[i][6]
+        });
+      }
+    }
+  }
+
+  // 4. Reward & Punishment (BARU)
+  let rwpn = [];
+  const shRwPn = ss.getSheetByName(MPP_SHEET_TIP_RW_PN);
+  if(shRwPn) {
+    const data = shRwPn.getDataRange().getValues();
+    for(let i=1; i<data.length; i++) {
+      if(filterByPeriod(data[i][2], data[i][1])) {
+        rwpn.push({
+          id: data[i][0], outlet: data[i][1], date: mppFormatDate_(data[i][2]),
+          nik: data[i][3], name: data[i][4], category: data[i][5],
+          type: data[i][6], value: data[i][7], desc: data[i][8]
+        });
+      }
+    }
+  }
+
+  return { income, expense, loan, rwpn };
+}
+
+/**
+ * Menyimpan Transaksi
+ */
+function mppLegacySaveTipTransaction_(mode, payload) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const id = Utilities.getUuid();
+  const timestamp = new Date();
+
+  // Helper to ensure sheet exists
+  const getOrInitSheet = (sheetName) => {
+      let sheet = ss.getSheetByName(sheetName);
+      if(!sheet) {
+          ensureMppSheets_(); // Try setup
+          SpreadsheetApp.flush(); // Force write
+          sheet = ss.getSheetByName(sheetName);
+          if (!sheet) throw new Error("Gagal membuat sheet: " + sheetName);
+      }
+      return sheet;
+  };
+
+  try {
+      if (mode === 'INCOME') {
+        const sheet = getOrInitSheet(MPP_SHEET_TIP_INCOME);
+        sheet.appendRow([id, payload.outlet, payload.date, payload.type, payload.nominal, payload.desc, payload.user, timestamp]);
+      }
+      else if (mode === 'EXPENSE') {
+        const sheet = getOrInitSheet(MPP_SHEET_TIP_EXPENSE);
+        sheet.appendRow([id, payload.outlet, payload.date, payload.nominal, payload.desc, payload.user, timestamp]);
+      }
+      else if (mode === 'LOAN') {
+        const sheet = getOrInitSheet(MPP_SHEET_TIP_LOAN);
+        sheet.appendRow([id, payload.outlet, payload.date, payload.nik, payload.name, payload.nominal, payload.desc, 'OPEN', payload.user, timestamp]);
+      }
+      else if (mode === 'REWARD_PUNISH') {
+        const sheet = getOrInitSheet(MPP_SHEET_TIP_RW_PN);
+        // ID, Outlet, Date, NIK, Name, Category, Type, Value, Desc, Created_By, Timestamp
+        sheet.appendRow([id, payload.outlet, payload.date, payload.nik, payload.name, payload.category, payload.type, payload.value, payload.desc, payload.user, timestamp]);
+      }
+
+      return { status: 'SUCCESS', id: id };
+  } catch (e) {
+      return { status: 'ERROR', message: e.toString() };
+  }
+}
+
+function mppLegacyDeleteTipTransaction_(mode, id) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  let sheetName = '';
+  if (mode === 'INCOME') sheetName = MPP_SHEET_TIP_INCOME;
+  else if (mode === 'EXPENSE') sheetName = MPP_SHEET_TIP_EXPENSE;
+  else if (mode === 'LOAN') sheetName = MPP_SHEET_TIP_LOAN;
+  else if (mode === 'REWARD_PUNISH') sheetName = MPP_SHEET_TIP_RW_PN;
+
+  const sheet = ss.getSheetByName(sheetName);
+  if(!sheet) return { status: 'ERROR', message: 'Sheet not found' };
+
+  const data = sheet.getDataRange().getValues();
+  for(let i=1; i<data.length; i++) {
+    if(String(data[i][0]) === String(id)) {
+      sheet.deleteRow(i + 1);
+      return { status: 'SUCCESS' };
+    }
+  }
+  return { status: 'FAILED', message: 'ID not found' };
+}
+
+/**
+ * KALKULASI PEMBAGIAN TIP BARU
+ * Updated to handle 'ALL' outlet for BIHQ Dashboard
+ * Updated logic: Daily Income uses LAST ENTRY WINS (Overwrite) behavior
+ */
+function mppLegacyCalculateTipDistribution_(outlet, month, year) {
+
+  // --- SPECIAL LOGIC FOR BIHQ ALL STORE DASHBOARD ---
+  if (outlet === 'ALL') {
+      const tipData = mppLegacyGetTipData_('ALL', month, year);
+
+      // We need to apply "Daily Income Overwrite Logic" per outlet first before summing
+      // To do this properly, we iterate all income, and for TYPE=DAILY, we group by Outlet+Date and take last.
+
+      let uniqueDailyIncome = {}; // key: "Outlet|Date" -> val: nominal
+      let otherIncomeMap = {}; // key: "Outlet" -> val: sum
+
+      tipData.income.forEach(i => {
+          if (i.type === 'DAILY') {
+              const key = i.outlet + '|' + i.date;
+              uniqueDailyIncome[key] = Number(i.nominal); // Overwrite!
+          } else {
+              if(!otherIncomeMap[i.outlet]) otherIncomeMap[i.outlet] = 0;
+              otherIncomeMap[i.outlet] += Number(i.nominal);
+          }
+      });
+
+      let summaryMap = {}; // { 'OutletName': { income: 0, expense: 0, loan: 0 } }
+      const initOutlet = (name) => {
+          if (!summaryMap[name]) summaryMap[name] = { name: name, income: 0, expense: 0, loan: 0 };
+      };
+
+      // Sum Unique Daily Income to Outlet
+      for (const [key, val] of Object.entries(uniqueDailyIncome)) {
+          const [out, date] = key.split('|');
+          initOutlet(out);
+          summaryMap[out].income += val;
+      }
+      // Sum Other Income
+      for (const [out, val] of Object.entries(otherIncomeMap)) {
+          initOutlet(out);
+          summaryMap[out].income += val;
+      }
+
+      // Aggregate Expense
+      tipData.expense.forEach(e => {
+          initOutlet(e.outlet);
+          summaryMap[e.outlet].expense += Number(e.nominal);
+      });
+
+      // Aggregate Loan
+      tipData.loan.forEach(l => {
+          initOutlet(l.outlet);
+          summaryMap[l.outlet].loan += Number(l.nominal);
+      });
+
+      // Convert to Array & Sort by Income High to Low
+      let leaderboard = Object.values(summaryMap).sort((a,b) => b.income - a.income);
+
+      // Calculate Grand Totals
+      let grandTotal = { income: 0, expense: 0, loan: 0, net: 0 };
+      leaderboard.forEach(x => {
+          grandTotal.income += x.income;
+          grandTotal.expense += x.expense;
+          grandTotal.loan += x.loan;
+      });
+      grandTotal.net = grandTotal.income - grandTotal.expense;
+
+      return {
+          status: 'SUCCESS',
+          mode: 'ALL_OUTLETS',
+          leaderboard: leaderboard,
+          totals: grandTotal,
+          meta: { month, year, outlet: 'ALL STORE' }
+      };
+  }
+
+  // --- EXISTING LOGIC FOR SINGLE OUTLET ---
+
+  // A. Data Gathering
+  const scheduleData = mppLegacyGetSchedule_(outlet, month, year);
+  const tipData = mppLegacyGetTipData_(outlet, month, year);
+
+  const allEmployees = mppLegacyGetEmployees_({role: 'SUPERADMIN'}).filter(e => {
+    return String(e.outlet) === String(outlet) && e.status !== 'resign';
+  });
+
+  const totalStaffCount = allEmployees.length;
+
+  let staffMap = {};
+  allEmployees.forEach(emp => {
+    staffMap[emp.nik] = {
+      nik: emp.nik,
+      name: emp.name,
+      position: emp.position,
+      section: emp.section,
+      grade: emp.grade,
+      daysCount: 0,
+      dailyRecords: [],
+      tipDaily: 0,
+      shareOtherIncome: 0,
+      shareExpense: 0,
+      personalReward: 0,
+      shareRewardDeduction: 0,
+      personalPunish: 0,
+      sharePunishAddition: 0,
+      loan: 0,
+      finalTip: 0,
+      history: { rwpn: [], loan: [] },
+      details: []
+    };
+  });
+
+  const daysInMonth = new Date(year, parseInt(month) + 1, 0).getDate();
+
+  // --- DAFTAR KODE ABSENSI YANG TIDAK DAPAT TIP (Blacklist) ---
+  const OFF_CODES = ['OFF', 'CT', 'XO', 'S', 'I', 'A', 'RS', '', '-', null, 'UNDEFINED'];
+
+  // --- STEP 1: Hitung Daily Tip (Overwrite Logic) ---
+  let totalDailyIncomeAccumulated = 0;
+  let dailyIncomeMap = {};
+  for(let d=1; d<=daysInMonth; d++) dailyIncomeMap[d] = 0;
+
+  // Use filter then iterate to populate map with OVERWRITE
+  tipData.income.filter(i => i.type === 'DAILY').forEach(inc => {
+     const d = new Date(inc.date).getDate();
+     dailyIncomeMap[d] = Number(inc.nominal); // FIX: Overwrite, don't +=
+  });
+
+  // Sum total after overwrite
+  for(let d=1; d<=daysInMonth; d++) {
+      totalDailyIncomeAccumulated += dailyIncomeMap[d];
+  }
+
+  // Loop setiap hari untuk mencatat record absensi SEMUA staff
+  for(let d=1; d<=daysInMonth; d++) {
+     const incomeToday = dailyIncomeMap[d];
+
+     let staffPresent = [];
+     Object.values(staffMap).forEach(staff => {
+         const nik = staff.nik;
+
+         // Ambil raw schedule (handle numeric/string key)
+         let rawCode = '';
+         if(scheduleData[nik]) {
+             rawCode = scheduleData[nik][d] || scheduleData[nik][String(d)] || '';
+         }
+
+         // Normalize
+         let checkCode = String(rawCode).trim().toUpperCase();
+
+         // Simpan kode asli untuk report/display
+         staff.tempCode = rawCode || '-';
+
+         // LOGIC: Jika TIDAK ada di blacklist, maka HADIR
+         // Ini akan meng-cover: MC9, MC11, MDC, M1|Section, dll tanpa perlu split string
+         if(!OFF_CODES.includes(checkCode)) {
+             staffPresent.push(nik);
+         }
+     });
+
+     let share = 0;
+     if(incomeToday > 0 && staffPresent.length > 0) {
+         share = incomeToday / staffPresent.length;
+     }
+
+     Object.values(staffMap).forEach(staff => {
+         const code = staff.tempCode;
+         const isPresent = staffPresent.includes(staff.nik);
+         const received = isPresent ? share : 0;
+
+         if(isPresent) {
+             staff.tipDaily += received;
+             staff.daysCount++;
+         }
+
+         staff.dailyRecords.push({
+             d: d,
+             code: code,
+             tipIn: incomeToday,
+             share: received
+         });
+     });
+  }
+
+  // --- STEP 2: Hitung Other Income (Bagi Rata ke All Staff) ---
+  let totalOtherIncome = 0;
+  tipData.income.filter(i => i.type === 'OTHER').forEach(inc => totalOtherIncome += Number(inc.nominal));
+
+  if(totalOtherIncome > 0 && totalStaffCount > 0) {
+     const shareOther = totalOtherIncome / totalStaffCount;
+     Object.values(staffMap).forEach(s => {
+        s.shareOtherIncome += shareOther;
+        s.details.push(`Pendapatan ${mppFormatRupiah_(totalOtherIncome)} dibagi ${totalStaffCount} staff : +${mppFormatRupiah_(shareOther)}`);
+     });
+  }
+
+  // --- STEP 3: Hitung Expense (Bagi Rata ke All Staff) ---
+  let totalExpense = 0;
+  tipData.expense.forEach(exp => totalExpense += Number(exp.nominal));
+
+  if(totalExpense > 0 && totalStaffCount > 0) {
+     const shareExp = totalExpense / totalStaffCount;
+     Object.values(staffMap).forEach(s => {
+        s.shareExpense += shareExp;
+        s.details.push(`Pengeluaran ${mppFormatRupiah_(totalExpense)} dibagi ${totalStaffCount} staff : -${mppFormatRupiah_(shareExp)}`);
+     });
+  }
+
+  // --- STEP 4: Reward & Punishment ---
+  tipData.rwpn.forEach(rp => {
+     const targetNik = rp.nik;
+     const targetStaff = staffMap[targetNik];
+     const otherStaffCount = totalStaffCount - 1;
+
+     if(!targetStaff) return;
+
+     let val = Number(rp.value);
+     if(rp.type === 'PERCENT') {
+        val = (val / 100) * targetStaff.tipDaily;
+     }
+
+     if(targetStaff) {
+         targetStaff.history.rwpn.push({
+             date: rp.date, category: rp.category, desc: rp.desc, nominal: val
+         });
+     }
+
+     if (rp.category === 'REWARD') {
+        targetStaff.personalReward += val;
+        targetStaff.details.push(`REWARD (${rp.desc}): +${mppFormatRupiah_(val)}`);
+
+        if(otherStaffCount > 0) {
+           const shareLoad = val / otherStaffCount;
+           Object.values(staffMap).forEach(s => {
+              if(s.nik !== targetNik) {
+                 s.shareRewardDeduction += shareLoad;
+                 s.details.push(`Reward ${rp.desc} bagi ${rp.name} : -${mppFormatRupiah_(shareLoad)}`);
+              }
+           });
+        }
+     }
+     else if (rp.category === 'PUNISHMENT') {
+        targetStaff.personalPunish += val;
+        targetStaff.details.push(`PUNISHMENT (${rp.desc}): -${mppFormatRupiah_(val)}`);
+
+        if(otherStaffCount > 0) {
+           const shareBenefit = val / otherStaffCount;
+           Object.values(staffMap).forEach(s => {
+              if(s.nik !== targetNik) {
+                 s.sharePunishAddition += shareBenefit;
+                 s.details.push(`Tambahan ${rp.desc} dari ${rp.name} : +${mppFormatRupiah_(shareBenefit)}`);
+              }
+           });
+        }
+     }
+  });
+
+  // --- STEP 5: Loan ---
+  let totalLoanAll = 0;
+  tipData.loan.forEach(l => {
+     if(staffMap[l.nik]) {
+        staffMap[l.nik].loan += Number(l.nominal);
+        staffMap[l.nik].history.loan.push({ date: l.date, desc: l.desc, nominal: l.nominal });
+        totalLoanAll += Number(l.nominal);
+     }
+  });
+
+  // --- FINAL CALCULATION ---
+  let report = [];
+  Object.values(staffMap).forEach(s => {
+     const incomes = s.tipDaily + s.shareOtherIncome + s.personalReward + s.sharePunishAddition;
+     const outcomes = s.shareExpense + s.personalPunish + s.shareRewardDeduction + s.loan;
+
+     s.finalTip = Math.floor(incomes - outcomes);
+     s.totalTip = Math.floor(s.tipDaily);
+
+     report.push(s);
+  });
+
+  return {
+    status: 'SUCCESS',
+    mode: 'SINGLE_OUTLET',
+    meta: {
+      outlet, month, year,
+      totalIncome: totalDailyIncomeAccumulated + totalOtherIncome,
+      totalExpense: totalExpense,
+      totalLoan: totalLoanAll,
+      finalBalance: (totalDailyIncomeAccumulated + totalOtherIncome) - totalExpense
+    },
+    daily: dailyIncomeMap,
+    rawData: {
+        expenses: tipData.expense,
+        otherIncomes: tipData.income.filter(i => i.type === 'OTHER'),
+        totalStaff: totalStaffCount
+    },
+    staffReport: report
+  };
+}
+
+function mppFormatDate_(dateObj) {
+  if (!dateObj) return "";
+  if (Object.prototype.toString.call(dateObj) === "[object Date]") {
+     if (isNaN(dateObj.getTime())) return "";
+     return Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  return String(dateObj);
+}
+
+function mppFormatRupiah_(num) {
+  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
 }

@@ -81,6 +81,24 @@ for (const match of salesAnalysisHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s
   catch (error) { failures.push(`docs/sales-analysis.html inline script ${salesAnalysisInlineIndex}: ${error.message}`); }
 }
 
+const mppHtml = await text('docs/mpp-schedule.html');
+if (!mppHtml.includes('name="viewport"')) failures.push('MPP · Schedule · Uang Tip belum memiliki viewport responsif');
+if (!mppHtml.includes('src="config.js"') || !mppHtml.includes('src="api-client.js"')) failures.push('MPP · Schedule · Uang Tip belum terhubung ke API BI-Space');
+if (!mppHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('MPP · Schedule · Uang Tip belum memakai sesi BI-Space');
+if (mppHtml.includes('id="login-view"') || mppHtml.includes('id="inp-nik"')) failures.push('Login lama masih terdapat di MPP · Schedule · Uang Tip');
+if (mppHtml.includes('<?!= include(')) failures.push('MPP · Schedule · Uang Tip masih memiliki include khusus GAS');
+if (!mppHtml.includes('@media (max-width: 900px)')) failures.push('MPP · Schedule · Uang Tip belum memiliki layout mobile');
+const mppStaticHtml = mppHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+const mppIds = [...mppStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
+const mppDuplicateIds = [...new Set(mppIds.filter((id, index) => mppIds.indexOf(id) !== index))];
+if (mppDuplicateIds.length) failures.push(`docs/mpp-schedule.html memiliki ID duplikat: ${mppDuplicateIds.join(', ')}`);
+let mppInlineIndex = 0;
+for (const match of mppHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  mppInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/mpp-schedule.html#inline-${mppInlineIndex}` }); }
+  catch (error) { failures.push(`docs/mpp-schedule.html inline script ${mppInlineIndex}: ${error.message}`); }
+}
+
 const css = await text('docs/ui-modern.css');
 if (!/@media\s*\(max-width:\s*760px\)/.test(css)) failures.push('Breakpoint tablet/mobile belum tersedia');
 if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion belum tersedia');
@@ -90,6 +108,9 @@ const backend = await text('docs/Code.gs');
 if (!backend.includes('mobileNotifications: getMobileNotifications')) failures.push('Endpoint mobileNotifications belum terdaftar');
 if (!backend.includes('function getMobileNotifications(token)')) failures.push('Feed notifikasi Android belum tersedia');
 if (!backend.includes('mobilePayload')) failures.push('Gateway JSON Android belum tersedia');
+if (!backend.includes('mppBootstrap: getMppBootstrap')) failures.push('Endpoint bootstrap MPP belum terdaftar');
+if (!backend.includes('function mppSessionEmployee_(token)')) failures.push('Endpoint MPP belum memvalidasi sesi BI-Space');
+if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('MPP tidak lagi memakai sheet database lama');
 const frontendStockCard = await text('docs/stock-card.html');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
 if (!backend.includes("const startDate = stockDateOffset_(today, -days);\n      // Baseline must be one day before the selected period")) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
