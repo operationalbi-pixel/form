@@ -25,6 +25,11 @@ for (const path of ['docs/config.js', 'docs/api-client.js', 'docs/Code.gs']) {
   }
 }
 
+const apiClient = await text('docs/api-client.js');
+if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('messageTargets.push(global.top)')) {
+  failures.push('API client belum menerima respons GAS ketika halaman dibuka di dalam iframe chat');
+}
+
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   const html = await text(path);
   if (!html.includes('ui-modern.css')) failures.push(`${path} belum memuat ui-modern.css`);
