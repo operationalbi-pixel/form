@@ -17,6 +17,7 @@ const CONFIG = Object.freeze({
   SUBPAGE_VISIBILITY_SHEET: 'APP_PAGE_VISIBILITY',
   SESSION_SHEET: 'APP_SESSIONS',
   PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS',
+  MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -106,6 +107,7 @@ function apiActions_() {
     resumeSession: resumeSession,
     beritaAcaraHandoff: createBeritaAcaraHandoff,
     consumeBeritaAcaraHandoff: consumeBeritaAcaraHandoff,
+    notifyBeritaAcaraEvent: notifyBeritaAcaraEvent,
     logout: logout,
     getAppData: getAppData,
     mobileNotifications: getMobileNotifications,
@@ -346,14 +348,86 @@ function consumeBeritaAcaraHandoff(handoff) {
     const employee = findEmployee_(normalizeNik_(data.nik));
     assertEmployeeActive_(employee);
     const position = normalizeEmployeePosition_(employee.position);
+    const notifyToken = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+    CacheService.getScriptCache().put('ba-notify:' + notifyToken, JSON.stringify({
+      nik: employee.nik,
+      issuedAt: Date.now()
+    }), 21600);
     return {
       NIK: employee.nik,
       NAME: employee.name,
       OUTLET: employee.outlet,
       POSITION: position,
       GRADE: employee.grade,
-      ROLE: employee.outlet === 'BIHQ' || position === 'AREA MANAGER' || position === 'FNB' ? 'APPROVER' : 'OUTLET'
+      ROLE: employee.outlet === 'BIHQ' || position === 'AREA MANAGER' || position === 'FNB' ? 'APPROVER' : 'OUTLET',
+      NOTIFY_TOKEN: notifyToken
     };
+  });
+}
+
+/** Receives a trusted Berita Acara event through the short-lived SSO callback token. */
+function notifyBeritaAcaraEvent(callbackToken, payload) {
+  return safe_(function () {
+    callbackToken = String(callbackToken || '').trim();
+    if (!/^[a-f0-9]{64}$/i.test(callbackToken)) throw new Error('Token notifikasi Berita Acara tidak valid.');
+    const cache = CacheService.getScriptCache(), key = 'ba-notify:' + callbackToken, raw = cache.get(key);
+    if (!raw) throw new Error('Token notifikasi Berita Acara sudah kedaluwarsa. Buka kembali Berita Acara dari BI-Space.');
+    const tokenData = JSON.parse(raw);
+    if (!tokenData.issuedAt) throw new Error('Token notifikasi Berita Acara tidak lengkap.');
+    tokenData.issuedAt = Date.now();
+    cache.put(key, JSON.stringify(tokenData), 21600);
+
+    const actor = findEmployee_(normalizeNik_(tokenData.nik));
+    assertEmployeeActive_(actor);
+    payload = payload || {};
+    const kind = String(payload.kind || '').trim().toUpperCase();
+    if (['NEW', 'UPDATED', 'APPROVED', 'REJECTED'].indexOf(kind) < 0) throw new Error('Jenis aktivitas Berita Acara tidak dikenal.');
+    const actorPosition = normalizeEmployeePosition_(actor.position);
+    if ((kind === 'APPROVED' || kind === 'REJECTED') && ['AREA MANAGER', 'FNB'].indexOf(actorPosition) < 0) {
+      throw new Error('Akun ini tidak berwenang mengirim aktivitas approval.');
+    }
+
+    const submissionId = cleanText_(payload.submissionId, 100);
+    const baType = cleanText_(payload.baType, 120) || 'Berita Acara';
+    const outlet = cleanText_(payload.outlet, 80) || actor.outlet;
+    const ownerNik = normalizeNik_(payload.ownerNik || actor.nik);
+    const status = cleanText_(payload.status, 80);
+    const nextApproval = normalizeEmployeePosition_(payload.nextApproval);
+    if (!submissionId) throw new Error('Nomor Berita Acara tidak tersedia.');
+    if ((kind === 'NEW' || kind === 'UPDATED') && ownerNik !== actor.nik) throw new Error('Pemilik Berita Acara tidak sesuai dengan sesi aktif.');
+
+    const recipients = {};
+    recipients[ownerNik] = true;
+    if (nextApproval === 'FNB' || nextApproval === 'AREA MANAGER') {
+      registeredMobilePushNiksForPositions_([nextApproval]).forEach(function (nik) { recipients[nik] = true; });
+    }
+
+    const titleMap = {
+      NEW: 'Berita Acara baru · ' + baType,
+      UPDATED: 'Berita Acara diperbarui · ' + baType,
+      APPROVED: 'Berita Acara disetujui · ' + baType,
+      REJECTED: 'Berita Acara ditolak · ' + baType
+    };
+    const bodyParts = [submissionId, outlet];
+    if (kind === 'NEW' || kind === 'UPDATED') bodyParts.push('oleh ' + actor.name);
+    else bodyParts.push('oleh ' + actor.name + (actorPosition ? ' (' + actorPosition + ')' : ''));
+    if (status) bodyParts.push(status);
+    const eventId = cleanText_(payload.eventId, 100) || Utilities.getUuid();
+    const notification = {
+      id: 'BERITA_ACARA:' + eventId,
+      type: 'BERITA_ACARA',
+      title: titleMap[kind],
+      body: bodyParts.join(' · '),
+      url: 'https://operationalbi-pixel.github.io/form/berita-acara.html'
+    };
+    persistMobileNotifications_(Object.keys(recipients), notification);
+    let sent = 0, attempted = 0;
+    Object.keys(recipients).forEach(function (nik) {
+      const result = sendRealtimeMobilePush_({ nik: nik }, notification);
+      sent += Number(result && result.sent || 0);
+      attempted += Number(result && result.attempted || 0);
+    });
+    return { accepted: true, recipients: Object.keys(recipients).length, sent: sent, attempted: attempted };
   });
 }
 
@@ -463,6 +537,8 @@ function getMobileNotifications(token) {
         url: item.linkUrl || 'https://operationalbi-pixel.github.io/form/'
       });
     });
+
+    readPersistedMobileNotifications_(employee.nik).forEach(function (item) { notifications.push(item); });
 
     if (employee.outlet !== 'BIHQ') {
       ensureStockCardInfrastructure_();
@@ -604,6 +680,65 @@ function readMobilePushTokens_(filter) {
     seen[token] = true;
     return true;
   }).map(function (row) { return String(row[0] || '').trim(); });
+}
+
+function ensureMobileEventSheet_() {
+  const sheet = ensureSheet_(CONFIG.MOBILE_EVENT_SHEET,
+    ['EVENT_ID', 'NIK', 'TYPE', 'TITLE', 'BODY', 'URL', 'CREATED_AT', 'EXPIRES_AT']);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function persistMobileNotifications_(niks, notification) {
+  const unique = {}, now = new Date(), expires = new Date(now.getTime() + 60 * 86400000);
+  (niks || []).forEach(function (nik) { nik = normalizeNik_(nik); if (nik) unique[nik] = true; });
+  const rows = Object.keys(unique).map(function (nik) {
+    return [String(notification.id || Utilities.getUuid()), nik, String(notification.type || 'SYSTEM'),
+      String(notification.title || 'BI-Space'), String(notification.body || ''), String(notification.url || ''), now, expires];
+  });
+  if (!rows.length) return;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sheet = ensureMobileEventSheet_();
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  } finally { lock.releaseLock(); }
+}
+
+function readPersistedMobileNotifications_(nik) {
+  const sheet = ensureMobileEventSheet_();
+  if (sheet.getLastRow() < 2) return [];
+  const normalizedNik = normalizeNik_(nik), now = Date.now();
+  const count = Math.min(5000, sheet.getLastRow() - 1), startRow = sheet.getLastRow() - count + 1;
+  return sheet.getRange(startRow, 1, count, 8).getValues().filter(function (row) {
+    const expiresAt = row[7] instanceof Date ? row[7].getTime() : new Date(row[7] || 0).getTime();
+    return normalizeNik_(row[1]) === normalizedNik && (!expiresAt || expiresAt > now);
+  }).slice(-50).reverse().map(function (row) {
+    return {
+      id: String(row[0] || ''), type: String(row[2] || 'SYSTEM'), title: String(row[3] || 'BI-Space'),
+      body: String(row[4] || ''), url: String(row[5] || ''), createdAt: dateIso_(row[6])
+    };
+  });
+}
+
+function registeredMobilePushNiksForPositions_(positions) {
+  const allowed = {};
+  (positions || []).forEach(function (position) { allowed[normalizeEmployeePosition_(position)] = true; });
+  const sheet = ensureMobilePushTokenSheet_(), candidates = {}, result = [];
+  if (sheet.getLastRow() < 2) return result;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues().forEach(function (row) {
+    if (truthy_(row[6])) candidates[normalizeNik_(row[1])] = true;
+  });
+  Object.keys(candidates).forEach(function (nik) {
+    try {
+      const employee = findEmployee_(nik);
+      assertEmployeeActive_(employee);
+      if (allowed[normalizeEmployeePosition_(employee.position)]) result.push(employee.nik);
+    } catch (error) {
+      console.warn('Penerima push Berita Acara dilewati untuk NIK ' + nik + ': ' + error.message);
+    }
+  });
+  return result;
 }
 
 function sendRealtimeMobilePush_(filter, notification) {

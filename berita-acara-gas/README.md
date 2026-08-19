@@ -15,6 +15,7 @@ Folder ini adalah sumber lengkap project Google Apps Script Berita Acara yang me
 - `AREA MANAGER` dan `FNB` dapat berpindah antara User Mode dan Approval Mode.
 - Dokumen buatan `FNB` tetap membutuhkan persetujuan `AREA MANAGER`.
 - Dokumen buatan `AREA MANAGER` otomatis disetujui pada seluruh tahap.
+- Dokumen baru, revisi, persetujuan, dan penolakan mengirim push realtime ke pembuat serta approver tahap berikutnya melalui token callback SSO berumur enam jam.
 
 ## GitHub sebagai sumber utama
 
