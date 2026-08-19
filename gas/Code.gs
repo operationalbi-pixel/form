@@ -10970,13 +10970,10 @@ function getChatBootstrap(token) {
     const session = requireSession_(token), employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee); ensureChatDatabase_();
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
-    const taskOutlets = employee.outlet === 'BIHQ' || ['AREA MANAGER', 'FNB'].indexOf(normalizeEmployeePosition_(employee.position)) >= 0
-      ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
     const reads = chatReadMap_(employee.nik), latest = chatLatestSequenceMap_();
     const rooms = [{ id: 'GENERAL', title: 'General', type: 'GENERAL', unread: Math.max(0, (latest.GENERAL || 0) - (reads.GENERAL || 0)) }];
     outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: 'Outlet ' + outlet, type: 'OUTLET', outlet: outlet, unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
-    const people = chatEmployees_().map(function (person) { return { nik: person.nik, name: person.name, outlet: person.outlet, position: person.position }; });
-    return { user: userView_(employee), rooms: rooms, outlets: outlets, taskOutlets: taskOutlets, people: people, tasks: chatPendingTasks_(employee), generatedAt: new Date().toISOString() };
+    return { user: userView_(employee), rooms: rooms, outlets: outlets, tasks: chatPendingTasks_(employee), generatedAt: new Date().toISOString() };
   });
 }
 
@@ -11103,13 +11100,13 @@ function createChatTask(token, payload) {
     if (dueAt && isNaN(dueAt.getTime())) throw new Error('Batas waktu tugas tidak valid.');
     const assignments = [], people = chatEmployees_(), roomOutlet = chatRoomOutlet_(roomId);
     if (picType === 'OUTLET') {
-      let outlets = Array.isArray(payload.outlets) ? payload.outlets.map(function (item) { return String(item).trim().toUpperCase(); }) : [];
-      if (roomOutlet) outlets = [roomOutlet]; if (!outlets.length) throw new Error('Pilih minimal satu outlet sebagai PIC.');
+      const outlets = roomOutlet ? [roomOutlet] : people.map(function (person) { return person.outlet; }).filter(function (outlet, index, list) { return outlet && outlet !== 'BIHQ' && list.indexOf(outlet) === index; }).sort();
+      if (!outlets.length) throw new Error('Tidak ada outlet aktif yang dapat menerima tugas.');
       outlets.forEach(function (outlet) { assignments.push([Utilities.getUuid(), taskId, 'OUTLET', outlet, '', 'Tim ' + outlet, 'OPEN', '', '', '']); });
     } else {
-      const niks = Array.isArray(payload.niks) ? payload.niks.map(normalizeNik_) : [];
-      if (!niks.length) throw new Error('Pilih minimal satu person sebagai PIC.');
-      niks.forEach(function (nik) { const person = people.filter(function (item) { return item.nik === nik && (!roomOutlet || item.outlet === roomOutlet || item.outlet === 'BIHQ'); })[0]; if (!person) throw new Error('PIC ' + nik + ' tidak tersedia di grup ini.'); assignments.push([Utilities.getUuid(), taskId, 'PERSON', person.outlet, person.nik, person.name, 'OPEN', '', '', '']); });
+      const recipients = roomOutlet ? people.filter(function (person) { return person.outlet === roomOutlet; }) : people;
+      if (!recipients.length) throw new Error('Tidak ada pengguna aktif yang dapat menerima tugas.');
+      recipients.forEach(function (person) { assignments.push([Utilities.getUuid(), taskId, 'PERSON', person.outlet, person.nik, person.name, 'OPEN', '', '', '']); });
     }
     const attachmentIds = saveChatAttachments_(payload.attachments, employee, '', taskId);
     const lock = LockService.getScriptLock(); lock.waitLock(15000);

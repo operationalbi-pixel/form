@@ -30,6 +30,18 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
   failures.push('API client belum menerima respons GAS ketika halaman dibuka di dalam iframe chat');
 }
 
+const chatHtml = await text('docs/chat.html');
+const chatBackend = await text('docs/Code.gs');
+if (chatHtml.includes('taskPicker') || chatHtml.includes('pickerLabel') || chatHtml.includes('renderTaskPicker')) {
+  failures.push('Form Create Task masih meminta daftar outlet atau person secara manual');
+}
+if (!chatHtml.includes("picType:type") || chatHtml.includes('outlets:type') || chatHtml.includes('niks:type')) {
+  failures.push('Create Task belum mengirim PIC Outlet/Person dengan cakupan otomatis');
+}
+if (!chatBackend.includes("const outlets = roomOutlet ? [roomOutlet]") || !chatBackend.includes("const recipients = roomOutlet ? people.filter")) {
+  failures.push('Backend Create Task belum membuat assignment otomatis berdasarkan grup dan tipe PIC');
+}
+
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   const html = await text(path);
   if (!html.includes('ui-modern.css')) failures.push(`${path} belum memuat ui-modern.css`);
