@@ -57,6 +57,12 @@ dengan URL `/exec` dari langkah pertama. `SITE_BASE_URL` boleh tetap kosong; apl
 - Repository private tidak selalu berarti situs Pages private; periksa paket dan kebijakan GitHub organisasi Anda.
 - Setiap kali `Code.gs` berubah, buat deployment/version baru atau perbarui deployment aktif.
 
+### Deployment otomatis GAS utama
+
+Backend `gas/Code.gs` dapat diterbitkan otomatis oleh workflow **Deploy Main GAS**. Setup satu kali dilakukan dengan menjalankan `setup-main-gas-auto-deploy.ps1`, lalu masukkan **Script ID** dari Apps Script utama. Script menyimpan tiga GitHub Secret terpisah (`MAIN_GAS_CLASPRC_JSON`, `MAIN_GAS_CLASP_JSON`, dan `MAIN_GAS_DEPLOYMENT_ID`) agar tidak tertukar dengan project Berita Acara.
+
+Setelah setup selesai, buka **Actions → Deploy Main GAS → Run workflow** satu kali. Perubahan berikutnya pada folder `gas/` akan memperbarui deployment produksi otomatis setelah validasi lulus. Fitur Pesan & Tugas baru dapat memuat grup setelah deployment utama ini memakai `Code.gs` terbaru; sheet `CHAT_ROOMS`, `CHAT_MESSAGES`, `CHAT_READS`, `CHAT_TASKS`, `CHAT_ASSIGNMENTS`, dan `CHAT_ATTACHMENTS` kemudian dibuat otomatis pada database chat.
+
 ## Database dan alur Showcase
 
 - Backend otomatis membuat sheet `MENU_SHOWCASE` dengan delapan kolom sumber dan 61 baris dari **Menu Showcase.xlsx**, ditambah kolom I `Kode Item` yang dapat diedit.
