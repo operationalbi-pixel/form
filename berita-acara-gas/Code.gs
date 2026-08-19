@@ -101,6 +101,38 @@ function escapeHtml_(value) {
   });
 }
 
+function baNotificationState_(row) {
+  row = row || {};
+  const fnbFlow = ['Waste Pcs To Pcs', 'Penjualan & Dispose Asset', 'Purchasing Non Supplier', 'Test Food', 'Revisi Stock Opname']
+    .some(function (type) { return String(row.ba_type || '').trim().indexOf(type) >= 0; });
+  if (row.am_rejected_date || row.fnb_rejected_date) return { status: 'Ditolak', nextApproval: '' };
+  if (row.am_approved_date) return { status: 'Disetujui', nextApproval: '' };
+  if (fnbFlow && row.fnb_approved_date) return { status: 'Menunggu Approval Area Manager', nextApproval: 'AREA MANAGER' };
+  if (fnbFlow) return { status: 'Menunggu Approval FNB', nextApproval: 'FNB' };
+  return { status: 'Menunggu Approval Area Manager', nextApproval: 'AREA MANAGER' };
+}
+
+/** Best-effort callback: saving Berita Acara must still succeed if FCM is temporarily unavailable. */
+function notifyBiSpaceBaEvent_(userData, event) {
+  try {
+    const notifyToken = String(userData && userData.NOTIFY_TOKEN || '').trim();
+    if (!notifyToken) return { accepted: false, reason: 'Notify token tidak tersedia.' };
+    event = event || {};
+    event.eventId = event.eventId || Utilities.getUuid();
+    const response = UrlFetchApp.fetch(BI_SPACE_API_URL, {
+      method: 'post',
+      payload: { mobilePayload: JSON.stringify({ action: 'notifyBeritaAcaraEvent', args: [notifyToken, event] }) },
+      muteHttpExceptions: true
+    });
+    const result = JSON.parse(response.getContentText() || '{}');
+    if (response.getResponseCode() !== 200 || !result.ok) console.warn('Notifikasi Berita Acara tidak terkirim: ' + (result.error || response.getContentText()));
+    return result;
+  } catch (error) {
+    console.warn('Notifikasi Berita Acara dilewati: ' + error.message);
+    return { accepted: false, error: error.message };
+  }
+}
+
 // ==========================================
 // 2. BIGQUERY HELPER FUNCTIONS
 // ==========================================
@@ -314,6 +346,12 @@ function rekamData(formData, baType, userData, isUpdate = false, submissionId = 
       newRow.fnb_rejected_date = null; newRow.fnb_rejected_by = null; newRow.fnb_reject_reason = null;
 
       insertToBq(newRow);
+      const updateState = baNotificationState_(newRow);
+      notifyBiSpaceBaEvent_(userData, {
+        kind: 'UPDATED', submissionId: submissionId, baType: newRow.ba_type,
+        outlet: newRow.outlet, ownerNik: newRow.nik,
+        status: updateState.status, nextApproval: updateState.nextApproval
+      });
       return { success: true, baId: submissionId, message: `Revisi Berhasil (BQ)! ID: ${submissionId}` };
     } 
     
@@ -344,6 +382,12 @@ function rekamData(formData, baType, userData, isUpdate = false, submissionId = 
       };
 
       insertToBq(rowData);
+      const newState = baNotificationState_(rowData);
+      notifyBiSpaceBaEvent_(userData, {
+        kind: 'NEW', submissionId: newId, baType: rowData.ba_type,
+        outlet: rowData.outlet, ownerNik: rowData.nik,
+        status: newState.status, nextApproval: newState.nextApproval
+      });
       return { success: true, baId: newId, message: `Berhasil (BQ)! ID: ${newId}` };
     }
 
@@ -510,6 +554,12 @@ function approveBa(sheetName, rowNumber, approverName, approverPosition, userDat
 
   try {
     insertToBq(newRow);
+    const approvedState = baNotificationState_(newRow);
+    notifyBiSpaceBaEvent_(trustedUser, {
+      kind: 'APPROVED', submissionId: submissionId, baType: newRow.ba_type,
+      outlet: newRow.outlet, ownerNik: newRow.nik,
+      status: approvedState.status, nextApproval: approvedState.nextApproval
+    });
     return { success: true, message: 'Berhasil Disetujui (BQ)!' };
   } catch (e) {
     return { success: false, message: "Error BQ: " + e.message };
@@ -545,6 +595,12 @@ function rejectBa(sheetName, rowNumber, approverName, approverPosition, reason, 
 
   try {
     insertToBq(newRow);
+    const rejectedState = baNotificationState_(newRow);
+    notifyBiSpaceBaEvent_(trustedUser, {
+      kind: 'REJECTED', submissionId: submissionId, baType: newRow.ba_type,
+      outlet: newRow.outlet, ownerNik: newRow.nik,
+      status: rejectedState.status, nextApproval: rejectedState.nextApproval
+    });
     return { success: true, message: 'Berhasil Ditolak (BQ)!' };
   } catch (e) {
     return { success: false, message: "Error BQ: " + e.message };

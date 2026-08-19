@@ -243,6 +243,8 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baBackend.includes('function requireBaSession_(')) failures.push('Operasi Berita Acara belum dilindungi sesi server-side');
   if (!baBackend.includes("creatorPosition === 'AREA MANAGER'")) failures.push('Dokumen buatan AREA MANAGER belum auto approve');
   if (!baBackend.includes("creatorPosition === 'FNB'")) failures.push('Dokumen buatan FNB belum melewati tahap approval FNB otomatis');
+  if (!baBackend.includes('function notifyBiSpaceBaEvent_(')) failures.push('Backend Berita Acara belum mengirim aktivitas ke push BI-Space');
+  if (!baBackend.includes("kind: 'NEW'") || !baBackend.includes("kind: 'UPDATED'") || !baBackend.includes("kind: 'APPROVED'") || !baBackend.includes("kind: 'REJECTED'")) failures.push('Notifikasi Berita Acara belum mencakup baru, revisi, approval, dan penolakan');
   if (/SpreadsheetApp\.openById|USER_SHEET_NAME|USER_SS_ID/.test(baBackend)) failures.push('Backend Berita Acara masih memakai database login lama');
 
   const baMobileIndex = await text('berita-acara-gas/Index.html');
@@ -347,6 +349,11 @@ const pushRequirements = [
   [allowedActions.has('registerPushToken'), 'Endpoint pendaftaran token FCM belum tersedia'],
   [backend.includes('function registerMobilePushToken('), 'Pendaftaran perangkat Android belum tersedia'],
   [backend.includes('function sendRealtimeMobilePush_('), 'Pengiriman FCM realtime belum tersedia'],
+  [allowedActions.has('notifyBeritaAcaraEvent'), 'Endpoint notifikasi realtime Berita Acara belum tersedia'],
+  [backend.includes("type: 'BERITA_ACARA'"), 'Kategori push Berita Acara belum tersedia'],
+  [backend.includes("CacheService.getScriptCache().put('ba-notify:'"), 'Callback notifikasi Berita Acara belum dilindungi token SSO singkat'],
+  [backend.includes("MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS'"), 'Riwayat pemulihan notifikasi Berita Acara belum tersedia'],
+  [backend.includes('readPersistedMobileNotifications_(employee.nik)'), 'Polling pemulihan belum membaca notifikasi Berita Acara yang terlewat'],
   [backend.includes('notifyPendingStockTransfers_(pendingRows);'), 'Transfer pending belum memicu push realtime'],
   [backend.includes("id: 'NEWS:' + newsId"), 'Berita baru belum memicu push realtime']
 ];
