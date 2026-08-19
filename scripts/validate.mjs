@@ -346,6 +346,11 @@ if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)
 }
 const actionBlock = backend.match(/function apiActions_\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:/gm)].map(match => match[1]));
+if (!allowedActions.has('chatMentions') || !backend.includes('function getChatMentionSuggestions(')) failures.push('Endpoint saran mention chat belum tersedia');
+if (!chatHtml.includes("api('chatMentions'") || !chatHtml.includes('id="mentionMenu"')) failures.push('UI chat belum mendukung mention anggota dengan @');
+if (!chatHtml.includes('id="dashboardBack"') || !chatHtml.includes('function backToDashboard(')) failures.push('Tombol kembali ke Dashboard belum tersedia di Pesan & Tugas');
+if (!chatHtml.includes('.top{position:sticky;top:0;')) failures.push('Header nama grup chat belum dibuat sticky');
+if (backend.includes("title: 'Outlet ' + outlet") || backend.includes("'Outlet ' + chatRoomOutlet_(roomId)")) failures.push('Nama grup outlet masih memakai awalan Outlet');
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);

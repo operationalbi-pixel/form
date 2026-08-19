@@ -115,6 +115,7 @@ function apiActions_() {
     registerPushToken: registerMobilePushToken,
     chatSetup: setupChatDatabase,
     chatBootstrap: getChatBootstrap,
+    chatMentions: getChatMentionSuggestions,
     chatMessages: getChatMessages,
     chatSend: sendChatMessage,
     chatMarkRead: markChatRoomRead,
@@ -10934,7 +10935,7 @@ function ensureChatRoomRow_(roomId) {
   if (roomId === 'GENERAL') return;
   const ss = ensureChatDatabase_(), sheet = ss.getSheetByName('CHAT_ROOMS');
   const exists = sheet.getLastRow() > 1 && sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues().some(function (row) { return row[0] === roomId; });
-  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), 'Outlet ' + chatRoomOutlet_(roomId), true, new Date(), 0]);
+  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), chatRoomOutlet_(roomId), true, new Date(), 0]);
 }
 
 function chatReadMap_(nik) {
@@ -10972,8 +10973,25 @@ function getChatBootstrap(token) {
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
     const reads = chatReadMap_(employee.nik), latest = chatLatestSequenceMap_();
     const rooms = [{ id: 'GENERAL', title: 'General', type: 'GENERAL', unread: Math.max(0, (latest.GENERAL || 0) - (reads.GENERAL || 0)) }];
-    outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: 'Outlet ' + outlet, type: 'OUTLET', outlet: outlet, unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
+    outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: outlet, type: 'OUTLET', outlet: outlet, unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
     return { user: userView_(employee), rooms: rooms, outlets: outlets, tasks: chatPendingTasks_(employee), generatedAt: new Date().toISOString() };
+  });
+}
+
+function getChatMentionSuggestions(token, roomId, query) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik);
+    assertEmployeeActive_(employee);
+    roomId = requireChatRoom_(employee, roomId);
+    const needle = String(query || '').trim().toLowerCase();
+    const people = chatMembers_(roomId).filter(function (member) {
+      if (member.nik === employee.nik) return false;
+      if (!needle) return true;
+      return String(member.name || '').toLowerCase().indexOf(needle) >= 0 || String(member.nik || '').toLowerCase().indexOf(needle) >= 0;
+    }).slice(0, 8).map(function (member) {
+      return { nik: member.nik, name: member.name, outlet: member.outlet };
+    });
+    return { people: people };
   });
 }
 
