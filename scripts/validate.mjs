@@ -359,6 +359,7 @@ if (!chatHtml.includes('function syncVisualViewport(') || !chatHtml.includes('to
 if (!backend.includes("dueAt: row[4] ? dateIso_(row[4]) : ''") || !backend.includes("employee.outlet === 'BIHQ' && type === 'OUTLET'")) failures.push('Deadline kosong atau visibilitas task outlet BIHQ belum benar');
 if (!chatHtml.includes("timeZone:'Asia/Jakarta'") || !chatHtml.includes('id="completeModal"') || !chatHtml.includes('Menyimpan...')) failures.push('Zona waktu, modal penyelesaian, atau status simpan task belum tersedia');
 if (!chatHtml.includes('grid-template-columns:repeat(auto-fit')) failures.push('Kartu task belum dibuat simetris dan memenuhi lebar');
+if (!chatHtml.includes('delivery-dot pending') || !chatHtml.includes('delivery-dot sent')) failures.push('Status kirim belum memakai dot kuning dan hijau');
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
