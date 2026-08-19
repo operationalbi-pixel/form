@@ -10954,14 +10954,14 @@ function chatPendingTasks_(employee) {
   const tasks = {}, assignments = chatSheetRows_('CHAT_ASSIGNMENTS');
   chatSheetRows_('CHAT_TASKS').forEach(function (row) {
     if (String(row[6]) !== 'OPEN') return;
-    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), picType: String(row[5]), createdBy: String(row[8]), createdAt: dateIso_(row[9]) };
+    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', picType: String(row[5]), createdBy: String(row[8]), createdAt: dateIso_(row[9]) };
   });
   const visible = {};
   assignments.forEach(function (row) {
     const task = tasks[String(row[1])];
     if (!task || String(row[6]) !== 'OPEN') return;
     const type = String(row[2]), outlet = String(row[3] || '').toUpperCase(), nik = normalizeNik_(row[4]);
-    if ((type === 'OUTLET' && outlet === employee.outlet) || (type === 'PERSON' && nik === employee.nik) || employee.outlet === 'BIHQ' && type === 'OUTLET' && task.roomId === 'GENERAL') visible[task.id] = task;
+    if ((type === 'OUTLET' && outlet === employee.outlet) || (type === 'PERSON' && nik === employee.nik) || (employee.outlet === 'BIHQ' && type === 'OUTLET')) visible[task.id] = task;
   });
   return Object.keys(visible).map(function (id) { return visible[id]; }).sort(function (a, b) { return String(a.dueAt || '9999').localeCompare(String(b.dueAt || '9999')); });
 }
@@ -11004,7 +11004,7 @@ function chatAttachmentViews_(ids) {
 
 function chatTaskById_(taskId) {
   const row = chatSheetRows_('CHAT_TASKS').filter(function (item) { return String(item[0]) === String(taskId); })[0];
-  return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), status: String(row[6]) } : null;
+  return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', status: String(row[6]) } : null;
 }
 
 function getChatMessages(token, roomId, beforeSequence) {
@@ -11015,7 +11015,7 @@ function getChatMessages(token, roomId, beforeSequence) {
     const rows = chatSheetRows_('CHAT_MESSAGES').filter(function (row) { return String(row[1]) === roomId && Number(row[2]) < before && !row[12]; }).slice(-100);
     const attachmentMap = {}, taskMap = {};
     chatSheetRows_('CHAT_ATTACHMENTS').forEach(function (row) { attachmentMap[String(row[0])] = { id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), size: Number(row[6] || 0) }; });
-    chatSheetRows_('CHAT_TASKS').forEach(function (row) { taskMap[String(row[0])] = { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), status: String(row[6]) }; });
+    chatSheetRows_('CHAT_TASKS').forEach(function (row) { taskMap[String(row[0])] = { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', status: String(row[6]) }; });
     const messages = rows.map(function (row) {
       let attachmentIds = []; try { attachmentIds = JSON.parse(String(row[9] || '[]')); } catch (error) {}
       return { id: String(row[0]), roomId: roomId, sequence: Number(row[2]), senderNik: String(row[3]), senderName: String(row[4]), senderOutlet: String(row[5]), type: String(row[6]), body: String(row[7] || ''), replyToId: String(row[8] || ''), attachments: attachmentIds.map(function (id) { return attachmentMap[id]; }).filter(Boolean), task: row[10] ? taskMap[String(row[10])] || null : null, createdAt: dateIso_(row[11]) };
