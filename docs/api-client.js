@@ -32,6 +32,16 @@
       var form = document.createElement('form');
       var input = document.createElement('input');
       var finished = false;
+      var messageTargets = [global];
+
+      // Chat dibuka di dalam iframe BI-Space. Output HtmlService GAS memakai
+      // top.postMessage(), sehingga balasannya tiba di jendela aplikasi utama,
+      // bukan di iframe chat. Dengarkan keduanya selama masih satu origin.
+      try {
+        if (global.top && global.top !== global) messageTargets.push(global.top);
+      } catch (error) {
+        // Bila parent berbeda origin, listener lokal tetap dipakai.
+      }
 
       iframe.name = frameName;
       iframe.setAttribute('aria-hidden', 'true');
@@ -50,7 +60,9 @@
       form.appendChild(input);
 
       function cleanup() {
-        global.removeEventListener('message', onMessage);
+        messageTargets.forEach(function (target) {
+          try { target.removeEventListener('message', onMessage); } catch (error) {}
+        });
         clearTimeout(timer);
         if (form.parentNode) form.parentNode.removeChild(form);
         if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
@@ -75,7 +87,9 @@
         reject(new Error('Server tidak merespons dalam ' + Math.round(timeoutMs / 60000) + ' menit. Periksa deployment GAS dan coba lagi.'));
       }, timeoutMs);
 
-      global.addEventListener('message', onMessage);
+      messageTargets.forEach(function (target) {
+        try { target.addEventListener('message', onMessage); } catch (error) {}
+      });
       document.body.appendChild(iframe);
       document.body.appendChild(form);
       form.submit();
