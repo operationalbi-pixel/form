@@ -351,6 +351,8 @@ if (!chatHtml.includes("api('chatMentions'") || !chatHtml.includes('id="mentionM
 if (!chatHtml.includes('id="dashboardBack"') || !chatHtml.includes('function backToDashboard(')) failures.push('Tombol kembali ke Dashboard belum tersedia di Pesan & Tugas');
 if (!chatHtml.includes('.top{position:sticky;top:0;')) failures.push('Header nama grup chat belum dibuat sticky');
 if (backend.includes("title: 'Outlet ' + outlet") || backend.includes("'Outlet ' + chatRoomOutlet_(roomId)")) failures.push('Nama grup outlet masih memakai awalan Outlet');
+if (!chatHtml.includes('bi_chat_messages_v2:') || !chatHtml.includes("delivery:'pending'")) failures.push('Cache dan status kirim instan chat belum tersedia');
+if (!chatHtml.includes('aria-label="Info dibaca"') || !chatHtml.includes("tasks.slice(0,3)")) failures.push('Ikon info baca atau batas tiga task belum tersedia');
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
