@@ -30,6 +30,18 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
   failures.push('API client belum menerima respons GAS ketika halaman dibuka di dalam iframe chat');
 }
 
+const chatHtml = await text('docs/chat.html');
+const chatBackend = await text('docs/Code.gs');
+if (chatHtml.includes('taskPicker') || chatHtml.includes('pickerLabel') || chatHtml.includes('renderTaskPicker')) {
+  failures.push('Form Create Task masih meminta daftar outlet atau person secara manual');
+}
+if (!chatHtml.includes("picType:type") || chatHtml.includes('outlets:type') || chatHtml.includes('niks:type')) {
+  failures.push('Create Task belum mengirim PIC Outlet/Person dengan cakupan otomatis');
+}
+if (!chatBackend.includes("const outlets = roomOutlet ? [roomOutlet]") || !chatBackend.includes("const recipients = roomOutlet ? people.filter")) {
+  failures.push('Backend Create Task belum membuat assignment otomatis berdasarkan grup dan tipe PIC');
+}
+
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   const html = await text(path);
   if (!html.includes('ui-modern.css')) failures.push(`${path} belum memuat ui-modern.css`);
@@ -334,6 +346,15 @@ if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)
 }
 const actionBlock = backend.match(/function apiActions_\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const allowedActions = new Set([...actionBlock.matchAll(/^\s*([A-Za-z0-9_]+)\s*:/gm)].map(match => match[1]));
+if (!allowedActions.has('chatMentions') || !backend.includes('function getChatMentionSuggestions(')) failures.push('Endpoint saran mention chat belum tersedia');
+if (!chatHtml.includes("api('chatMentions'") || !chatHtml.includes('id="mentionMenu"')) failures.push('UI chat belum mendukung mention anggota dengan @');
+if (!chatHtml.includes('id="dashboardBack"') || !chatHtml.includes('function backToDashboard(')) failures.push('Tombol kembali ke Dashboard belum tersedia di Pesan & Tugas');
+if (!chatHtml.includes('.top{position:sticky;top:0;')) failures.push('Header nama grup chat belum dibuat sticky');
+if (backend.includes("title: 'Outlet ' + outlet") || backend.includes("'Outlet ' + chatRoomOutlet_(roomId)")) failures.push('Nama grup outlet masih memakai awalan Outlet');
+if (!chatHtml.includes('bi_chat_messages_v2:') || !chatHtml.includes("delivery:'pending'")) failures.push('Cache dan status kirim instan chat belum tersedia');
+if (!chatHtml.includes('aria-label="Info dibaca"') || !chatHtml.includes("tasks.slice(0,3)")) failures.push('Ikon info baca atau batas tiga task belum tersedia');
+if (!chatHtml.includes('function loadOlderMessages(') || !chatHtml.includes("api('chatMessages',[token,roomId,before])")) failures.push('Riwayat chat lama belum dapat dimuat saat scroll ke atas');
+if (!chatHtml.includes('function wireMediaThumbnails(') || !chatHtml.includes('id="mediaModal"')) failures.push('Preview gambar dan PDF di dalam chat belum tersedia');
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
