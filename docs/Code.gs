@@ -7025,11 +7025,14 @@ function compareStockLotsFifo_(a, b) {
   return String(a && a.expiryDate || '9999-12-31').localeCompare(String(b && b.expiryDate || '9999-12-31'));
 }
 
-/** Recalculated flow: FEFO first; lots without expiry stay after dated lots and remain FIFO among themselves. */
+/** Recalculated flow: FEFO when both expiry dates are known; otherwise keep the arrival FIFO order. */
 function compareStockLotsFefo_(a, b) {
   const aExpiry = String(a && a.expiryDate || '').slice(0, 10);
   const bExpiry = String(b && b.expiryDate || '').slice(0, 10);
-  if (Boolean(aExpiry) !== Boolean(bExpiry)) return aExpiry ? -1 : 1;
+  // Expiry yang belum dicatat tidak boleh membuat lot lama tertahan tanpa batas.
+  // Jika salah satu lot belum memiliki expiry, pertahankan urutan kedatangan FIFO.
+  // FEFO hanya dapat dibandingkan secara aman ketika kedua expiry sudah diketahui.
+  if (!aExpiry || !bExpiry) return compareStockLotsFifo_(a, b);
   if (aExpiry && bExpiry) {
     const expiryCompare = aExpiry.localeCompare(bExpiry);
     if (expiryCompare) return expiryCompare;

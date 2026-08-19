@@ -113,7 +113,8 @@ if (!backend.includes('function mppSessionEmployee_(token)')) failures.push('End
 if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('MPP tidak lagi memakai sheet database lama');
 const frontendStockCard = await text('docs/stock-card.html');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
-if (!backend.includes("const startDate = stockDateOffset_(today, -days);\n      // Baseline must be one day before the selected period")) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
+if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);') ||
+    !backend.includes('const baselineDate = stockDateOffset_(startDate, -1);')) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
 if (!frontendStockCard.includes('Recalculate FIFO &amp; FEFO')) failures.push('Tombol rekalkulasi FIFO/FEFO belum tersedia');
 if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStockCard.includes("openExpiryAlertModal(\\'FIFO\\')")) failures.push('Daftar detail item FIFO/FEFO belum tersedia');
 try {
