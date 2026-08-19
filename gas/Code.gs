@@ -18,6 +18,7 @@ const CONFIG = Object.freeze({
   SESSION_SHEET: 'APP_SESSIONS',
   PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS',
   MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS',
+  CHAT_SPREADSHEET_ID: '1-2UtuE33BtRu4xxAdKUvP69VlmYGhK9_Z-fMjEXE8ao',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -112,6 +113,15 @@ function apiActions_() {
     getAppData: getAppData,
     mobileNotifications: getMobileNotifications,
     registerPushToken: registerMobilePushToken,
+    chatSetup: setupChatDatabase,
+    chatBootstrap: getChatBootstrap,
+    chatMessages: getChatMessages,
+    chatSend: sendChatMessage,
+    chatMarkRead: markChatRoomRead,
+    chatReaders: getChatMessageReaders,
+    chatCreateTask: createChatTask,
+    chatCompleteTask: completeChatTask,
+    chatAttachment: getChatAttachment,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
     adminAddNews: adminAddNews,
@@ -226,6 +236,7 @@ function htmlBridgeOutput_(requestId, response) {
 /** Run once from the Apps Script editor after replacing appsscript.json. */
 function authorizeProjectServices() {
   SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getName();
+  SpreadsheetApp.openById(CONFIG.CHAT_SPREADSHEET_ID).getName();
   DriveApp.getRootFolder().getName();
   BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
   // Memaksa layar otorisasi meminta scope script.external_request yang
@@ -10814,6 +10825,346 @@ function truthy_(value) { return value === true || String(value).toLowerCase() =
 function dateIso_(value) {
   const date = value instanceof Date ? value : new Date(value || 0);
   return isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+// ---------- BI-Space group chat & tasks ----------
+
+const CHAT_DB = Object.freeze({
+  ROOMS: ['ROOM_ID', 'ROOM_TYPE', 'OUTLET', 'TITLE', 'ACTIVE', 'CREATED_AT', 'LAST_SEQUENCE'],
+  MESSAGES: ['MESSAGE_ID', 'ROOM_ID', 'SEQUENCE', 'SENDER_NIK', 'SENDER_NAME', 'SENDER_OUTLET', 'MESSAGE_TYPE', 'BODY', 'REPLY_TO_ID', 'ATTACHMENT_IDS_JSON', 'TASK_ID', 'CREATED_AT', 'DELETED_AT'],
+  READS: ['ROOM_ID', 'NIK', 'LAST_READ_SEQUENCE', 'LAST_READ_AT'],
+  TASKS: ['TASK_ID', 'ROOM_ID', 'TITLE', 'DESCRIPTION', 'DUE_AT', 'PIC_TYPE', 'STATUS', 'CREATED_BY_NIK', 'CREATED_BY_NAME', 'CREATED_AT', 'COMPLETED_AT'],
+  ASSIGNMENTS: ['ASSIGNMENT_ID', 'TASK_ID', 'ASSIGNMENT_TYPE', 'OUTLET', 'NIK', 'NAME', 'STATUS', 'COMPLETED_BY_NIK', 'COMPLETED_BY_NAME', 'COMPLETED_AT'],
+  ATTACHMENTS: ['ATTACHMENT_ID', 'MESSAGE_ID', 'TASK_ID', 'FILE_ID', 'FILE_NAME', 'MIME_TYPE', 'FILE_SIZE', 'UPLOADED_BY', 'UPLOADED_AT'],
+  AUDIT: ['AUDIT_ID', 'ACTION', 'ENTITY_ID', 'ROOM_ID', 'NIK', 'NAME', 'DETAIL_JSON', 'CREATED_AT']
+});
+
+function chatSpreadsheet_() {
+  try { return SpreadsheetApp.openById(CONFIG.CHAT_SPREADSHEET_ID); }
+  catch (error) { throw new Error('Database chat belum dapat diakses. Bagikan spreadsheet ' + CONFIG.CHAT_SPREADSHEET_ID + ' sebagai Editor kepada akun pemilik deployment GAS.'); }
+}
+
+function ensureChatSheet_(ss, name, headers) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const current = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+  if (current.join('|') !== headers.join('|')) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+  if (!sheet.getFilter() && sheet.getMaxRows() > 1) sheet.getRange(1, 1, Math.max(2, sheet.getLastRow()), headers.length).createFilter();
+  return sheet;
+}
+
+function ensureChatAttachmentFolder_() {
+  const properties = PropertiesService.getScriptProperties();
+  const existing = String(properties.getProperty('CHAT_ATTACHMENT_FOLDER_ID') || '');
+  if (existing) {
+    try { return DriveApp.getFolderById(existing); } catch (error) { properties.deleteProperty('CHAT_ATTACHMENT_FOLDER_ID'); }
+  }
+  const folder = DriveApp.createFolder('BI_SPACE_CHAT_ATTACHMENTS');
+  properties.setProperty('CHAT_ATTACHMENT_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function ensureChatDatabase_() {
+  const ss = chatSpreadsheet_();
+  if (CacheService.getScriptCache().get('chat-schema-v1') === 'ready') return ss;
+  Object.keys(CHAT_DB).forEach(function (name) { ensureChatSheet_(ss, 'CHAT_' + name, CHAT_DB[name]); });
+  const roomSheet = ss.getSheetByName('CHAT_ROOMS');
+  if (roomSheet.getLastRow() < 2) roomSheet.appendRow(['GENERAL', 'GENERAL', '', 'General', true, new Date(), 0]);
+  ensureChatAttachmentFolder_();
+  CacheService.getScriptCache().put('chat-schema-v1', 'ready', 21600);
+  return ss;
+}
+
+function setupChatDatabase(token) {
+  return safe_(function () {
+    const session = requireSession_(token), employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    const ss = ensureChatDatabase_();
+    return { ready: true, spreadsheetId: ss.getId(), sheets: Object.keys(CHAT_DB).map(function (name) { return 'CHAT_' + name; }) };
+  });
+}
+
+function chatEmployees_() {
+  const cached = readScriptJsonCache_('chat-active-employees-v1');
+  if (cached) return cached;
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  const employees = sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().map(function (row) {
+    return { nik: normalizeNik_(row[0]), name: String(row[1] || '').trim(), outlet: String(row[2] || '').trim().toUpperCase(), position: normalizeEmployeePosition_(row[4]), status: String(row[8] || '').trim().toLowerCase() };
+  }).filter(function (employee) { return employee.nik && employee.name && employee.outlet && employee.status !== 'resign'; });
+  writeScriptJsonCache_('chat-active-employees-v1', employees, 600);
+  return employees;
+}
+
+function chatRoomId_(value) {
+  value = String(value || 'GENERAL').trim().toUpperCase();
+  if (value === 'GENERAL') return value;
+  const outlet = value.replace(/^OUTLET:/, '').replace(/[^A-Z0-9_-]/g, '');
+  if (!outlet) throw new Error('Grup outlet tidak valid.');
+  return 'OUTLET:' + outlet;
+}
+
+function chatRoomOutlet_(roomId) { return roomId.indexOf('OUTLET:') === 0 ? roomId.slice(7) : ''; }
+
+function requireChatRoom_(employee, roomId) {
+  roomId = chatRoomId_(roomId);
+  const outlet = chatRoomOutlet_(roomId);
+  if (outlet && employee.outlet !== 'BIHQ' && employee.outlet !== outlet) throw new Error('Anda tidak memiliki akses ke grup outlet ini.');
+  return roomId;
+}
+
+function chatMembers_(roomId) {
+  const outlet = chatRoomOutlet_(roomId);
+  return chatEmployees_().filter(function (employee) { return !outlet || employee.outlet === outlet || employee.outlet === 'BIHQ'; });
+}
+
+function chatSheetRows_(sheetName) {
+  const sheet = chatSpreadsheet_().getSheetByName(sheetName);
+  if (!sheet) throw new Error('Struktur database chat belum siap. Jalankan setup chat terlebih dahulu.');
+  return sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+}
+
+function ensureChatRoomRow_(roomId) {
+  if (roomId === 'GENERAL') return;
+  const ss = ensureChatDatabase_(), sheet = ss.getSheetByName('CHAT_ROOMS');
+  const exists = sheet.getLastRow() > 1 && sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues().some(function (row) { return row[0] === roomId; });
+  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), 'Outlet ' + chatRoomOutlet_(roomId), true, new Date(), 0]);
+}
+
+function chatReadMap_(nik) {
+  const map = {};
+  chatSheetRows_('CHAT_READS').forEach(function (row) { if (normalizeNik_(row[1]) === nik) map[String(row[0])] = Number(row[2] || 0); });
+  return map;
+}
+
+function chatLatestSequenceMap_() {
+  const map = {};
+  chatSheetRows_('CHAT_ROOMS').forEach(function (row) { map[String(row[0])] = Number(row[6] || 0); });
+  return map;
+}
+
+function chatPendingTasks_(employee) {
+  const tasks = {}, assignments = chatSheetRows_('CHAT_ASSIGNMENTS');
+  chatSheetRows_('CHAT_TASKS').forEach(function (row) {
+    if (String(row[6]) !== 'OPEN') return;
+    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), picType: String(row[5]), createdBy: String(row[8]), createdAt: dateIso_(row[9]) };
+  });
+  const visible = {};
+  assignments.forEach(function (row) {
+    const task = tasks[String(row[1])];
+    if (!task || String(row[6]) !== 'OPEN') return;
+    const type = String(row[2]), outlet = String(row[3] || '').toUpperCase(), nik = normalizeNik_(row[4]);
+    if ((type === 'OUTLET' && outlet === employee.outlet) || (type === 'PERSON' && nik === employee.nik) || employee.outlet === 'BIHQ' && type === 'OUTLET' && task.roomId === 'GENERAL') visible[task.id] = task;
+  });
+  return Object.keys(visible).map(function (id) { return visible[id]; }).sort(function (a, b) { return String(a.dueAt || '9999').localeCompare(String(b.dueAt || '9999')); });
+}
+
+function getChatBootstrap(token) {
+  return safe_(function () {
+    const session = requireSession_(token), employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee); ensureChatDatabase_();
+    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
+    const taskOutlets = employee.outlet === 'BIHQ' || ['AREA MANAGER', 'FNB'].indexOf(normalizeEmployeePosition_(employee.position)) >= 0
+      ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
+    const reads = chatReadMap_(employee.nik), latest = chatLatestSequenceMap_();
+    const rooms = [{ id: 'GENERAL', title: 'General', type: 'GENERAL', unread: Math.max(0, (latest.GENERAL || 0) - (reads.GENERAL || 0)) }];
+    outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: 'Outlet ' + outlet, type: 'OUTLET', outlet: outlet, unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
+    const people = chatEmployees_().map(function (person) { return { nik: person.nik, name: person.name, outlet: person.outlet, position: person.position }; });
+    return { user: userView_(employee), rooms: rooms, outlets: outlets, taskOutlets: taskOutlets, people: people, tasks: chatPendingTasks_(employee), generatedAt: new Date().toISOString() };
+  });
+}
+
+function chatAttachmentViews_(ids) {
+  const wanted = {}; (ids || []).forEach(function (id) { wanted[id] = true; });
+  return chatSheetRows_('CHAT_ATTACHMENTS').filter(function (row) { return wanted[String(row[0])]; }).map(function (row) {
+    return { id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), size: Number(row[6] || 0) };
+  });
+}
+
+function chatTaskById_(taskId) {
+  const row = chatSheetRows_('CHAT_TASKS').filter(function (item) { return String(item[0]) === String(taskId); })[0];
+  return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), status: String(row[6]) } : null;
+}
+
+function getChatMessages(token, roomId, beforeSequence) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    roomId = requireChatRoom_(employee, roomId); ensureChatDatabase_();
+    const before = Number(beforeSequence || Number.MAX_SAFE_INTEGER);
+    const rows = chatSheetRows_('CHAT_MESSAGES').filter(function (row) { return String(row[1]) === roomId && Number(row[2]) < before && !row[12]; }).slice(-100);
+    const attachmentMap = {}, taskMap = {};
+    chatSheetRows_('CHAT_ATTACHMENTS').forEach(function (row) { attachmentMap[String(row[0])] = { id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), size: Number(row[6] || 0) }; });
+    chatSheetRows_('CHAT_TASKS').forEach(function (row) { taskMap[String(row[0])] = { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: dateIso_(row[4]), status: String(row[6]) }; });
+    const messages = rows.map(function (row) {
+      let attachmentIds = []; try { attachmentIds = JSON.parse(String(row[9] || '[]')); } catch (error) {}
+      return { id: String(row[0]), roomId: roomId, sequence: Number(row[2]), senderNik: String(row[3]), senderName: String(row[4]), senderOutlet: String(row[5]), type: String(row[6]), body: String(row[7] || ''), replyToId: String(row[8] || ''), attachments: attachmentIds.map(function (id) { return attachmentMap[id]; }).filter(Boolean), task: row[10] ? taskMap[String(row[10])] || null : null, createdAt: dateIso_(row[11]) };
+    });
+    return { messages: messages, hasMore: rows.length === 100, oldestSequence: messages.length ? messages[0].sequence : 0, latestSequence: messages.length ? messages[messages.length - 1].sequence : 0 };
+  });
+}
+
+function saveChatAttachments_(uploads, employee, messageId, taskId) {
+  uploads = Array.isArray(uploads) ? uploads : [];
+  if (uploads.length > 5) throw new Error('Maksimal 5 lampiran dalam satu kiriman.');
+  const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+  const rows = [], ids = [], folder = ensureChatAttachmentFolder_();
+  uploads.forEach(function (upload) {
+    upload = upload || {}; const mime = String(upload.mimeType || '').toLowerCase();
+    if (allowed.indexOf(mime) < 0) throw new Error('Format lampiran tidak didukung: ' + String(upload.fileName || mime));
+    const raw = String(upload.base64 || '').replace(/^data:[^;]+;base64,/, '');
+    const bytes = Utilities.base64Decode(raw);
+    if (!bytes.length || bytes.length > 5 * 1024 * 1024) throw new Error('Ukuran setiap lampiran harus di bawah 5 MB.');
+    const id = Utilities.getUuid(), name = String(upload.fileName || 'lampiran').replace(/[\\/:*?"<>|]+/g, '-').slice(-120);
+    const file = folder.createFile(Utilities.newBlob(bytes, mime, id.slice(0, 8) + '-' + name));
+    ids.push(id); rows.push([id, messageId || '', taskId || '', file.getId(), name, mime, bytes.length, employee.nik, new Date()]);
+  });
+  if (rows.length) {
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    try {
+      const sheet = ensureChatDatabase_().getSheetByName('CHAT_ATTACHMENTS');
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    } finally { lock.releaseLock(); }
+  }
+  return ids;
+}
+
+function appendChatMessage_(roomId, employee, type, body, replyToId, attachmentIds, taskId, forcedMessageId) {
+  const lock = LockService.getScriptLock(); lock.waitLock(15000);
+  try {
+    const ss = ensureChatDatabase_(), sheet = ss.getSheetByName('CHAT_MESSAGES'); ensureChatRoomRow_(roomId);
+    const roomSheet = ss.getSheetByName('CHAT_ROOMS'), roomRows = roomSheet.getRange(2, 1, roomSheet.getLastRow() - 1, 7).getValues();
+    const roomIndex = roomRows.findIndex(function (row) { return String(row[0]) === roomId; });
+    if (roomIndex < 0) throw new Error('Grup chat tidak ditemukan.');
+    const sequence = Number(roomRows[roomIndex][6] || 0);
+    const id = String(forcedMessageId || Utilities.getUuid());
+    sheet.appendRow([id, roomId, sequence + 1, employee.nik, employee.name, employee.outlet, type, body, replyToId || '', JSON.stringify(attachmentIds || []), taskId || '', new Date(), '']);
+    roomSheet.getRange(roomIndex + 2, 7).setValue(sequence + 1);
+    return { id: id, sequence: sequence + 1 };
+  } finally { lock.releaseLock(); }
+}
+
+function notifyChatRoom_(roomId, employee, title, body, entityId) {
+  const members = chatMembers_(roomId).filter(function (member) { return member.nik !== employee.nik; });
+  const notification = { id: 'CHAT:' + entityId, type: 'CHAT', title: title, body: body, url: 'https://operationalbi-pixel.github.io/form/chat.html?room=' + encodeURIComponent(roomId) };
+  persistMobileNotifications_(members.map(function (member) { return member.nik; }), notification);
+  if (roomId === 'GENERAL') sendRealtimeMobilePush_({}, notification);
+  else {
+    sendRealtimeMobilePush_({ outlet: chatRoomOutlet_(roomId) }, notification);
+    if (chatRoomOutlet_(roomId) !== 'BIHQ') sendRealtimeMobilePush_({ outlet: 'BIHQ' }, notification);
+  }
+}
+
+function sendChatMessage(token, payload) {
+  return safe_(function () {
+    payload = payload || {}; const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    const roomId = requireChatRoom_(employee, payload.roomId), body = cleanText_(payload.body, 4000);
+    if (!body && !(payload.attachments || []).length) throw new Error('Tulis pesan atau tambahkan lampiran.');
+    const messageId = Utilities.getUuid(), attachmentIds = saveChatAttachments_(payload.attachments, employee, messageId, '');
+    const message = appendChatMessage_(roomId, employee, 'MESSAGE', body, cleanText_(payload.replyToId, 80), attachmentIds, '', messageId);
+    notifyChatRoom_(roomId, employee, employee.name + ' · ' + (roomId === 'GENERAL' ? 'General' : chatRoomOutlet_(roomId)), body || 'Mengirim lampiran', message.id);
+    return { messageId: message.id, sequence: message.sequence };
+  });
+}
+
+function markChatRoomRead(token, roomId, sequence) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); roomId = requireChatRoom_(employee, roomId); sequence = Math.max(0, Number(sequence || 0));
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    try {
+      const sheet = ensureChatDatabase_().getSheetByName('CHAT_READS'), values = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues() : [], rowIndex = values.findIndex(function (row) { return String(row[0]) === roomId && normalizeNik_(row[1]) === employee.nik; });
+      if (rowIndex >= 0) sheet.getRange(rowIndex + 2, 3, 1, 2).setValues([[Math.max(sequence, Number(values[rowIndex][2] || 0)), new Date()]]);
+      else sheet.appendRow([roomId, employee.nik, sequence, new Date()]);
+      return { read: true, sequence: sequence };
+    } finally { lock.releaseLock(); }
+  });
+}
+
+function getChatMessageReaders(token, roomId, sequence) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); roomId = requireChatRoom_(employee, roomId); sequence = Number(sequence || 0);
+    const reads = {}, members = chatMembers_(roomId); chatSheetRows_('CHAT_READS').forEach(function (row) { if (String(row[0]) === roomId) reads[normalizeNik_(row[1])] = Number(row[2] || 0); });
+    const seen = [], unseen = []; members.forEach(function (member) { (reads[member.nik] >= sequence ? seen : unseen).push({ nik: member.nik, name: member.name, outlet: member.outlet }); });
+    return { seen: seen, unseen: unseen, total: members.length };
+  });
+}
+
+function createChatTask(token, payload) {
+  return safe_(function () {
+    payload = payload || {}; const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    const roomId = requireChatRoom_(employee, payload.roomId), title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), picType = String(payload.picType || '').toUpperCase();
+    if (!title) throw new Error('Judul tugas wajib diisi.'); if (['OUTLET', 'PERSON'].indexOf(picType) < 0) throw new Error('Pilih PIC Outlet atau Person.');
+    const taskId = Utilities.getUuid(), dueAt = payload.dueAt ? new Date(payload.dueAt) : '';
+    if (dueAt && isNaN(dueAt.getTime())) throw new Error('Batas waktu tugas tidak valid.');
+    const assignments = [], people = chatEmployees_(), roomOutlet = chatRoomOutlet_(roomId);
+    if (picType === 'OUTLET') {
+      let outlets = Array.isArray(payload.outlets) ? payload.outlets.map(function (item) { return String(item).trim().toUpperCase(); }) : [];
+      if (roomOutlet) outlets = [roomOutlet]; if (!outlets.length) throw new Error('Pilih minimal satu outlet sebagai PIC.');
+      outlets.forEach(function (outlet) { assignments.push([Utilities.getUuid(), taskId, 'OUTLET', outlet, '', 'Tim ' + outlet, 'OPEN', '', '', '']); });
+    } else {
+      const niks = Array.isArray(payload.niks) ? payload.niks.map(normalizeNik_) : [];
+      if (!niks.length) throw new Error('Pilih minimal satu person sebagai PIC.');
+      niks.forEach(function (nik) { const person = people.filter(function (item) { return item.nik === nik && (!roomOutlet || item.outlet === roomOutlet || item.outlet === 'BIHQ'); })[0]; if (!person) throw new Error('PIC ' + nik + ' tidak tersedia di grup ini.'); assignments.push([Utilities.getUuid(), taskId, 'PERSON', person.outlet, person.nik, person.name, 'OPEN', '', '', '']); });
+    }
+    const attachmentIds = saveChatAttachments_(payload.attachments, employee, '', taskId);
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    try {
+      const ss = ensureChatDatabase_(), taskSheet = ss.getSheetByName('CHAT_TASKS'), assignmentSheet = ss.getSheetByName('CHAT_ASSIGNMENTS');
+      taskSheet.appendRow([taskId, roomId, title, description, dueAt || '', picType, 'OPEN', employee.nik, employee.name, new Date(), '']);
+      assignmentSheet.getRange(assignmentSheet.getLastRow() + 1, 1, assignments.length, assignments[0].length).setValues(assignments);
+    } finally { lock.releaseLock(); }
+    const message = appendChatMessage_(roomId, employee, 'TASK', title, '', attachmentIds, taskId);
+    notifyChatRoom_(roomId, employee, 'Tugas baru · ' + title, description || ('Ditambahkan oleh ' + employee.name), taskId);
+    return { taskId: taskId, messageId: message.id };
+  });
+}
+
+function completeChatTask(token, taskId) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee); taskId = String(taskId || '');
+    const ss = ensureChatDatabase_(), taskSheet = ss.getSheetByName('CHAT_TASKS'), assignmentSheet = ss.getSheetByName('CHAT_ASSIGNMENTS');
+    const taskValues = taskSheet.getLastRow() > 1 ? taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 11).getValues() : [], taskIndex = taskValues.findIndex(function (row) { return String(row[0]) === taskId; });
+    if (taskIndex < 0 || String(taskValues[taskIndex][6]) !== 'OPEN') throw new Error('Tugas tidak ditemukan atau sudah selesai.');
+    const roomId = requireChatRoom_(employee, taskValues[taskIndex][1]), title = String(taskValues[taskIndex][2]);
+    const values = assignmentSheet.getLastRow() > 1 ? assignmentSheet.getRange(2, 1, assignmentSheet.getLastRow() - 1, 10).getValues() : [];
+    const targets = [];
+    values.forEach(function (row, index) { if (String(row[1]) !== taskId || String(row[6]) !== 'OPEN') return; if ((String(row[2]) === 'OUTLET' && String(row[3]).toUpperCase() === employee.outlet) || (String(row[2]) === 'PERSON' && normalizeNik_(row[4]) === employee.nik)) targets.push(index); });
+    if (!targets.length) throw new Error('Tugas ini bukan untuk akun Anda atau sudah diselesaikan.');
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    try {
+      targets.forEach(function (index) { assignmentSheet.getRange(index + 2, 7, 1, 4).setValues([['DONE', employee.nik, employee.name, new Date()]]); values[index][6] = 'DONE'; });
+      const remaining = values.some(function (row) { return String(row[1]) === taskId && String(row[6]) === 'OPEN'; });
+      if (!remaining) taskSheet.getRange(taskIndex + 2, 7, 1, 5).setValues([['DONE', taskValues[taskIndex][7], taskValues[taskIndex][8], taskValues[taskIndex][9], new Date()]]);
+    } finally { lock.releaseLock(); }
+    const message = appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' telah menyelesaikan tugas ' + title, '', [], taskId);
+    notifyChatRoom_(roomId, employee, 'Tugas selesai · ' + title, employee.name + ' telah menyelesaikan tugas.', message.id);
+    return { completed: true, taskId: taskId };
+  });
+}
+
+function getChatAttachment(token, attachmentId) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    ensureChatDatabase_();
+    const row = chatSheetRows_('CHAT_ATTACHMENTS').filter(function (item) { return String(item[0]) === String(attachmentId); })[0];
+    if (!row) throw new Error('Lampiran tidak ditemukan.');
+    let roomId = '';
+    if (row[1]) {
+      const message = chatSheetRows_('CHAT_MESSAGES').filter(function (item) { return String(item[0]) === String(row[1]); })[0];
+      roomId = message ? String(message[1]) : '';
+    }
+    if (!roomId && row[2]) {
+      const task = chatSheetRows_('CHAT_TASKS').filter(function (item) { return String(item[0]) === String(row[2]); })[0];
+      roomId = task ? String(task[1]) : '';
+    }
+    if (!roomId) throw new Error('Pemilik lampiran tidak dapat diverifikasi.');
+    requireChatRoom_(employee, roomId);
+    const file = DriveApp.getFileById(String(row[3])), blob = file.getBlob();
+    if (blob.getBytes().length > 6 * 1024 * 1024) throw new Error('Lampiran terlalu besar untuk dibuka dari aplikasi.');
+    return { id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), base64: Utilities.base64Encode(blob.getBytes()) };
+  });
 }
 
 // ---------- Lost And Found (SABAR) ----------
