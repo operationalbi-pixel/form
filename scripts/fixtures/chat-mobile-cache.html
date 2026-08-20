@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="id">
+<meta charset="utf-8">
+<title>Chat Mobile Cache Fixture</title>
+<script>
+  (function () {
+    var token = 'fixture-chat-token', hash = 2166136261;
+    for (var index = 0; index < token.length; index += 1) {
+      hash ^= token.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    localStorage.setItem('bakerzin_session', token);
+    localStorage.setItem('bi_chat_bootstrap_v3:' + (hash >>> 0).toString(36), JSON.stringify({
+      savedAt: Date.now(),
+      data: {
+        user: { nik: 'FIXTURE', name: 'Mobile Tester', outlet: 'BIHQ' },
+        rooms: [{ id: 'GENERAL', title: 'General', type: 'GENERAL', description: 'Pengujian tampilan mobile', unread: 0 }],
+        outlets: ['BICP'],
+        tasks: []
+      }
+    }));
+    location.replace('../../docs/chat.html?room=GENERAL');
+  }());
+</script>
+</html>

@@ -361,11 +361,17 @@ if (!chatHtml.includes("timeZone:'Asia/Jakarta'") || !chatHtml.includes('id="com
 if (!chatHtml.includes('grid-template-columns:repeat(auto-fit')) failures.push('Kartu task belum dibuat simetris dan memenuhi lebar');
 if (!chatHtml.includes('delivery-dot pending') || !chatHtml.includes('delivery-dot sent')) failures.push('Status kirim belum memakai dot kuning dan hijau');
 if (!chatHtml.includes("q('send').addEventListener('pointerdown'") || !chatHtml.includes('function keepComposerFocus(')) failures.push('Keyboard chat belum dipertahankan saat tombol Send ditekan');
+if (!apiClient.includes('function syncChatLayerViewport()') || !apiClient.includes("global.visualViewport.addEventListener('resize', syncChatLayerViewport)")) failures.push('Iframe induk chat belum mengikuti visual viewport saat keyboard terbuka');
+const chatMobileFixture = await text('scripts/fixtures/chat-mobile-cache.html');
+if (!chatMobileFixture.includes('Chat Mobile Cache Fixture') || !chatMobileFixture.includes('bi_chat_bootstrap_v3:')) failures.push('Fixture pengujian header chat mobile belum tersedia');
 if (!chatHtml.includes('placeholder="Tulis pesan..."')) failures.push('Placeholder input chat belum diringkas');
 if (!chatHtml.includes('bi_chat_bootstrap_v3:') || !chatHtml.includes('function readBootstrapCache(') || !chatHtml.includes('function applyBootstrap(')) failures.push('Daftar grup chat belum memakai cache-first bootstrap');
-for (const action of ['chatTaskProgress', 'chatSearch', 'chatRoomDetails', 'chatUpdateRoom']) {
+for (const action of ['chatTaskProgress', 'chatSearch', 'chatRoomDetails', 'chatUpdateRoom', 'chatUpdateTask', 'chatDeleteTask']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Pesan & Tugas '${action}' belum tersedia`);
 }
+if (!backend.includes('function requireChatTaskManager_(') || !backend.includes("employee.outlet !== 'BIHQ' && creatorNik !== employee.nik")) failures.push('Izin edit/hapus task belum dibatasi untuk creator dan BIHQ');
+if (!chatHtml.includes('data-task-menu=') || !chatHtml.includes('id="taskManageModal"') || !chatHtml.includes("api('chatDeleteTask'")) failures.push('Menu tiga titik edit/hapus task belum tersedia');
+if (!backend.includes('Persist chat notification failed') || !chatHtml.includes('max=1280')) failures.push('Pembuatan task bergambar belum dilindungi dari kegagalan notifikasi atau ukuran gambar besar');
 if (!chatHtml.includes('id="taskInfoModal"') || !chatHtml.includes("api('chatTaskProgress'")) failures.push('Informasi progress task per outlet/person belum tersedia');
 if (!chatHtml.includes('id="chatSearch"') || !chatHtml.includes("api('chatSearch'")) failures.push('Pencarian pesan per grup belum tersedia');
 if (!chatHtml.includes('id="groupModal"') || !chatHtml.includes("api('chatRoomDetails'") || !chatHtml.includes("api('chatUpdateRoom'")) failures.push('Edit keterangan grup dan history task belum tersedia');
