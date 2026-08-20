@@ -122,6 +122,10 @@ function apiActions_() {
     chatReaders: getChatMessageReaders,
     chatCreateTask: createChatTask,
     chatCompleteTask: completeChatTask,
+    chatTaskProgress: getChatTaskProgress,
+    chatSearch: searchChatMessages,
+    chatRoomDetails: getChatRoomDetails,
+    chatUpdateRoom: updateChatRoomDescription,
     chatAttachment: getChatAttachment,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
@@ -10834,7 +10838,7 @@ function dateIso_(value) {
 // ---------- BI-Space group chat & tasks ----------
 
 const CHAT_DB = Object.freeze({
-  ROOMS: ['ROOM_ID', 'ROOM_TYPE', 'OUTLET', 'TITLE', 'ACTIVE', 'CREATED_AT', 'LAST_SEQUENCE'],
+  ROOMS: ['ROOM_ID', 'ROOM_TYPE', 'OUTLET', 'TITLE', 'ACTIVE', 'CREATED_AT', 'LAST_SEQUENCE', 'DESCRIPTION', 'UPDATED_BY_NIK', 'UPDATED_BY_NAME', 'UPDATED_AT'],
   MESSAGES: ['MESSAGE_ID', 'ROOM_ID', 'SEQUENCE', 'SENDER_NIK', 'SENDER_NAME', 'SENDER_OUTLET', 'MESSAGE_TYPE', 'BODY', 'REPLY_TO_ID', 'ATTACHMENT_IDS_JSON', 'TASK_ID', 'CREATED_AT', 'DELETED_AT'],
   READS: ['ROOM_ID', 'NIK', 'LAST_READ_SEQUENCE', 'LAST_READ_AT'],
   TASKS: ['TASK_ID', 'ROOM_ID', 'TITLE', 'DESCRIPTION', 'DUE_AT', 'PIC_TYPE', 'STATUS', 'CREATED_BY_NIK', 'CREATED_BY_NAME', 'CREATED_AT', 'COMPLETED_AT'],
@@ -10873,12 +10877,12 @@ function ensureChatAttachmentFolder_() {
 
 function ensureChatDatabase_() {
   const ss = chatSpreadsheet_();
-  if (CacheService.getScriptCache().get('chat-schema-v1') === 'ready') return ss;
+  if (CacheService.getScriptCache().get('chat-schema-v2') === 'ready') return ss;
   Object.keys(CHAT_DB).forEach(function (name) { ensureChatSheet_(ss, 'CHAT_' + name, CHAT_DB[name]); });
   const roomSheet = ss.getSheetByName('CHAT_ROOMS');
   if (roomSheet.getLastRow() < 2) roomSheet.appendRow(['GENERAL', 'GENERAL', '', 'General', true, new Date(), 0]);
   ensureChatAttachmentFolder_();
-  CacheService.getScriptCache().put('chat-schema-v1', 'ready', 21600);
+  CacheService.getScriptCache().put('chat-schema-v2', 'ready', 21600);
   return ss;
 }
 
@@ -10935,7 +10939,15 @@ function ensureChatRoomRow_(roomId) {
   if (roomId === 'GENERAL') return;
   const ss = ensureChatDatabase_(), sheet = ss.getSheetByName('CHAT_ROOMS');
   const exists = sheet.getLastRow() > 1 && sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues().some(function (row) { return row[0] === roomId; });
-  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), chatRoomOutlet_(roomId), true, new Date(), 0]);
+  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), chatRoomOutlet_(roomId), true, new Date(), 0, '', '', '', '']);
+}
+
+function chatRoomMetaMap_() {
+  const map = {};
+  chatSheetRows_('CHAT_ROOMS').forEach(function (row) {
+    map[String(row[0])] = { description: String(row[7] || ''), updatedByNik: normalizeNik_(row[8]), updatedByName: String(row[9] || ''), updatedAt: row[10] ? dateIso_(row[10]) : '' };
+  });
+  return map;
 }
 
 function chatReadMap_(nik) {
@@ -10971,9 +10983,9 @@ function getChatBootstrap(token) {
     const session = requireSession_(token), employee = findEmployee_(session.nik);
     assertEmployeeActive_(employee); ensureChatDatabase_();
     const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; }) : [employee.outlet];
-    const reads = chatReadMap_(employee.nik), latest = chatLatestSequenceMap_();
-    const rooms = [{ id: 'GENERAL', title: 'General', type: 'GENERAL', unread: Math.max(0, (latest.GENERAL || 0) - (reads.GENERAL || 0)) }];
-    outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: outlet, type: 'OUTLET', outlet: outlet, unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
+    const reads = chatReadMap_(employee.nik), latest = chatLatestSequenceMap_(), meta = chatRoomMetaMap_();
+    const rooms = [{ id: 'GENERAL', title: 'General', type: 'GENERAL', description: meta.GENERAL ? meta.GENERAL.description : '', unread: Math.max(0, (latest.GENERAL || 0) - (reads.GENERAL || 0)) }];
+    outlets.forEach(function (outlet) { const id = 'OUTLET:' + outlet; rooms.push({ id: id, title: outlet, type: 'OUTLET', outlet: outlet, description: meta[id] ? meta[id].description : '', unread: Math.max(0, (latest[id] || 0) - (reads[id] || 0)) }); });
     return { user: userView_(employee), rooms: rooms, outlets: outlets, tasks: chatPendingTasks_(employee), generatedAt: new Date().toISOString() };
   });
 }
@@ -11005,6 +11017,66 @@ function chatAttachmentViews_(ids) {
 function chatTaskById_(taskId) {
   const row = chatSheetRows_('CHAT_TASKS').filter(function (item) { return String(item[0]) === String(taskId); })[0];
   return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', status: String(row[6]) } : null;
+}
+
+function chatTaskProgressView_(taskRow, assignmentRows) {
+  const taskId = String(taskRow[0]), picType = String(taskRow[5] || '').toUpperCase();
+  const entries = (assignmentRows || []).filter(function (row) { return String(row[1]) === taskId; }).map(function (row) {
+    const done = String(row[6]) === 'DONE';
+    return { type: String(row[2]), outlet: String(row[3] || '').toUpperCase(), nik: normalizeNik_(row[4]), name: String(row[5] || ''), label: picType === 'OUTLET' ? String(row[3] || '').toUpperCase() : String(row[5] || row[4] || ''), completed: done, completedByNik: normalizeNik_(row[7]), completedByName: String(row[8] || ''), completedAt: done && row[9] ? dateIso_(row[9]) : '' };
+  });
+  const completed = entries.filter(function (entry) { return entry.completed; }).length, total = entries.length;
+  return { id: taskId, roomId: String(taskRow[1]), title: String(taskRow[2]), description: String(taskRow[3] || ''), dueAt: taskRow[4] ? dateIso_(taskRow[4]) : '', picType: picType, status: String(taskRow[6]), createdByNik: normalizeNik_(taskRow[7]), createdByName: String(taskRow[8] || ''), createdAt: taskRow[9] ? dateIso_(taskRow[9]) : '', completedAt: taskRow[10] ? dateIso_(taskRow[10]) : '', completed: completed, total: total, percent: total ? Math.round(completed * 100 / total) : 0, entries: entries };
+}
+
+function getChatTaskProgress(token, taskId) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    const taskRow = chatSheetRows_('CHAT_TASKS').filter(function (row) { return String(row[0]) === String(taskId || ''); })[0];
+    if (!taskRow) throw new Error('Tugas tidak ditemukan.');
+    requireChatRoom_(employee, taskRow[1]);
+    return chatTaskProgressView_(taskRow, chatSheetRows_('CHAT_ASSIGNMENTS'));
+  });
+}
+
+function searchChatMessages(token, roomId, query) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    roomId = requireChatRoom_(employee, roomId); query = cleanText_(query, 120).toLowerCase();
+    if (query.length < 2) return { results: [] };
+    const rows = chatSheetRows_('CHAT_MESSAGES'), results = [];
+    for (let index = rows.length - 1; index >= 0 && results.length < 50; index -= 1) {
+      const row = rows[index], body = String(row[7] || '');
+      if (String(row[1]) !== roomId || row[12] || body.toLowerCase().indexOf(query) < 0) continue;
+      results.push({ id: String(row[0]), sequence: Number(row[2] || 0), senderName: String(row[4] || ''), senderOutlet: String(row[5] || ''), type: String(row[6] || ''), body: body.slice(0, 700), createdAt: row[11] ? dateIso_(row[11]) : '' });
+    }
+    return { results: results };
+  });
+}
+
+function getChatRoomDetails(token, roomId) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    roomId = requireChatRoom_(employee, roomId); ensureChatRoomRow_(roomId);
+    const meta = chatRoomMetaMap_()[roomId] || {}, assignments = chatSheetRows_('CHAT_ASSIGNMENTS');
+    const history = chatSheetRows_('CHAT_TASKS').filter(function (row) { return String(row[1]) === roomId; }).sort(function (a, b) { return new Date(b[9] || 0).getTime() - new Date(a[9] || 0).getTime(); }).slice(0, 50).map(function (row) { const view = chatTaskProgressView_(row, assignments); delete view.entries; return view; });
+    return { id: roomId, title: roomId === 'GENERAL' ? 'General' : chatRoomOutlet_(roomId), description: String(meta.description || ''), updatedByName: String(meta.updatedByName || ''), updatedAt: String(meta.updatedAt || ''), history: history };
+  });
+}
+
+function updateChatRoomDescription(token, roomId, description) {
+  return safe_(function () {
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    roomId = requireChatRoom_(employee, roomId); description = cleanText_(description, 600); ensureChatRoomRow_(roomId);
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    try {
+      const ss = ensureChatDatabase_(), roomSheet = ss.getSheetByName('CHAT_ROOMS'), rows = roomSheet.getRange(2, 1, roomSheet.getLastRow() - 1, CHAT_DB.ROOMS.length).getValues(), index = rows.findIndex(function (row) { return String(row[0]) === roomId; });
+      if (index < 0) throw new Error('Grup tidak ditemukan.');
+      roomSheet.getRange(index + 2, 8, 1, 4).setValues([[description, employee.nik, employee.name, new Date()]]);
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_ROOM_DESCRIPTION', roomId, roomId, employee.nik, employee.name, JSON.stringify({ description: description }), new Date()]);
+    } finally { lock.releaseLock(); }
+    return { id: roomId, description: description, updatedByName: employee.name, updatedAt: new Date().toISOString() };
+  });
 }
 
 function getChatMessages(token, roomId, beforeSequence) {
