@@ -360,6 +360,13 @@ if (!backend.includes("dueAt: row[4] ? dateIso_(row[4]) : ''") || !backend.inclu
 if (!chatHtml.includes("timeZone:'Asia/Jakarta'") || !chatHtml.includes('id="completeModal"') || !chatHtml.includes('Menyimpan...')) failures.push('Zona waktu, modal penyelesaian, atau status simpan task belum tersedia');
 if (!chatHtml.includes('grid-template-columns:repeat(auto-fit')) failures.push('Kartu task belum dibuat simetris dan memenuhi lebar');
 if (!chatHtml.includes('delivery-dot pending') || !chatHtml.includes('delivery-dot sent')) failures.push('Status kirim belum memakai dot kuning dan hijau');
+for (const action of ['chatTaskProgress', 'chatSearch', 'chatRoomDetails', 'chatUpdateRoom']) {
+  if (!allowedActions.has(action)) failures.push(`Endpoint Pesan & Tugas '${action}' belum tersedia`);
+}
+if (!chatHtml.includes('id="taskInfoModal"') || !chatHtml.includes("api('chatTaskProgress'")) failures.push('Informasi progress task per outlet/person belum tersedia');
+if (!chatHtml.includes('id="chatSearch"') || !chatHtml.includes("api('chatSearch'")) failures.push('Pencarian pesan per grup belum tersedia');
+if (!chatHtml.includes('id="groupModal"') || !chatHtml.includes("api('chatRoomDetails'") || !chatHtml.includes("api('chatUpdateRoom'")) failures.push('Edit keterangan grup dan history task belum tersedia');
+if (!backend.includes("chat-schema-v2") || !backend.includes("'DESCRIPTION', 'UPDATED_BY_NIK'")) failures.push('Migrasi keterangan grup chat belum tersedia');
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
