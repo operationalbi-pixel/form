@@ -121,6 +121,8 @@ function apiActions_() {
     chatMarkRead: markChatRoomRead,
     chatReaders: getChatMessageReaders,
     chatCreateTask: createChatTask,
+    chatUpdateTask: updateChatTask,
+    chatDeleteTask: deleteChatTask,
     chatCompleteTask: completeChatTask,
     chatTaskProgress: getChatTaskProgress,
     chatSearch: searchChatMessages,
@@ -10966,9 +10968,11 @@ function chatPendingTasks_(employee) {
   const tasks = {}, assignments = chatSheetRows_('CHAT_ASSIGNMENTS');
   chatSheetRows_('CHAT_TASKS').forEach(function (row) {
     if (String(row[6]) !== 'OPEN') return;
-    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', picType: String(row[5]), createdBy: String(row[8]), createdAt: dateIso_(row[9]) };
+    const creatorNik = normalizeNik_(row[7]);
+    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', picType: String(row[5]), createdByNik: creatorNik, createdByName: String(row[8]), createdAt: dateIso_(row[9]), canManage: employee.outlet === 'BIHQ' || creatorNik === employee.nik };
   });
   const visible = {};
+  if (employee.outlet === 'BIHQ') Object.keys(tasks).forEach(function (id) { visible[id] = tasks[id]; });
   assignments.forEach(function (row) {
     const task = tasks[String(row[1])];
     if (!task || String(row[6]) !== 'OPEN') return;
@@ -11100,9 +11104,13 @@ function saveChatAttachments_(uploads, employee, messageId, taskId) {
   uploads = Array.isArray(uploads) ? uploads : [];
   if (uploads.length > 5) throw new Error('Maksimal 5 lampiran dalam satu kiriman.');
   const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-  const rows = [], ids = [], folder = ensureChatAttachmentFolder_();
+  const mimeAliases = { 'image/jpg': 'image/jpeg', 'image/pjpeg': 'image/jpeg', 'image/x-png': 'image/png' };
+  let folder;
+  try { folder = ensureChatAttachmentFolder_(); }
+  catch (error) { throw new Error('Penyimpanan lampiran belum dapat diakses. Periksa izin Google Drive lalu coba lagi.'); }
+  const rows = [], ids = [];
   uploads.forEach(function (upload) {
-    upload = upload || {}; const mime = String(upload.mimeType || '').toLowerCase();
+    upload = upload || {}; const inputMime = String(upload.mimeType || '').toLowerCase(), mime = mimeAliases[inputMime] || inputMime;
     if (allowed.indexOf(mime) < 0) throw new Error('Format lampiran tidak didukung: ' + String(upload.fileName || mime));
     const raw = String(upload.base64 || '').replace(/^data:[^;]+;base64,/, '');
     const bytes = Utilities.base64Decode(raw);
@@ -11137,14 +11145,19 @@ function appendChatMessage_(roomId, employee, type, body, replyToId, attachmentI
 }
 
 function notifyChatRoom_(roomId, employee, title, body, entityId) {
-  const members = chatMembers_(roomId).filter(function (member) { return member.nik !== employee.nik; });
   const notification = { id: 'CHAT:' + entityId, type: 'CHAT', title: title, body: body, url: 'https://operationalbi-pixel.github.io/form/chat.html?room=' + encodeURIComponent(roomId) };
-  persistMobileNotifications_(members.map(function (member) { return member.nik; }), notification);
-  if (roomId === 'GENERAL') sendRealtimeMobilePush_({}, notification);
-  else {
-    sendRealtimeMobilePush_({ outlet: chatRoomOutlet_(roomId) }, notification);
-    if (chatRoomOutlet_(roomId) !== 'BIHQ') sendRealtimeMobilePush_({ outlet: 'BIHQ' }, notification);
-  }
+  // Penyimpanan chat/task sudah selesai sebelum notifikasi dikirim. Gangguan FCM
+  // atau sheet notifikasi tidak boleh membuat transaksi utama dilaporkan gagal.
+  let members = [];
+  try { members = chatMembers_(roomId).filter(function (member) { return member.nik !== employee.nik; }); } catch (error) { console.warn('Resolve chat notification members failed: ' + error); }
+  try { persistMobileNotifications_(members.map(function (member) { return member.nik; }), notification); } catch (error) { console.warn('Persist chat notification failed: ' + error); }
+  try {
+    if (roomId === 'GENERAL') sendRealtimeMobilePush_({}, notification);
+    else {
+      sendRealtimeMobilePush_({ outlet: chatRoomOutlet_(roomId) }, notification);
+      if (chatRoomOutlet_(roomId) !== 'BIHQ') sendRealtimeMobilePush_({ outlet: 'BIHQ' }, notification);
+    }
+  } catch (error) { console.warn('Realtime chat notification failed: ' + error); }
 }
 
 function sendChatMessage(token, payload) {
@@ -11205,9 +11218,76 @@ function createChatTask(token, payload) {
       taskSheet.appendRow([taskId, roomId, title, description, dueAt || '', picType, 'OPEN', employee.nik, employee.name, new Date(), '']);
       assignmentSheet.getRange(assignmentSheet.getLastRow() + 1, 1, assignments.length, assignments[0].length).setValues(assignments);
     } finally { lock.releaseLock(); }
-    const message = appendChatMessage_(roomId, employee, 'TASK', title, '', attachmentIds, taskId);
+    let message = { id: '' };
+    try { message = appendChatMessage_(roomId, employee, 'TASK', title, '', attachmentIds, taskId); }
+    catch (error) { console.warn('Task saved but timeline message failed: ' + error); }
     notifyChatRoom_(roomId, employee, 'Tugas baru · ' + title, description || ('Ditambahkan oleh ' + employee.name), taskId);
     return { taskId: taskId, messageId: message.id };
+  });
+}
+
+function requireChatTaskManager_(employee, taskRow) {
+  const creatorNik = normalizeNik_(taskRow[7]);
+  if (employee.outlet !== 'BIHQ' && creatorNik !== employee.nik) throw new Error('Hanya pembuat tugas atau akun BIHQ yang dapat mengubah tugas ini.');
+}
+
+function updateChatTask(token, taskId, payload) {
+  return safe_(function () {
+    payload = payload || {}; taskId = String(taskId || '');
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    const title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), dueAt = payload.dueAt ? new Date(payload.dueAt) : '';
+    if (!title) throw new Error('Judul tugas wajib diisi.');
+    if (dueAt && isNaN(dueAt.getTime())) throw new Error('Batas waktu tugas tidak valid.');
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    let roomId = '';
+    try {
+      const ss = ensureChatDatabase_(), taskSheet = ss.getSheetByName('CHAT_TASKS'), messageSheet = ss.getSheetByName('CHAT_MESSAGES');
+      const tasks = taskSheet.getLastRow() > 1 ? taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 11).getValues() : [];
+      const taskIndex = tasks.findIndex(function (row) { return String(row[0]) === taskId; });
+      if (taskIndex < 0 || String(tasks[taskIndex][6]) !== 'OPEN') throw new Error('Tugas tidak ditemukan atau sudah selesai.');
+      requireChatTaskManager_(employee, tasks[taskIndex]);
+      roomId = requireChatRoom_(employee, tasks[taskIndex][1]);
+      taskSheet.getRange(taskIndex + 2, 3, 1, 3).setValues([[title, description, dueAt || '']]);
+      if (messageSheet.getLastRow() > 1) {
+        const messages = messageSheet.getRange(2, 1, messageSheet.getLastRow() - 1, 13).getValues();
+        messages.forEach(function (row, index) { if (String(row[10]) === taskId && String(row[6]) === 'TASK' && !row[12]) messageSheet.getRange(index + 2, 8).setValue(title); });
+      }
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title, description: description, dueAt: dueAt ? dueAt.toISOString() : '' }), new Date()]);
+    } finally { lock.releaseLock(); }
+    appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' memperbarui tugas ' + title, '', [], '');
+    notifyChatRoom_(roomId, employee, 'Tugas diperbarui · ' + title, description || ('Diperbarui oleh ' + employee.name), taskId);
+    return { updated: true, taskId: taskId, title: title, description: description, dueAt: dueAt ? dueAt.toISOString() : '' };
+  });
+}
+
+function deleteChatTask(token, taskId) {
+  return safe_(function () {
+    taskId = String(taskId || '');
+    const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
+    const lock = LockService.getScriptLock(); lock.waitLock(15000);
+    let roomId = '', title = '';
+    try {
+      const ss = ensureChatDatabase_(), taskSheet = ss.getSheetByName('CHAT_TASKS'), assignmentSheet = ss.getSheetByName('CHAT_ASSIGNMENTS'), messageSheet = ss.getSheetByName('CHAT_MESSAGES');
+      const tasks = taskSheet.getLastRow() > 1 ? taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 11).getValues() : [];
+      const taskIndex = tasks.findIndex(function (row) { return String(row[0]) === taskId; });
+      if (taskIndex < 0 || String(tasks[taskIndex][6]) !== 'OPEN') throw new Error('Tugas tidak ditemukan atau sudah selesai.');
+      requireChatTaskManager_(employee, tasks[taskIndex]);
+      roomId = requireChatRoom_(employee, tasks[taskIndex][1]); title = String(tasks[taskIndex][2]);
+      taskSheet.getRange(taskIndex + 2, 7).setValue('DELETED');
+      taskSheet.getRange(taskIndex + 2, 11).setValue(new Date());
+      if (assignmentSheet.getLastRow() > 1) {
+        const assignments = assignmentSheet.getRange(2, 1, assignmentSheet.getLastRow() - 1, 10).getValues();
+        assignments.forEach(function (row, index) { if (String(row[1]) === taskId && String(row[6]) === 'OPEN') assignmentSheet.getRange(index + 2, 7).setValue('CANCELLED'); });
+      }
+      if (messageSheet.getLastRow() > 1) {
+        const messages = messageSheet.getRange(2, 1, messageSheet.getLastRow() - 1, 13).getValues();
+        messages.forEach(function (row, index) { if (String(row[10]) === taskId && String(row[6]) === 'TASK' && !row[12]) messageSheet.getRange(index + 2, 13).setValue(new Date()); });
+      }
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'DELETE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title }), new Date()]);
+    } finally { lock.releaseLock(); }
+    appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' menghapus tugas ' + title, '', [], '');
+    notifyChatRoom_(roomId, employee, 'Tugas dihapus · ' + title, 'Dihapus oleh ' + employee.name, taskId);
+    return { deleted: true, taskId: taskId };
   });
 }
 
