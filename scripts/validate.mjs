@@ -116,6 +116,17 @@ for (const match of mppHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/s
   catch (error) { failures.push(`docs/mpp-schedule.html inline script ${mppInlineIndex}: ${error.message}`); }
 }
 
+const socializationHtml = await text('docs/sosialisasi.html');
+if (!socializationHtml.includes('viewport-fit=cover')) failures.push('Portal Sosialisasi belum aman untuk notch WebView');
+if (!socializationHtml.includes('src="config.js"') || !socializationHtml.includes('src="api-client.js"')) failures.push('Portal Sosialisasi belum terhubung ke API BI-Space');
+if (!socializationHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Portal Sosialisasi belum memakai sesi BI-Space');
+if (socializationHtml.includes("view === 'LOGIN'") || socializationHtml.includes('function LoginScreen') || socializationHtml.includes("runServer('loginUser'")) failures.push('Halaman login lama masih aktif di Portal Sosialisasi');
+if (!socializationHtml.includes("location.href = 'index.html'")) failures.push('Portal Sosialisasi belum memiliki tombol kembali ke Dashboard');
+if (!socializationHtml.includes('socializationBootstrap') || !socializationHtml.includes('socializationSubmitQuiz')) failures.push('Portal Sosialisasi belum memakai endpoint internal');
+if (!socializationHtml.includes('--bi-red: #be1e3a')) failures.push('Tema BI-Space belum diterapkan ke Portal Sosialisasi');
+if (!socializationHtml.includes('@media (max-width: 640px)')) failures.push('Portal Sosialisasi belum memiliki layout mobile');
+if (!await text('docs/index.html').then(value => value.includes("sosialisasi.html?task="))) failures.push('Menu Sosialisasi belum diarahkan ke halaman internal');
+
 const css = await text('docs/ui-modern.css');
 if (!/@media\s*\(max-width:\s*760px\)/.test(css)) failures.push('Breakpoint tablet/mobile belum tersedia');
 if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion belum tersedia');
@@ -128,6 +139,9 @@ if (!backend.includes('mobilePayload')) failures.push('Gateway JSON Android belu
 if (!backend.includes('mppBootstrap: getMppBootstrap')) failures.push('Endpoint bootstrap MPP belum terdaftar');
 if (!backend.includes('function mppSessionEmployee_(token)')) failures.push('Endpoint MPP belum memvalidasi sesi BI-Space');
 if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('MPP tidak lagi memakai sheet database lama');
+if (!backend.includes('socializationBootstrap: getSocializationBootstrap') || !backend.includes('function getSocializationBootstrap(token)')) failures.push('Endpoint bootstrap Portal Sosialisasi belum terdaftar');
+if (!backend.includes("const SOCIALIZATION_SPREADSHEET_ID = '1S3aXdOMMcvPePgaQZFnxgMOY7PwFMHv7mApCVBU30Lk'")) failures.push('Portal Sosialisasi tidak lagi memakai database lama yang diminta');
+if (!backend.includes('function submitSocializationQuiz(token, materialId, score)')) failures.push('Penyimpanan quiz Portal Sosialisasi belum tersedia');
 try {
   const insertCalls = [];
   const insertContext = vm.createContext({

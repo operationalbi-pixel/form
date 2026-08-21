@@ -155,6 +155,12 @@ function apiActions_() {
     salesAnalysisSaveGlobal: saveSalesAnalysisGlobal,
     salesAnalysisAddGlobal: addSalesAnalysisGlobalItem,
     salesAnalysisDeleteGlobal: deleteSalesAnalysisGlobalItem,
+    socializationBootstrap: getSocializationBootstrap,
+    socializationMaterials: getSocializationMaterials,
+    socializationSaveMaterial: saveSocializationMaterial,
+    socializationSubmitQuiz: submitSocializationQuiz,
+    socializationMaterialReport: getSocializationMaterialReport,
+    socializationUserReport: getSocializationUserReport,
     mppBootstrap: getMppBootstrap,
     mppGetEmployees: getMppEmployees,
     mppAddEmployee: addMppEmployee,
@@ -8440,6 +8446,7 @@ function findEmployee_(nik) {
         outlet: String(values[i][2] || '').trim().toUpperCase(),
         position: normalizeEmployeePosition_(values[i][4]),
         grade: String(values[i][5] || '').trim().toUpperCase(),
+        section: String(values[i][6] || '').trim().toUpperCase() || 'ALL',
         status: String(values[i][8] || '').trim().toLowerCase(),
         password: String(values[i][11] || '')
       };
@@ -12155,6 +12162,179 @@ function processLostFoundItem(token, actionType, formData) {
   return safe_(function () {
     const context = lostFoundContext_(token);
     return LOST_FOUND.processItemAction(context.auth.code, actionType, formData || {});
+  });
+}
+
+// ---------- Portal Sosialisasi (database legacy yang sama) ----------
+
+const SOCIALIZATION_SPREADSHEET_ID = '1S3aXdOMMcvPePgaQZFnxgMOY7PwFMHv7mApCVBU30Lk';
+const SOCIALIZATION_MATERIAL_HEADERS = ['ID', 'JUDUL', 'TIPE', 'LINK', 'PERTANYAAN_JSON', 'SECTION'];
+const SOCIALIZATION_PROGRESS_HEADERS = ['NIK', 'MATERI_ID', 'STATUS', 'SKOR', 'TANGGAL'];
+
+function socializationSheet_(name, headers) {
+  const ss = SpreadsheetApp.openById(SOCIALIZATION_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+      .setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function socializationContext_(token) {
+  const session = requireSession_(token), employee = findEmployee_(session.nik);
+  assertEmployeeActive_(employee);
+  return { employee: employee, isAdmin: employee.outlet === 'BIHQ' };
+}
+
+function socializationUserView_(context) {
+  const employee = context.employee;
+  return {
+    nik: employee.nik, name: employee.name, outlet: employee.outlet,
+    position: employee.position, grade: employee.grade, section: employee.section || 'ALL',
+    role: context.isAdmin ? 'ADMIN' : 'USER'
+  };
+}
+
+function socializationJson_(value, fallback) {
+  try { return value ? JSON.parse(String(value)) : fallback; }
+  catch (error) { return fallback; }
+}
+
+function socializationDate_(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  return isNaN(date.getTime()) ? String(value) : Utilities.formatDate(date, Session.getScriptTimeZone() || 'Asia/Jakarta', 'dd/MM/yyyy HH:mm');
+}
+
+function socializationMaterialsFor_(context) {
+  const materialSheet = socializationSheet_('Materi', SOCIALIZATION_MATERIAL_HEADERS);
+  const progressSheet = socializationSheet_('Progress', SOCIALIZATION_PROGRESS_HEADERS);
+  const materials = materialSheet.getDataRange().getValues(), progress = progressSheet.getDataRange().getValues();
+  const completed = {};
+  progress.slice(1).forEach(function (row) {
+    if (normalizeNik_(row[0]) === context.employee.nik && String(row[2] || '').trim().toUpperCase() === 'COMPLETED') {
+      completed[String(row[1] || '').trim()] = true;
+    }
+  });
+  return materials.slice(1).map(function (row) {
+    const id = String(row[0] || '').trim(), section = String(row[5] || 'ALL').trim().toUpperCase() || 'ALL';
+    if (!id || (!context.isAdmin && section !== 'ALL' && section !== context.employee.section) || (!context.isAdmin && completed[id])) return null;
+    return {
+      id: id, title: String(row[1] || ''), type: String(row[2] || ''), link: String(row[3] || ''),
+      questions: socializationJson_(row[4], []), section: section
+    };
+  }).filter(Boolean);
+}
+
+function getSocializationBootstrap(token) {
+  return safe_(function () {
+    const context = socializationContext_(token);
+    return { user: socializationUserView_(context), materials: socializationMaterialsFor_(context) };
+  });
+}
+
+function getSocializationMaterials(token) {
+  return safe_(function () { return socializationMaterialsFor_(socializationContext_(token)); });
+}
+
+function socializationQuestions_(questions) {
+  if (!Array.isArray(questions) || !questions.length) throw new Error('Tambahkan minimal satu soal quiz.');
+  return questions.map(function (question, index) {
+    const text = cleanText_(question && question.q, 500);
+    const options = Array.isArray(question && question.options)
+      ? question.options.map(function (option) { return cleanText_(option, 250); }).slice(0, 6) : [];
+    const correct = Number(question && question.correct);
+    if (!text || options.length < 2 || options.some(function (option) { return !option; })) throw new Error('Soal ' + (index + 1) + ' belum lengkap.');
+    if (!isFinite(correct) || correct < 0 || correct >= options.length) throw new Error('Jawaban benar soal ' + (index + 1) + ' belum dipilih.');
+    return { q: text, options: options, correct: Math.floor(correct) };
+  });
+}
+
+function saveSocializationMaterial(token, payload) {
+  return safe_(function () {
+    const context = socializationContext_(token);
+    if (!context.isAdmin) throw new Error('Hanya BIHQ yang dapat menambahkan materi Sosialisasi.');
+    payload = payload || {};
+    const title = cleanText_(payload.title, 200), type = String(payload.type || '').trim().toLowerCase();
+    const section = String(payload.section || 'ALL').trim().toUpperCase();
+    if (!title) throw new Error('Judul materi wajib diisi.');
+    if (['youtube', 'ppt', 'pdf'].indexOf(type) < 0) throw new Error('Tipe materi tidak didukung.');
+    if (['ALL', 'SERVICE', 'KITCHEN'].indexOf(section) < 0) throw new Error('Section materi tidak valid.');
+    const link = safeUrl_(payload.link), questions = socializationQuestions_(payload.questions);
+    const sheet = socializationSheet_('Materi', SOCIALIZATION_MATERIAL_HEADERS);
+    sheet.appendRow([String(Date.now()), title, type, link, JSON.stringify(questions), section]);
+    return 'SUCCESS';
+  });
+}
+
+function submitSocializationQuiz(token, materialId, score) {
+  return safe_(function () {
+    const context = socializationContext_(token), id = cleanText_(materialId, 100), numericScore = Number(score);
+    if (!id) throw new Error('Materi ID tidak tersedia.');
+    if (!isFinite(numericScore) || numericScore < 0 || numericScore > 100) throw new Error('Nilai quiz tidak valid.');
+    const lock = LockService.getScriptLock();
+    lock.waitLock(20000);
+    try {
+      const sheet = socializationSheet_('Progress', SOCIALIZATION_PROGRESS_HEADERS);
+      const values = sheet.getDataRange().getValues();
+      let targetRow = 0;
+      const duplicates = [];
+      for (let index = 1; index < values.length; index++) {
+        if (normalizeNik_(values[index][0]) !== context.employee.nik || String(values[index][1] || '').trim() !== id) continue;
+        if (!targetRow) targetRow = index + 1;
+        else duplicates.push(index + 1);
+      }
+      const row = [context.employee.nik, id, 'COMPLETED', Math.round(numericScore), new Date()];
+      if (targetRow) sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+      else sheet.appendRow(row);
+      duplicates.sort(function (a, b) { return b - a; }).forEach(function (rowNumber) { sheet.deleteRow(rowNumber); });
+      return 'SUCCESS';
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function socializationEmployeeMap_() {
+  const map = {}, sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return map;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(7, sheet.getLastColumn())).getDisplayValues().forEach(function (row) {
+    const nik = normalizeNik_(row[0]);
+    if (nik) map[nik] = { name: String(row[1] || nik), outlet: String(row[2] || '-').toUpperCase(), position: String(row[4] || '-') };
+  });
+  return map;
+}
+
+function getSocializationMaterialReport(token, materialId) {
+  return safe_(function () {
+    const context = socializationContext_(token);
+    if (!context.isAdmin) throw new Error('Laporan keseluruhan hanya tersedia untuk BIHQ.');
+    const id = cleanText_(materialId, 100), employees = socializationEmployeeMap_(), report = {};
+    socializationSheet_('Progress', SOCIALIZATION_PROGRESS_HEADERS).getDataRange().getValues().slice(1).forEach(function (row) {
+      const nik = normalizeNik_(row[0]);
+      if (!nik || String(row[1] || '').trim() !== id) return;
+      const employee = employees[nik] || { name: 'Unknown', outlet: '-', position: '-' };
+      report[nik] = { name: employee.name, nik: nik, position: employee.position, outlet: employee.outlet, time: socializationDate_(row[4]), score: row[3] };
+    });
+    return Object.keys(report).map(function (nik) { return report[nik]; });
+  });
+}
+
+function getSocializationUserReport(token) {
+  return safe_(function () {
+    const context = socializationContext_(token), materialNames = {}, report = {};
+    socializationSheet_('Materi', SOCIALIZATION_MATERIAL_HEADERS).getDataRange().getValues().slice(1).forEach(function (row) {
+      materialNames[String(row[0] || '').trim()] = String(row[1] || 'Unknown Material');
+    });
+    socializationSheet_('Progress', SOCIALIZATION_PROGRESS_HEADERS).getDataRange().getValues().slice(1).forEach(function (row) {
+      const id = String(row[1] || '').trim();
+      if (normalizeNik_(row[0]) !== context.employee.nik || !id) return;
+      report[id] = { title: materialNames[id] || 'Unknown Material', score: row[3], date: socializationDate_(row[4]) };
+    });
+    return Object.keys(report).map(function (id) { return report[id]; });
   });
 }
 
