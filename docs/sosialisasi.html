@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Portal Sosialisasi · BI-Space</title>
+  <script src="config.js"></script>
+  <script src="api-client.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- REACT & BABEL -->
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+  <!-- PDF GENERATOR & CHART JS & DATALABELS PLUGIN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+  
+  <style>
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    
+    .aspect-video-container {
+      position: relative;
+      padding-bottom: 56.25%;
+      height: 0;
+      overflow: hidden;
+      background: black;
+    }
+    .aspect-video-container iframe, 
+    .aspect-video-container #yt-player-frame {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+    }
+    
+    /* Animasi Toast */
+    @keyframes slideIn {
+      from { transform: translateY(100%); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .toast-anim { animation: slideIn 0.3s ease-out forwards; }
+
+    :root {
+      --bi-red: #be1e3a;
+      --bi-red-dark: #7f1528;
+      --bi-ink: #2f1d22;
+      --bi-muted: #7c6c71;
+      --bi-line: #eadde0;
+      --bi-soft: #f8f3f5;
+    }
+    html, body, #root { min-height: 100%; }
+    body.bi-socialization {
+      margin: 0;
+      overflow-x: hidden;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      background: linear-gradient(180deg, #fff 0, var(--bi-soft) 100%);
+      color: var(--bi-ink);
+    }
+    .bi-topbar {
+      top: env(safe-area-inset-top) !important;
+      border-color: var(--bi-line) !important;
+      background: rgba(255,255,255,.96) !important;
+      backdrop-filter: blur(16px);
+      color: var(--bi-ink) !important;
+      box-shadow: 0 10px 35px rgba(74, 21, 37, .08) !important;
+    }
+    .bi-brand { color: var(--bi-red) !important; }
+    .bi-back {
+      display: inline-flex; align-items: center; gap: 7px; min-height: 42px;
+      padding: 0 14px; border: 1px solid #ebcbd3; border-radius: 14px;
+      background: #fff; color: var(--bi-red-dark); font-weight: 800;
+    }
+    .bg-slate-900, .bg-slate-800, .bg-slate-850, .bg-slate-900\/50, .bg-slate-800\/50 {
+      background-color: #fff !important;
+    }
+    .bg-slate-700 { background-color: #f2e8eb !important; }
+    .border-slate-800, .border-slate-700, .border-slate-600 { border-color: var(--bi-line) !important; }
+    .text-white, .text-slate-100, .text-slate-300 { color: var(--bi-ink) !important; }
+    .text-slate-400, .text-slate-500 { color: var(--bi-muted) !important; }
+    .text-blue-400, .text-blue-500, .text-green-500, .text-emerald-500 { color: var(--bi-red) !important; }
+    .bg-blue-600, .bg-blue-500, .bg-green-600, .bg-green-500, .bg-emerald-600, .bg-emerald-500, .bg-red-600, .bg-red-500 {
+      background-color: var(--bi-red) !important; color: #fff !important;
+    }
+    .border-blue-500, .border-green-500 { border-color: var(--bi-red) !important; }
+    input, select, textarea { color: var(--bi-ink) !important; background: #fff !important; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    .bi-page-shell { width: min(1180px, 100%); }
+    @media (max-width: 640px) {
+      .bi-topbar { padding: 10px 12px !important; }
+      .bi-brand span { font-size: 16px; }
+      .bi-page-shell { padding: 14px 12px 28px !important; }
+      .bi-back span { display: none; }
+      .bi-back { width: 42px; padding: 0; justify-content: center; }
+      table { min-width: 620px; }
+    }
+  </style>
+</head>
+<body class="bi-socialization">
+  <div id="root">
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-family:Arial,sans-serif;text-align:center;padding:24px;">
+      <div>
+        <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Memuat Portal Sosialisasi...</div>
+        <div style="font-size:12px;color:#64748b;">Jika terlalu lama, cek koneksi CDN atau buka Console browser.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.addEventListener('error', function(e) {
+      var root = document.getElementById('root');
+      if (root && root.dataset.rendered !== '1') {
+        root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fecaca;font-family:Arial,sans-serif;text-align:center;padding:24px;background:#0f172a;"><div style="max-width:720px;background:#1e293b;border:1px solid #7f1d1d;border-radius:16px;padding:24px;"><div style="font-size:20px;font-weight:700;margin-bottom:8px;color:#fff;">Aplikasi gagal dimuat</div><div style="font-size:13px;line-height:1.6;color:#fecaca;">Error: ' + (e.message || 'Library tidak berhasil dimuat') + '</div><div style="font-size:12px;color:#94a3b8;margin-top:12px;">Biasanya karena CDN React/Babel/jsPDF gagal dimuat atau ada error JavaScript.</div></div></div>';
+      }
+    });
+    setTimeout(function() {
+      var root = document.getElementById('root');
+      if (root && root.dataset.rendered !== '1') {
+        root.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#cbd5e1;font-family:Arial,sans-serif;text-align:center;padding:24px;background:#0f172a;"><div style="max-width:720px;background:#1e293b;border:1px solid #334155;border-radius:16px;padding:24px;"><div style="font-size:20px;font-weight:700;margin-bottom:8px;color:#fff;">Aplikasi belum berhasil tampil</div><div style="font-size:13px;line-height:1.6;color:#cbd5e1;">React/Babel kemungkinan belum termuat. Coba refresh, cek jaringan internet, atau buka Console browser untuk melihat error detail.</div></div></div>';
+      }
+    }, 8000);
+  </script>
+
+  <script type="text/babel" data-presets="env,react">
+    const { useState, useEffect, useRef } = React;
+    const jsPDF = window.jspdf ? window.jspdf.jsPDF : null;
+    const ChartDataLabels = window.ChartDataLabels || null;
+
+    const SOCIALIZATION_ACTIONS = Object.freeze({
+      bootstrap: 'socializationBootstrap',
+      getMaterials: 'socializationMaterials',
+      saveMaterial: 'socializationSaveMaterial',
+      submitQuiz: 'socializationSubmitQuiz',
+      getMaterialReport: 'socializationMaterialReport',
+      getUserReport: 'socializationUserReport'
+    });
+
+    const getSessionToken = () => {
+      try { return localStorage.getItem('bakerzin_session') || ''; }
+      catch (error) { return ''; }
+    };
+
+    const runServer = (funcName, ...args) => {
+      return {
+        withSuccessHandler: (onSuccess) => ({
+          withFailureHandler: (onFailure) => {
+             const action = SOCIALIZATION_ACTIONS[funcName];
+             const token = getSessionToken();
+             if (!action) { onFailure(new Error('Fungsi Sosialisasi tidak dikenal: ' + funcName)); return; }
+             if (!token) { location.href = 'index.html'; return; }
+             window.BAKERZIN_API.call(action, [token].concat(args)).then((response) => {
+               if (!response || !response.ok) throw new Error(response && response.error || 'Server tidak dapat memproses permintaan.');
+               onSuccess(response.data);
+             }).catch(onFailure);
+          }
+        })
+      }
+    };
+
+    // --- ICONS ---
+    const Icon = ({ name, size = 24, className = "" }) => {
+      const icons = {
+        User: <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>,
+        UserHead: <circle cx="12" cy="7" r="4"></circle>,
+        Users: <g><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></g>,
+        Lock: <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>,
+        Plus: <line x1="12" y1="5" x2="12" y2="19"></line>,
+        BookOpen: <path d="M2 3h6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>,
+        LogOut: <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>,
+        CheckCircle: <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>,
+        Link: <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>,
+        Eye: <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>,
+        External: <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>,
+        ChevronLeft: <polyline points="15 18 9 12 15 6"></polyline>,
+        Play: <polygon points="5 3 19 12 5 21 5 3"></polygon>,
+        FileText: <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>,
+        Download: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path>,
+        Chart: <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>,
+        Close: <line x1="18" y1="6" x2="6" y2="18"></line>,
+        Search: <circle cx="11" cy="11" r="8"></circle>,
+        List: <g><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></g>,
+        Alert: <g><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></g>,
+        Info: <g><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></g>,
+        Refresh: <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      };
+      
+      const renderPath = () => {
+        if (name === 'User') return <g>{icons.User}{icons.UserHead}</g>;
+        if (name === 'Users') return <g>{icons.Users}</g>;
+        if (name === 'Search') return <g>{icons.Search}<line x1="21" y1="21" x2="16.65" y2="16.65"></line></g>;
+        if (name === 'List') return <g>{icons.List}</g>;
+        if (name === 'Alert') return <g>{icons.Alert}</g>;
+        if (name === 'Info') return <g>{icons.Info}</g>;
+        if (name === 'Lock') return <g>{icons.Lock}<path d="M7 11V7a5 5 0 0 1 10 0v4"></path></g>;
+        if (name === 'Plus') return <g>{icons.Plus}<line x1="5" y1="12" x2="19" y2="12"></line></g>;
+        if (name === 'BookOpen') return <g>{icons.BookOpen}<path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></g>;
+        if (name === 'LogOut') return <g>{icons.LogOut}<polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></g>;
+        if (name === 'CheckCircle') return <g>{icons.CheckCircle}<polyline points="22 4 12 14.01 9 11.01"></polyline></g>;
+        if (name === 'Link') return <g>{icons.Link}<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></g>;
+        if (name === 'Eye') return <g>{icons.Eye}<circle cx="12" cy="12" r="3"></circle></g>;
+        if (name === 'External') return <g>{icons.External}<polyline points="15 3 21 3 21 9"></polyline></g>;
+        if (name === 'Download') return <g>{icons.Download}</g>;
+        if (name === 'Chart') return <g><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></g>;
+        if (name === 'Close') return <g>{icons.Close}<line x1="6" y1="6" x2="18" y2="18"></line></g>;
+        if (name === 'Refresh') return <g>{icons.Refresh}</g>;
+        return icons[name] || null;
+      };
+      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{renderPath()}</svg>;
+    };
+
+    // --- HELPERS ---
+    const getYoutubeId = (url) => {
+        if (!url) return null;
+        const match = url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/);
+        return (match && match[2].length === 11) ? match[2] : null;
+    };
+    const getGoogleDriveId = (url) => {
+        if (!url) return null;
+        const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/) || url.match(/id=([a-zA-Z0-9_-]+)/);
+        return match ? match[1] : null;
+    }
+    const getPreviewLink = (url, type) => {
+        if (!url) return '';
+        if (type === 'youtube') {
+             const id = getYoutubeId(url);
+             return id ? `https://www.youtube.com/embed/${id}` : url;
+        }
+        const id = getGoogleDriveId(url);
+        return id ? `https://drive.google.com/file/d/${id}/preview` : url;
+    };
+
+    // --- TOAST COMPONENT ---
+    function Toast({ message, type, onClose }) {
+        useEffect(() => {
+            const timer = setTimeout(onClose, 5000); 
+            return () => clearTimeout(timer);
+        }, [onClose]);
+
+        const bgColor = type === 'error' ? 'bg-red-600' : 'bg-green-600';
+        return (
+            <div className={`fixed bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 z-[100] toast-anim ${bgColor} text-white`}>
+                <Icon name={type === 'error' ? 'Alert' : 'CheckCircle'} size={20} />
+                <span className="text-sm font-medium">{message}</span>
+                <button onClick={onClose} className="opacity-70 hover:opacity-100"><Icon name="Close" size={16}/></button>
+            </div>
+        );
+    }
+
+    // --- APP ---
+    function App() {
+      const [view, setView] = useState('BOOT');
+      const [currentUser, setCurrentUser] = useState(null);
+      const [materials, setMaterials] = useState([]);
+      const [activeMaterial, setActiveMaterial] = useState(null);
+      const [isLoading, setIsLoading] = useState(true);
+      const [toast, setToast] = useState(null);
+      const [bootError, setBootError] = useState('');
+
+      const showToast = (msg, type='success') => setToast({ message: msg, type });
+      
+      const handleApiError = (err, retryFn) => {
+          setIsLoading(false);
+          console.error("API Error:", err);
+          
+          if (err && err.message && (err.message.includes("429") || err.message.includes("NetworkError"))) {
+              showToast("Koneksi sibuk (429). Mencoba lagi...", 'error');
+              if (retryFn) setTimeout(() => {
+                  setIsLoading(true);
+                  retryFn();
+              }, 2000);
+          } else {
+              showToast(err.message || "Terjadi kesalahan koneksi", 'error');
+          }
+      };
+
+      const api = {
+          getMats: (cb) => runServer('getMaterials').withSuccessHandler(cb).withFailureHandler(err => handleApiError(err, () => api.getMats(cb))),
+          saveMat: (d, cb) => runServer('saveMaterial', d).withSuccessHandler(cb).withFailureHandler(err => handleApiError(err, () => api.saveMat(d,cb))),
+          getRep: (id, cb) => runServer('getMaterialReport', id).withSuccessHandler(cb).withFailureHandler(err => handleApiError(err, () => api.getRep(id,cb))),
+          getUserRep: (cb) => runServer('getUserReport').withSuccessHandler(cb).withFailureHandler(err => handleApiError(err, () => api.getUserRep(cb))),
+          subQuiz: (id, sc, cb) => runServer('submitQuiz', id, sc).withSuccessHandler(cb).withFailureHandler(err => handleApiError(err, () => api.subQuiz(id,sc,cb)))
+      };
+
+      const openPortal = () => {
+        setIsLoading(true);
+        setBootError('');
+        runServer('bootstrap').withSuccessHandler((res) => {
+            setIsLoading(false);
+            setCurrentUser(res.user);
+            setMaterials(res.materials || []);
+            setView(res.user.role === 'ADMIN' ? 'ADMIN' : 'USER_DASHBOARD');
+        }).withFailureHandler((error) => {
+            setIsLoading(false);
+            const message = error && error.message ? error.message : 'Portal Sosialisasi gagal dimuat.';
+            setBootError(message);
+            setView('ERROR');
+        });
+      };
+
+      useEffect(() => { openPortal(); }, []);
+
+      const fetchMaterials = () => {
+          api.getMats((res) => setMaterials(res || []));
+      };
+
+      const backToDashboard = () => { window.location.href = 'index.html'; };
+
+      return (
+        <div className="min-h-screen font-sans">
+          {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+
+          {currentUser && (
+            <nav className="bi-topbar border-b p-4 flex justify-between items-center sticky z-50">
+              <div className="bi-brand flex items-center gap-2 font-bold text-xl"><Icon name="BookOpen" /><span>Portal Sosialisasi</span></div>
+              <div className="flex items-center gap-4">
+                <div className="text-right hidden sm:block">
+                  <p className="text-sm font-semibold text-white">{currentUser?.name}</p>
+                  <div className="flex items-center justify-end gap-1 text-xs text-slate-400">
+                     <span className="bg-slate-700 px-1 rounded">{currentUser?.section}</span>
+                     <span>{currentUser?.role}</span>
+                  </div>
+                </div>
+                <button onClick={backToDashboard} className="bi-back" title="Kembali ke Dashboard"><Icon name="LogOut" size={18} /><span>Dashboard</span></button>
+              </div>
+            </nav>
+          )}
+          <main className="bi-page-shell p-4 md:p-8 mx-auto">
+            {isLoading && <div className="fixed inset-0 bg-white/90 flex items-center justify-center z-[60]"><div className="text-center"><div className="animate-spin rounded-full h-12 w-12 border-4 border-[#f0d5dc] border-t-[#be1e3a] mx-auto"></div><p className="mt-4 font-bold">Memuat Portal Sosialisasi...</p><p className="text-sm text-slate-500 mt-1">Menggunakan akun BI-Space aktif</p></div></div>}
+            {view === 'ERROR' && <div className="max-w-lg mx-auto mt-16 bg-white border border-red-200 rounded-2xl p-7 text-center shadow-xl"><Icon name="Alert" size={36} className="mx-auto text-red-500"/><h2 className="text-xl font-bold mt-3">Portal belum dapat dibuka</h2><p className="text-sm text-slate-500 mt-2">{bootError}</p><div className="flex gap-3 mt-6"><button onClick={backToDashboard} className="flex-1 border border-slate-300 rounded-xl py-3 font-bold">Dashboard</button><button onClick={openPortal} className="flex-1 bg-red-600 text-white rounded-xl py-3 font-bold">Coba Lagi</button></div></div>}
+            {view === 'ADMIN' && <AdminDashboard materials={materials} refreshList={fetchMaterials} setLoading={setIsLoading} showToast={showToast} user={currentUser} api={api} />}
+            {view === 'USER_DASHBOARD' && <UserDashboard materials={materials} user={currentUser} api={api} setLoading={setIsLoading} onOpenMaterial={(m) => { setActiveMaterial(m); setView('MATERIAL_VIEWER'); }} />}
+            {view === 'MATERIAL_VIEWER' && activeMaterial && <MaterialViewer material={activeMaterial} onComplete={() => setView('QUIZ')} onBack={() => setView('USER_DASHBOARD')} />}
+            {view === 'QUIZ' && activeMaterial && <QuizTaker material={activeMaterial} user={currentUser} api={api} onFinish={() => { setView('USER_DASHBOARD'); fetchMaterials(); }} />}
+          </main>
+        </div>
+      );
+    }
+
+    // --- COMPONENT: USER PERSONAL REPORT MODAL ---
+    function UserPersonalReportModal({ data, onClose, user }) {
+        return (
+            <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
+                <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+                    <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-900 rounded-t-xl">
+                        <h3 className="font-bold text-lg text-white flex items-center gap-2"><Icon name="List" size={20}/> Laporan Training Saya</h3>
+                        <button onClick={onClose}><Icon name="Close" className="text-slate-400 hover:text-white"/></button>
+                    </div>
+                    <div className="p-6 flex-1 overflow-y-auto">
+                        <div className="mb-4 bg-blue-900/20 p-3 rounded border border-blue-700/50 text-sm text-blue-200">
+                           Berikut adalah daftar materi yang telah Anda selesaikan beserta nilai yang diperoleh.
+                        </div>
+                        {data.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500 italic">Belum ada training yang diselesaikan.</div>
+                        ) : (
+                            <div className="overflow-hidden rounded-lg border border-slate-700">
+                                <table className="w-full text-sm text-left text-slate-300">
+                                    <thead className="bg-slate-900 text-slate-400 uppercase text-xs">
+                                        <tr><th className="px-4 py-3">Judul Materi</th><th className="px-4 py-3 text-center">Skor</th><th className="px-4 py-3 text-right">Tanggal Selesai</th></tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-700 bg-slate-800">
+                                        {data.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-750">
+                                                <td className="px-4 py-3 font-medium text-white">{row.title}</td>
+                                                <td className="px-4 py-3 text-center"><span className={`px-2 py-1 rounded text-xs font-bold ${row.score >= 80 ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'}`}>{row.score}</span></td>
+                                                <td className="px-4 py-3 text-right text-slate-400 text-xs">{row.date}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                    <div className="p-4 border-t border-slate-700 flex justify-end"><button onClick={onClose} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded transition">Tutup</button></div>
+                </div>
+            </div>
+        );
+    }
+
+    // --- COMPONENT: REPORT MODAL (ADMIN) ---
+    function ReportModal({ material, data, onClose, user }) {
+        const pieRef = useRef(null);
+        const barRef = useRef(null);
+        const [chartInstances, setChartInstances] = useState([]);
+        
+        // --- CLIENT SIDE SORTING LOGIC ---
+        // Memastikan data selalu berurutan berdasarkan Outlet meskipun dari server acak
+        const sortedData = [...data].sort((a, b) => {
+            const outletA = String(a.outlet || '').toUpperCase();
+            const outletB = String(b.outlet || '').toUpperCase();
+            if (outletA < outletB) return -1;
+            if (outletA > outletB) return 1;
+            
+            // Secondary Sort: Name
+            const nameA = String(a.name || '').toUpperCase();
+            const nameB = String(b.name || '').toUpperCase();
+            if (nameA < nameB) return -1;
+            if (nameA > nameB) return 1;
+            return 0;
+        });
+
+        // Use sortedData for charts to be consistent (optional, usually aggregated)
+        const outletCounts = {};
+        sortedData.forEach(row => { const o = row.outlet || "Unknown"; outletCounts[o] = (outletCounts[o] || 0) + 1; });
+        const labels = Object.keys(outletCounts);
+        const values = Object.values(outletCounts);
+
+        useEffect(() => {
+            if (pieRef.current && barRef.current) {
+                chartInstances.forEach(c => c.destroy());
+                
+                // --- PIE CHART ---
+                const pieChart = new Chart(pieRef.current, { 
+                    type: 'pie', 
+                    data: { 
+                        labels, 
+                        datasets: [{ 
+                            data: values, 
+                            backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'], 
+                            borderWidth: 0 
+                        }] 
+                    }, 
+                    options: { 
+                        responsive: true, 
+                        maintainAspectRatio: false, 
+                        plugins: { 
+                            legend: { position: 'right', labels: { color: '#334155', font: {size: 10} } }, 
+                            title: { display: true, text: 'Komposisi Partisipasi', color: '#0f172a' } 
+                        } 
+                    } 
+                });
+
+                // --- VERTICAL BAR CHART (FIXED) ---
+                const barChart = new Chart(barRef.current, { 
+                    type: 'bar', 
+                    plugins: ChartDataLabels ? [ChartDataLabels] : [], 
+                    data: { 
+                        labels, 
+                        datasets: [{ 
+                            label: 'Jumlah Peserta', 
+                            data: values, 
+                            backgroundColor: '#3b82f6', 
+                            borderRadius: 4,
+                            barPercentage: 0.7 
+                        }] 
+                    }, 
+                    options: { 
+                        indexAxis: 'x', // DIKEMBALIKAN KE 'x' (VERTIKAL)
+                        responsive: true, 
+                        maintainAspectRatio: false, 
+                        layout: { padding: { right: 20 } }, 
+                        scales: { 
+                            y: { // Sumbu Y untuk nilai (Vertikal chart)
+                                grid: { color: '#e2e8f0' }, 
+                                ticks: { color: '#334155', stepSize: 1, autoSkip: false } 
+                            }, 
+                            x: { // Sumbu X untuk label (Vertikal chart)
+                                grid: { display: false }, 
+                                ticks: { color: '#334155', display: true } 
+                            } 
+                        }, 
+                        plugins: { 
+                            legend: { display: false }, 
+                            title: { display: true, text: 'Partisipasi by Outlet', color: '#0f172a' }, 
+                            datalabels: { 
+                                color: 'white', 
+                                font: { weight: 'bold', size: 11 }, 
+                                anchor: 'end', 
+                                align: 'start', 
+                                offset: 4, 
+                                formatter: (v) => v 
+                            } 
+                        } 
+                    } 
+                });
+                
+                setChartInstances([pieChart, barChart]);
+            }
+            return () => chartInstances.forEach(c => c.destroy());
+        }, []);
+
+        const generatePDF = () => {
+            if (!jsPDF) {
+                alert('Library PDF belum termuat. Silakan refresh halaman lalu coba lagi.');
+                return;
+            }
+            const doc = new jsPDF();
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text("LAPORAN SOSIALISASI", 14, 20);
+            doc.setFontSize(10); doc.setFont('helvetica', 'normal'); doc.text("Portal Sosialisasi System", 196, 18, { align: 'right' });
+            doc.setFontSize(12); doc.text(`Materi: ${material.title}`, 14, 28); doc.text(`Total Peserta: ${sortedData.length}`, 196, 28, { align: 'right' });
+            try { doc.addImage(pieRef.current.toDataURL('image/png'), 'PNG', 15, 35, 80, 50); doc.addImage(barRef.current.toDataURL('image/png'), 'PNG', 105, 35, 90, 50); } catch (e) {}
+            // USE sortedData FOR PDF TABLE
+            doc.autoTable({ startY: 95, head: [['Nama Lengkap', 'NIK', 'Posisi', 'Outlet', 'Waktu', 'Skor']], body: sortedData.map(r => [r.name, r.nik, r.position, r.outlet, r.time, r.score]), theme: 'grid', headStyles: { fillColor: [41, 128, 185], textColor: 255, fontStyle: 'bold' }, styles: { fontSize: 9 }, didDrawPage: (d) => { doc.setFontSize(8); doc.setTextColor(150); doc.text(`© Bakerzin | Genarated ${new Date().toLocaleDateString()}`, 105, 290, { align: "center" }); } });
+            doc.save(`Laporan_${material.title}.pdf`);
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
+                <div className="bg-slate-800 rounded-xl border border-slate-700 w-full max-w-4xl h-[90vh] flex flex-col shadow-2xl">
+                    <div className="p-4 border-b border-slate-700 flex justify-between items-center"><h3 className="font-bold text-lg text-white">Laporan: {material.title}</h3><button onClick={onClose}><Icon name="Close" className="text-slate-400 hover:text-white"/></button></div>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="bg-white p-4 rounded border border-slate-200 h-64"><canvas ref={pieRef}></canvas></div><div className="bg-white p-4 rounded border border-slate-200 h-64"><canvas ref={barRef}></canvas></div></div>
+                        <div className="bg-slate-900 rounded border border-slate-700 overflow-hidden"><table className="w-full text-sm text-left"><thead className="bg-slate-800 text-slate-400 uppercase text-xs"><tr><th className="px-4 py-3">Nama</th><th className="px-4 py-3">NIK</th><th className="px-4 py-3">Outlet</th><th className="px-4 py-3 text-center">Skor</th></tr></thead><tbody className="divide-y divide-slate-800 text-slate-300">
+                        {/* USE sortedData FOR DISPLAY TABLE */}
+                        {sortedData.slice(0, 10).map((r, i) => (<tr key={i} className="hover:bg-slate-800/50"><td className="px-4 py-2 font-medium">{r.name}</td><td className="px-4 py-2 text-slate-500">{r.nik}</td><td className="px-4 py-2">{r.outlet}</td><td className="px-4 py-2 text-center">{r.score}</td></tr>))}</tbody></table></div>
+                    </div>
+                    <div className="p-4 border-t border-slate-700 flex justify-end gap-3"><button onClick={onClose} className="px-4 py-2 rounded text-slate-300 hover:bg-slate-700">Tutup</button><button onClick={generatePDF} className="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded flex items-center gap-2"><Icon name="Download" size={18}/> Download PDF</button></div>
+                </div>
+            </div>
+        );
+    }
+
+    // --- COMPONENT: ADMIN DASHBOARD ---
+    function AdminDashboard({ materials, refreshList, setLoading, showToast, user, api }) {
+      const [form, setForm] = useState({ title: '', type: 'youtube', section: 'ALL', link: '', questions: [{ q: '', options: ['', '', ''], correct: 0 }] });
+      const [reportModal, setReportModal] = useState({ isOpen: false, material: null, data: [] });
+      const [searchQuery, setSearchQuery] = useState(''); 
+      const [previewLink, setPreviewLink] = useState('');
+
+      const processedMaterials = [...materials].sort((a, b) => Number(b.id) - Number(a.id)).filter(m => m.title.toLowerCase().includes(searchQuery.toLowerCase()));
+
+      const handleSave = () => {
+        setLoading(true);
+        api.saveMat({ ...form }, () => {
+          setLoading(false); showToast('Materi Tersimpan!');
+          setForm({ title: '', type: 'youtube', section: 'ALL', link: '', questions: [{ q: '', options: ['', '', ''], correct: 0 }] });
+          setPreviewLink(''); refreshList();
+        });
+      };
+
+      const handleOpenReport = (material) => {
+        setLoading(true);
+        api.getRep(material.id, (data) => {
+          setLoading(false);
+          if(data.length === 0) { showToast("Belum ada peserta.", 'error'); return; }
+          setReportModal({ isOpen: true, material: material, data: data });
+        });
+      };
+
+      const updateQ = (idx, f, v) => {
+          const n = [...form.questions]; f === 'option' ? n[idx].options[v.optIdx] = v.text : n[idx][f] = v; setForm({...form, questions: n});
+      };
+
+      return (
+        <div className="space-y-6">
+          {reportModal.isOpen && <ReportModal material={reportModal.material} data={reportModal.data} user={user} onClose={() => setReportModal({ ...reportModal, isOpen: false })} />}
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-700">
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-blue-400"><Icon name="Plus"/> Upload Materi</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="col-span-2"><label className="text-xs text-slate-400">Judul</label><input className="w-full bg-slate-900 border border-slate-600 rounded p-3" value={form.title} onChange={e => setForm({...form, title: e.target.value})} /></div>
+              <div><label className="text-xs text-slate-400">Tipe</label><select className="w-full bg-slate-900 border border-slate-600 rounded p-3" value={form.type} onChange={e => { setForm({...form, type: e.target.value}); setPreviewLink(getPreviewLink(form.link, e.target.value)); }}><option value="youtube">YouTube</option><option value="ppt">PPT</option><option value="pdf">PDF</option></select></div>
+              <div><label className="text-xs text-slate-400">Section</label><select className="w-full bg-slate-900 border border-slate-600 rounded p-3" value={form.section} onChange={e => setForm({...form, section: e.target.value})}><option value="ALL">ALL</option><option value="SERVICE">SERVICE</option><option value="KITCHEN">KITCHEN</option></select></div>
+              <div className="col-span-2"><label className="text-xs text-slate-400">Link Original (Google Drive / Youtube)</label><input className="w-full bg-slate-900 border border-slate-600 rounded p-3" placeholder="Paste Link disini..." value={form.link} onChange={e => { setForm({...form, link: e.target.value}); setPreviewLink(getPreviewLink(e.target.value, form.type)); }} /><div className="mt-1 text-[10px] text-slate-500 font-mono bg-slate-900 p-2 rounded border border-slate-700 break-all"><span className="text-green-500 font-bold">Auto Convert Preview:</span> {previewLink || '-'}</div></div>
+            </div>
+            <div className="space-y-4 border-t border-slate-700 pt-4">
+              <h3 className="font-bold text-slate-300">Soal Quiz</h3>
+              {form.questions.map((q, idx) => (<div key={idx} className="bg-slate-900/50 p-4 rounded border border-slate-700 mb-2"><div className="flex justify-between mb-2"><span>Soal {idx+1}</span>{form.questions.length>1 && <button onClick={()=>{const n=[...form.questions];n.splice(idx,1);setForm({...form,questions:n})}} className="text-red-400 text-xs">Hapus</button>}</div><input className="w-full bg-slate-800 border border-slate-600 rounded p-2 mb-3" placeholder="Pertanyaan" value={q.q} onChange={e => updateQ(idx,'q',e.target.value)}/><div className="grid grid-cols-3 gap-3">{q.options.map((opt,oIdx)=>(<div key={oIdx} onClick={()=>updateQ(idx,'correct',oIdx)} className={`flex items-center gap-2 p-2 rounded border cursor-pointer ${q.correct===oIdx?'border-green-500 bg-green-900/20':'border-slate-700'}`}><div className={`w-4 h-4 rounded-full border ${q.correct===oIdx?'bg-green-500 border-green-500':'border-slate-500'}`}></div><input className="bg-transparent outline-none w-full text-sm" placeholder={`Opsi ${oIdx+1}`} value={opt} onChange={e=>updateQ(idx,'option',{optIdx:oIdx,text:e.target.value})}/></div>))}</div></div>))}
+              <button onClick={()=>setForm({...form,questions:[...form.questions,{q:'',options:['','',''],correct:0}]})} className="w-full py-2 border-dashed border-2 border-slate-600 text-slate-400 rounded">+ Soal</button>
+            </div>
+            <button onClick={handleSave} className="mt-6 w-full bg-green-600 font-bold py-3 rounded text-white">PUBLISH</button>
+          </div>
+          <div className="opacity-75"><h3 className="font-bold mb-4 text-lg">Materi Terupload</h3><div className="mb-4 relative"><div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Icon name="Search" size={18} className="text-slate-500"/></div><input type="text" placeholder="Cari judul materi..." className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-10 p-3 text-sm focus:border-blue-500 outline-none transition" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div><div className="space-y-3">{processedMaterials.length === 0 ? (<div className="text-center py-8 text-slate-500 text-sm italic">Tidak ada materi ditemukan.</div>) : (processedMaterials.map(m => (<div key={m.id} className="p-4 bg-slate-800 rounded-lg border border-slate-700 flex justify-between items-center"><div><div className="font-bold">{m.title}</div><div className="text-xs text-slate-400">{m.type} • {m.section} • {m.questions.length} Soal</div></div><button onClick={() => handleOpenReport(m)} className="flex items-center gap-2 bg-emerald-600 px-3 py-2 rounded text-xs font-bold hover:bg-emerald-500"><Icon name="Chart" size={16}/> Lihat Laporan</button></div>)))}</div></div>
+        </div>
+      );
+    }
+
+    // --- COMPONENT: USER DASHBOARD ---
+    function UserDashboard({ materials, user, onOpenMaterial, api, setLoading }) {
+      const [showReport, setShowReport] = useState(false);
+      const [reportData, setReportData] = useState([]);
+      const myMaterials = materials.filter(m => m.section === 'ALL' || m.section === user.section);
+      const handleViewReport = () => { setLoading(true); api.getUserRep((data) => { setLoading(false); setReportData(data); setShowReport(true); }); };
+      return (
+        <div>
+          {showReport && <UserPersonalReportModal data={reportData} user={user} onClose={() => setShowReport(false)} />}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6"><h2 className="text-2xl font-bold">Halo, {user.name} <span className="text-sm font-normal bg-slate-700 px-2 rounded ml-2 align-middle">{user.section}</span></h2><button onClick={handleViewReport} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition shadow-lg w-full sm:w-auto justify-center"><Icon name="List" size={18} /> Lihat Laporan Training Saya</button></div>
+          {myMaterials.length === 0 ? <div className="text-center py-12 bg-slate-800 rounded-xl border border-slate-700"><Icon name="CheckCircle" size={48} className="mx-auto text-green-500 mb-4"/><p>Semua materi selesai!</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{myMaterials.map(m => (<button key={m.id} onClick={() => onOpenMaterial(m)} className="bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-blue-500 p-6 rounded-xl text-left relative group overflow-hidden"><div className="absolute top-0 right-0 p-4 opacity-10"><Icon name={m.type==='youtube'?'Play':'BookOpen'} size={64}/></div><div className="relative z-10"><div className="flex gap-2 mb-2"><span className="text-[10px] bg-blue-900 px-2 py-1 rounded uppercase">{m.type}</span><span className="text-[10px] bg-slate-700 px-2 py-1 rounded uppercase">{m.section}</span></div><h3 className="text-xl font-bold mb-1">{m.title}</h3><p className="text-xs text-slate-400">{m.questions.length} Pertanyaan</p></div></button>))}</div>}
+        </div>
+      );
+    }
+
+    // --- COMPONENT: VIEWER (ULTIMATE MULTI-MODE) ---
+    function MaterialViewer({ material, onComplete, onBack }) {
+      const [unlocked, setUnlocked] = useState(false);
+      const [timer, setTimer] = useState(15);
+      const [showTroubleshoot, setShowTroubleshoot] = useState(false);
+      const [viewMode, setViewMode] = useState(0); 
+
+      const getEmbedLink = (url, type, mode) => {
+         if (!url) return '';
+         if (type === 'youtube') { const id = getYoutubeId(url); return id ? `https://www.youtube.com/embed/${id}?enablejsapi=1&origin=${window.location.origin}` : url; }
+         const id = getGoogleDriveId(url);
+         if (!id) return url;
+         if (mode === 0) return `https://drive.google.com/file/d/${id}/preview`;
+         else if (mode === 1) { const encodedUrl = encodeURIComponent(`https://drive.google.com/file/d/${id}/view`); return `https://docs.google.com/viewer?srcid=${id}&pid=explorer&efh=false&a=v&chrome=false&embedded=true`; } 
+         else return `https://drive.google.com/uc?export=view&id=${id}`;
+      };
+
+      useEffect(() => {
+        if (material.type === 'youtube') {
+            const id = getYoutubeId(material.link);
+            if (id && !window.YT) { const t = document.createElement('script'); t.src = "https://www.youtube.com/iframe_api"; document.body.appendChild(t); }
+            const init = () => new window.YT.Player('yt-player-frame', { videoId: id, events: { 'onStateChange': e => { if(e.data===0) setUnlocked(true); } } });
+            if (window.YT && window.YT.Player) init(); else window.onYouTubeIframeAPIReady = init;
+        } else {
+            const i = setInterval(() => setTimer(p => { if(p<=1) { clearInterval(i); return 0; } return p-1; }), 1000);
+            return () => clearInterval(i);
+        }
+      }, [material]);
+
+      const currentSrc = getEmbedLink(material.link, material.type, viewMode);
+
+      return (
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden flex flex-col shadow-2xl">
+           <div className="p-3 border-b border-slate-700 bg-slate-900 flex justify-between items-center flex-wrap gap-2">
+             <div className="flex items-center gap-3"><button onClick={onBack} className="flex items-center gap-1 text-sm text-slate-400 hover:text-white"><Icon name="ChevronLeft" size={16}/> Kembali</button><div className={`px-2 py-1 text-[10px] rounded font-bold ${unlocked?'bg-green-500':'bg-slate-700'}`}>{unlocked?'SIAP TEST':'TERKUNCI'}</div></div>
+             {material.type !== 'youtube' && (<div className="flex items-center gap-1 bg-slate-800 p-1 rounded border border-slate-700"><button onClick={() => setViewMode(0)} className={`px-2 py-1 text-[10px] rounded ${viewMode===0 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>Mode 1</button><button onClick={() => setViewMode(1)} className={`px-2 py-1 text-[10px] rounded ${viewMode===1 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>Mode 2</button><button onClick={() => setViewMode(2)} className={`px-2 py-1 text-[10px] rounded ${viewMode===2 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>Mode 3</button><button onClick={() => setShowTroubleshoot(!showTroubleshoot)} className="ml-1 text-yellow-500 hover:text-yellow-400 p-1"><Icon name="Alert" size={14} /></button></div>)}
+           </div>
+           {showTroubleshoot && (<div className="bg-yellow-900/40 p-4 text-xs text-yellow-200 border-b border-yellow-700/50"><strong>Panduan Layar Putih:</strong><ul className="list-disc ml-4 mt-1 space-y-1"><li>Coba ganti <strong>Mode 1, 2, atau 3</strong>.</li><li>Pastikan Login Google di browser.</li><li>Gunakan tombol "Buka File Langsung".</li></ul></div>)}
+           <div className={`w-full relative ${material.type === 'youtube' ? 'aspect-video-container bg-black' : 'h-[80vh] bg-white group'}`}>{material.type === 'youtube' ? <div id="yt-player-frame"></div> : <><iframe key={viewMode} src={currentSrc} frameBorder="0" allowFullScreen sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation" allow="autoplay; encrypted-media" className="w-full h-full relative z-10"></iframe><div className="absolute bottom-4 right-4 z-20"><a href={material.link} target="_blank" className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-full shadow-lg font-bold text-xs transition transform hover:scale-105 border border-white/20"><Icon name="External" size={14}/> Buka File Langsung</a></div></>}</div>
+           <div className="p-4 border-t border-slate-700 bg-slate-850 flex justify-between items-center"><div className="text-xs text-slate-500 hidden sm:block">{material.type==='youtube'?(unlocked?"Video selesai.":"Tonton sampai habis."):(timer>0?`Tunggu ${timer}s.`:"Silakan konfirmasi.")}</div>{material.type!=='youtube' && <button disabled={timer>0||unlocked} onClick={()=>setUnlocked(true)} className={`px-6 py-3 rounded font-bold flex items-center gap-2 ${unlocked?'bg-green-600':'bg-blue-600'}`}>{unlocked?<Icon name="CheckCircle" size={16}/>:<Icon name="Eye" size={16}/>} {unlocked?'SUDAH DIBACA':'KONFIRMASI'}</button>}<button disabled={!unlocked} onClick={onComplete} className={`ml-4 px-6 py-3 rounded font-bold flex items-center gap-2 ${unlocked?'bg-blue-600 hover:scale-105':'bg-slate-700 opacity-50 cursor-not-allowed'}`}><Icon name="Lock" size={16}/> QUIZ</button></div>
+        </div>
+      );
+    }
+
+    // --- COMPONENT: QUIZ ---
+    function QuizTaker({ material, user, onFinish, api }) {
+      const [ans, setAns] = useState({});
+      const submit = () => {
+        if(Object.keys(ans).length < material.questions.length) return alert('Jawab semua soal!');
+        let correct = 0; material.questions.forEach((q,i) => { if(parseInt(ans[i])===q.correct) correct++; });
+        const score = Math.round((correct/material.questions.length)*100);
+        alert(`Nilai: ${score}`);
+        api.subQuiz(material.id, score, ()=>onFinish());
+      };
+      return (
+        <div className="bg-slate-800 rounded-xl border border-slate-700 p-6 max-w-3xl mx-auto"><h2 className="text-2xl font-bold mb-6 text-center">Quiz: {material.title}</h2>{material.questions.map((q,i)=>(<div key={i} className="bg-slate-900 p-4 rounded border border-slate-800 mb-4"><p className="font-bold mb-3">{i+1}. {q.q}</p><div className="space-y-2">{q.options.map((opt,oIdx)=>(<div key={oIdx} onClick={()=>setAns({...ans,[i]:oIdx})} className={`p-3 rounded border cursor-pointer ${ans[i]===oIdx?'border-blue-500 bg-blue-900/20':'border-slate-700'}`}><div className="flex items-center gap-3"><div className={`w-4 h-4 rounded-full border flex items-center justify-center ${ans[i]===oIdx?'border-blue-500':''}`}>{ans[i]===oIdx&&<div className="w-2 h-2 bg-blue-500 rounded-full"></div>}</div><span>{opt}</span></div></div>))}</div></div>))}<button onClick={submit} className="mt-8 w-full bg-green-600 hover:bg-green-500 font-bold py-4 rounded-xl">KIRIM JAWABAN</button></div>
+      );
+    }
+
+    try {
+      const rootEl = document.getElementById('root');
+      rootEl.dataset.rendered = '1';
+      const root = ReactDOM.createRoot(rootEl);
+      root.render(<App />);
+    } catch (err) {
+      console.error(err);
+      const rootEl = document.getElementById('root');
+      if (rootEl) {
+        rootEl.dataset.rendered = '0';
+        rootEl.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#fecaca;font-family:Arial,sans-serif;text-align:center;padding:24px;background:#0f172a;"><div style="max-width:720px;background:#1e293b;border:1px solid #7f1d1d;border-radius:16px;padding:24px;"><div style="font-size:20px;font-weight:700;margin-bottom:8px;color:#fff;">Aplikasi gagal dirender</div><div style="font-size:13px;line-height:1.6;color:#fecaca;">${err.message || err}</div></div></div>`;
+      }
+    }
+  </script>
+</body>
+</html>
