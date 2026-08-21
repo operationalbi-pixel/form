@@ -10652,10 +10652,53 @@ function bqField_(name, type, mode) {
   return { name: name, type: type || 'STRING', mode: mode || 'NULLABLE' };
 }
 
+function insertAllRowSize_(row) {
+  // BigQuery menghitung limit berdasarkan byte request, bukan jumlah karakter.
+  // Tambahkan sedikit ruang untuk koma/pemisah JSON di dalam array `rows`.
+  return Utilities.newBlob(JSON.stringify(row || {}), 'application/json').getBytes().length + 2;
+}
+
 function insertAll_(tableId, rows) {
-  const result = BigQuery.Tabledata.insertAll({ rows: rows, skipInvalidRows: false, ignoreUnknownValues: false },
-    CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
-  if (result.insertErrors && result.insertErrors.length) throw new Error('BigQuery menolak data: ' + JSON.stringify(result.insertErrors));
+  rows = Array.isArray(rows) ? rows : [];
+  if (!rows.length) return { insertedRows: 0, batchCount: 0 };
+
+  // tabledata.insertAll memiliki batas request 10 MB. Gunakan maksimum 500 baris
+  // dan 7,5 MB agar masih ada ruang untuk envelope JSON serta karakter UTF-8.
+  const maxRowsPerBatch = 500, maxPayloadBytes = Math.floor(7.5 * 1024 * 1024), envelopeBytes = 160;
+  let batch = [], batchBytes = envelopeBytes, insertedRows = 0, batchCount = 0;
+
+  function flushBatch_() {
+    if (!batch.length) return;
+    const firstRow = insertedRows + 1, currentBatch = batchCount + 1;
+    const result = BigQuery.Tabledata.insertAll({ rows: batch, skipInvalidRows: false, ignoreUnknownValues: false },
+      CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
+    if (result.insertErrors && result.insertErrors.length) {
+      const errors = result.insertErrors.map(function (entry) {
+        const localIndex = Number(entry && entry.index || 0);
+        return {
+          row: firstRow + localIndex,
+          errors: entry && entry.errors ? entry.errors : entry
+        };
+      });
+      throw new Error('BigQuery menolak data pada batch ' + currentBatch + ': ' + JSON.stringify(errors));
+    }
+    insertedRows += batch.length;
+    batchCount += 1;
+    batch = [];
+    batchBytes = envelopeBytes;
+  }
+
+  rows.forEach(function (row, index) {
+    const rowBytes = insertAllRowSize_(row);
+    if (rowBytes + envelopeBytes > maxPayloadBytes) {
+      throw new Error('Baris ' + (index + 1) + ' terlalu besar untuk dikirim ke BigQuery. Kurangi ukuran lampiran atau isi teks pada baris tersebut.');
+    }
+    if (batch.length && (batch.length >= maxRowsPerBatch || batchBytes + rowBytes > maxPayloadBytes)) flushBatch_();
+    batch.push(row);
+    batchBytes += rowBytes;
+  });
+  flushBatch_();
+  return { insertedRows: insertedRows, batchCount: batchCount };
 }
 
 function runNamedQuery_(query, params, options) {
