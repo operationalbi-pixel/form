@@ -128,6 +128,34 @@ if (!backend.includes('mobilePayload')) failures.push('Gateway JSON Android belu
 if (!backend.includes('mppBootstrap: getMppBootstrap')) failures.push('Endpoint bootstrap MPP belum terdaftar');
 if (!backend.includes('function mppSessionEmployee_(token)')) failures.push('Endpoint MPP belum memvalidasi sesi BI-Space');
 if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('MPP tidak lagi memakai sheet database lama');
+try {
+  const insertCalls = [];
+  const insertContext = vm.createContext({
+    console,
+    CONFIG: { BQ_PROJECT_ID: 'test-project', BQ_DATASET_ID: 'test-dataset' },
+    Utilities: {
+      newBlob(value) {
+        return { getBytes() { return Array.from(Buffer.from(String(value), 'utf8')); } };
+      }
+    },
+    BigQuery: {
+      Tabledata: {
+        insertAll(request, projectId, datasetId, tableId) {
+          insertCalls.push({ request, projectId, datasetId, tableId });
+          return {};
+        }
+      }
+    }
+  });
+  new vm.Script(backend, { filename: 'docs/Code.gs#insert-all-batch-test' }).runInContext(insertContext);
+  const batchRows = Array.from({ length: 1201 }, (_, index) => ({ insertId: `ROW-${index}`, json: { value: `Data ${index}` } }));
+  const batchResult = insertContext.insertAll_('stock_card_test', batchRows);
+  const batchSizes = insertCalls.map(call => call.request.rows.length);
+  if (batchSizes.join(',') !== '500,500,201') failures.push(`BigQuery insertAll belum membagi 1.201 baris secara aman: ${batchSizes.join(',')}`);
+  if (batchResult.insertedRows !== 1201 || batchResult.batchCount !== 3) failures.push('Ringkasan batch BigQuery tidak sesuai jumlah baris yang dikirim');
+} catch (error) {
+  failures.push(`Uji batch BigQuery gagal: ${error.message}`);
+}
 const frontendStockCard = await text('docs/stock-card.html');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
 if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);') ||
