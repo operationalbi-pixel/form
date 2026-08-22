@@ -1,15 +1,21 @@
 (function () {
   'use strict';
-  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v2';
+  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v3';
   var DEFAULT_MENUS = [
-    { id: 'static:absensi-break', title: 'Absensi Break', icon: 'free_breakfast', type: 'static', url: 'absensibreak.html' },
+    { id: 'static:absensi-break', title: 'Absensi Break', icon: 'schedule', type: 'static', url: 'absensibreak.html' },
     { id: 'static:opening-closing', title: 'Opening & Closing Checklist', icon: 'checklist', type: 'static', url: '' },
     { id: 'static:berita-acara', title: 'Form Berita Acara', icon: 'description', type: 'static', url: 'berita-acara.html' }
   ];
 
   function esc(v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) {
-      return ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;' })[ch];
+      var map = {};
+      map['&'] = '&' + 'amp;';
+      map['<'] = '&' + 'lt;';
+      map['>'] = '&' + 'gt;';
+      map['"'] = '&' + 'quot;';
+      map["'"] = '&#39;';
+      return map[ch];
     });
   }
 
@@ -192,6 +198,13 @@
   }
 
   function ensureStyles() {
+    if (!document.getElementById('qm-material-icons')) {
+      var link = document.createElement('link');
+      link.id = 'qm-material-icons';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0&display=block';
+      document.head.appendChild(link);
+    }
     var oldStyle = document.getElementById('qm-styles');
     if (oldStyle) oldStyle.remove();
     var style = document.createElement('style');
@@ -203,19 +216,19 @@
       '.qm-kicker .material-symbols-rounded{font-size:18px}',
       '.qm-reset{border:0;background:transparent;color:#8b8084;font-size:11px;font-weight:700;cursor:pointer;padding:4px 8px;border-radius:8px}',
       '.qm-reset:hover{background:#f5eef0;color:var(--red,#a91431)}',
-      '.qm-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}',
-      '.qm-item,.qm-add{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:104px;padding:14px 10px;border-radius:16px;cursor:pointer;font:inherit;text-align:center;transition:transform .15s,box-shadow .15s,border-color .15s}',
+      '.qm-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}',
+      '.qm-item,.qm-add{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:92px;padding:12px 6px;border-radius:14px;cursor:pointer;font:inherit;text-align:center;transition:transform .15s,box-shadow .15s,border-color .15s}',
       '.qm-item{border:1px solid #e7dfe1;background:#fff;box-shadow:0 6px 18px rgba(54,35,40,.04)}',
       '.qm-item:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(54,35,40,.08);border-color:#dfb9c1}',
-      '.qm-icon{font-size:28px;color:var(--red,#a91431)}',
-      '.qm-label{font-size:12px;font-weight:700;color:#2c2528;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
-      '.qm-remove{position:absolute;top:6px;right:8px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:14px;color:#b0a4a8;opacity:0;transition:opacity .15s}',
+      '.qm-icon.material-symbols-rounded{font-family:"Material Symbols Rounded";font-weight:normal;font-style:normal;font-size:28px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;font-feature-settings:"liga";-webkit-font-feature-settings:"liga";-webkit-font-smoothing:antialiased;color:var(--red,#a91431);font-variation-settings:"FILL" 0,"wght" 400,"GRAD" 0,"opsz" 24}',
+      '.qm-label{font-size:11px;font-weight:700;color:#2c2528;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}',
+      '.qm-remove{position:absolute;top:4px;right:6px;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:13px;color:#b0a4a8;opacity:0;transition:opacity .15s}',
       '.qm-item:hover .qm-remove{opacity:1}',
       '.qm-remove:hover{background:#fff1f3;color:#a91431}',
       '.qm-add{border:1.5px dashed #d5c6ca;background:#faf7f8;color:#8b8084}',
       '.qm-add:hover{border-color:var(--red,#a91431);color:var(--red,#a91431);background:#fff8f9}',
-      '.qm-add .material-symbols-rounded{font-size:26px}',
-      '.qm-add span:last-child{font-size:11px;font-weight:700}',
+      '.qm-add .material-symbols-rounded{font-family:"Material Symbols Rounded";font-size:24px;font-variation-settings:"FILL" 0,"wght" 400,"GRAD" 0,"opsz" 24}',
+      '.qm-add span:last-child{font-size:10px;font-weight:700}',
       '.qm-modal{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(40,28,32,.45)}',
       '.qm-modal.open{display:flex}',
       '.qm-dialog{width:min(520px,100%);max-height:min(70vh,560px);display:flex;flex-direction:column;background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 24px 60px rgba(40,28,32,.22)}',
@@ -225,10 +238,10 @@
       '.qm-dialog-body{padding:12px 14px;overflow:auto;display:grid;gap:6px}',
       '.qm-pick{display:flex;align-items:center;gap:12px;width:100%;border:1px solid #eee5e7;border-radius:12px;padding:10px 12px;background:#fff;cursor:pointer;text-align:left;font:inherit}',
       '.qm-pick:hover{border-color:#dfb9c1;background:#fffafb}',
-      '.qm-pick .material-symbols-rounded{color:var(--red,#a91431);font-size:22px}',
+      '.qm-pick .material-symbols-rounded{font-family:"Material Symbols Rounded";color:var(--red,#a91431);font-size:22px;font-variation-settings:"FILL" 0,"wght" 400,"GRAD" 0,"opsz" 24}',
       '.qm-pick span:last-child{font-size:13px;font-weight:600;color:#2c2528}',
       '.qm-pick.disabled{opacity:.45;pointer-events:none}',
-      '@media (max-width:640px){.qm-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}'
+      '@media (max-width:640px){.qm-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.qm-item,.qm-add{min-height:84px;padding:10px 4px;border-radius:12px}.qm-icon.material-symbols-rounded{font-size:24px}.qm-label{font-size:10px}}'
     ].join('');
     document.head.appendChild(style);
   }
