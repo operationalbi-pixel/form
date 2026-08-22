@@ -134,7 +134,7 @@
 // Dashboard quick menu grid
 try {
   var s = document.createElement('script');
-  s.src = 'quick-menu.js?v=20260822-qm3';
+  s.src = 'quick-menu.js?v=20260822-qm4';
   s.defer = true;
   (document.head || document.documentElement).appendChild(s);
 } catch (e) {}
