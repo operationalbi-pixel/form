@@ -10883,8 +10883,106 @@ function safeUrl_(value) {
 function truthy_(value) { return value === true || String(value).toLowerCase() === 'true' || String(value) === '1'; }
 
 function dateIso_(value) {
-  const date = value instanceof Date ? value : new Date(value || 0);
-  return isNaN(date.getTime()) ? '' : date.toISOString();
+  const date = parseTimestamp_(value);
+  return date ? date.toISOString() : '';
+}
+
+/**
+ * Mengubah nilai sel Spreadsheet menjadi Date yang benar tanpa bergantung pada
+ * zona waktu file Spreadsheet. Sel tanggal asli dikembalikan apa adanya, teks
+ * ISO-8601 dibaca sebagai instant absolut, dan teks lokal `dd/MM/yyyy HH:mm:ss`
+ * dibaca sebagai waktu Asia/Jakarta agar jam chat tidak bergeser.
+ */
+function parseTimestamp_(value) {
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return null;
+  if (/^-?\d+$/.test(text)) {
+    const numeric = new Date(Number(text));
+    return isNaN(numeric.getTime()) ? null : numeric;
+  }
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(text)) {
+    const normalized = text.replace(' ', 'T');
+    // Teks tanpa offset ditulis oleh aplikasi ini dalam UTC.
+    const iso = /(Z|[+-]\d{2}:?\d{2})$/.test(normalized) ? normalized : normalized + 'Z';
+    const parsed = new Date(iso);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const local = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (local) {
+    const utcMs = Date.UTC(Number(local[3]), Number(local[2]) - 1, Number(local[1]), Number(local[4] || 0), Number(local[5] || 0), Number(local[6] || 0));
+    return new Date(utcMs - CHAT_TIMEZONE_OFFSET_MS);
+  }
+  const fallback = new Date(text);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
+/** Asia/Jakarta (WIB) tidak memakai daylight saving, selalu UTC+7. */
+const CHAT_TIMEZONE_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/**
+ * Timestamp yang ditulis ke database chat. Nilai disimpan sebagai teks ISO-8601
+ * UTC sehingga pembacaan kembali tidak pernah ditafsirkan ulang mengikuti zona
+ * waktu Spreadsheet, penyebab jam chat dan jam task tidak sinkron.
+ */
+function chatNow_() {
+  return new Date().toISOString();
+}
+
+/**
+ * Selisih zona waktu Spreadsheet terhadap WIB. Baris chat lama disimpan sebagai
+ * objek Date, sehingga Apps Script menulis serial memakai zona waktu skrip
+ * (Asia/Jakarta) tetapi membacanya kembali memakai zona waktu Spreadsheet. Bila
+ * kedua zona berbeda, jam hasil pembacaan bergeser sebesar selisih ini.
+ */
+function chatLegacyShiftMs_() {
+  const cache = chatLegacyShiftMs_.cached;
+  if (typeof cache === 'number') return cache;
+  let shift = 0;
+  try {
+    const zone = chatSpreadsheet_().getSpreadsheetTimeZone();
+    if (zone && zone !== 'Asia/Jakarta') {
+      const reference = new Date();
+      const offsetText = Utilities.formatDate(reference, zone, 'Z');
+      const match = String(offsetText).match(/^([+-])(\d{2})(\d{2})$/);
+      if (match) {
+        const sheetOffsetMs = (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 3600000 + Number(match[3]) * 60000);
+        shift = sheetOffsetMs - CHAT_TIMEZONE_OFFSET_MS;
+      }
+    }
+  } catch (error) {
+    shift = 0;
+  }
+  chatLegacyShiftMs_.cached = shift;
+  return shift;
+}
+
+/**
+ * Pembacaan timestamp khusus database chat. Teks ISO-8601 (format baru) dipakai
+ * apa adanya, sedangkan sel Date warisan dikoreksi mengikuti selisih zona waktu
+ * Spreadsheet agar jam chat dan jam task sama dengan waktu sebenarnya.
+ */
+function chatIso_(value) {
+  const date = parseTimestamp_(value);
+  if (!date) return '';
+  if (!(value instanceof Date)) return date.toISOString();
+  return new Date(date.getTime() + chatLegacyShiftMs_()).toISOString();
+}
+
+/**
+ * Menormalkan batas waktu tugas menjadi teks ISO-8601 UTC. Nilai `datetime-local`
+ * tanpa offset dianggap waktu Asia/Jakarta karena seluruh pengguna berada di WIB.
+ */
+function chatDueValue_(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+  const localInput = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (localInput) {
+    const utcMs = Date.UTC(Number(localInput[1]), Number(localInput[2]) - 1, Number(localInput[3]), Number(localInput[4]), Number(localInput[5]), Number(localInput[6] || 0));
+    return new Date(utcMs - CHAT_TIMEZONE_OFFSET_MS).toISOString();
+  }
+  const date = parseTimestamp_(text);
+  return date ? date.toISOString() : '';
 }
 
 // ---------- BI-Space group chat & tasks ----------
@@ -10912,6 +11010,12 @@ function ensureChatSheet_(ss, name, headers) {
   if (current.join('|') !== headers.join('|')) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
   sheet.setFrozenRows(1);
+  // Kolom waktu dipaksa berformat teks agar teks ISO-8601 UTC tidak diubah
+  // Spreadsheet menjadi nilai tanggal lokal yang menggeser jam chat dan task.
+  headers.forEach(function (header, index) {
+    if (!/_AT$/.test(header) || sheet.getMaxRows() < 2) return;
+    sheet.getRange(2, index + 1, sheet.getMaxRows() - 1, 1).setNumberFormat('@');
+  });
   if (!sheet.getFilter() && sheet.getMaxRows() > 1) sheet.getRange(1, 1, Math.max(2, sheet.getLastRow()), headers.length).createFilter();
   return sheet;
 }
@@ -10929,12 +11033,12 @@ function ensureChatAttachmentFolder_() {
 
 function ensureChatDatabase_() {
   const ss = chatSpreadsheet_();
-  if (CacheService.getScriptCache().get('chat-schema-v2') === 'ready') return ss;
+  if (CacheService.getScriptCache().get('chat-schema-v3') === 'ready') return ss;
   Object.keys(CHAT_DB).forEach(function (name) { ensureChatSheet_(ss, 'CHAT_' + name, CHAT_DB[name]); });
   const roomSheet = ss.getSheetByName('CHAT_ROOMS');
-  if (roomSheet.getLastRow() < 2) roomSheet.appendRow(['GENERAL', 'GENERAL', '', 'General', true, new Date(), 0]);
+  if (roomSheet.getLastRow() < 2) roomSheet.appendRow(['GENERAL', 'GENERAL', '', 'General', true, chatNow_(), 0]);
   ensureChatAttachmentFolder_();
-  CacheService.getScriptCache().put('chat-schema-v2', 'ready', 21600);
+  CacheService.getScriptCache().put('chat-schema-v3', 'ready', 21600);
   return ss;
 }
 
@@ -10991,13 +11095,13 @@ function ensureChatRoomRow_(roomId) {
   if (roomId === 'GENERAL') return;
   const ss = ensureChatDatabase_(), sheet = ss.getSheetByName('CHAT_ROOMS');
   const exists = sheet.getLastRow() > 1 && sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues().some(function (row) { return row[0] === roomId; });
-  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), chatRoomOutlet_(roomId), true, new Date(), 0, '', '', '', '']);
+  if (!exists) sheet.appendRow([roomId, 'OUTLET', chatRoomOutlet_(roomId), chatRoomOutlet_(roomId), true, chatNow_(), 0, '', '', '', '']);
 }
 
 function chatRoomMetaMap_() {
   const map = {};
   chatSheetRows_('CHAT_ROOMS').forEach(function (row) {
-    map[String(row[0])] = { description: String(row[7] || ''), updatedByNik: normalizeNik_(row[8]), updatedByName: String(row[9] || ''), updatedAt: row[10] ? dateIso_(row[10]) : '' };
+    map[String(row[0])] = { description: String(row[7] || ''), updatedByNik: normalizeNik_(row[8]), updatedByName: String(row[9] || ''), updatedAt: row[10] ? chatIso_(row[10]) : '' };
   });
   return map;
 }
@@ -11019,7 +11123,7 @@ function chatPendingTasks_(employee) {
   chatSheetRows_('CHAT_TASKS').forEach(function (row) {
     if (String(row[6]) !== 'OPEN') return;
     const creatorNik = normalizeNik_(row[7]);
-    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', picType: String(row[5]), createdByNik: creatorNik, createdByName: String(row[8]), createdAt: dateIso_(row[9]), canManage: employee.outlet === 'BIHQ' || creatorNik === employee.nik };
+    tasks[String(row[0])] = { id: String(row[0]), roomId: String(row[1]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? chatIso_(row[4]) : '', picType: String(row[5]), createdByNik: creatorNik, createdByName: String(row[8]), createdAt: chatIso_(row[9]), canManage: employee.outlet === 'BIHQ' || creatorNik === employee.nik };
   });
   const visible = {};
   if (employee.outlet === 'BIHQ') Object.keys(tasks).forEach(function (id) { visible[id] = tasks[id]; });
@@ -11070,17 +11174,17 @@ function chatAttachmentViews_(ids) {
 
 function chatTaskById_(taskId) {
   const row = chatSheetRows_('CHAT_TASKS').filter(function (item) { return String(item[0]) === String(taskId); })[0];
-  return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', status: String(row[6]) } : null;
+  return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? chatIso_(row[4]) : '', status: String(row[6]) } : null;
 }
 
 function chatTaskProgressView_(taskRow, assignmentRows) {
   const taskId = String(taskRow[0]), picType = String(taskRow[5] || '').toUpperCase();
   const entries = (assignmentRows || []).filter(function (row) { return String(row[1]) === taskId; }).map(function (row) {
     const done = String(row[6]) === 'DONE';
-    return { type: String(row[2]), outlet: String(row[3] || '').toUpperCase(), nik: normalizeNik_(row[4]), name: String(row[5] || ''), label: picType === 'OUTLET' ? String(row[3] || '').toUpperCase() : String(row[5] || row[4] || ''), completed: done, completedByNik: normalizeNik_(row[7]), completedByName: String(row[8] || ''), completedAt: done && row[9] ? dateIso_(row[9]) : '' };
+    return { type: String(row[2]), outlet: String(row[3] || '').toUpperCase(), nik: normalizeNik_(row[4]), name: String(row[5] || ''), label: picType === 'OUTLET' ? String(row[3] || '').toUpperCase() : String(row[5] || row[4] || ''), completed: done, completedByNik: normalizeNik_(row[7]), completedByName: String(row[8] || ''), completedAt: done && row[9] ? chatIso_(row[9]) : '' };
   });
   const completed = entries.filter(function (entry) { return entry.completed; }).length, total = entries.length;
-  return { id: taskId, roomId: String(taskRow[1]), title: String(taskRow[2]), description: String(taskRow[3] || ''), dueAt: taskRow[4] ? dateIso_(taskRow[4]) : '', picType: picType, status: String(taskRow[6]), createdByNik: normalizeNik_(taskRow[7]), createdByName: String(taskRow[8] || ''), createdAt: taskRow[9] ? dateIso_(taskRow[9]) : '', completedAt: taskRow[10] ? dateIso_(taskRow[10]) : '', completed: completed, total: total, percent: total ? Math.round(completed * 100 / total) : 0, entries: entries };
+  return { id: taskId, roomId: String(taskRow[1]), title: String(taskRow[2]), description: String(taskRow[3] || ''), dueAt: taskRow[4] ? chatIso_(taskRow[4]) : '', picType: picType, status: String(taskRow[6]), createdByNik: normalizeNik_(taskRow[7]), createdByName: String(taskRow[8] || ''), createdAt: taskRow[9] ? chatIso_(taskRow[9]) : '', completedAt: taskRow[10] ? chatIso_(taskRow[10]) : '', completed: completed, total: total, percent: total ? Math.round(completed * 100 / total) : 0, entries: entries };
 }
 
 function getChatTaskProgress(token, taskId) {
@@ -11102,7 +11206,7 @@ function searchChatMessages(token, roomId, query) {
     for (let index = rows.length - 1; index >= 0 && results.length < 50; index -= 1) {
       const row = rows[index], body = String(row[7] || '');
       if (String(row[1]) !== roomId || row[12] || body.toLowerCase().indexOf(query) < 0) continue;
-      results.push({ id: String(row[0]), sequence: Number(row[2] || 0), senderName: String(row[4] || ''), senderOutlet: String(row[5] || ''), type: String(row[6] || ''), body: body.slice(0, 700), createdAt: row[11] ? dateIso_(row[11]) : '' });
+      results.push({ id: String(row[0]), sequence: Number(row[2] || 0), senderName: String(row[4] || ''), senderOutlet: String(row[5] || ''), type: String(row[6] || ''), body: body.slice(0, 700), createdAt: row[11] ? chatIso_(row[11]) : '' });
     }
     return { results: results };
   });
@@ -11126,8 +11230,8 @@ function updateChatRoomDescription(token, roomId, description) {
     try {
       const ss = ensureChatDatabase_(), roomSheet = ss.getSheetByName('CHAT_ROOMS'), rows = roomSheet.getRange(2, 1, roomSheet.getLastRow() - 1, CHAT_DB.ROOMS.length).getValues(), index = rows.findIndex(function (row) { return String(row[0]) === roomId; });
       if (index < 0) throw new Error('Grup tidak ditemukan.');
-      roomSheet.getRange(index + 2, 8, 1, 4).setValues([[description, employee.nik, employee.name, new Date()]]);
-      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_ROOM_DESCRIPTION', roomId, roomId, employee.nik, employee.name, JSON.stringify({ description: description }), new Date()]);
+      roomSheet.getRange(index + 2, 8, 1, 4).setValues([[description, employee.nik, employee.name, chatNow_()]]);
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_ROOM_DESCRIPTION', roomId, roomId, employee.nik, employee.name, JSON.stringify({ description: description }), chatNow_()]);
     } finally { lock.releaseLock(); }
     return { id: roomId, description: description, updatedByName: employee.name, updatedAt: new Date().toISOString() };
   });
@@ -11141,10 +11245,10 @@ function getChatMessages(token, roomId, beforeSequence) {
     const rows = chatSheetRows_('CHAT_MESSAGES').filter(function (row) { return String(row[1]) === roomId && Number(row[2]) < before && !row[12]; }).slice(-100);
     const attachmentMap = {}, taskMap = {};
     chatSheetRows_('CHAT_ATTACHMENTS').forEach(function (row) { attachmentMap[String(row[0])] = { id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), size: Number(row[6] || 0) }; });
-    chatSheetRows_('CHAT_TASKS').forEach(function (row) { taskMap[String(row[0])] = { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? dateIso_(row[4]) : '', status: String(row[6]) }; });
+    chatSheetRows_('CHAT_TASKS').forEach(function (row) { taskMap[String(row[0])] = { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? chatIso_(row[4]) : '', status: String(row[6]) }; });
     const messages = rows.map(function (row) {
       let attachmentIds = []; try { attachmentIds = JSON.parse(String(row[9] || '[]')); } catch (error) {}
-      return { id: String(row[0]), roomId: roomId, sequence: Number(row[2]), senderNik: String(row[3]), senderName: String(row[4]), senderOutlet: String(row[5]), type: String(row[6]), body: String(row[7] || ''), replyToId: String(row[8] || ''), attachments: attachmentIds.map(function (id) { return attachmentMap[id]; }).filter(Boolean), task: row[10] ? taskMap[String(row[10])] || null : null, createdAt: dateIso_(row[11]) };
+      return { id: String(row[0]), roomId: roomId, sequence: Number(row[2]), senderNik: String(row[3]), senderName: String(row[4]), senderOutlet: String(row[5]), type: String(row[6]), body: String(row[7] || ''), replyToId: String(row[8] || ''), attachments: attachmentIds.map(function (id) { return attachmentMap[id]; }).filter(Boolean), task: row[10] ? taskMap[String(row[10])] || null : null, createdAt: chatIso_(row[11]) };
     });
     return { messages: messages, hasMore: rows.length === 100, oldestSequence: messages.length ? messages[0].sequence : 0, latestSequence: messages.length ? messages[messages.length - 1].sequence : 0 };
   });
@@ -11167,7 +11271,7 @@ function saveChatAttachments_(uploads, employee, messageId, taskId) {
     if (!bytes.length || bytes.length > 5 * 1024 * 1024) throw new Error('Ukuran setiap lampiran harus di bawah 5 MB.');
     const id = Utilities.getUuid(), name = String(upload.fileName || 'lampiran').replace(/[\\/:*?"<>|]+/g, '-').slice(-120);
     const file = folder.createFile(Utilities.newBlob(bytes, mime, id.slice(0, 8) + '-' + name));
-    ids.push(id); rows.push([id, messageId || '', taskId || '', file.getId(), name, mime, bytes.length, employee.nik, new Date()]);
+    ids.push(id); rows.push([id, messageId || '', taskId || '', file.getId(), name, mime, bytes.length, employee.nik, chatNow_()]);
   });
   if (rows.length) {
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
@@ -11188,7 +11292,7 @@ function appendChatMessage_(roomId, employee, type, body, replyToId, attachmentI
     if (roomIndex < 0) throw new Error('Grup chat tidak ditemukan.');
     const sequence = Number(roomRows[roomIndex][6] || 0);
     const id = String(forcedMessageId || Utilities.getUuid());
-    sheet.appendRow([id, roomId, sequence + 1, employee.nik, employee.name, employee.outlet, type, body, replyToId || '', JSON.stringify(attachmentIds || []), taskId || '', new Date(), '']);
+    sheet.appendRow([id, roomId, sequence + 1, employee.nik, employee.name, employee.outlet, type, body, replyToId || '', JSON.stringify(attachmentIds || []), taskId || '', chatNow_(), '']);
     roomSheet.getRange(roomIndex + 2, 7).setValue(sequence + 1);
     return { id: id, sequence: sequence + 1 };
   } finally { lock.releaseLock(); }
@@ -11228,8 +11332,8 @@ function markChatRoomRead(token, roomId, sequence) {
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
     try {
       const sheet = ensureChatDatabase_().getSheetByName('CHAT_READS'), values = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues() : [], rowIndex = values.findIndex(function (row) { return String(row[0]) === roomId && normalizeNik_(row[1]) === employee.nik; });
-      if (rowIndex >= 0) sheet.getRange(rowIndex + 2, 3, 1, 2).setValues([[Math.max(sequence, Number(values[rowIndex][2] || 0)), new Date()]]);
-      else sheet.appendRow([roomId, employee.nik, sequence, new Date()]);
+      if (rowIndex >= 0) sheet.getRange(rowIndex + 2, 3, 1, 2).setValues([[Math.max(sequence, Number(values[rowIndex][2] || 0)), chatNow_()]]);
+      else sheet.appendRow([roomId, employee.nik, sequence, chatNow_()]);
       return { read: true, sequence: sequence };
     } finally { lock.releaseLock(); }
   });
@@ -11249,8 +11353,8 @@ function createChatTask(token, payload) {
     payload = payload || {}; const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
     const roomId = requireChatRoom_(employee, payload.roomId), title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), picType = String(payload.picType || '').toUpperCase();
     if (!title) throw new Error('Judul tugas wajib diisi.'); if (['OUTLET', 'PERSON'].indexOf(picType) < 0) throw new Error('Pilih PIC Outlet atau Person.');
-    const taskId = Utilities.getUuid(), dueAt = payload.dueAt ? new Date(payload.dueAt) : '';
-    if (dueAt && isNaN(dueAt.getTime())) throw new Error('Batas waktu tugas tidak valid.');
+    const taskId = Utilities.getUuid(), dueAt = chatDueValue_(payload.dueAt);
+    if (payload.dueAt && !dueAt) throw new Error('Batas waktu tugas tidak valid.');
     const assignments = [], people = chatEmployees_(), roomOutlet = chatRoomOutlet_(roomId);
     if (picType === 'OUTLET') {
       const outlets = roomOutlet ? [roomOutlet] : people.map(function (person) { return person.outlet; }).filter(function (outlet, index, list) { return outlet && outlet !== 'BIHQ' && list.indexOf(outlet) === index; }).sort();
@@ -11265,7 +11369,7 @@ function createChatTask(token, payload) {
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
     try {
       const ss = ensureChatDatabase_(), taskSheet = ss.getSheetByName('CHAT_TASKS'), assignmentSheet = ss.getSheetByName('CHAT_ASSIGNMENTS');
-      taskSheet.appendRow([taskId, roomId, title, description, dueAt || '', picType, 'OPEN', employee.nik, employee.name, new Date(), '']);
+      taskSheet.appendRow([taskId, roomId, title, description, dueAt || '', picType, 'OPEN', employee.nik, employee.name, chatNow_(), '']);
       assignmentSheet.getRange(assignmentSheet.getLastRow() + 1, 1, assignments.length, assignments[0].length).setValues(assignments);
     } finally { lock.releaseLock(); }
     let message = { id: '' };
@@ -11285,9 +11389,9 @@ function updateChatTask(token, taskId, payload) {
   return safe_(function () {
     payload = payload || {}; taskId = String(taskId || '');
     const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
-    const title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), dueAt = payload.dueAt ? new Date(payload.dueAt) : '';
+    const title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), dueAt = chatDueValue_(payload.dueAt);
     if (!title) throw new Error('Judul tugas wajib diisi.');
-    if (dueAt && isNaN(dueAt.getTime())) throw new Error('Batas waktu tugas tidak valid.');
+    if (payload.dueAt && !dueAt) throw new Error('Batas waktu tugas tidak valid.');
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
     let roomId = '';
     try {
@@ -11302,11 +11406,11 @@ function updateChatTask(token, taskId, payload) {
         const messages = messageSheet.getRange(2, 1, messageSheet.getLastRow() - 1, 13).getValues();
         messages.forEach(function (row, index) { if (String(row[10]) === taskId && String(row[6]) === 'TASK' && !row[12]) messageSheet.getRange(index + 2, 8).setValue(title); });
       }
-      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title, description: description, dueAt: dueAt ? dueAt.toISOString() : '' }), new Date()]);
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'UPDATE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title, description: description, dueAt: dueAt }), chatNow_()]);
     } finally { lock.releaseLock(); }
     appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' memperbarui tugas ' + title, '', [], '');
     notifyChatRoom_(roomId, employee, 'Tugas diperbarui · ' + title, description || ('Diperbarui oleh ' + employee.name), taskId);
-    return { updated: true, taskId: taskId, title: title, description: description, dueAt: dueAt ? dueAt.toISOString() : '' };
+    return { updated: true, taskId: taskId, title: title, description: description, dueAt: dueAt };
   });
 }
 
@@ -11324,16 +11428,16 @@ function deleteChatTask(token, taskId) {
       requireChatTaskManager_(employee, tasks[taskIndex]);
       roomId = requireChatRoom_(employee, tasks[taskIndex][1]); title = String(tasks[taskIndex][2]);
       taskSheet.getRange(taskIndex + 2, 7).setValue('DELETED');
-      taskSheet.getRange(taskIndex + 2, 11).setValue(new Date());
+      taskSheet.getRange(taskIndex + 2, 11).setValue(chatNow_());
       if (assignmentSheet.getLastRow() > 1) {
         const assignments = assignmentSheet.getRange(2, 1, assignmentSheet.getLastRow() - 1, 10).getValues();
         assignments.forEach(function (row, index) { if (String(row[1]) === taskId && String(row[6]) === 'OPEN') assignmentSheet.getRange(index + 2, 7).setValue('CANCELLED'); });
       }
       if (messageSheet.getLastRow() > 1) {
         const messages = messageSheet.getRange(2, 1, messageSheet.getLastRow() - 1, 13).getValues();
-        messages.forEach(function (row, index) { if (String(row[10]) === taskId && String(row[6]) === 'TASK' && !row[12]) messageSheet.getRange(index + 2, 13).setValue(new Date()); });
+        messages.forEach(function (row, index) { if (String(row[10]) === taskId && String(row[6]) === 'TASK' && !row[12]) messageSheet.getRange(index + 2, 13).setValue(chatNow_()); });
       }
-      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'DELETE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title }), new Date()]);
+      ss.getSheetByName('CHAT_AUDIT').appendRow([Utilities.getUuid(), 'DELETE_TASK', taskId, roomId, employee.nik, employee.name, JSON.stringify({ title: title }), chatNow_()]);
     } finally { lock.releaseLock(); }
     appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' menghapus tugas ' + title, '', [], '');
     notifyChatRoom_(roomId, employee, 'Tugas dihapus · ' + title, 'Dihapus oleh ' + employee.name, taskId);
@@ -11354,9 +11458,9 @@ function completeChatTask(token, taskId) {
     if (!targets.length) throw new Error('Tugas ini bukan untuk akun Anda atau sudah diselesaikan.');
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
     try {
-      targets.forEach(function (index) { assignmentSheet.getRange(index + 2, 7, 1, 4).setValues([['DONE', employee.nik, employee.name, new Date()]]); values[index][6] = 'DONE'; });
+      targets.forEach(function (index) { assignmentSheet.getRange(index + 2, 7, 1, 4).setValues([['DONE', employee.nik, employee.name, chatNow_()]]); values[index][6] = 'DONE'; });
       const remaining = values.some(function (row) { return String(row[1]) === taskId && String(row[6]) === 'OPEN'; });
-      if (!remaining) taskSheet.getRange(taskIndex + 2, 7, 1, 5).setValues([['DONE', taskValues[taskIndex][7], taskValues[taskIndex][8], taskValues[taskIndex][9], new Date()]]);
+      if (!remaining) taskSheet.getRange(taskIndex + 2, 7, 1, 5).setValues([['DONE', taskValues[taskIndex][7], taskValues[taskIndex][8], taskValues[taskIndex][9], chatNow_()]]);
     } finally { lock.releaseLock(); }
     const message = appendChatMessage_(roomId, employee, 'SYSTEM', employee.name + ' telah menyelesaikan tugas ' + title, '', [], taskId);
     notifyChatRoom_(roomId, employee, 'Tugas selesai · ' + title, employee.name + ' telah menyelesaikan tugas.', message.id);
