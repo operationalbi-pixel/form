@@ -1,1 +1,25 @@
-RECOVERY_NEEDED
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pesan · BI-Space</title>
+</head>
+<body>
+<script>
+(function(){
+  var url = "https://raw.githubusercontent.com/operationalbi-pixel/form/fdbc72cb5fc844f28eef6bc2977feb94c966033e/docs/chat.html";
+  fetch(url).then(function(r){return r.text()}).then(function(html){
+    var oldCss = ".pin-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;border:0;background:transparent;padding:0;text-align:left;color:inherit;cursor:pointer;font:inherit}.pin strong{font-size:12px;line-height:1.25;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pin span{font-size:9px;line-height:1.2;color:#7e7045;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}";
+    var newCss = ".pin-copy{flex:1;min-width:0;display:flex;flex-direction:row;align-items:center;gap:8px;border:0;background:transparent;padding:0;text-align:left;color:inherit;cursor:pointer;font:inherit}.pin strong{font-size:12px;line-height:1.25;flex:1;min-width:0;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pin span{font-size:9px;line-height:1.2;color:#7e7045;flex-shrink:0;white-space:nowrap}";
+    if (html.indexOf(oldCss) !== -1) html = html.replace(oldCss, newCss);
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(function(e){
+    document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat. Refresh atau hubungi admin.<br><small>"+e+"</small></p>";
+  });
+})();
+</script>
+</body>
+</html>
