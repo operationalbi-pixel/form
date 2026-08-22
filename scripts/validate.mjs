@@ -398,7 +398,7 @@ if (!chatHtml.includes('aria-label="Info dibaca"') || !chatHtml.includes("tasks.
 if (!chatHtml.includes('function loadOlderMessages(') || !chatHtml.includes("api('chatMessages',[token,roomId,before])")) failures.push('Riwayat chat lama belum dapat dimuat saat scroll ke atas');
 if (!chatHtml.includes('function wireMediaThumbnails(') || !chatHtml.includes('id="mediaModal"')) failures.push('Preview gambar dan PDF di dalam chat belum tersedia');
 if (!chatHtml.includes('function syncVisualViewport(') || !chatHtml.includes('top:var(--chat-visual-top,0px)') || !chatHtml.includes('height:var(--chat-visual-height,100dvh)')) failures.push('Header grup chat belum dikunci saat keyboard mobile terbuka');
-if (!backend.includes("dueAt: row[4] ? dateIso_(row[4]) : ''") || !backend.includes("employee.outlet === 'BIHQ' && type === 'OUTLET'")) failures.push('Deadline kosong atau visibilitas task outlet BIHQ belum benar');
+if (!backend.includes("dueAt: row[4] ? chatIso_(row[4]) : ''") || !backend.includes("employee.outlet === 'BIHQ' && type === 'OUTLET'")) failures.push('Deadline kosong atau visibilitas task outlet BIHQ belum benar');
 if (!chatHtml.includes("timeZone:'Asia/Jakarta'") || !chatHtml.includes('id="completeModal"') || !chatHtml.includes('Menyimpan...')) failures.push('Zona waktu, modal penyelesaian, atau status simpan task belum tersedia');
 if (!chatHtml.includes('grid-template-columns:repeat(auto-fit')) failures.push('Kartu task belum dibuat simetris dan memenuhi lebar');
 if (!chatHtml.includes('delivery-dot pending') || !chatHtml.includes('delivery-dot sent')) failures.push('Status kirim belum memakai dot kuning dan hijau');
@@ -417,7 +417,80 @@ if (!backend.includes('Persist chat notification failed') || !chatHtml.includes(
 if (!chatHtml.includes('id="taskInfoModal"') || !chatHtml.includes("api('chatTaskProgress'")) failures.push('Informasi progress task per outlet/person belum tersedia');
 if (!chatHtml.includes('id="chatSearch"') || !chatHtml.includes("api('chatSearch'")) failures.push('Pencarian pesan per grup belum tersedia');
 if (!chatHtml.includes('id="groupModal"') || !chatHtml.includes("api('chatRoomDetails'") || !chatHtml.includes("api('chatUpdateRoom'")) failures.push('Edit keterangan grup dan history task belum tersedia');
-if (!backend.includes("chat-schema-v2") || !backend.includes("'DESCRIPTION', 'UPDATED_BY_NIK'")) failures.push('Migrasi keterangan grup chat belum tersedia');
+if (!backend.includes("chat-schema-v3") || !backend.includes("'DESCRIPTION', 'UPDATED_BY_NIK'")) failures.push('Migrasi keterangan grup chat belum tersedia');
+
+// ---------- Dashboard fokus Informasi terbaru ----------
+const dashboardHtml = await text('docs/index.html');
+if (/BIHQ CONTROL TOWER/i.test(dashboardHtml) || dashboardHtml.includes('renderOutletProgressSection') || dashboardHtml.includes('bihq-progress')) {
+  failures.push('Bagian BIHQ Control Tower masih ada di dashboard');
+}
+if (/Daftar pekerjaan aktif/i.test(dashboardHtml)) failures.push('Label Daftar pekerjaan aktif masih ada di dashboard');
+if (!dashboardHtml.includes('renderDashboardNews()')) failures.push('Dashboard tidak lagi menampilkan Informasi terbaru');
+if (!/BAKERZIN_STATE\.page==='dashboard'\?dashboard:taskCard/.test(dashboardHtml)) {
+  failures.push('Dashboard belum fokus hanya pada Informasi terbaru');
+}
+for (const orphan of ['loadOutletProgress', 'filterOutletProgress', 'setOutletProgressView', 'renderProgressSummary', 'readOutletProgressCache']) {
+  if (dashboardHtml.includes(orphan)) failures.push(`Sisa kode Control Tower '${orphan}' belum dibersihkan`);
+}
+
+// ---------- Waktu chat dan task konsisten WIB ----------
+if (!backend.includes('function chatNow_()') || !backend.includes('function chatIso_(') || !backend.includes('function chatDueValue_(')) {
+  failures.push('Helper waktu chat yang bebas zona waktu Spreadsheet belum tersedia');
+}
+if (!backend.includes('const CHAT_TIMEZONE_OFFSET_MS')) failures.push('Offset WIB untuk chat belum didefinisikan');
+if (/appendRow\(\[id, roomId, sequence \+ 1,[^\]]*new Date\(\)/.test(backend)) {
+  failures.push('Pesan chat masih menyimpan waktu sebagai Date yang bergantung zona waktu Spreadsheet');
+}
+if (!backend.includes("if (!/_AT$/.test(header) || sheet.getMaxRows() < 2) return;")) {
+  failures.push('Kolom waktu chat belum dipaksa berformat teks');
+}
+try {
+  const chatTimeContext = vm.createContext({
+    console,
+    Utilities: { formatDate(date, zone) { return { 'Asia/Jakarta': '+0700', 'Asia/Tokyo': '+0900' }[zone] || '+0000'; } }
+  });
+  new vm.Script(backend, { filename: 'docs/Code.gs#chat-timezone-test' }).runInContext(chatTimeContext);
+  chatTimeContext.chatSpreadsheet_ = () => ({ getSpreadsheetTimeZone: () => 'Asia/Jakarta' });
+  chatTimeContext.chatLegacyShiftMs_.cached = undefined;
+  if (chatTimeContext.chatIso_('2026-08-22T03:15:00.000Z') !== '2026-08-22T03:15:00.000Z') {
+    failures.push('Timestamp ISO chat tidak boleh digeser ulang saat dibaca');
+  }
+  if (chatTimeContext.chatDueValue_('2026-08-22T17:30') !== '2026-08-22T10:30:00.000Z') {
+    failures.push('Batas waktu task belum dibaca sebagai waktu Asia/Jakarta');
+  }
+  const storedNow = chatTimeContext.chatNow_();
+  if (typeof storedNow !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(storedNow)) {
+    failures.push('Waktu chat harus disimpan sebagai teks ISO-8601 UTC, bukan objek Date');
+  }
+  chatTimeContext.chatSpreadsheet_ = () => ({ getSpreadsheetTimeZone: () => 'Asia/Tokyo' });
+  chatTimeContext.chatLegacyShiftMs_.cached = undefined;
+  const legacyCell = vm.runInContext("new Date('2026-08-22T03:15:00Z')", chatTimeContext);
+  if (chatTimeContext.chatIso_(legacyCell) !== '2026-08-22T05:15:00.000Z') {
+    failures.push('Jam chat lama belum dikoreksi terhadap zona waktu Spreadsheet');
+  }
+} catch (error) {
+  failures.push(`Uji zona waktu chat gagal: ${error.message}`);
+}
+
+// ---------- Sticky task ringkas dan dapat dibuka ----------
+if (!chatHtml.includes('class="task-done-btn"') || !chatHtml.includes('data-complete=')) {
+  failures.push('Tombol Selesai sticky task belum diganti centang dalam kotak hijau');
+}
+if (/<button data-complete="'\+esc\(t\.id\)\+'">Selesai<\/button>/.test(chatHtml)) {
+  failures.push('Tombol teks Selesai masih dipakai pada sticky task');
+}
+if (!/\.pin \.task-done-btn[^{]*\{[^}]*border-radius:7px/.test(chatHtml)) failures.push('Tombol centang sticky task belum berbentuk kotak');
+if (!/\.pin \.task-done-btn\{[^}]*background:#1fa361/.test(chatHtml)) failures.push('Tombol centang sticky task belum berwarna hijau');
+if (chatHtml.includes('class="task-info-btn"')) failures.push('Tombol i sticky task belum disatukan dengan menu titik tiga');
+if (!chatHtml.includes('id="taskInfoFromMenu"')) failures.push('Menu titik tiga belum memuat Informasi Penyelesaian');
+if (!/\.pin\{[^}]*padding:5px 6px 5px 10px/.test(chatHtml)) failures.push('Kotak sticky task belum diringkas tingginya');
+if (!/\.pins\{[^}]*padding:6px 14px/.test(chatHtml)) failures.push('Area sticky task masih menyisakan ruang kosong berlebih');
+if (!chatHtml.includes('data-task-detail=') || !chatHtml.includes('function openTaskDetail(') || !chatHtml.includes('id="taskDetailModal"')) {
+  failures.push('Task belum dapat diklik untuk menampilkan deskripsi dan deadline');
+}
+if (!chatHtml.includes('function taskDetailHtml(') || !/taskDetailHtml[\s\S]{0,400}DEADLINE/.test(chatHtml) || !/taskDetailHtml[\s\S]{0,400}DESKRIPSI/.test(chatHtml)) {
+  failures.push('Detail task belum menampilkan deskripsi dan deadline');
+}
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
