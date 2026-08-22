@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v1';
+  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v2';
   var DEFAULT_MENUS = [
     { id: 'static:absensi-break', title: 'Absensi Break', icon: 'free_breakfast', type: 'static', url: 'absensibreak.html' },
     { id: 'static:opening-closing', title: 'Opening & Closing Checklist', icon: 'checklist', type: 'static', url: '' },
@@ -8,20 +8,75 @@
   ];
 
   function esc(v) {
-    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
-      return ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;' })[c];
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) {
+      return ({ '&': '&', '<': '<', '>': '>', '"': '"', "'": '&#39;' })[ch];
+    });
+  }
+
+  function matchTaskIcon(titleNeedle, urlNeedle) {
+    var tasks = (window.BAKERZIN_STATE && BAKERZIN_STATE.tasks) || [];
+    var needles = (titleNeedle || '').toLowerCase().split('|').filter(Boolean);
+    for (var i = 0; i < tasks.length; i++) {
+      var t = tasks[i];
+      var title = String(t.title || '').toLowerCase();
+      var target = String(t.target || '').toLowerCase();
+      var hit = needles.some(function (n) { return n && (title.indexOf(n) >= 0 || target.indexOf(n) >= 0); });
+      if (!hit && urlNeedle) {
+        hit = target.indexOf(String(urlNeedle).toLowerCase()) >= 0 || String(t.target || '').indexOf(urlNeedle) >= 0;
+      }
+      if (hit) {
+        try {
+          if (typeof taskIcon === 'function') return taskIcon(t);
+        } catch (e) {}
+        if (t.icon) return String(t.icon).toLowerCase().replace(/[^a-z0-9_]/g, '');
+      }
+    }
+    return '';
+  }
+
+  function enrichMenuIcon(item) {
+    if (!item) return item;
+    var live = '';
+    if (item.type === 'task' && item.taskId) {
+      var task = ((window.BAKERZIN_STATE && BAKERZIN_STATE.tasks) || []).filter(function (t) { return t.id === item.taskId; })[0];
+      if (task) {
+        try { if (typeof taskIcon === 'function') live = taskIcon(task); } catch (e) {}
+        if (!live && task.icon) live = String(task.icon).toLowerCase().replace(/[^a-z0-9_]/g, '');
+      }
+    } else if (item.type === 'page' && item.pageId) {
+      var page = ((window.BAKERZIN_STATE && BAKERZIN_STATE.pages) || []).filter(function (p) { return p.id === item.pageId; })[0];
+      if (page && page.icon) live = String(page.icon).toLowerCase().replace(/[^a-z0-9_]/g, '');
+    } else if (item.type === 'static') {
+      if (item.id === 'static:absensi-break') live = matchTaskIcon('absensi|break', 'absensibreak');
+      else if (item.id === 'static:opening-closing') live = matchTaskIcon('opening|closing|checklist', '');
+      else if (item.id === 'static:berita-acara') live = matchTaskIcon('berita acara|berita-acara', 'berita-acara');
+      else if (item.id === 'static:stock-card') live = matchTaskIcon('stock card|stockcard', 'StockCard') || 'inventory_2';
+      else if (item.id === 'static:lost-found') live = matchTaskIcon('lost|found|sabar', 'lost');
+      else if (item.id === 'static:mpp') live = matchTaskIcon('mpp|uang tip', 'mpp-schedule');
+      else if (item.id === 'static:sales') live = matchTaskIcon('sales|analisa', 'sales-analysis');
+      else if (item.id === 'static:sosialisasi') live = matchTaskIcon('sosialisasi', 'sosialisasi');
+      else if (item.id === 'static:showcase') live = matchTaskIcon('showcase', 'showcase');
+      else if (item.id === 'static:chat') live = 'chat';
+    }
+    if (live) item.icon = live;
+    return item;
+  }
+
+  function defaultMenus() {
+    return DEFAULT_MENUS.map(function (m) {
+      return enrichMenuIcon({ id: m.id, title: m.title, icon: m.icon, type: m.type, url: m.url });
     });
   }
 
   function loadSaved() {
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return DEFAULT_MENUS.slice();
+      if (!raw) return defaultMenus();
       var parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || !parsed.length) return DEFAULT_MENUS.slice();
-      return parsed;
+      if (!Array.isArray(parsed) || !parsed.length) return defaultMenus();
+      return parsed.map(function (item) { return enrichMenuIcon(item); });
     } catch (e) {
-      return DEFAULT_MENUS.slice();
+      return defaultMenus();
     }
   }
 
@@ -52,7 +107,7 @@
       seen[item.id] = true;
       items.push(item);
     }
-    DEFAULT_MENUS.forEach(add);
+    defaultMenus().forEach(add);
     var staticPages = [
       { id: 'static:chat', title: 'Pesan / Chat', icon: 'chat', type: 'static', url: 'chat.html' },
       { id: 'static:stock-card', title: 'Stock Card', icon: 'inventory_2', type: 'static', url: 'stock-card.html' },
@@ -62,7 +117,7 @@
       { id: 'static:sosialisasi', title: 'Sosialisasi', icon: 'campaign', type: 'static', url: 'sosialisasi.html' },
       { id: 'static:showcase', title: 'Showcase Log', icon: 'storefront', type: 'static', url: 'showcaselog.html' }
     ];
-    staticPages.forEach(add);
+    staticPages.forEach(function (p) { add(enrichMenuIcon(p)); });
     var tasks = (window.BAKERZIN_STATE && BAKERZIN_STATE.tasks) || [];
     tasks.forEach(function (t) {
       var icon = 'link';
@@ -87,7 +142,7 @@
       add({
         id: 'page:' + p.id,
         title: p.title || 'Halaman',
-        icon: 'folder',
+        icon: p.icon || 'folder',
         type: 'page',
         pageId: p.id,
         url: ''
@@ -137,7 +192,8 @@
   }
 
   function ensureStyles() {
-    if (document.getElementById('qm-styles')) return;
+    var oldStyle = document.getElementById('qm-styles');
+    if (oldStyle) oldStyle.remove();
     var style = document.createElement('style');
     style.id = 'qm-styles';
     style.textContent = [
@@ -147,7 +203,7 @@
       '.qm-kicker .material-symbols-rounded{font-size:18px}',
       '.qm-reset{border:0;background:transparent;color:#8b8084;font-size:11px;font-weight:700;cursor:pointer;padding:4px 8px;border-radius:8px}',
       '.qm-reset:hover{background:#f5eef0;color:var(--red,#a91431)}',
-      '.qm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:10px}',
+      '.qm-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}',
       '.qm-item,.qm-add{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:104px;padding:14px 10px;border-radius:16px;cursor:pointer;font:inherit;text-align:center;transition:transform .15s,box-shadow .15s,border-color .15s}',
       '.qm-item{border:1px solid #e7dfe1;background:#fff;box-shadow:0 6px 18px rgba(54,35,40,.04)}',
       '.qm-item:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(54,35,40,.08);border-color:#dfb9c1}',
@@ -243,7 +299,7 @@
     if (add) add.onclick = openPicker;
     var reset = root.querySelector('#qmReset');
     if (reset) reset.onclick = function () {
-      saveMenus(DEFAULT_MENUS.slice());
+      saveMenus(defaultMenus());
       injectGrid(true);
     };
   }
