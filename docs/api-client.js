@@ -18,8 +18,6 @@
 
   function timeoutForAction(action) {
     action = String(action || '');
-    // Sales Usage dapat membawa ribuan baris dan butuh waktu lebih lama.
-    // Beri ruang lebih besar di sisi browser, tetapi backend tetap harus diproses secara batch.
     if (action === 'uploadUsage' || action === 'previewSalesRepair' || action === 'repairSalesUpload') return 540000;
     if (/^chat(?:Create|Update|Delete)Task$/.test(action)) return 300000;
     return /^(verify|upload|salesAnalysis)|^lostFound(?:Save|Update|Process)$/.test(action) ? 300000 : 90000;
@@ -35,14 +33,9 @@
       var finished = false;
       var messageTargets = [global];
 
-      // Chat dibuka di dalam iframe BI-Space. Output HtmlService GAS memakai
-      // top.postMessage(), sehingga balasannya tiba di jendela aplikasi utama,
-      // bukan di iframe chat. Dengarkan keduanya selama masih satu origin.
       try {
         if (global.top && global.top !== global) messageTargets.push(global.top);
-      } catch (error) {
-        // Bila parent berbeda origin, listener lokal tetap dipakai.
-      }
+      } catch (error) {}
 
       iframe.name = frameName;
       iframe.setAttribute('aria-hidden', 'true');
@@ -71,9 +64,6 @@
 
       function onMessage(event) {
         var message = event.data;
-        // HtmlService GAS membungkus output dalam iframe internal Google, sehingga
-        // event.source bukan iframe luar yang dibuat halaman ini. Request ID acak
-        // tetap memastikan hanya jawaban untuk panggilan ini yang diterima.
         if (finished || !message || message.bakerzinApi !== true || message.requestId !== id) return;
         finished = true;
         cleanup();
@@ -140,3 +130,11 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installChatWidget);
   else installChatWidget();
 }(window));
+
+// Dashboard quick menu grid
+try {
+  var s = document.createElement('script');
+  s.src = 'quick-menu.js?v=20260822-qm1';
+  s.defer = true;
+  (document.head || document.documentElement).appendChild(s);
+} catch (e) {}
