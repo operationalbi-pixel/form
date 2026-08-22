@@ -1,11 +1,7 @@
 (function () {
   'use strict';
-  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v3';
-  var DEFAULT_MENUS = [
-    { id: 'static:absensi-break', title: 'Absensi Break', icon: 'schedule', type: 'static', url: 'absensibreak.html' },
-    { id: 'static:opening-closing', title: 'Opening & Closing Checklist', icon: 'checklist', type: 'static', url: '' },
-    { id: 'static:berita-acara', title: 'Form Berita Acara', icon: 'description', type: 'static', url: 'berita-acara.html' }
-  ];
+  var STORAGE_KEY = 'bakerzin_dashboard_quick_menus_v4';
+  var DEFAULT_MENUS = [];
 
   function esc(v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (ch) {
@@ -79,7 +75,7 @@
       var raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return defaultMenus();
       var parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || !parsed.length) return defaultMenus();
+      if (!Array.isArray(parsed)) return defaultMenus();
       return parsed.map(function (item) { return enrichMenuIcon(item); });
     } catch (e) {
       return defaultMenus();
@@ -181,7 +177,7 @@
     var menus = loadSaved();
     var html = '<section class="qm-section" aria-label="Menu cepat dashboard">';
     html += '<div class="qm-head"><div class="qm-kicker"><span class="material-symbols-rounded" aria-hidden="true">apps</span>Menu Cepat</div>';
-    html += '<button type="button" class="qm-reset" id="qmReset" title="Kembalikan default">Reset</button></div>';
+    html += '<button type="button" class="qm-reset" id="qmReset" title="Kosongkan menu">Kosongkan</button></div>';
     html += '<div class="qm-grid">';
     menus.forEach(function (item, index) {
       html += '<button type="button" class="qm-item" data-qm-index="' + index + '">';
