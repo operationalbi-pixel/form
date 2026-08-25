@@ -483,8 +483,8 @@ if (!/\.pin \.task-done-btn[^{]*\{[^}]*border-radius:7px/.test(chatHtml)) failur
 if (!/\.pin \.task-done-btn\{[^}]*background:#1fa361/.test(chatHtml)) failures.push('Tombol centang sticky task belum berwarna hijau');
 if (chatHtml.includes('class="task-info-btn"')) failures.push('Tombol i sticky task belum disatukan dengan menu titik tiga');
 if (!chatHtml.includes('id="taskInfoFromMenu"')) failures.push('Menu titik tiga belum memuat Informasi Penyelesaian');
-if (!/\.pin\{[^}]*padding:5px 6px 5px 10px/.test(chatHtml)) failures.push('Kotak sticky task belum diringkas tingginya');
-if (!/\.pins\{[^}]*padding:6px 14px/.test(chatHtml)) failures.push('Area sticky task masih menyisakan ruang kosong berlebih');
+if (!/\.pin\{[^}]*padding:(?:5px 6px 5px 10px|0 6px 0 0)/.test(chatHtml)) failures.push('Kotak sticky task belum diringkas tingginya');
+if (!/\.pins\{[^}]*padding:(?:6px|2px) 14px/.test(chatHtml)) failures.push('Area sticky task masih menyisakan ruang kosong berlebih');
 if (!chatHtml.includes('data-task-detail=') || !chatHtml.includes('function openTaskDetail(') || !chatHtml.includes('id="taskDetailModal"')) {
   failures.push('Task belum dapat diklik untuk menampilkan deskripsi dan deadline');
 }
