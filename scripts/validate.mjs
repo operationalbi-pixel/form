@@ -32,6 +32,12 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
 
 const chatHtml = await text('docs/chat.html');
 const chatBackend = await text('docs/Code.gs');
+let chatInlineIndex = 0;
+for (const match of chatHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  chatInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/chat.html#inline-${chatInlineIndex}` }); }
+  catch (error) { failures.push(`docs/chat.html inline script ${chatInlineIndex}: ${error.message}`); }
+}
 if (chatHtml.includes('taskPicker') || chatHtml.includes('pickerLabel') || chatHtml.includes('renderTaskPicker')) {
   failures.push('Form Create Task masih meminta daftar outlet atau person secara manual');
 }
@@ -40,6 +46,21 @@ if (!chatHtml.includes("picType:type") || chatHtml.includes('outlets:type') || c
 }
 if (!chatBackend.includes("const outlets = roomOutlet ? [roomOutlet]") || !chatBackend.includes("const recipients = roomOutlet ? people.filter")) {
   failures.push('Backend Create Task belum membuat assignment otomatis berdasarkan grup dan tipe PIC');
+}
+if (!chatHtml.includes('data-reply=') || !chatHtml.includes('id="replyBar"') || !chatHtml.includes('replyToId:draft.replyToId')) {
+  failures.push('Chat belum menyediakan reply pesan yang terlihat dan tersimpan');
+}
+if (!chatHtml.includes('id="roomCreateTask"') || !chatHtml.includes('function openRoomCreateTask(')) {
+  failures.push('Header grup belum memiliki tombol tambah tugas langsung');
+}
+if (!chatHtml.includes('capture="environment"') || !chatHtml.includes('id="taskCamera"')) {
+  failures.push('Lampiran task belum dapat membuka kamera langsung');
+}
+if (!chatHtml.includes('function taskAgeLabel(') || !chatHtml.includes('UMUR TUGAS')) {
+  failures.push('Detail task belum menampilkan umur tugas');
+}
+if (!chatBackend.includes('function chatTaskAttachmentMap_()') || !chatHtml.includes('task-detail-attachments')) {
+  failures.push('Lampiran task belum tersedia pada detail task');
 }
 
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
@@ -488,7 +509,7 @@ if (!/\.pins\{[^}]*padding:(?:6px|2px) 14px/.test(chatHtml)) failures.push('Area
 if (!chatHtml.includes('data-task-detail=') || !chatHtml.includes('function openTaskDetail(') || !chatHtml.includes('id="taskDetailModal"')) {
   failures.push('Task belum dapat diklik untuk menampilkan deskripsi dan deadline');
 }
-if (!chatHtml.includes('function taskDetailHtml(') || !/taskDetailHtml[\s\S]{0,400}DEADLINE/.test(chatHtml) || !/taskDetailHtml[\s\S]{0,400}DESKRIPSI/.test(chatHtml)) {
+if (!chatHtml.includes('function taskDetailHtml(') || !/taskDetailHtml[\s\S]{0,1200}DEADLINE/.test(chatHtml) || !/taskDetailHtml[\s\S]{0,1200}DESKRIPSI/.test(chatHtml)) {
   failures.push('Detail task belum menampilkan deskripsi dan deadline');
 }
 for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems', 'lostFoundItemDetail', 'lostFoundSave', 'lostFoundUpdate', 'lostFoundProcess']) {

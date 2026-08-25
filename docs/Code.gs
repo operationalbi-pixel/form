@@ -11118,6 +11118,17 @@ function chatLatestSequenceMap_() {
   return map;
 }
 
+function chatTaskAttachmentMap_() {
+  const map = {};
+  chatSheetRows_('CHAT_ATTACHMENTS').forEach(function (row) {
+    const taskId = String(row[2] || '');
+    if (!taskId) return;
+    if (!map[taskId]) map[taskId] = [];
+    map[taskId].push({ id: String(row[0]), name: String(row[4]), mimeType: String(row[5]), size: Number(row[6] || 0) });
+  });
+  return map;
+}
+
 function chatPendingTasks_(employee) {
   const tasks = {}, assignments = chatSheetRows_('CHAT_ASSIGNMENTS');
   chatSheetRows_('CHAT_TASKS').forEach(function (row) {
@@ -11177,14 +11188,14 @@ function chatTaskById_(taskId) {
   return row ? { id: String(row[0]), title: String(row[2]), description: String(row[3] || ''), dueAt: row[4] ? chatIso_(row[4]) : '', status: String(row[6]) } : null;
 }
 
-function chatTaskProgressView_(taskRow, assignmentRows) {
+function chatTaskProgressView_(taskRow, assignmentRows, attachmentMap) {
   const taskId = String(taskRow[0]), picType = String(taskRow[5] || '').toUpperCase();
   const entries = (assignmentRows || []).filter(function (row) { return String(row[1]) === taskId; }).map(function (row) {
     const done = String(row[6]) === 'DONE';
     return { type: String(row[2]), outlet: String(row[3] || '').toUpperCase(), nik: normalizeNik_(row[4]), name: String(row[5] || ''), label: picType === 'OUTLET' ? String(row[3] || '').toUpperCase() : String(row[5] || row[4] || ''), completed: done, completedByNik: normalizeNik_(row[7]), completedByName: String(row[8] || ''), completedAt: done && row[9] ? chatIso_(row[9]) : '' };
   });
   const completed = entries.filter(function (entry) { return entry.completed; }).length, total = entries.length;
-  return { id: taskId, roomId: String(taskRow[1]), title: String(taskRow[2]), description: String(taskRow[3] || ''), dueAt: taskRow[4] ? chatIso_(taskRow[4]) : '', picType: picType, status: String(taskRow[6]), createdByNik: normalizeNik_(taskRow[7]), createdByName: String(taskRow[8] || ''), createdAt: taskRow[9] ? chatIso_(taskRow[9]) : '', completedAt: taskRow[10] ? chatIso_(taskRow[10]) : '', completed: completed, total: total, percent: total ? Math.round(completed * 100 / total) : 0, entries: entries };
+  return { id: taskId, roomId: String(taskRow[1]), title: String(taskRow[2]), description: String(taskRow[3] || ''), dueAt: taskRow[4] ? chatIso_(taskRow[4]) : '', picType: picType, status: String(taskRow[6]), createdByNik: normalizeNik_(taskRow[7]), createdByName: String(taskRow[8] || ''), createdAt: taskRow[9] ? chatIso_(taskRow[9]) : '', completedAt: taskRow[10] ? chatIso_(taskRow[10]) : '', completed: completed, total: total, percent: total ? Math.round(completed * 100 / total) : 0, entries: entries, attachments: attachmentMap ? attachmentMap[taskId] || [] : [] };
 }
 
 function getChatTaskProgress(token, taskId) {
@@ -11193,7 +11204,7 @@ function getChatTaskProgress(token, taskId) {
     const taskRow = chatSheetRows_('CHAT_TASKS').filter(function (row) { return String(row[0]) === String(taskId || ''); })[0];
     if (!taskRow) throw new Error('Tugas tidak ditemukan.');
     requireChatRoom_(employee, taskRow[1]);
-    return chatTaskProgressView_(taskRow, chatSheetRows_('CHAT_ASSIGNMENTS'));
+    return chatTaskProgressView_(taskRow, chatSheetRows_('CHAT_ASSIGNMENTS'), chatTaskAttachmentMap_());
   });
 }
 
