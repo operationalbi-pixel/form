@@ -8,14 +8,29 @@
 <body>
 <script>
 (function(){
-  var url = "https://raw.githubusercontent.com/operationalbi-pixel/form/abe0288ab35fee15be3a372cdde8048120c4d5b5/docs/chat.html";
-  fetch(url).then(function(r){return r.text()}).then(function(html){
-    document.open();
-    document.write(html);
-    document.close();
-  }).catch(function(e){
+  var stableLoader = "https://raw.githubusercontent.com/operationalbi-pixel/form/abe0288ab35fee15be3a372cdde8048120c4d5b5/docs/chat.html";
+  function fail(e){
     document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat. Refresh atau hubungi admin.<br><small>"+e+"</small></p>";
-  });
+  }
+  fetch(stableLoader).then(function(r){ return r.text(); }).then(function(loaderHtml){
+    var injected = loaderHtml.replace(
+      /document\.open\(\);\s*document\.write\(html\);\s*document\.close\(\);/,
+      "fetch('chat-reply-patches.js?v=r1').then(function(rr){return rr.text()}).then(function(js){" +
+      "try{(0,eval)(js);var rp=window.__CHAT_REPLY_PATCHES||[];" +
+      "for(var j=0;j<rp.length;j++){if(html.indexOf(rp[j][0])!==-1)html=html.split(rp[j][0]).join(rp[j][1]);}}" +
+      "catch(e){if(window.console)console.warn('reply patches',e)}" +
+      "document.open();document.write(html);document.close();" +
+      "}).catch(function(){document.open();document.write(html);document.close();});"
+    );
+    if (injected === loaderHtml) {
+      // fallback: still load stable without reply
+      document.open(); document.write(loaderHtml); document.close();
+      return;
+    }
+    document.open();
+    document.write(injected);
+    document.close();
+  }).catch(fail);
 })();
 </script>
 </body>
