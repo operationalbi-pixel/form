@@ -11,14 +11,35 @@
   var originalRoomCreateTask = null;
   var pendingSystemReply = null;
   var selectedTarget = null;
+  var roomCache = {};
+  var targetCache = {};
+  var targetCachePromise = {};
+  var CACHE_TTL = 45000;
+
+  function svgIcon(name) {
+    var icons = {
+      task:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l2 2 4-4"/><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 4V2h6v2"/></svg>',
+      target:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1.4"/></svg>',
+      camera:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.4-2h7.2L17 8h3v10H4z"/><circle cx="12" cy="13" r="3"/></svg>',
+      image:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m6 17 4-4 3 3 2-2 3 3"/></svg>',
+      document:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5M10 12h5M10 16h5"/></svg>',
+      edit:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 3.5-.8L18 8.7 15.3 6 5.8 15.5z"/><path d="m14.8 6.5 2.7 2.7"/></svg>',
+      delete:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14"/></svg>'
+    };
+    return icons[name] || '';
+  }
 
   try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (e) {}
 
   function q(id) { return document.getElementById(id); }
   function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
   function api(action, args) {
+    var started = Date.now();
     return global.BAKERZIN_API.call(action, args || []).then(function (r) {
       if (!r || !r.ok) throw new Error(r && r.error || 'Server tidak merespons.');
+      if (/^chat(Create|Update|Delete|Complete)Task$/.test(action)) {
+        setTimeout(function(){ refreshBootstrap().catch(function(){}); }, 0);
+      }
       return r.data;
     });
   }
@@ -73,8 +94,75 @@
   function stripTargetMarker(text) {
     return String(text || '').replace(/\n?\[\[BI_TARGET_V1\|\d{4}-\d{2}\|(CREATE|EDIT|COMPLETE|DELETE)\|[A-Za-z0-9_-]+\]\]/g, '').trim();
   }
+  function cacheNow() { return Date.now(); }
+
+  function getCachedRoomData(roomId) {
+    var cached = roomCache[roomId];
+    return cached && (cacheNow() - cached.at < CACHE_TTL) ? cached.data : null;
+  }
+
+  function buildRoomTaskCache(roomId) {
+    if (!bootstrap) return null;
+    var tasks = (bootstrap.tasks || []).filter(function (t) { return t.roomId === roomId; });
+    var data = { open: tasks.slice(), history: [] };
+    roomCache[roomId] = { at: cacheNow(), data: data };
+    return data;
+  }
+
+  function warmRoomCache(roomId) {
+    if (!roomId) return Promise.resolve(null);
+    var data = buildRoomTaskCache(roomId);
+    preloadTargets(roomId);
+    return Promise.resolve(data);
+  }
+
+  function preloadTargets(roomId, force) {
+    if (!roomId) return Promise.resolve([]);
+    var cached = targetCache[roomId];
+    if (!force && cached && cacheNow() - cached.at < CACHE_TTL) return Promise.resolve(cached.items);
+    if (!force && targetCachePromise[roomId]) return targetCachePromise[roomId];
+    targetCachePromise[roomId] = api('chatSearch', [token, { roomId: roomId, query: MARK, limit: 250 }]).then(function (data) {
+      var results = (data.results || []).slice().sort(function(a,b){return new Date(a.createdAt||0)-new Date(b.createdAt||0);});
+      var creates = {}, completes = {};
+      results.forEach(function (item) {
+        parseTargetMarker(item.body || '').forEach(function (event) {
+          if ((event.type === 'CREATE' || event.type === 'EDIT') && event.payload.id) creates[event.payload.id] = Object.assign({}, event.payload, { createdAt: item.createdAt, createdBy: item.senderName });
+          if (event.type === 'COMPLETE' && event.payload.id) completes[event.payload.id] = Object.assign({}, event.payload, { completedAt: item.createdAt, completedBy: item.senderName });
+          if (event.type === 'DELETE' && event.payload.id) creates[event.payload.id] = Object.assign({}, creates[event.payload.id] || {}, { deleted: true, deletedAt: item.createdAt });
+        });
+      });
+      var items = Object.keys(creates).filter(function (id) { return !creates[id].deleted; }).map(function (id) {
+        var target = creates[id];
+        target.completion = completes[id] || null;
+        return target;
+      });
+      targetCache[roomId] = { at: cacheNow(), items: items };
+      return items;
+    }).catch(function () {
+      return cached ? cached.items : [];
+    }).finally(function () {
+      delete targetCachePromise[roomId];
+    });
+    return targetCachePromise[roomId];
+  }
+
+  function updateTargetCacheOptimistically(roomId, meta, mode) {
+    var cached = targetCache[roomId];
+    var list = cached ? cached.items.slice() : [];
+    var idx = list.findIndex(function(t){return t.id === meta.id;});
+    if (mode === 'delete') {
+      if (idx >= 0) list.splice(idx, 1);
+    } else if (mode === 'complete') {
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], { completion: meta.completion || meta });
+    } else {
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], meta);
+      else list.push(Object.assign({}, meta));
+    }
+    targetCache[roomId] = { at: cacheNow(), items: list };
+  }
+
   function refreshBootstrap() {
-    return api('chatBootstrap', [token]).then(function (data) { bootstrap = data; return data; });
+    return api('chatBootstrap', [token]).then(function (data) { bootstrap = data; (data.rooms||[]).forEach(function(r){ buildRoomTaskCache(r.id); }); return data; });
   }
 
   function injectStyles() {
@@ -83,12 +171,12 @@
     style.id = 'biChatEnhanceStyle';
     style.textContent = [
       '.bi-group-search{position:relative;margin:0 0 10px}.bi-group-search input{width:100%;height:42px;border:1px solid var(--line);border-radius:13px;padding:0 12px 0 37px;outline:none;background:#fff}.bi-group-search:before{content:"⌕";position:absolute;left:13px;top:8px;color:var(--muted);font-size:20px}',
-      '.bi-pop{position:fixed;z-index:90;min-width:190px;padding:6px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 16px 45px rgba(45,24,30,.2);display:none}.bi-pop.open{display:grid;gap:3px}.bi-pop button{border:0;background:#fff;border-radius:10px;padding:10px 12px;text-align:left;cursor:pointer;color:var(--ink);font-weight:600}.bi-pop button:hover{background:#fff0f3;color:var(--wine)}.bi-attach-option{display:flex!important;align-items:center;gap:9px}.bi-attach-option span{width:26px;height:26px;border-radius:9px;background:#f6e9ec;display:grid;place-items:center}',
+      '.bi-pop{position:fixed;z-index:90;min-width:190px;padding:6px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 16px 45px rgba(45,24,30,.2);display:none}.bi-pop.open{display:grid;gap:3px}.bi-pop button{border:0;background:#fff;border-radius:10px;padding:10px 12px;text-align:left;cursor:pointer;color:var(--ink);font-weight:600}.bi-pop button:hover{background:#fff0f3;color:var(--wine)}.bi-attach-option{display:flex!important;align-items:center;gap:9px}',
       '.bi-panel-layer{position:fixed;inset:0;z-index:90;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-panel-layer.open{display:flex}.bi-panel{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:hidden;background:#fff;border-radius:22px;box-shadow:0 25px 70px rgba(48,19,27,.35);display:flex;flex-direction:column}.bi-panel-head{display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--line)}.bi-panel-head strong{font-size:18px;line-height:1.25;font-weight:700;flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.bi-x{width:36px;height:36px;border:1px solid var(--line);border-radius:11px;background:#fff;cursor:pointer}.bi-tabs{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}.bi-tab{border:0;background:#fff;padding:12px;font-weight:800;color:var(--muted);cursor:pointer}.bi-tab.active{color:var(--wine);box-shadow:inset 0 -2px var(--wine)}.bi-panel-body{padding:16px 18px 20px;overflow-y:auto;overflow-x:hidden;min-width:0}.bi-monthbar{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:14px}.bi-monthbar select{border:1px solid var(--line);border-radius:11px;padding:9px 10px;background:#fff}.bi-refresh{border:0;border-radius:11px;background:#f4edef;color:var(--wine);padding:0 12px;font-weight:800;cursor:pointer}',
       '.bi-summary{display:block;padding:13px 14px;border:1px solid #f0d8de;border-radius:15px;background:#fff8fa;margin-bottom:12px}.bi-summary strong{font-size:24px;color:var(--wine);display:block}.bi-summary span{font-size:11px;color:var(--muted)}.bi-progress{height:8px;border-radius:8px;background:#eee7e9;overflow:hidden;margin-top:8px}.bi-progress i{display:block;height:100%;background:linear-gradient(90deg,var(--wine-dark),var(--wine));border-radius:inherit}.bi-list{display:grid;gap:8px;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:13px;background:#fff;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row.done{opacity:.72;background:#fafafa}.bi-row-copy{flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden}.bi-row-copy strong{display:block;font-size:12px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-copy span{display:block;font-size:10px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-action{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:#fff;cursor:pointer;display:grid;place-items:center;flex:0 0 auto}.bi-row-action.complete{background:#1fa361;color:#fff;border-color:#1a8a53}.bi-row-action.menu{color:var(--wine);font-size:18px}.bi-empty{text-align:center;padding:30px 10px;color:var(--muted);font-size:12px}',
       '.bi-form-layer{position:fixed;inset:0;z-index:100;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-form-layer.open{display:flex}.bi-form{width:min(520px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:#fff;border-radius:22px;padding:20px;box-shadow:0 25px 70px rgba(48,19,27,.35)}.bi-form-head{display:flex;align-items:center;gap:10px;margin-bottom:15px}.bi-form-head h3{margin:0;flex:1}.bi-field{margin:12px 0}.bi-field label{display:block;font-size:10px;font-weight:800;color:#665b5f;margin-bottom:6px}.bi-field input,.bi-field select{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px;outline:none}.bi-rule{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bi-rule label{border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center;cursor:pointer}.bi-rule label:has(input:checked){border-color:var(--wine);background:#fff0f3;color:var(--wine)}.bi-number-wrap{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.bi-percent{height:44px;min-width:52px;border:1px solid var(--line);border-radius:12px;display:flex!important;align-items:center;justify-content:center;gap:5px;padding:0 9px;margin:0!important}.bi-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.bi-secondary,.bi-primary{border:0;border-radius:12px;padding:10px 15px;cursor:pointer}.bi-secondary{background:#f4edef}.bi-primary{background:var(--wine);color:#fff;font-weight:800}',
       '.top #roomTitle{font-size:34px!important;line-height:1.08!important;font-weight:800!important;letter-spacing:-.02em;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.group-title{min-width:0;flex:1 1 auto}',
-      '.bi-pop .bi-create-icon{width:28px;height:28px;border-radius:9px;background:#f6e9ec;color:var(--wine);display:grid;place-items:center;font-weight:900;flex:0 0 auto}.bi-create-option{display:flex!important;align-items:center;gap:9px}.top #chatSearch,.top #roomCreateTask,.top .close{width:40px!important;height:40px!important;min-width:40px!important;border:1px solid var(--line)!important;border-radius:13px!important;background:#fff!important;color:var(--wine)!important;display:grid!important;place-items:center!important;padding:0!important;box-shadow:none!important}.top #chatSearch:hover,.top #roomCreateTask:hover,.top .close:hover{background:#fff0f3!important}.bi-target-menu{position:fixed;z-index:120;min-width:150px;padding:6px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 14px 40px rgba(45,24,30,.2);display:none}.bi-target-menu.open{display:grid}.bi-target-menu button{border:0;background:#fff;padding:10px 12px;border-radius:9px;text-align:left;cursor:pointer}.bi-target-menu button:hover{background:#fff0f3;color:var(--wine)}.bi-camera-layer{position:fixed;inset:0;z-index:140;background:#111;display:none;flex-direction:column}.bi-camera-layer.open{display:flex}.bi-camera-video{flex:1;width:100%;min-height:0;object-fit:cover;background:#000}.bi-camera-controls{display:flex;align-items:center;justify-content:center;gap:18px;padding:18px max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom));background:#111}.bi-camera-shot{width:68px;height:68px;border:6px solid #fff;border-radius:50%;background:#ddd;cursor:pointer}.bi-camera-close{position:absolute;z-index:2;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));width:42px;height:42px;border:1px solid rgba(255,255,255,.5);border-radius:13px;background:rgba(0,0,0,.35);color:#fff;font-size:20px;cursor:pointer}',
+      '.bi-pop .bi-create-icon,.bi-attach-option span{width:30px;height:30px;border-radius:9px;background:#f3f4f5;color:#71767d;display:grid;place-items:center;flex:0 0 auto}.bi-create-icon svg,.bi-attach-option span svg,.bi-target-menu svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.bi-create-option{display:flex!important;align-items:center;gap:10px;color:#4f555b!important}.bi-create-option:hover,.bi-attach-option:hover{color:#2f3438!important;background:#f7f8f9!important}.top #chatSearch,.top #roomCreateTask,.top .close{width:40px!important;height:40px!important;min-width:40px!important;border:1px solid var(--line)!important;border-radius:13px!important;background:#fff!important;color:var(--wine)!important;display:grid!important;place-items:center!important;padding:0!important;box-shadow:none!important}.top #chatSearch:hover,.top #roomCreateTask:hover,.top .close:hover{background:#fff0f3!important}.bi-target-menu{position:fixed;z-index:120;min-width:150px;padding:6px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 14px 40px rgba(45,24,30,.2);display:none}.bi-target-menu.open{display:grid}.bi-target-menu button{border:0;background:#fff;padding:10px 12px;border-radius:9px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:9px;color:#555b61}.bi-target-menu button:hover{background:#fff0f3;color:var(--wine)}.bi-camera-layer{position:fixed;inset:0;z-index:140;background:#111;display:none;flex-direction:column}.bi-camera-layer.open{display:flex}.bi-camera-video{flex:1;width:100%;min-height:0;object-fit:cover;background:#000}.bi-camera-controls{display:flex;align-items:center;justify-content:center;gap:18px;padding:18px max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom));background:#111}.bi-camera-shot{width:68px;height:68px;border:6px solid #fff;border-radius:50%;background:#ddd;cursor:pointer}.bi-camera-close{position:absolute;z-index:2;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));width:42px;height:42px;border:1px solid rgba(255,255,255,.5);border-radius:13px;background:rgba(0,0,0,.35);color:#fff;font-size:20px;cursor:pointer}',
       '.bi-goodjob{text-align:center}.bi-thumb{font-size:58px;display:block;animation:biThumb .65s ease both}.bi-goodjob h3{font-size:24px;margin:8px 0 4px;color:#197149}.bi-goodjob p{font-size:12px;color:var(--muted);line-height:1.5}@keyframes biThumb{0%{transform:scale(.25) rotate(-18deg);opacity:0}65%{transform:scale(1.18) rotate(8deg);opacity:1}100%{transform:scale(1) rotate(0)}}',
       '.message.system .bi-system-reply{display:grid!important}.bi-system-reply{width:24px;height:22px;border:0;background:transparent;color:var(--wine);padding:2px;cursor:pointer;place-items:center}.bi-system-reply svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
       '.top-copy{min-width:0}.top{gap:8px}.header-action,.top .close,.back{flex:0 0 auto}.group-title{min-width:0}.composer{position:relative}.reply-bar{flex:0 0 auto}',
@@ -131,7 +219,7 @@
     button.setAttribute('aria-label', 'Create Task atau Target');
     var pop = document.createElement('div');
     pop.id = 'biRoomCreateMenu'; pop.className = 'bi-pop';
-    pop.innerHTML = '<button type="button" class="bi-create-option" id="biCreateTaskOption"><span class="bi-create-icon">✓</span>Create Task</button><button type="button" class="bi-create-option" id="biCreateTargetOption"><span class="bi-create-icon">◎</span>Create Target</button>';
+    pop.innerHTML = '<button type="button" class="bi-create-option" id="biCreateTaskOption"><span class="bi-create-icon">'+svgIcon('task')+'</span>Create Task</button><button type="button" class="bi-create-option" id="biCreateTargetOption"><span class="bi-create-icon">'+svgIcon('target')+'</span>Create Target</button>';
     document.body.appendChild(pop);
     button.onclick = function (e) {
       e.preventDefault(); e.stopPropagation();
@@ -162,7 +250,7 @@
     var docs = document.createElement('input'); docs.type = 'file'; docs.accept = '.pdf,.xls,.xlsx,.doc,.docx'; docs.multiple = true; docs.hidden = true;
     document.body.appendChild(camera); document.body.appendChild(gallery); document.body.appendChild(docs);
     var pop = document.createElement('div'); pop.id = 'biAttachMenu'; pop.className = 'bi-pop';
-    pop.innerHTML = '<button class="bi-attach-option" id="biAttachCamera"><span>📷</span>Camera</button><button class="bi-attach-option" id="biAttachGallery"><span>🖼️</span>Gambar</button><button class="bi-attach-option" id="biAttachDocs"><span>📄</span>Dokumen</button>';
+    pop.innerHTML = '<button class="bi-attach-option" id="biAttachCamera"><span>'+svgIcon('camera')+'</span>Camera</button><button class="bi-attach-option" id="biAttachGallery"><span>'+svgIcon('image')+'</span>Gambar</button><button class="bi-attach-option" id="biAttachDocs"><span>'+svgIcon('document')+'</span>Dokumen</button>';
     document.body.appendChild(pop);
     button.onclick = function (e) { e.preventDefault(); e.stopPropagation(); if (pop.classList.contains('open')) pop.classList.remove('open'); else positionPop(pop, button); };
     q('biAttachCamera').onclick = function () { pop.classList.remove('open'); openDirectCamera(camera); };
@@ -339,7 +427,7 @@
     menu = document.createElement('div');
     menu.id = 'biTargetMenu';
     menu.className = 'bi-target-menu';
-    menu.innerHTML = '<button type="button" id="biTargetEdit">✎ Edit</button><button type="button" id="biTargetDelete">🗑 Hapus</button>';
+    menu.innerHTML = '<button type="button" id="biTargetEdit">'+svgIcon('edit')+'<span>Edit</span></button><button type="button" id="biTargetDelete">'+svgIcon('delete')+'<span>Hapus</span></button>';
     document.body.appendChild(menu);
     document.addEventListener('click', function (e) {
       if (!e.target.closest('#biTargetMenu') && !e.target.closest('[data-target-menu]')) menu.classList.remove('open');
@@ -365,8 +453,12 @@
     q('biTargetDelete').onclick = function () {
       menu.classList.remove('open');
       if (!global.confirm('Hapus target "' + target.goal + '"?')) return;
-      api('chatSend', [token, { roomId: activeRoomId(), body: deleteTargetMessage(target), attachments: [] }])
-        .then(function () { toast('Target berhasil dihapus.'); renderTargetPanel(); })
+      var roomId = activeRoomId();
+      updateTargetCacheOptimistically(roomId, target, 'delete');
+      renderTargetPanel();
+      toast('Target dihapus.');
+      api('chatSend', [token, { roomId: roomId, body: deleteTargetMessage(target), attachments: [] }])
+        .then(function () { preloadTargets(roomId, true); })
         .catch(function (e) { toast('Target gagal dihapus: ' + e.message); });
     };
   }
@@ -583,8 +675,12 @@
     if (!raw || !isFinite(value)) return toast('Target harus berupa angka.');
     var editId = q('biTargetFormLayer').dataset.editId || ''; var meta = { id: editId || uuid(), goal: goal, rule: rule, value: value, percent: percent, month: month, year: year, createdAt: new Date().toISOString() };
     var button = q('biSaveTarget'); button.disabled = true; button.textContent = 'Menyimpan...';
+    q('biTargetFormLayer').classList.remove('open'); q('biTargetFormLayer').dataset.editId = '';
+    updateTargetCacheOptimistically(roomId, meta, 'upsert');
+    toast(editId ? 'Target disimpan.' : 'Target dibuat.');
+    returnToRoomChat();
     api('chatSend', [token, { roomId: roomId, body: (editId ? editTargetMessage(meta) : createTargetMessage(meta)), attachments: [] }]).then(function () {
-      q('biTargetFormLayer').classList.remove('open'); q('biTargetFormLayer').dataset.editId = ''; toast(editId ? 'Target berhasil diperbarui.' : 'Target berhasil dibuat.'); cleanTargetMarkersInView(); returnToRoomChat();
+      cleanTargetMarkersInView(); preloadTargets(roomId, true);
     }).catch(function (e) { toast('Target gagal dibuat: ' + e.message); }).finally(function () { button.disabled = false; button.textContent = 'Buat Target'; });
   }
 
@@ -657,7 +753,7 @@
 
   function renderPanel(tab) {
     q('biPanelLayer').dataset.tab = tab; q('biTaskTab').classList.toggle('active', tab === 'task'); q('biTargetTab').classList.toggle('active', tab === 'target');
-    q('biDashList').innerHTML = '<div class="bi-empty">Memuat data...</div>';
+    if (!q('biDashList').children.length) q('biDashList').innerHTML = '<div class="bi-empty">Memuat data...</div>';
     if (tab === 'target') renderTargetPanel(); else renderTaskPanel();
   }
 
@@ -690,18 +786,18 @@
       q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
       q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) { var isDone = t.status !== 'OPEN'; return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + (isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : 'Belum selesai') + '</span></div>' + (!isDone ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>'; }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
       Array.prototype.forEach.call(document.querySelectorAll('[data-task-complete]'), function (b) { b.onclick = function () { q('biPanelLayer').classList.remove('open'); var pin = document.querySelector('#pins [data-complete="' + b.dataset.taskComplete.replace(/"/g, '') + '"]'); if (pin) pin.click(); else toast('Task tidak ditemukan pada sticky list.'); }; });
-      Array.prototype.forEach.call(document.querySelectorAll('[data-task-menu]'), function (b) { b.onclick = function () { q('biPanelLayer').classList.remove('open'); var taskId = b.dataset.taskMenu; var pin = findStickyTaskButton(taskId, 'data-task-menu'); if (pin) pin.click(); else if (typeof global.openTaskManager === 'function') global.openTaskManager(taskId); else if (typeof global.openTaskDetail === 'function') global.openTaskDetail(taskId); else api('chatTaskProgress', [token, taskId]).then(function (data) { showTaskFallbackMenu(data, taskId); }).catch(function (e) { toast(e.message); }); }; });
+      Array.prototype.forEach.call(document.querySelectorAll('[data-task-menu]'), function (b) { b.onclick = function () { var taskId = b.dataset.taskMenu; var pin = findStickyTaskButton(taskId, 'data-task-menu'); if (pin) { pin.click(); } else { api('chatTaskProgress', [token, taskId]).then(function (data) { showTaskFallbackMenu(data, taskId); }).catch(function (e) { toast(e.message); }); } }; });
     }).catch(function (e) { q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>'; });
   }
 
   function observeRooms() {
     if (!q('rooms')) return;
     new MutationObserver(function () { currentRoom = activeRoomId(); if (q('biGroupSearch') && q('biGroupSearch').value) q('biGroupSearch').dispatchEvent(new Event('input')); }).observe(q('rooms'), { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-    document.addEventListener('click', function (e) { var room = e.target.closest && e.target.closest('.room[data-room]'); if (room) { currentRoom = room.getAttribute('data-room'); preloadMentions(currentRoom); } }, true);
+    document.addEventListener('click', function (e) { var room = e.target.closest && e.target.closest('.room[data-room]'); if (room) { currentRoom = room.getAttribute('data-room'); preloadMentions(currentRoom); warmRoomCache(currentRoom); preloadTargets(currentRoom); } }, true);
   }
 
   function boot() {
-    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId) preloadMentions(roomId);}).catch(function () {});
+    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });
