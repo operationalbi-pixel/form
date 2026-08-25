@@ -5,3 +5,14 @@ window.BAKERZIN_CONFIG = Object.freeze({
   // Kosongkan agar alamat dashboard mengikuti lokasi GitHub Pages saat ini.
   SITE_BASE_URL: ''
 });
+
+// Enhancement khusus halaman Chat. Dipisahkan dari chat.html agar perubahan
+// fitur dapat di-rollback tanpa menyentuh engine chat utama.
+try {
+  if (/\/chat\.html$/i.test(window.location.pathname)) {
+    var biChatEnhancement = document.createElement('script');
+    biChatEnhancement.src = 'chat-enhancements.js?v=20260826-target1';
+    biChatEnhancement.async = true;
+    (document.head || document.documentElement).appendChild(biChatEnhancement);
+  }
+} catch (e) {}
