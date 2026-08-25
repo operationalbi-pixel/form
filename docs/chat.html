@@ -8,18 +8,14 @@
 <body>
 <script>
 (function(){
-  function fail(e){
-    document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat.<br><small>"+e+"</small></p>";
-  }
-  function gunzipB64(b64){
-    var bin = Uint8Array.from(atob(b64.replace(/\s/g,'')), function(c){ return c.charCodeAt(0); });
-    if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error('Browser tidak mendukung DecompressionStream'));
-    var stream = new Response(bin).body.pipeThrough(new DecompressionStream('gzip'));
-    return new Response(stream).text();
-  }
-  fetch('chat.gz.b64?v=r3').then(function(r){ return r.text(); }).then(gunzipB64).then(function(html){
-    document.open(); document.write(html); document.close();
-  }).catch(fail);
+  var url = "https://raw.githubusercontent.com/operationalbi-pixel/form/abe0288ab35fee15be3a372cdde8048120c4d5b5/docs/chat.html";
+  fetch(url).then(function(r){return r.text()}).then(function(html){
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(function(e){
+    document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat. Refresh atau hubungi admin.<br><small>"+e+"</small></p>";
+  });
 })();
 </script>
 </body>
