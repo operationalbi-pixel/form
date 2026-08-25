@@ -88,7 +88,7 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
 
 const lostFoundHtml = await text('docs/lost-and-found.html');
 if (!lostFoundHtml.includes('name="viewport"') || !lostFoundHtml.includes('viewport-fit=cover')) failures.push('Lost And Found belum memiliki viewport WebView yang aman');
-if (!lostFoundHtml.includes('src="config.js"') || !lostFoundHtml.includes('src="api-client.js"')) failures.push('Lost And Found belum terhubung ke API BI-Space');
+if (!lostFoundHtml.includes('src="config.js"') || !lostFoundHtml.includes('src="api-client.js')) failures.push('Lost And Found belum terhubung ke API BI-Space');
 if (!lostFoundHtml.includes('localStorage.getItem("bakerzin_session")')) failures.push('Lost And Found belum memakai sesi login BI-Space');
 if (!lostFoundHtml.includes('window.location.href = "index.html"')) failures.push('Lost And Found belum memiliki navigasi kembali ke BI-Space');
 const lostFoundStaticHtml = lostFoundHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
@@ -104,7 +104,7 @@ for (const match of lostFoundHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*
 
 const salesAnalysisHtml = await text('docs/sales-analysis.html');
 if (!salesAnalysisHtml.includes('name="viewport"') || !salesAnalysisHtml.includes('viewport-fit=cover')) failures.push('Analisa Sales belum memiliki viewport WebView yang aman');
-if (!salesAnalysisHtml.includes('src="config.js"') || !salesAnalysisHtml.includes('src="api-client.js"')) failures.push('Analisa Sales belum terhubung ke API BI-Space');
+if (!salesAnalysisHtml.includes('src="config.js"') || !salesAnalysisHtml.includes('src="api-client.js')) failures.push('Analisa Sales belum terhubung ke API BI-Space');
 if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Analisa Sales belum memakai sesi login BI-Space');
 if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
 if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
@@ -121,7 +121,7 @@ for (const match of salesAnalysisHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s
 
 const mppHtml = await text('docs/mpp-schedule.html');
 if (!mppHtml.includes('name="viewport"')) failures.push('MPP · Schedule · Uang Tip belum memiliki viewport responsif');
-if (!mppHtml.includes('src="config.js"') || !mppHtml.includes('src="api-client.js"')) failures.push('MPP · Schedule · Uang Tip belum terhubung ke API BI-Space');
+if (!mppHtml.includes('src="config.js"') || !mppHtml.includes('src="api-client.js')) failures.push('MPP · Schedule · Uang Tip belum terhubung ke API BI-Space');
 if (!mppHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('MPP · Schedule · Uang Tip belum memakai sesi BI-Space');
 if (mppHtml.includes('id="login-view"') || mppHtml.includes('id="inp-nik"')) failures.push('Login lama masih terdapat di MPP · Schedule · Uang Tip');
 if (mppHtml.includes('<?!= include(')) failures.push('MPP · Schedule · Uang Tip masih memiliki include khusus GAS');
@@ -139,7 +139,7 @@ for (const match of mppHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/s
 
 const socializationHtml = await text('docs/sosialisasi.html');
 if (!socializationHtml.includes('viewport-fit=cover')) failures.push('Portal Sosialisasi belum aman untuk notch WebView');
-if (!socializationHtml.includes('src="config.js"') || !socializationHtml.includes('src="api-client.js"')) failures.push('Portal Sosialisasi belum terhubung ke API BI-Space');
+if (!socializationHtml.includes('src="config.js"') || !socializationHtml.includes('src="api-client.js')) failures.push('Portal Sosialisasi belum terhubung ke API BI-Space');
 if (!socializationHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Portal Sosialisasi belum memakai sesi BI-Space');
 if (socializationHtml.includes("view === 'LOGIN'") || socializationHtml.includes('function LoginScreen') || socializationHtml.includes("runServer('loginUser'")) failures.push('Halaman login lama masih aktif di Portal Sosialisasi');
 if (!socializationHtml.includes("location.href = 'index.html'")) failures.push('Portal Sosialisasi belum memiliki tombol kembali ke Dashboard');

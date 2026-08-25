@@ -111,7 +111,7 @@
     }
     defaultMenus().forEach(add);
     var staticPages = [
-      { id: 'static:chat', title: 'Pesan / Chat', icon: 'chat', type: 'static', url: 'chat.html' },
+      { id: 'static:chat', title: 'Pesan / Chat', icon: 'chat', type: 'static', url: 'chat.html?v=20260826-chat110' },
       { id: 'static:stock-card', title: 'Stock Card', icon: 'inventory_2', type: 'static', url: 'stock-card.html' },
       { id: 'static:lost-found', title: 'Lost & Found', icon: 'search', type: 'static', url: 'lost-and-found.html' },
       { id: 'static:mpp', title: 'MPP Schedule', icon: 'calendar_month', type: 'static', url: 'mpp-schedule.html' },

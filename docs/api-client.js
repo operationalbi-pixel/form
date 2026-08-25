@@ -1,6 +1,8 @@
 (function (global) {
   'use strict';
 
+  var CHAT_ASSET_VERSION = '20260826-chat110';
+
   function apiUrl() {
     var value = global.BAKERZIN_CONFIG && global.BAKERZIN_CONFIG.API_URL || '';
     if (!value || value.indexOf('PASTE_') === 0) {
@@ -118,7 +120,7 @@
     }
     function close() { layer.classList.remove('open'); document.documentElement.style.overflow = ''; }
     closeButton.addEventListener('click', close);
-    button.addEventListener('click', function () { if (!frame.src) frame.src = 'chat.html'; syncChatLayerViewport(); layer.classList.add('open'); document.documentElement.style.overflow = 'hidden'; global.setTimeout(syncChatLayerViewport, 40); });
+    button.addEventListener('click', function () { if (!frame.src) frame.src = 'chat.html?v=' + encodeURIComponent(CHAT_ASSET_VERSION); syncChatLayerViewport(); layer.classList.add('open'); document.documentElement.style.overflow = 'hidden'; global.setTimeout(syncChatLayerViewport, 40); });
     global.addEventListener('resize', syncChatLayerViewport);
     if (global.visualViewport) {
       global.visualViewport.addEventListener('resize', syncChatLayerViewport);
