@@ -6,17 +6,35 @@
   <title>Pesan · BI-Space</title>
 </head>
 <body>
-<script src="chat-reply-bundle.js"></script>
 <script>
-/* loader rebuilt: see patches below */
 (function(){
-  var url = "https://raw.githubusercontent.com/operationalbi-pixel/form/fdbc72cb5fc844f28eef6bc2977feb94c966033e/docs/chat.html";
-  var patches = [];
-  function add(a,b){patches.push([a,b])}
-  // sticky + task + realtime patches loaded from previous version via fetch of self - simplified: inline critical reply-only if full too large
-  fetch('chat.html').catch(function(){});
+  var baseUrl = "https://raw.githubusercontent.com/operationalbi-pixel/form/fdbc72cb5fc844f28eef6bc2977feb94c966033e/docs/chat.html";
+  var patchUrl = "chat-patches.js?v=20260825-reply1";
+  function apply(html, patches) {
+    for (var i = 0; i < patches.length; i++) {
+      if (html.indexOf(patches[i][0]) !== -1) html = html.split(patches[i][0]).join(patches[i][1]);
+    }
+    return html;
+  }
+  function fail(e) {
+    document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat. Refresh atau hubungi admin.<br><small>"+e+"</small></p>";
+  }
+  Promise.all([
+    fetch(baseUrl).then(function(r){ return r.text(); }),
+    fetch(patchUrl).then(function(r){ return r.text(); })
+  ]).then(function(results){
+    var html = results[0];
+    var patches;
+    try {
+      (0, eval)(results[1]);
+      patches = window.__CHAT_PATCHES || [];
+    } catch (e) { fail(e); return; }
+    html = apply(html, patches);
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(fail);
 })();
 </script>
-<p style="font-family:sans-serif;padding:24px">Updating...</p>
 </body>
 </html>
