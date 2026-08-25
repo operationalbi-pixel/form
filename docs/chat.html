@@ -9,30 +9,32 @@
 <script>
 (function(){
   var baseUrl = "https://raw.githubusercontent.com/operationalbi-pixel/form/fdbc72cb5fc844f28eef6bc2977feb94c966033e/docs/chat.html";
-  var patchUrl = "chat-patches.js?v=20260825-reply1";
-  function apply(html, patches) {
-    for (var i = 0; i < patches.length; i++) {
+  var chunkUrls = ["chat-patch-0.txt?v=r2","chat-patch-1.txt?v=r2","chat-patch-2.txt?v=r2"];
+  function b64ToUtf8(b64){
+    var bin = atob(b64.replace(/\s/g,''));
+    try { return decodeURIComponent(escape(bin)); } catch(e) {
+      var out = '';
+      for (var i=0;i<bin.length;i++) out += String.fromCharCode(bin.charCodeAt(i));
+      return out;
+    }
+  }
+  function apply(html, patches){
+    for (var i=0;i<patches.length;i++){
       if (html.indexOf(patches[i][0]) !== -1) html = html.split(patches[i][0]).join(patches[i][1]);
     }
     return html;
   }
-  function fail(e) {
+  function fail(e){
     document.body.innerHTML = "<p style=\"font-family:sans-serif;padding:24px\">Gagal memuat chat. Refresh atau hubungi admin.<br><small>"+e+"</small></p>";
   }
-  Promise.all([
-    fetch(baseUrl).then(function(r){ return r.text(); }),
-    fetch(patchUrl).then(function(r){ return r.text(); })
-  ]).then(function(results){
-    var html = results[0];
-    var patches;
-    try {
-      (0, eval)(results[1]);
-      patches = window.__CHAT_PATCHES || [];
-    } catch (e) { fail(e); return; }
+  Promise.all([fetch(baseUrl).then(function(r){return r.text()})].concat(chunkUrls.map(function(u){return fetch(u).then(function(r){return r.text()})})))
+  .then(function(parts){
+    var html = parts[0];
+    var code = b64ToUtf8(parts[1]) + b64ToUtf8(parts[2]) + b64ToUtf8(parts[3]);
+    (0, eval)(code);
+    var patches = window.__CHAT_PATCHES || [];
     html = apply(html, patches);
-    document.open();
-    document.write(html);
-    document.close();
+    document.open(); document.write(html); document.close();
   }).catch(fail);
 })();
 </script>
