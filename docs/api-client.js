@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var CHAT_ASSET_VERSION = '20260826-chat110';
+  var CHAT_ASSET_VERSION = '20260826-target4-mobile1';
 
   function apiUrl() {
     var value = global.BAKERZIN_CONFIG && global.BAKERZIN_CONFIG.API_URL || '';
