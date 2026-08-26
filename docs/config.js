@@ -11,7 +11,7 @@ window.BAKERZIN_CONFIG = Object.freeze({
 try {
   if (/\/chat\.html$/i.test(window.location.pathname)) {
     var biChatEnhancement = document.createElement('script');
-    biChatEnhancement.src = 'chat-enhancements.js?v=20260826-target4-mobile2';
+    biChatEnhancement.src = 'chat-enhancements.js?v=20260826-target4-mobile3';
     biChatEnhancement.async = true;
     (document.head || document.documentElement).appendChild(biChatEnhancement);
   }

@@ -678,7 +678,7 @@
     try {
       if (global.parent && global.parent !== global && global.parent.document) {
         var outerClose = global.parent.document.getElementById('biChatLayerClose');
-        if (outerClose && global.matchMedia('(max-width:720px)').matches) outerClose.style.display = 'none';
+        if (outerClose) outerClose.style.display = 'none';
       }
     } catch (e) {}
   }
