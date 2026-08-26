@@ -14,6 +14,8 @@
   var roomCache = {};
   var targetCache = {};
   var targetCachePromise = {};
+  var taskRefreshPromise = {};
+  var taskPanelRequest = 0;
   var CACHE_TTL = 45000;
 
   function svgIcon(name) {
@@ -98,13 +100,15 @@
 
   function getCachedRoomData(roomId) {
     var cached = roomCache[roomId];
-    return cached && (cacheNow() - cached.at < CACHE_TTL) ? cached.data : null;
+    return cached ? cached.data : null;
   }
 
   function buildRoomTaskCache(roomId) {
     if (!bootstrap) return null;
+    var previous = roomCache[roomId];
     var tasks = (bootstrap.tasks || []).filter(function (t) { return t.roomId === roomId; });
-    var data = { open: tasks.slice(), history: [] };
+    var history = previous && previous.data && previous.data.history || [];
+    var data = { open: tasks.slice(), history: history.slice() };
     roomCache[roomId] = { at: cacheNow(), data: data };
     return data;
   }
@@ -163,6 +167,18 @@
 
   function refreshBootstrap() {
     return api('chatBootstrap', [token]).then(function (data) { bootstrap = data; (data.rooms||[]).forEach(function(r){ buildRoomTaskCache(r.id); }); return data; });
+  }
+
+  function applyHostTaskCache(tasks) {
+    bootstrap = bootstrap || { rooms: [], tasks: [] };
+    bootstrap.tasks = (tasks || []).slice();
+    var roomIds = {};
+    (bootstrap.rooms || []).forEach(function (room) { roomIds[room.id] = true; });
+    bootstrap.tasks.forEach(function (task) { if (task.roomId) roomIds[task.roomId] = true; });
+    Object.keys(roomIds).forEach(buildRoomTaskCache);
+    if (q('biPanelLayer') && q('biPanelLayer').classList.contains('open') && q('biPanelLayer').dataset.tab === 'task') {
+      renderTaskPanel(false);
+    }
   }
 
   function injectStyles() {
@@ -483,6 +499,40 @@
     if (pin) setTimeout(function () { pin.click(); }, 50);
   }
 
+  function promoteTaskModalChain() {
+    ['taskManageModal','taskModal','deleteTaskModal','completeModal','taskInfoModal','taskDetailModal'].forEach(function (id) {
+      var modal = q(id);
+      if (modal) modal.style.zIndex = '130';
+    });
+  }
+
+  function openTaskManagerFromPanel(taskId) {
+    promoteTaskModalChain();
+    if (global.BI_CHAT_TASK_MANAGER && typeof global.BI_CHAT_TASK_MANAGER.open === 'function') {
+      global.BI_CHAT_TASK_MANAGER.open(taskId);
+      return;
+    }
+    var pin = findStickyTaskButton(taskId, 'data-task-menu');
+    if (pin) {
+      pin.click();
+      return;
+    }
+    api('chatTaskProgress', [token, taskId]).then(function (data) {
+      showTaskFallbackMenu(data, taskId);
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  function openTaskCompleteFromPanel(taskId) {
+    promoteTaskModalChain();
+    if (global.BI_CHAT_TASK_MANAGER && typeof global.BI_CHAT_TASK_MANAGER.complete === 'function') {
+      global.BI_CHAT_TASK_MANAGER.complete(taskId);
+      return;
+    }
+    var pin = findStickyTaskButton(taskId, 'data-complete');
+    if (pin) pin.click();
+    else toast('Task tidak ditemukan pada sticky list.');
+  }
+
   function stopDirectCamera() {
     if (activeCameraStream) {
       activeCameraStream.getTracks().forEach(function (track) { try { track.stop(); } catch (e) {} });
@@ -774,20 +824,47 @@
     }).catch(function (e) { q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>'; });
   }
 
-  function renderTaskPanel() {
+  function renderTaskSnapshot(roomId, month, year, data) {
+    data = data || { open: [], history: [] };
+    var open = (data.open || []).map(function (t) { return Object.assign({}, t, { status: 'OPEN' }); });
+    var tasks = open.concat(data.history || []).filter(function (t) { var d = new Date(t.createdAt || 0); return !isNaN(d.getTime()) && d.getMonth() + 1 === month && d.getFullYear() === year; });
+    var uniq = {}, merged = []; tasks.forEach(function (t) { if (!uniq[t.id]) { uniq[t.id] = true; merged.push(t); } }); tasks = merged;
+    tasks.sort(function (a, b) { var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
+    var done = tasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = tasks.length ? Math.round(done * 100 / tasks.length) : 0;
+    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
+    q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) { var isDone = t.status !== 'OPEN'; return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + (isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : 'Belum selesai') + '</span></div>' + (!isDone ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>'; }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
+    Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-task-complete]'), function (b) {
+      b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openTaskCompleteFromPanel(b.dataset.taskComplete); };
+    });
+    Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-task-menu]'), function (b) {
+      b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openTaskManagerFromPanel(b.dataset.taskMenu); };
+    });
+  }
+
+  function renderCurrentTaskPanel(roomId) {
+    if (!q('biPanelLayer').classList.contains('open') || q('biPanelLayer').dataset.tab !== 'task' || activeRoomId() !== roomId) return;
+    renderTaskSnapshot(roomId, Number(q('biDashMonth').value), Number(q('biDashYear').value), getCachedRoomData(roomId) || buildRoomTaskCache(roomId));
+  }
+
+  function refreshTaskRoomInBackground(roomId) {
+    if (taskRefreshPromise[roomId]) return taskRefreshPromise[roomId];
+    var openRequest = refreshBootstrap().then(function () { renderCurrentTaskPanel(roomId); });
+    var historyRequest = api('chatRoomDetails', [token, roomId]).then(function (details) {
+      var cached = getCachedRoomData(roomId) || buildRoomTaskCache(roomId) || { open: [], history: [] };
+      cached.history = (details.history || []).slice();
+      roomCache[roomId] = { at: cacheNow(), data: cached };
+      renderCurrentTaskPanel(roomId);
+    });
+    taskRefreshPromise[roomId] = Promise.allSettled([openRequest, historyRequest]).finally(function () { delete taskRefreshPromise[roomId]; });
+    return taskRefreshPromise[roomId];
+  }
+
+  function renderTaskPanel(refreshInBackground) {
     var roomId = activeRoomId(), month = Number(q('biDashMonth').value), year = Number(q('biDashYear').value);
-    Promise.all([refreshBootstrap(), api('chatRoomDetails', [token, roomId])]).then(function (all) {
-      var open = (all[0].tasks || []).filter(function (t) { return t.roomId === roomId; }).map(function (t) { return Object.assign({}, t, { status: 'OPEN' }); });
-      var history = all[1].history || [];
-      var tasks = open.concat(history).filter(function (t) { var d = new Date(t.createdAt || 0); return !isNaN(d.getTime()) && d.getMonth() + 1 === month && d.getFullYear() === year; });
-      var uniq = {}, merged = []; tasks.forEach(function (t) { if (!uniq[t.id]) { uniq[t.id] = true; merged.push(t); } }); tasks = merged;
-      tasks.sort(function (a, b) { var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
-      var done = tasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = tasks.length ? Math.round(done * 100 / tasks.length) : 0;
-      q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
-      q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) { var isDone = t.status !== 'OPEN'; return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + (isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : 'Belum selesai') + '</span></div>' + (!isDone ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>'; }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
-      Array.prototype.forEach.call(document.querySelectorAll('[data-task-complete]'), function (b) { b.onclick = function () { q('biPanelLayer').classList.remove('open'); var pin = document.querySelector('#pins [data-complete="' + b.dataset.taskComplete.replace(/"/g, '') + '"]'); if (pin) pin.click(); else toast('Task tidak ditemukan pada sticky list.'); }; });
-      Array.prototype.forEach.call(document.querySelectorAll('[data-task-menu]'), function (b) { b.onclick = function () { var taskId = b.dataset.taskMenu; var pin = findStickyTaskButton(taskId, 'data-task-menu'); if (pin) { pin.click(); } else { api('chatTaskProgress', [token, taskId]).then(function (data) { showTaskFallbackMenu(data, taskId); }).catch(function (e) { toast(e.message); }); } }; });
-    }).catch(function (e) { q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>'; });
+    var request = ++taskPanelRequest;
+    var cached = getCachedRoomData(roomId) || buildRoomTaskCache(roomId);
+    if (request === taskPanelRequest) renderTaskSnapshot(roomId, month, year, cached || { open: [], history: [] });
+    if (refreshInBackground !== false) refreshTaskRoomInBackground(roomId).catch(function () {});
   }
 
   function observeRooms() {
@@ -797,7 +874,7 @@
   }
 
   function boot() {
-    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
+    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });
