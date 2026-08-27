@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var CHAT_ASSET_VERSION = '20260826-target4-mobile3';
+  var CHAT_ASSET_VERSION = '20260827-target4-mobile4';
 
   function apiUrl() {
     var value = global.BAKERZIN_CONFIG && global.BAKERZIN_CONFIG.API_URL || '';
@@ -127,8 +127,9 @@
       global.visualViewport.addEventListener('scroll', syncChatLayerViewport);
     }
     layer.addEventListener('click', function (event) { if (event.target === layer) close(); });
-    global.addEventListener('message', function (event) { if (event.data && event.data.biChatClose) close(); });
-    function refreshBadge() { call('chatBootstrap', [token]).then(function (response) { if (!response || !response.ok) return; var count = (response.data.rooms || []).reduce(function (sum, room) { return sum + Number(room.unread || 0); }, 0); var badge = document.getElementById('biChatBadge'); if (!badge) return; badge.textContent = count > 99 ? '99+' : String(count); badge.style.display = count ? 'grid' : 'none'; }).catch(function () {}); }
+    function setBadgeCount(value) { var count = Math.max(0, Number(value || 0)); var badge = document.getElementById('biChatBadge'); if (!badge) return; badge.textContent = count > 99 ? '99+' : String(count); badge.style.display = count ? 'grid' : 'none'; }
+    global.addEventListener('message', function (event) { if (event.source !== frame.contentWindow || !event.data) return; if (event.data.biChatClose) close(); if (Object.prototype.hasOwnProperty.call(event.data, 'biChatUnread')) setBadgeCount(event.data.biChatUnread); });
+    function refreshBadge() { call('chatBootstrap', [token]).then(function (response) { if (!response || !response.ok) return; setBadgeCount((response.data.rooms || []).reduce(function (sum, room) { return sum + Number(room.unread || 0); }, 0)); }).catch(function () {}); }
     refreshBadge(); global.setInterval(refreshBadge, 30000);
   }
 
