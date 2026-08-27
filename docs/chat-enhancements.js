@@ -16,6 +16,7 @@
   var targetCachePromise = {};
   var taskRefreshPromise = {};
   var taskPanelRequest = 0;
+  var panelRenderRequest = 0;
   var CACHE_TTL = 45000;
 
   function svgIcon(name) {
@@ -196,7 +197,7 @@
       '.bi-goodjob{text-align:center}.bi-thumb{font-size:58px;display:block;animation:biThumb .65s ease both}.bi-goodjob h3{font-size:24px;margin:8px 0 4px;color:#197149}.bi-goodjob p{font-size:12px;color:var(--muted);line-height:1.5}@keyframes biThumb{0%{transform:scale(.25) rotate(-18deg);opacity:0}65%{transform:scale(1.18) rotate(8deg);opacity:1}100%{transform:scale(1) rotate(0)}}',
       '.message.system .bi-system-reply{display:grid!important}.bi-system-reply{width:24px;height:22px;border:0;background:transparent;color:var(--wine);padding:2px;cursor:pointer;place-items:center}.bi-system-reply svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
       '.top-copy{min-width:0}.top{gap:8px}.header-action,.top .close,.back{flex:0 0 auto}.group-title{min-width:0}.composer{position:relative}.reply-bar{flex:0 0 auto}',
-      '@media(max-width:720px){.top #roomTitle{font-size:30px!important;line-height:1.08!important;font-weight:800!important}.bi-panel-layer,.bi-form-layer{padding:0;align-items:flex-end}.bi-panel,.bi-form{border-radius:22px 22px 0 0;max-height:calc(92dvh - max(30px,env(safe-area-inset-top)))}.bi-panel-body{padding:13px 12px 18px}.bi-row{padding:10px}.top{gap:5px!important;padding-left:8px!important;padding-right:8px!important}.group-title{font-size:13px!important}.header-action,.top .close{width:32px!important;height:32px!important}.composer{gap:6px!important}.attach-btn,.send-btn{width:42px!important;height:42px!important;flex:0 0 auto}.file-strip{z-index:8}}'
+      '@media(max-width:720px){.top #roomTitle{font-size:30px!important;line-height:1.08!important;font-weight:800!important}.bi-panel-layer,.bi-form-layer{padding:0;align-items:flex-end}.bi-panel,.bi-form{border-radius:22px 22px 0 0;max-height:calc(92dvh - max(30px,env(safe-area-inset-top)))}.bi-panel-body{padding:13px 12px 18px}.bi-row{padding:10px}.top{gap:5px!important;padding-left:8px!important;padding-right:8px!important}.group-title{font-size:13px!important}.top #chatSearch,.top #roomCreateTask,.top .close{width:40px!important;height:40px!important;min-width:40px!important}.composer{gap:6px!important}.attach-btn,.send-btn{width:42px!important;height:42px!important;flex:0 0 auto}.file-strip{z-index:8}}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -802,14 +803,23 @@
   }
 
   function renderPanel(tab) {
-    q('biPanelLayer').dataset.tab = tab; q('biTaskTab').classList.toggle('active', tab === 'task'); q('biTargetTab').classList.toggle('active', tab === 'target');
-    if (!q('biDashList').children.length) q('biDashList').innerHTML = '<div class="bi-empty">Memuat data...</div>';
-    if (tab === 'target') renderTargetPanel(); else renderTaskPanel();
+    var request = ++panelRenderRequest;
+    q('biPanelLayer').dataset.tab = tab;
+    q('biTaskTab').classList.toggle('active', tab === 'task');
+    q('biTargetTab').classList.toggle('active', tab === 'target');
+    q('biDashSummary').innerHTML = '';
+    q('biDashList').innerHTML = '<div class="bi-empty">Memuat ' + (tab === 'target' ? 'Target' : 'Task') + '...</div>';
+    if (tab === 'target') renderTargetPanel(request); else renderTaskPanel();
   }
 
-  function renderTargetPanel() {
+  function panelRenderIsCurrent(request, tab) {
+    return request === panelRenderRequest && q('biPanelLayer').classList.contains('open') && q('biPanelLayer').dataset.tab === tab;
+  }
+
+  function renderTargetPanel(request) {
     var month = Number(q('biDashMonth').value), year = Number(q('biDashYear').value);
     fetchTargets(month, year).then(function (targets) {
+      if (!panelRenderIsCurrent(request, 'target')) return;
       targets.sort(function (a, b) { var ad = !!a.completion, bd = !!b.completion; if (ad !== bd) return ad ? 1 : -1; return String(a.goal).localeCompare(String(b.goal)); });
       var done = targets.filter(function (t) { return !!t.completion; }).length, percent = targets.length ? Math.round(done * 100 / targets.length) : 0;
       q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Target complete · ' + done + ' dari ' + targets.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
@@ -821,7 +831,10 @@
       }).join('') : '<div class="bi-empty">Belum ada Target pada ' + monthName(month) + ' ' + year + '.</div>';
       Array.prototype.forEach.call(document.querySelectorAll('[data-target-index]'), function (b) { b.onclick = function () { startTargetCompletion(targets[Number(b.dataset.targetIndex)]); }; });
       Array.prototype.forEach.call(document.querySelectorAll('[data-target-menu]'), function (b) { b.onclick = function () { openTargetMenu(targets[Number(b.dataset.targetMenu)], b); }; });
-    }).catch(function (e) { q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>'; });
+    }).catch(function (e) {
+      if (!panelRenderIsCurrent(request, 'target')) return;
+      q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>';
+    });
   }
 
   function renderTaskSnapshot(roomId, month, year, data) {
