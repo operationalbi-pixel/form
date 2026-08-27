@@ -187,7 +187,7 @@
     var style = document.createElement('style');
     style.id = 'biChatEnhanceStyle';
     style.textContent = [
-      '.bi-group-search{position:relative;margin:0 0 10px}.bi-group-search input{width:100%;height:42px;border:1px solid var(--line);border-radius:13px;padding:0 12px 0 37px;outline:none;background:#fff}.bi-group-search:before{content:"⌕";position:absolute;left:13px;top:8px;color:var(--muted);font-size:20px}',
+      '.bi-group-search-row{display:grid;grid-template-columns:minmax(0,1fr) 42px;gap:8px;margin:0 0 10px}.bi-group-search{position:relative;margin:0}.bi-group-search input{width:100%;height:42px;border:1px solid var(--line);border-radius:13px;padding:0 12px 0 37px;outline:none;background:#fff}.bi-group-search:before{content:"⌕";position:absolute;left:13px;top:8px;color:var(--muted);font-size:20px}.bi-group-add{width:42px;height:42px;border:0;border-radius:13px;background:var(--wine);color:#fff;font-size:24px;line-height:1;cursor:pointer;display:grid;place-items:center}.bi-member-note{margin:4px 0 10px;color:var(--muted);font-size:10px}.bi-member-results,.bi-selected-members{display:grid;gap:6px;max-height:190px;overflow:auto}.bi-member-option,.bi-selected-member{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:11px;padding:8px 9px;background:#fff}.bi-member-copy{flex:1;min-width:0}.bi-member-copy strong,.bi-member-copy span{display:block}.bi-member-copy strong{font-size:11px}.bi-member-copy span{font-size:9px;color:var(--muted)}.bi-member-option button,.bi-selected-member button{width:30px;height:30px;border:0;border-radius:9px;background:#fff0f3;color:var(--wine);cursor:pointer;font-weight:800}.bi-selected-members{margin-top:7px}.bi-member-empty{padding:14px;text-align:center;color:var(--muted);font-size:10px}',
       '.bi-pop{position:fixed;z-index:90;min-width:190px;padding:6px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 16px 45px rgba(45,24,30,.2);display:none}.bi-pop.open{display:grid;gap:3px}.bi-pop button{border:0;background:#fff;border-radius:10px;padding:10px 12px;text-align:left;cursor:pointer;color:var(--ink);font-weight:600}.bi-pop button:hover{background:#fff0f3;color:var(--wine)}.bi-attach-option{display:flex!important;align-items:center;gap:9px}',
       '.bi-panel-layer{position:fixed;inset:0;z-index:90;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-panel-layer.open{display:flex}.bi-panel{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:hidden;background:#fff;border-radius:22px;box-shadow:0 25px 70px rgba(48,19,27,.35);display:flex;flex-direction:column}.bi-panel-head{display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--line)}.bi-panel-head strong{font-size:18px;line-height:1.25;font-weight:700;flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.bi-x{width:36px;height:36px;border:1px solid var(--line);border-radius:11px;background:#fff;cursor:pointer}.bi-tabs{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}.bi-tab{border:0;background:#fff;padding:12px;font-weight:800;color:var(--muted);cursor:pointer}.bi-tab.active{color:var(--wine);box-shadow:inset 0 -2px var(--wine)}.bi-panel-body{padding:16px 18px 20px;overflow-y:auto;overflow-x:hidden;min-width:0}.bi-monthbar{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:14px}.bi-monthbar select{border:1px solid var(--line);border-radius:11px;padding:9px 10px;background:#fff}.bi-refresh{border:0;border-radius:11px;background:#f4edef;color:var(--wine);padding:0 12px;font-weight:800;cursor:pointer}',
       '.bi-summary{display:block;padding:13px 14px;border:1px solid #f0d8de;border-radius:15px;background:#fff8fa;margin-bottom:12px}.bi-summary strong{font-size:24px;color:var(--wine);display:block}.bi-summary span{font-size:11px;color:var(--muted)}.bi-progress{height:8px;border-radius:8px;background:#eee7e9;overflow:hidden;margin-top:8px}.bi-progress i{display:block;height:100%;background:linear-gradient(90deg,var(--wine-dark),var(--wine));border-radius:inherit}.bi-list{display:grid;gap:8px;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:13px;background:#fff;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row.done{opacity:.72;background:#fafafa}.bi-row-copy{flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden}.bi-row-copy strong{display:block;font-size:12px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-copy span{display:block;font-size:10px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-action{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:#fff;cursor:pointer;display:grid;place-items:center;flex:0 0 auto}.bi-row-action.complete{background:#1fa361;color:#fff;border-color:#1a8a53}.bi-row-action.menu{color:var(--wine);font-size:18px}.bi-empty{text-align:center;padding:30px 10px;color:var(--muted);font-size:12px}',
@@ -217,15 +217,45 @@
     if (!create || q('biGroupSearch')) return;
     create.style.display = 'none';
     var wrap = document.createElement('div');
-    wrap.className = 'bi-group-search';
-    wrap.innerHTML = '<input id="biGroupSearch" type="search" placeholder="Cari group..." autocomplete="off">';
+    wrap.className = 'bi-group-search-row';
+    wrap.innerHTML = '<div class="bi-group-search"><input id="biGroupSearch" type="search" placeholder="Cari group..." autocomplete="off"></div><button type="button" class="bi-group-add" id="biCreateGroupButton" aria-label="Create Group" title="Create Group">+</button>';
     create.parentNode.insertBefore(wrap, create.nextSibling);
     q('biGroupSearch').addEventListener('input', function () {
       var term = this.value.trim().toLowerCase();
-      Array.prototype.forEach.call(document.querySelectorAll('#rooms .room'), function (room) {
-        room.style.display = !term || room.textContent.toLowerCase().indexOf(term) >= 0 ? '' : 'none';
-      });
+      Array.prototype.forEach.call(document.querySelectorAll('#rooms .room'), function (room) { room.style.display = !term || room.textContent.toLowerCase().indexOf(term) >= 0 ? '' : 'none'; });
     });
+    var layer = document.createElement('div');
+    layer.id = 'biCreateGroupLayer'; layer.className = 'bi-form-layer';
+    layer.innerHTML = '<div class="bi-form"><div class="bi-form-head"><h3>Create Group</h3><button type="button" class="bi-x" id="biCreateGroupClose">✕</button></div><div class="bi-field"><label>NAMA GROUP</label><input id="biGroupName" maxlength="80" placeholder="Contoh: Tim Opening"></div><div class="bi-field"><label>TAMBAHKAN NAMA</label><input id="biMemberSearch" type="search" placeholder="Cari nama atau NIK..." autocomplete="off"><div class="bi-member-note">Anda otomatis menjadi anggota group.</div><div class="bi-member-results" id="biMemberResults"><div class="bi-member-empty">Memuat daftar nama...</div></div></div><div class="bi-field"><label>ANGGOTA YANG DITAMBAHKAN</label><div class="bi-selected-members" id="biSelectedMembers"><div class="bi-member-empty">Belum ada nama ditambahkan.</div></div></div><div class="bi-actions"><button type="button" class="bi-secondary" id="biCreateGroupCancel">Batal</button><button type="button" class="bi-primary" id="biCreateGroupSubmit">Create Group</button></div></div>';
+    document.body.appendChild(layer);
+    var people = [], selected = [];
+    function renderSelected() {
+      q('biSelectedMembers').innerHTML = selected.length ? selected.map(function (person) { return '<div class="bi-selected-member"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(person.nik)+' · '+esc(person.outlet)+'</span></div><button type="button" data-member-remove="'+esc(person.nik)+'" aria-label="Hapus '+esc(person.name)+'">✕</button></div>'; }).join('') : '<div class="bi-member-empty">Belum ada nama ditambahkan.</div>';
+      Array.prototype.forEach.call(q('biSelectedMembers').querySelectorAll('[data-member-remove]'), function (button) { button.onclick = function () { selected = selected.filter(function (person) { return person.nik !== button.dataset.memberRemove; }); renderSelected(); renderResults(); }; });
+    }
+    function renderResults() {
+      var term = q('biMemberSearch').value.trim().toLowerCase(), selectedMap = {};
+      selected.forEach(function (person) { selectedMap[person.nik] = true; });
+      var visible = people.filter(function (person) { return !selectedMap[person.nik] && (!term || String(person.name||'').toLowerCase().indexOf(term)>=0 || String(person.nik||'').toLowerCase().indexOf(term)>=0 || String(person.outlet||'').toLowerCase().indexOf(term)>=0); }).slice(0,30);
+      q('biMemberResults').innerHTML = visible.length ? visible.map(function (person) { return '<div class="bi-member-option"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(person.nik)+' · '+esc(person.outlet)+'</span></div><button type="button" data-member-add="'+esc(person.nik)+'" aria-label="Tambah '+esc(person.name)+'">+</button></div>'; }).join('') : '<div class="bi-member-empty">Nama tidak ditemukan.</div>';
+      Array.prototype.forEach.call(q('biMemberResults').querySelectorAll('[data-member-add]'), function (button) { button.onclick = function () { var person = people.filter(function (item) { return item.nik === button.dataset.memberAdd; })[0]; if (person) selected.push(person); renderSelected(); renderResults(); }; });
+    }
+    function closeCreateGroup() { layer.classList.remove('open'); }
+    q('biCreateGroupButton').onclick = function () {
+      q('biGroupName').value = ''; q('biMemberSearch').value = ''; selected = []; renderSelected(); layer.classList.add('open');
+      q('biMemberResults').innerHTML = '<div class="bi-member-empty">Memuat daftar nama...</div>';
+      api('chatMentions', [token, 'GENERAL', '']).then(function (data) { people = (data.people || []).slice().sort(function (a,b) { return String(a.name||'').localeCompare(String(b.name||''), 'id'); }); renderResults(); }).catch(function (error) { q('biMemberResults').innerHTML = '<div class="bi-member-empty">'+esc(error.message)+'</div>'; });
+      setTimeout(function () { q('biGroupName').focus(); }, 60);
+    };
+    q('biMemberSearch').oninput = renderResults; q('biCreateGroupClose').onclick = closeCreateGroup; q('biCreateGroupCancel').onclick = closeCreateGroup;
+    layer.onclick = function (event) { if (event.target === layer) closeCreateGroup(); };
+    q('biCreateGroupSubmit').onclick = function () {
+      var title = q('biGroupName').value.trim(), button = this;
+      if (title.length < 2) { toast('Nama group minimal 2 karakter.'); return; }
+      if (!selected.length) { toast('Tambahkan minimal satu nama anggota.'); return; }
+      button.disabled = true; button.textContent = 'Membuat...';
+      api('chatCreateRoom', [token, { title: title, memberNiks: selected.map(function (person) { return person.nik; }) }]).then(function (data) { toast('Group berhasil dibuat.'); var next = new URL(location.href); next.searchParams.set('room', data.room.id); setTimeout(function () { location.href = next.toString(); }, 350); }).catch(function (error) { toast(error.message); }).finally(function () { button.disabled = false; button.textContent = 'Create Group'; });
+    };
   }
 
   function installRoomCreateMenu() {
