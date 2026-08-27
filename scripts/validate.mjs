@@ -438,7 +438,7 @@ if (!backend.includes('Persist chat notification failed') || !chatHtml.includes(
 if (!chatHtml.includes('id="taskInfoModal"') || !chatHtml.includes("api('chatTaskProgress'")) failures.push('Informasi progress task per outlet/person belum tersedia');
 if (!chatHtml.includes('id="chatSearch"') || !chatHtml.includes("api('chatSearch'")) failures.push('Pencarian pesan per grup belum tersedia');
 if (!chatHtml.includes('id="groupModal"') || !chatHtml.includes("api('chatRoomDetails'") || !chatHtml.includes("api('chatUpdateRoom'")) failures.push('Edit keterangan grup dan history task belum tersedia');
-if (!backend.includes("chat-schema-v3") || !backend.includes("'DESCRIPTION', 'UPDATED_BY_NIK'")) failures.push('Migrasi keterangan grup chat belum tersedia');
+if (!backend.includes("chat-schema-v4") || !backend.includes("'DESCRIPTION', 'UPDATED_BY_NIK'") || !backend.includes("MEMBERS: ['ROOM_ID', 'NIK'")) failures.push('Migrasi schema grup chat dan anggota belum tersedia');
 
 // ---------- Dashboard fokus Informasi terbaru ----------
 const dashboardHtml = await text('docs/index.html');
