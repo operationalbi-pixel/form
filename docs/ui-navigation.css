@@ -1,0 +1,38 @@
+/* Shared page-level navigation for BI-Space. Internal drill-down back controls keep their native icon. */
+.dashboard-back-standard {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  width: auto !important;
+  min-width: max-content !important;
+  min-height: 40px !important;
+  padding: 0 12px !important;
+  border: 1px solid #eadde0 !important;
+  border-radius: 13px !important;
+  background: #fff !important;
+  color: #a91431 !important;
+  font-family: "DM Sans", "Plus Jakarta Sans", "Segoe UI", sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease !important;
+}
+
+.dashboard-back-standard:hover,
+.dashboard-back-standard:focus-visible {
+  border-color: #dcb8c0 !important;
+  background: #fff3f5 !important;
+  color: #8f0d28 !important;
+}
+
+.dashboard-back-standard:focus-visible {
+  outline: 3px solid rgba(169, 20, 49, .18) !important;
+  outline-offset: 2px !important;
+}

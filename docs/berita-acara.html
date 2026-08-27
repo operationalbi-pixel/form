@@ -18,10 +18,11 @@
     .back{width:40px;height:40px;display:grid;place-items:center;border:1px solid var(--line);border-radius:12px;color:var(--red);background:#fff;text-decoration:none;font-size:22px;font-weight:700}.title{min-width:0}.title strong,.title span{display:block}.title strong{font-size:13px}.title span{margin-top:2px;color:#8b7f83;font-size:9px}.frame-wrap{position:relative;min-height:0;overflow:hidden}.frame{width:100%;height:100%;min-height:0;display:block;border:0;background:#fff}.state{position:absolute;z-index:2;inset:0;display:grid;place-items:center;padding:24px;background:#f7f4f5}.card{max-width:520px;padding:26px;border:1px solid var(--line);border-radius:18px;background:#fff;text-align:center;box-shadow:0 16px 45px rgba(70,30,40,.08)}.spinner{width:36px;height:36px;margin:0 auto 14px;border:4px solid #f2dfe3;border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite}.card strong{display:block;font-size:15px}.card p{margin:8px 0 0;color:#82767a;font-size:11px;line-height:1.6}.retry{margin-top:16px;padding:10px 14px;border:0;border-radius:10px;color:#fff;background:var(--red);font-weight:750}@keyframes spin{to{transform:rotate(360deg)}}
     @media(max-width:600px){.bar{min-height:52px;padding:6px 10px}.back{width:38px;height:38px}.title strong{font-size:12px}}
   </style>
+  <link rel="stylesheet" href="ui-navigation.css?v=20260827-nav1">
 </head>
 <body>
   <main class="shell">
-    <header class="bar"><a class="back" href="index.html" aria-label="Kembali ke BI-Space">‹</a><div class="title"><strong>Berita Acara Digital</strong><span>Identitas mengikuti akun BI-Space</span></div></header>
+    <header class="bar"><a class="back dashboard-back-standard" href="index.html" aria-label="Kembali ke Dashboard" title="Kembali ke Dashboard">← Dashboard</a><div class="title"><strong>Berita Acara Digital</strong><span>Identitas mengikuti akun BI-Space</span></div></header>
     <section class="frame-wrap">
       <div id="state" class="state"><div class="card"><div class="spinner"></div><strong>Membuka Berita Acara...</strong><p>Memvalidasi sesi dan data karyawan dari EMP_LIST.</p></div></div>
       <iframe id="beritaAcaraFrame" class="frame" title="Sistem Berita Acara Digital" allow="camera; microphone; clipboard-write" referrerpolicy="strict-origin"></iframe>

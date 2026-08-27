@@ -318,6 +318,7 @@
     .lf-boot-spinner { width: 38px; height: 38px; margin: 0 auto 16px; border: 4px solid #f2d9df; border-top-color: var(--bi-red); border-radius: 50%; animation: lf-spin .8s linear infinite; }
     @keyframes lf-spin { to { transform: rotate(360deg); } }
   </style>
+  <link rel="stylesheet" href="ui-navigation.css?v=20260827-nav1">
 </head>
 <body class="lf-booting bg-slate-50 min-h-screen flex flex-col text-slate-800 selection:bg-sky-500/30">
 
@@ -342,9 +343,7 @@
             <p class="text-[10px] text-sky-300 font-medium uppercase tracking-[0.18em]">Lost &amp; Found</p>
           </div>
         </div>
-        <button onclick="logout()" class="lg:hidden p-2.5 bg-white/10 hover:bg-red-600 text-sky-100 hover:text-white rounded-xl transition-all cursor-pointer" title="Kembali ke BI-Space">
-          <i data-lucide="arrow-left" class="h-5 w-5"></i>
-        </button>
+        <button onclick="logout()" class="lg:hidden p-2.5 bg-white/10 hover:bg-red-600 text-sky-100 hover:text-white rounded-xl transition-all cursor-pointer dashboard-back-standard" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
       </div>
 
       <div class="hidden lg:block mt-8 p-4 rounded-3xl bg-white/10 border border-white/10 shadow-inner">
@@ -363,9 +362,7 @@
       </nav>
 
       <div class="hidden lg:block mt-auto space-y-4 pt-6 border-t border-white/10">
-        <button onclick="logout()" class="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-white/10 hover:bg-red-600 text-sky-100 hover:text-white rounded-2xl transition-all cursor-pointer font-semibold text-sm" title="Kembali ke BI-Space">
-          <i data-lucide="arrow-left" class="h-5 w-5"></i><span>Kembali ke BI-Space</span>
-        </button>
+        <button onclick="logout()" class=" flex items-center justify-center space-x-2 px-4 py-3 bg-white/10 hover:bg-red-600 text-sky-100 hover:text-white rounded-2xl transition-all cursor-pointer font-semibold text-sm dashboard-back-standard" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
         <div class="text-[10px] leading-relaxed text-sky-300/80 text-center font-medium">
           Â© 2026 Bakerzin<br><span class="italic">Crafted By Day &amp; Nite Promise</span>
         </div>
