@@ -11054,14 +11054,26 @@ function setupChatDatabase(token) {
 }
 
 function chatEmployees_() {
-  const cached = readScriptJsonCache_('chat-active-employees-v1');
+  const cached = readScriptJsonCache_('chat-active-employees-v2');
   if (cached) return cached;
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  const employees = sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().map(function (row) {
-    return { nik: normalizeNik_(row[0]), name: String(row[1] || '').trim(), outlet: String(row[2] || '').trim().toUpperCase(), position: normalizeEmployeePosition_(row[4]), status: String(row[8] || '').trim().toLowerCase() };
-  }).filter(function (employee) { return employee.nik && employee.name && employee.outlet && employee.status !== 'resign'; });
-  writeScriptJsonCache_('chat-active-employees-v1', employees, 600);
+  const employeesByNik = {};
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().forEach(function (row) {
+    const nik = normalizeNik_(row[0]), status = String(row[8] || '').trim().toLowerCase();
+    if (!nik || status === 'resign') return;
+    const candidate = {
+      nik: nik,
+      name: String(row[1] || '').trim() || nik,
+      outlet: String(row[2] || '').trim().toUpperCase(),
+      position: normalizeEmployeePosition_(row[4]),
+      status: status
+    };
+    const current = employeesByNik[nik];
+    if (!current || (!current.outlet && candidate.outlet) || (current.name === nik && candidate.name !== nik)) employeesByNik[nik] = candidate;
+  });
+  const employees = Object.keys(employeesByNik).map(function (nik) { return employeesByNik[nik]; });
+  writeScriptJsonCache_('chat-active-employees-v2', employees, 600);
   return employees;
 }
 
