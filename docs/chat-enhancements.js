@@ -228,25 +228,49 @@
     layer.id = 'biCreateGroupLayer'; layer.className = 'bi-form-layer';
     layer.innerHTML = '<div class="bi-form"><div class="bi-form-head"><h3>Create Group</h3><button type="button" class="bi-x" id="biCreateGroupClose">✕</button></div><div class="bi-field"><label>NAMA GROUP</label><input id="biGroupName" maxlength="80" placeholder="Contoh: Tim Opening"></div><div class="bi-field"><label>TAMBAHKAN NAMA</label><div class="bi-member-autocomplete"><input id="biMemberSearch" type="search" placeholder="Ketik nama, NIK, atau outlet..." autocomplete="off"><div class="bi-member-results" id="biMemberResults"></div></div><div class="bi-member-note" id="biMemberNote">Anda otomatis menjadi anggota group.</div></div><div class="bi-field"><label>ANGGOTA YANG DITAMBAHKAN</label><div class="bi-selected-members" id="biSelectedMembers"><div class="bi-member-empty">Belum ada nama ditambahkan.</div></div></div><div class="bi-actions"><button type="button" class="bi-secondary" id="biCreateGroupCancel">Batal</button><button type="button" class="bi-primary" id="biCreateGroupSubmit">Create Group</button></div></div>';
     document.body.appendChild(layer);
-    var people = [], selected = [];
+    var people = [], selected = [], peopleLoading = false, peopleRequest = 0;
+    function searchable(value) { return String(value || '').normalize ? String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/s+/g, ' ').trim() : String(value || '').toLowerCase().replace(/s+/g, ' ').trim(); }
+    function personMeta(person) { return [person.nik, person.outlet || 'Outlet belum diisi'].filter(Boolean).join(' · '); }
+    function normalizePeople(rows) {
+      var byNik = {};
+      (rows || []).forEach(function (person) {
+        var nik = String(person.nik || '').trim().toUpperCase();
+        if (!nik) return;
+        var candidate = { nik: nik, name: String(person.name || '').trim() || nik, outlet: String(person.outlet || '').trim().toUpperCase() };
+        var current = byNik[nik];
+        if (!current || (!current.outlet && candidate.outlet) || (current.name === nik && candidate.name !== nik)) byNik[nik] = candidate;
+      });
+      return Object.keys(byNik).map(function (nik) { return byNik[nik]; }).sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'id', { sensitivity: 'base' }); });
+    }
     function renderSelected() {
-      q('biSelectedMembers').innerHTML = selected.length ? selected.map(function (person) { return '<div class="bi-selected-member"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(person.nik)+' · '+esc(person.outlet)+'</span></div><button type="button" data-member-remove="'+esc(person.nik)+'" aria-label="Hapus '+esc(person.name)+'">✕</button></div>'; }).join('') : '<div class="bi-member-empty">Belum ada nama ditambahkan.</div>';
+      q('biSelectedMembers').innerHTML = selected.length ? selected.map(function (person) { return '<div class="bi-selected-member"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(personMeta(person))+'</span></div><button type="button" data-member-remove="'+esc(person.nik)+'" aria-label="Hapus '+esc(person.name)+'">✕</button></div>'; }).join('') : '<div class="bi-member-empty">Belum ada nama ditambahkan.</div>';
       Array.prototype.forEach.call(q('biSelectedMembers').querySelectorAll('[data-member-remove]'), function (button) { button.onclick = function () { selected = selected.filter(function (person) { return person.nik !== button.dataset.memberRemove; }); renderSelected(); renderResults(); }; });
     }
     function renderResults() {
-      var term = q('biMemberSearch').value.trim().toLowerCase(), selectedMap = {}, results = q('biMemberResults');
+      var input = q('biMemberSearch'), term = searchable(input.value), selectedMap = {}, results = q('biMemberResults');
       selected.forEach(function (person) { selectedMap[person.nik] = true; });
-      if (!term) { results.classList.remove('open'); results.innerHTML = ''; return; }
-      var visible = people.filter(function (person) { return !selectedMap[person.nik] && (String(person.name||'').toLowerCase().indexOf(term)>=0 || String(person.nik||'').toLowerCase().indexOf(term)>=0 || String(person.outlet||'').toLowerCase().indexOf(term)>=0); });
-      results.innerHTML = visible.length ? visible.map(function (person) { return '<div class="bi-member-option"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(person.nik)+' · '+esc(person.outlet)+'</span></div><button type="button" data-member-add="'+esc(person.nik)+'" aria-label="Tambah '+esc(person.name)+'">+</button></div>'; }).join('') : '<div class="bi-member-empty">Nama tidak ditemukan.</div>';
+      if (document.activeElement !== input && !term) { results.classList.remove('open'); results.innerHTML = ''; return; }
+      if (peopleLoading) { results.innerHTML = '<div class="bi-member-empty">Memuat seluruh nama aktif...</div>'; results.classList.add('open'); return; }
+      var visible = people.filter(function (person) {
+        if (selectedMap[person.nik]) return false;
+        if (!term) return true;
+        return searchable(person.name).indexOf(term) >= 0 || searchable(person.nik).indexOf(term) >= 0 || searchable(person.outlet).indexOf(term) >= 0;
+      });
+      results.innerHTML = visible.length ? visible.map(function (person) { return '<div class="bi-member-option"><div class="bi-member-copy"><strong>'+esc(person.name)+'</strong><span>'+esc(personMeta(person))+'</span></div><button type="button" data-member-add="'+esc(person.nik)+'" aria-label="Tambah '+esc(person.name)+'">+</button></div>'; }).join('') : '<div class="bi-member-empty">Nama tidak ditemukan.</div>';
       results.classList.add('open');
-      Array.prototype.forEach.call(results.querySelectorAll('[data-member-add]'), function (button) { button.onclick = function () { var person = people.filter(function (item) { return item.nik === button.dataset.memberAdd; })[0]; if (person) selected.push(person); q('biMemberSearch').value = ''; results.classList.remove('open'); results.innerHTML = ''; renderSelected(); }; });
+      Array.prototype.forEach.call(results.querySelectorAll('[data-member-add]'), function (button) { button.onclick = function () { var person = people.filter(function (item) { return item.nik === button.dataset.memberAdd; })[0]; if (person) selected.push(person); input.value = ''; results.classList.remove('open'); results.innerHTML = ''; renderSelected(); }; });
     }
     function closeCreateGroup() { layer.classList.remove('open'); }
     q('biCreateGroupButton').onclick = function () {
-      q('biGroupName').value = ''; q('biMemberSearch').value = ''; selected = []; renderSelected(); layer.classList.add('open');
+      var request = ++peopleRequest;
+      q('biGroupName').value = ''; q('biMemberSearch').value = ''; selected = []; people = []; peopleLoading = true; renderSelected(); layer.classList.add('open');
       q('biMemberResults').classList.remove('open'); q('biMemberResults').innerHTML = ''; q('biMemberNote').textContent = 'Memuat seluruh nama aktif...';
-      api('chatMentions', [token, 'GENERAL', '', 'ALL']).then(function (data) { people = (data.people || []).slice().sort(function (a,b) { return String(a.name||'').localeCompare(String(b.name||''), 'id'); }); q('biMemberNote').textContent = 'Ketik untuk mencari dari '+people.length+' pengguna aktif. Anda otomatis menjadi anggota group.'; }).catch(function (error) { q('biMemberNote').textContent = error.message; });
+      api('chatMentions', [token, 'GENERAL', '', 'ALL']).then(function (data) {
+        if (request !== peopleRequest) return;
+        people = normalizePeople(data.people || []); peopleLoading = false;
+        q('biMemberNote').textContent = people.length+' pengguna aktif tersedia. Klik kolom nama untuk melihat semua atau ketik untuk mencari. Anda otomatis menjadi anggota group.';
+        renderResults();
+      }).catch(function (error) { if (request !== peopleRequest) return; peopleLoading = false; q('biMemberNote').textContent = error.message; renderResults(); });
       setTimeout(function () { q('biGroupName').focus(); }, 60);
     };
     q('biMemberSearch').oninput = renderResults; q('biMemberSearch').onfocus = renderResults; q('biCreateGroupClose').onclick = closeCreateGroup; q('biCreateGroupCancel').onclick = closeCreateGroup;
