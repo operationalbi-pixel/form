@@ -11218,17 +11218,19 @@ function createChatRoom(token, payload) {
   });
 }
 
-function getChatMentionSuggestions(token, roomId, query) {
+function getChatMentionSuggestions(token, roomId, query, resultLimit) {
   return safe_(function () {
     const employee = findEmployee_(requireSession_(token).nik);
     assertEmployeeActive_(employee);
     roomId = requireChatRoom_(employee, roomId);
     const needle = String(query || '').trim().toLowerCase();
-    const people = chatMembers_(roomId).filter(function (member) {
-      if (member.nik === employee.nik) return false;
-      if (!needle) return true;
-      return String(member.name || '').toLowerCase().indexOf(needle) >= 0 || String(member.nik || '').toLowerCase().indexOf(needle) >= 0;
-    }).slice(0, 8).map(function (member) {
+      const matched = chatMembers_(roomId).filter(function (member) {
+        if (member.nik === employee.nik) return false;
+        if (!needle) return true;
+        return String(member.name || '').toLowerCase().indexOf(needle) >= 0 || String(member.nik || '').toLowerCase().indexOf(needle) >= 0 || String(member.outlet || '').toLowerCase().indexOf(needle) >= 0;
+      });
+      const maxResults = String(resultLimit || '').toUpperCase() === 'ALL' ? matched.length : Math.max(1, Math.min(30, Number(resultLimit || 8)));
+      const people = matched.slice(0, maxResults).map(function (member) {
       return { nik: member.nik, name: member.name, outlet: member.outlet };
     });
     return { people: people };
