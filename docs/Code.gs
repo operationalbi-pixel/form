@@ -11172,6 +11172,7 @@ function chatPendingTasks_(employee) {
   assignments.forEach(function (row) {
     const task = tasks[String(row[1])];
     if (!task || String(row[6]) !== 'OPEN') return;
+    if (chatIsCustomRoom_(task.roomId) && !chatRoomMemberNiks_(task.roomId)[employee.nik]) return;
     const type = String(row[2]), outlet = String(row[3] || '').toUpperCase(), nik = normalizeNik_(row[4]);
     if ((type === 'OUTLET' && outlet === employee.outlet) || (type === 'PERSON' && nik === employee.nik) || (employee.outlet === 'BIHQ' && type === 'OUTLET')) visible[task.id] = task;
   });
