@@ -413,6 +413,7 @@
       #toast-wrapper { right: 14px; left: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); }
     }
   </style>
+  <link rel="stylesheet" href="ui-navigation.css?v=20260827-nav1">
 </head>
 <body>
 
@@ -480,9 +481,7 @@
         </button>
       </nav>
 
-      <button onclick="app.logout()" class="btn btn-outline-danger w-100 rounded-3 mt-4 py-2 fw-600 border-2">
-        <i class="fas fa-arrow-left me-2"></i> Kembali
-      </button>
+      <button onclick="app.logout()" class="btn btn-outline-danger w-100 rounded-3 mt-4 py-2 fw-600 border-2 dashboard-back-standard" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
     </div>
 
     <!-- CONTENT -->

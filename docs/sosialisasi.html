@@ -100,6 +100,7 @@
       table { min-width: 620px; }
     }
   </style>
+  <link rel="stylesheet" href="ui-navigation.css?v=20260827-nav1">
 </head>
 <body class="bi-socialization">
   <div id="root">
@@ -325,13 +326,13 @@
                      <span>{currentUser?.role}</span>
                   </div>
                 </div>
-                <button onClick={backToDashboard} className="bi-back" title="Kembali ke Dashboard"><Icon name="LogOut" size={18} /><span>Dashboard</span></button>
+                <button onClick={backToDashboard} className="bi-back dashboard-back-standard" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
               </div>
             </nav>
           )}
           <main className="bi-page-shell p-4 md:p-8 mx-auto">
             {isLoading && <div className="fixed inset-0 bg-white/90 flex items-center justify-center z-[60]"><div className="text-center"><div className="animate-spin rounded-full h-12 w-12 border-4 border-[#f0d5dc] border-t-[#be1e3a] mx-auto"></div><p className="mt-4 font-bold">Memuat Portal Sosialisasi...</p><p className="text-sm text-slate-500 mt-1">Menggunakan akun BI-Space aktif</p></div></div>}
-            {view === 'ERROR' && <div className="max-w-lg mx-auto mt-16 bg-white border border-red-200 rounded-2xl p-7 text-center shadow-xl"><Icon name="Alert" size={36} className="mx-auto text-red-500"/><h2 className="text-xl font-bold mt-3">Portal belum dapat dibuka</h2><p className="text-sm text-slate-500 mt-2">{bootError}</p><div className="flex gap-3 mt-6"><button onClick={backToDashboard} className="flex-1 border border-slate-300 rounded-xl py-3 font-bold">Dashboard</button><button onClick={openPortal} className="flex-1 bg-red-600 text-white rounded-xl py-3 font-bold">Coba Lagi</button></div></div>}
+            {view === 'ERROR' && <div className="max-w-lg mx-auto mt-16 bg-white border border-red-200 rounded-2xl p-7 text-center shadow-xl"><Icon name="Alert" size={36} className="mx-auto text-red-500"/><h2 className="text-xl font-bold mt-3">Portal belum dapat dibuka</h2><p className="text-sm text-slate-500 mt-2">{bootError}</p><div className="flex gap-3 mt-6"><button onClick={backToDashboard} className="flex-1 border border-slate-300 rounded-xl py-3 font-bold">← Dashboard</button><button onClick={openPortal} className="flex-1 bg-red-600 text-white rounded-xl py-3 font-bold">Coba Lagi</button></div></div>}
             {view === 'ADMIN' && <AdminDashboard materials={materials} refreshList={fetchMaterials} setLoading={setIsLoading} showToast={showToast} user={currentUser} api={api} />}
             {view === 'USER_DASHBOARD' && <UserDashboard materials={materials} user={currentUser} api={api} setLoading={setIsLoading} onOpenMaterial={(m) => { setActiveMaterial(m); setView('MATERIAL_VIEWER'); }} />}
             {view === 'MATERIAL_VIEWER' && activeMaterial && <MaterialViewer material={activeMaterial} onComplete={() => setView('QUIZ')} onBack={() => setView('USER_DASHBOARD')} />}
