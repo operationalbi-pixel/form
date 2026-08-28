@@ -1724,7 +1724,10 @@ function parseBihqBatchGroups_(payload) {
     const outletName = type === 'GOODS_RECEIPT' ? row.outletName : row.originName;
     const entry = directory.byName[normalizeStoreName_(outletName)] || null;
     if (!entry) throw new Error('Outlet "' + outletName + '" belum terdaftar di sheet STORE CODE.');
-    if (active.indexOf(entry.code) < 0 || entry.code === 'BIHQ') throw new Error('Outlet ' + entry.code + ' tidak aktif atau tidak dapat dipakai untuk batch.');
+    // BIHQ adalah Origin yang valid untuk batch Goods Delivery. Good Receipt tetap
+    // dikelompokkan hanya ke outlet operasional agar stok masuk tidak tercatat ke BIHQ.
+    const isBihqGoodsDelivery = type === 'GOODS_DELIVERY' && entry.code === 'BIHQ';
+    if (!isBihqGoodsDelivery && (active.indexOf(entry.code) < 0 || entry.code === 'BIHQ')) throw new Error('Outlet ' + entry.code + ' tidak aktif atau tidak dapat dipakai untuk batch.');
     if (!grouped[entry.code]) grouped[entry.code] = { outlet: entry.code, outletName: entry.name, rows: [] };
     grouped[entry.code].rows.push(row);
   });
