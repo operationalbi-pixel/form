@@ -3324,6 +3324,8 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   Object.keys(usageTotals).forEach(function (code) {
     const variants = catalog.byCode[code] || [], required = Number(usageTotals[code] || 0), available = Math.max(0, Number(currentMap[code] || 0));
     const shortage = Math.max(0, required - available);
+    // DIRECT_WIP tetap dipotong sebagai item jadi meskipun stoknya minus; resep hanya dipakai saat produksi manual.
+    if (wipCodeUsesDirectSales_(catalog, code)) return;
     if (!variants.length || shortage <= 0.0000001) return;
     let variant = null, selectedKey = cleanText_(wipChoices[code], 500);
     if (variants.length === 1) variant = variants[0];
@@ -4283,13 +4285,26 @@ function getStockHistory(token, payload) {
 
 /** WIP recipe master and production ledger. */
 function ensureWipRecipeSheet_() {
-  const headers = ['FORMULA_CODE', 'FORMULA_NAME', 'FINISHED_UNIT', 'MATERIAL_CODE', 'MATERIAL_NAME', 'QTY_USAGE', 'MATERIAL_UNIT'];
+  const recipeHeaders = ['FORMULA_CODE', 'FORMULA_NAME', 'FINISHED_UNIT', 'MATERIAL_CODE', 'MATERIAL_NAME', 'QTY_USAGE', 'MATERIAL_UNIT'];
+  const headers = recipeHeaders.concat(['SALES_USAGE_MODE']);
+  const ss = getSpreadsheet_(), existing = ss.getSheetByName(CONFIG.WIP_RECIPE_SHEET);
+  const existingHeaders = existing && existing.getLastColumn() ? existing.getRange(1, 1, 1, existing.getLastColumn()).getDisplayValues()[0].map(function (value) {
+    return String(value || '').trim().toUpperCase();
+  }) : [];
+  const hadSalesUsageMode = existingHeaders.indexOf('SALES_USAGE_MODE') >= 0;
   const sheet = ensureSheet_(CONFIG.WIP_RECIPE_SHEET, headers);
   if (sheet.getLastRow() < 2) {
     const seed = wipRecipeSeedRows_();
-    if (seed.length) sheet.getRange(2, 1, seed.length, headers.length).setValues(seed);
+    if (seed.length) sheet.getRange(2, 1, seed.length, recipeHeaders.length).setValues(seed);
   }
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#9f172b').setFontColor('#ffffff');
+  if (!hadSalesUsageMode && sheet.getLastRow() >= 2) {
+    const initialDirectCodes = { BICK0022: true, BICK0034: true, BICK0143: true, BICK0146: true, BICK0111: true };
+    const codes = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+    sheet.getRange(2, 8, codes.length, 1).setValues(codes.map(function (row) {
+      return [initialDirectCodes[String(row[0] || '').trim().toUpperCase()] ? 'DIRECT_WIP' : ''];
+    }));
+  }
   sheet.setFrozenRows(1);
   sheet.setColumnWidths(1, 1, 120);
   sheet.setColumnWidths(2, 1, 260);
@@ -4297,6 +4312,7 @@ function ensureWipRecipeSheet_() {
   sheet.setColumnWidths(4, 1, 120);
   sheet.setColumnWidths(5, 1, 260);
   sheet.setColumnWidths(6, 2, 105);
+  sheet.setColumnWidth(8, 150);
   return sheet;
 }
 
@@ -4334,24 +4350,35 @@ function safeWipMaterialQty_(recipeQty, formulaQty, factor, label) {
   return Math.round(qty * 1000000000000) / 1000000000000;
 }
 
+function normalizeWipSalesUsageMode_(value) {
+  const mode = cleanText_(value, 80).toUpperCase().replace(/[\s-]+/g, '_');
+  return mode === 'DIRECT_WIP' || mode === 'DIRECT' || mode === 'LANGSUNG' ? 'DIRECT_WIP' : 'AUTO_RECIPE';
+}
+
+function wipCodeUsesDirectSales_(catalog, code) {
+  const variants = catalog && catalog.byCode && catalog.byCode[String(code || '').trim().toUpperCase()] || [];
+  return variants.some(function (variant) { return variant.salesUsageMode === 'DIRECT_WIP'; });
+}
+
 function readWipRecipeCatalog_() {
   const sheet = ensureWipRecipeSheet_(), result = { variants: [], byCode: {}, invalidRowsSkipped: 0 };
   if (sheet.getLastRow() < 2) return result;
   // Gunakan raw value agar angka resep tidak berubah menjadi string berformat locale
   // seperti 1,111.11 / 1.111,11 saat dibaca dari Google Sheets.
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues();
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues();
   const variants = {};
   rows.forEach(function (row, index) {
     const code = cleanText_(row[0], 80).toUpperCase(), name = cleanText_(row[1], 180), finishedUnit = normalizeUnit_(row[2]);
     const materialCode = cleanText_(row[3], 80).toUpperCase(), materialName = cleanText_(row[4], 180);
-    const qty = parseWipRecipeNumber_(row[5]), materialUnit = normalizeUnit_(row[6]);
+    const qty = parseWipRecipeNumber_(row[5]), materialUnit = normalizeUnit_(row[6]), salesUsageMode = normalizeWipSalesUsageMode_(row[7]);
     if (!code || !name || !finishedUnit || !materialCode || materialCode === '0' || !materialName || materialName === '0' ||
         !isFinite(qty) || qty <= 0 || qty > 1000000 || !materialUnit || materialUnit === '0' || materialUnit === '-') {
       result.invalidRowsSkipped++;
       return;
     }
     const key = code + '|' + name.toUpperCase() + '|' + finishedUnit;
-    if (!variants[key]) variants[key] = { key: key, code: code, name: name, unit: finishedUnit, materials: [] };
+    if (!variants[key]) variants[key] = { key: key, code: code, name: name, unit: finishedUnit, salesUsageMode: salesUsageMode, materials: [] };
+    if (salesUsageMode === 'DIRECT_WIP') variants[key].salesUsageMode = 'DIRECT_WIP';
     variants[key].materials.push({ sourceRow: index + 2, code: materialCode, name: materialName, qty: qty, unit: materialUnit });
   });
   Object.keys(variants).forEach(function (key) {
@@ -9135,6 +9162,8 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
   if (depth > 10) throw new Error('Struktur WIP terlalu dalam untuk ' + item.code + ' · ' + item.name + '.');
   path = path || {};
   const code = String(item.code || '').toUpperCase();
+  // Item DIRECT_WIP sengaja boleh minus saat penjualan. Produksi manual tetap memakai resep yang sama.
+  if (wipCodeUsesDirectSales_(state.wipCatalog, code)) return null;
   if (path[code]) throw new Error('Resep WIP berputar/circular terdeteksi pada ' + code + ' · ' + item.name + '.');
   const nextPath = Object.assign({}, path); nextPath[code] = true;
 
