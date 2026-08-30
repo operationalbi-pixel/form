@@ -154,8 +154,9 @@
           if (event.type === 'DELETE' && event.payload.id) creates[event.payload.id] = Object.assign({}, creates[event.payload.id] || {}, { deleted: true, deletedAt: item.createdAt });
         });
       });
-      var items = Object.keys(creates).filter(function (id) { return !creates[id].deleted && !targetDeleteIsPending(roomId, id); }).map(function (id) {
+      var items = Object.keys(creates).filter(function (id) { return !!creates[id].goal; }).map(function (id) {
         var target = creates[id];
+        target.deleted = !!target.deleted || targetDeleteIsPending(roomId, id);
         target.completion = completes[id] || null;
         return target;
       });
@@ -174,7 +175,7 @@
     var list = cached ? cached.items.slice() : [];
     var idx = list.findIndex(function(t){return t.id === meta.id;});
     if (mode === 'delete') {
-      if (idx >= 0) list.splice(idx, 1);
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], { deleted: true, deletedAt: new Date().toISOString() });
     } else if (mode === 'complete') {
       if (idx >= 0) list[idx] = Object.assign({}, list[idx], { completion: meta.completion || meta });
     } else {
@@ -449,8 +450,9 @@
           if (event.type === 'DELETE' && event.payload.id) creates[event.payload.id] = Object.assign({}, creates[event.payload.id] || {}, { deleted: true, deletedAt: item.createdAt });
         });
       });
-      return Object.keys(creates).filter(function (id) { return !creates[id].deleted && !targetDeleteIsPending(roomId, id); }).map(function (id) {
+      return Object.keys(creates).filter(function (id) { return !!creates[id].goal; }).map(function (id) {
         var target = creates[id], completion = completes[id] || null;
+        target.deleted = !!target.deleted || targetDeleteIsPending(roomId, id);
         target.completion = completion;
         return target;
       });
@@ -550,7 +552,9 @@
       setTargetDeletePending(roomId, target.id, true);
       updateTargetCacheOptimistically(roomId, target, 'delete');
       if (targetPanelRoomId === roomId) {
-        targetPanelItems = previousItems.filter(function (item) { return item.id !== target.id; });
+        targetPanelItems = previousItems.map(function (item) {
+          return item.id === target.id ? Object.assign({}, item, { deleted: true, deletedAt: new Date().toISOString() }) : item;
+        });
         renderTargetSnapshot(targetPanelItems, panelRenderRequest, roomId);
       }
       toast('Target dihapus.');
@@ -907,16 +911,24 @@
 
   function renderTargetSnapshot(targets, request, roomId) {
     if (!panelRenderIsCurrent(request, 'target') || activeRoomId() !== roomId) return;
-    targets = (targets || []).slice().sort(function (a, b) { var ad = !!a.completion, bd = !!b.completion; if (ad !== bd) return ad ? 1 : -1; return String(a.goal).localeCompare(String(b.goal)); });
+    targets = (targets || []).slice().sort(function (a, b) {
+      var ax = !!a.deleted, bx = !!b.deleted;
+      if (ax !== bx) return ax ? 1 : -1;
+      var ad = !!a.completion, bd = !!b.completion;
+      if (ad !== bd) return ad ? 1 : -1;
+      return String(a.goal).localeCompare(String(b.goal));
+    });
     targetPanelItems = targets.slice();
     targetPanelRoomId = roomId;
-    var done = targets.filter(function (t) { return !!t.completion; }).length, percent = targets.length ? Math.round(done * 100 / targets.length) : 0;
-    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Target complete · ' + done + ' dari ' + targets.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
+    var activeTargets = targets.filter(function (t) { return !t.deleted; });
+    var done = activeTargets.filter(function (t) { return !!t.completion; }).length, percent = activeTargets.length ? Math.round(done * 100 / activeTargets.length) : 0;
+    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Target complete · ' + done + ' dari ' + activeTargets.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
     q('biDashList').innerHTML = targets.length ? targets.map(function (t, index) {
-      var comp = t.completion, desc = (t.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(t.value) + (t.percent ? '%' : '');
-      if (comp) desc += ' · Realisasi ' + formatThousands(comp.actual) + (t.percent ? '%' : '') + (comp.achieved ? ' · Tercapai' : ' · Tidak tercapai');
-      else desc += ' · Belum diselesaikan';
-      return '<article class="bi-row' + (comp ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.goal) + '</strong><span>' + esc(desc) + '</span></div>' + (!comp ? '<button class="bi-row-action complete" data-target-index="' + index + '" title="Isi realisasi">✓</button>' : '') + '<button class="bi-row-action menu" data-target-menu="' + index + '" title="Edit / Hapus">⋮</button></article>';
+      var deleted = !!t.deleted, comp = t.completion;
+      var desc = deleted ? 'Dihapus' : (t.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(t.value) + (t.percent ? '%' : '');
+      if (!deleted && comp) desc += ' · Realisasi ' + formatThousands(comp.actual) + (t.percent ? '%' : '') + (comp.achieved ? ' · Tercapai' : ' · Tidak tercapai');
+      else if (!deleted) desc += ' · Belum diselesaikan';
+      return '<article class="bi-row' + (comp || deleted ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.goal) + '</strong><span>' + esc(desc) + '</span></div>' + (!deleted && !comp ? '<button class="bi-row-action complete" data-target-index="' + index + '" title="Isi realisasi">✓</button>' : '') + (!deleted ? '<button class="bi-row-action menu" data-target-menu="' + index + '" title="Edit / Hapus">⋮</button>' : '') + '</article>';
     }).join('') : '<div class="bi-empty">Belum ada Target pada ' + monthName(Number(q('biDashMonth').value)) + ' ' + Number(q('biDashYear').value) + '.</div>';
     Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-target-index]'), function (b) { b.onclick = function () { startTargetCompletion(targets[Number(b.dataset.targetIndex)]); }; });
     Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-target-menu]'), function (b) { b.onclick = function () { openTargetMenu(targets[Number(b.dataset.targetMenu)], b); }; });
