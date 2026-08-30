@@ -18,6 +18,7 @@
   var targetPanelItems = [];
   var targetPanelRoomId = '';
   var taskRefreshPromise = {};
+  var taskStatusPending = {};
   var taskPanelRequest = 0;
   var panelRenderRequest = 0;
   var CACHE_TTL = 45000;
@@ -111,7 +112,7 @@
     if (!bootstrap) return null;
     var previous = roomCache[roomId];
     var tasks = (bootstrap.tasks || []).filter(function (t) { return t.roomId === roomId; });
-    var history = previous && previous.data && previous.data.history || [];
+    var history = applyPendingTaskStatuses(roomId, previous && previous.data && previous.data.history || []);
     var data = { open: tasks.slice(), history: history.slice() };
     roomCache[roomId] = { at: cacheNow(), data: data };
     return data;
@@ -199,6 +200,38 @@
     if (q('biPanelLayer') && q('biPanelLayer').classList.contains('open') && q('biPanelLayer').dataset.tab === 'task') {
       renderTaskPanel(false);
     }
+  }
+
+  function taskStatusKey(roomId, taskId) {
+    return String(roomId || '') + '|' + String(taskId || '');
+  }
+
+  function applyPendingTaskStatuses(roomId, history) {
+    var list = (history || []).slice();
+    Object.keys(taskStatusPending).forEach(function (key) {
+      var pending = taskStatusPending[key];
+      if (!pending || pending.roomId !== roomId) return;
+      var idx = list.findIndex(function (task) { return String(task.id) === String(pending.task.id); });
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], pending.task);
+      else list.push(Object.assign({}, pending.task));
+    });
+    return list;
+  }
+
+  function applyHostTaskStatus(detail) {
+    var task = detail && detail.task;
+    if (!task || !task.id || !task.roomId) return;
+    var key = taskStatusKey(task.roomId, task.id);
+    if (detail.rollback) delete taskStatusPending[key];
+    else taskStatusPending[key] = { roomId: task.roomId, task: Object.assign({}, task) };
+    var cached = getCachedRoomData(task.roomId) || buildRoomTaskCache(task.roomId) || { open: [], history: [] };
+    var history = (cached.history || []).slice();
+    var idx = history.findIndex(function (item) { return String(item.id) === String(task.id); });
+    if (idx >= 0) history[idx] = Object.assign({}, history[idx], task);
+    else history.push(Object.assign({}, task));
+    cached.history = history;
+    roomCache[task.roomId] = { at: cacheNow(), data: cached };
+    renderCurrentTaskPanel(task.roomId);
   }
 
   function injectStyles() {
@@ -971,9 +1004,10 @@
       var view = taskViewForMonth(task, month, year);
       if (view) tasks.push(view);
     });
-    tasks.sort(function (a, b) { var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
-    var done = tasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = tasks.length ? Math.round(done * 100 / tasks.length) : 0;
-    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
+    tasks.sort(function (a, b) { var ax = a.status === 'DELETED', bx = b.status === 'DELETED'; if (ax !== bx) return ax ? 1 : -1; var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
+    var activeTasks = tasks.filter(function (t) { return t.status !== 'DELETED'; });
+    var done = activeTasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = activeTasks.length ? Math.round(done * 100 / activeTasks.length) : 0;
+    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + activeTasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
     q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) {
       var isDone = t.status !== 'OPEN', canComplete = !isDone && !!openById[t.id], completed = Number(t.completed || 0), total = Number(t.total || 0);
       var statusText = isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : canComplete ? 'Belum selesai' : total ? completed + ' dari ' + total + ' selesai' : 'Sedang berjalan';
@@ -981,7 +1015,7 @@
         var created = new Date(t.originalCreatedAt || 0);
         statusText += ' · Lanjutan dari ' + monthName(created.getMonth() + 1) + ' ' + created.getFullYear();
       }
-      return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + esc(statusText) + '</span></div>' + (canComplete ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>';
+      return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + esc(statusText) + '</span></div>' + (canComplete ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + (t.status !== 'DELETED' ? '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button>' : '') + '</article>';
     }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
     Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-task-complete]'), function (b) {
       b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openTaskCompleteFromPanel(b.dataset.taskComplete); };
@@ -1001,7 +1035,14 @@
     var openRequest = refreshBootstrap().then(function () { renderCurrentTaskPanel(roomId); });
     var historyRequest = api('chatRoomDetails', [token, roomId]).then(function (details) {
       var cached = getCachedRoomData(roomId) || buildRoomTaskCache(roomId) || { open: [], history: [] };
-      cached.history = (details.history || []).slice();
+      var history = (details.history || []).slice();
+      Object.keys(taskStatusPending).forEach(function (key) {
+        var pending = taskStatusPending[key];
+        if (!pending || pending.roomId !== roomId) return;
+        var serverTask = history.find(function (task) { return String(task.id) === String(pending.task.id); });
+        if (serverTask && String(serverTask.status || '').toUpperCase() === String(pending.task.status || '').toUpperCase()) delete taskStatusPending[key];
+      });
+      cached.history = applyPendingTaskStatuses(roomId, history);
       roomCache[roomId] = { at: cacheNow(), data: cached };
       renderCurrentTaskPanel(roomId);
     });
@@ -1024,7 +1065,7 @@
   }
 
   function boot() {
-    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
+    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); global.addEventListener('bi:task-status', function (event) { applyHostTaskStatus(event.detail || {}); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });
