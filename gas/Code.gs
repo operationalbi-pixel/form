@@ -11467,8 +11467,8 @@ function getChatMessageReaders(token, roomId, sequence) {
 function createChatTask(token, payload) {
   return safe_(function () {
     payload = payload || {}; const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
-    const roomId = requireChatRoom_(employee, payload.roomId), title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), picType = String(payload.picType || '').toUpperCase();
-    if (!title) throw new Error('Judul tugas wajib diisi.'); if (['OUTLET', 'PERSON'].indexOf(picType) < 0) throw new Error('Pilih PIC Outlet atau Person.');
+    const roomId = requireChatRoom_(employee, payload.roomId), rawTitle = String(payload.title || '').trim(), title = cleanText_(rawTitle, 50), description = cleanText_(payload.description, 2000), picType = String(payload.picType || '').toUpperCase();
+    if (!title) throw new Error('Judul tugas wajib diisi.'); if (rawTitle.length > 50) throw new Error('Judul Task maksimal 50 karakter.'); if (['OUTLET', 'PERSON'].indexOf(picType) < 0) throw new Error('Pilih PIC Outlet atau Person.');
     const taskId = Utilities.getUuid(), dueAt = chatDueValue_(payload.dueAt);
     if (payload.dueAt && !dueAt) throw new Error('Batas waktu tugas tidak valid.');
     const assignments = [], people = chatMembers_(roomId), roomOutlet = chatRoomOutlet_(roomId);
@@ -11505,8 +11505,9 @@ function updateChatTask(token, taskId, payload) {
   return safe_(function () {
     payload = payload || {}; taskId = String(taskId || '');
     const employee = findEmployee_(requireSession_(token).nik); assertEmployeeActive_(employee);
-    const title = cleanText_(payload.title, 180), description = cleanText_(payload.description, 2000), dueAt = chatDueValue_(payload.dueAt);
+    const rawTitle = String(payload.title || '').trim(), title = cleanText_(rawTitle, 50), description = cleanText_(payload.description, 2000), dueAt = chatDueValue_(payload.dueAt);
     if (!title) throw new Error('Judul tugas wajib diisi.');
+    if (rawTitle.length > 50) throw new Error('Judul Task maksimal 50 karakter.');
     if (payload.dueAt && !dueAt) throw new Error('Batas waktu tugas tidak valid.');
     const lock = LockService.getScriptLock(); lock.waitLock(15000);
     let roomId = '';
