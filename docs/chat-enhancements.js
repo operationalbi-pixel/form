@@ -14,7 +14,11 @@
   var roomCache = {};
   var targetCache = {};
   var targetCachePromise = {};
+  var targetDeletePending = {};
+  var targetPanelItems = [];
+  var targetPanelRoomId = '';
   var taskRefreshPromise = {};
+  var taskStatusPending = {};
   var taskPanelRequest = 0;
   var panelRenderRequest = 0;
   var CACHE_TTL = 45000;
@@ -26,6 +30,7 @@
       camera:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.4-2h7.2L17 8h3v10H4z"/><circle cx="12" cy="13" r="3"/></svg>',
       image:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m6 17 4-4 3 3 2-2 3 3"/></svg>',
       document:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5M10 12h5M10 16h5"/></svg>',
+      info:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg>',
       edit:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 19 3.5-.8L18 8.7 15.3 6 5.8 15.5z"/><path d="m14.8 6.5 2.7 2.7"/></svg>',
       delete:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14"/></svg>'
     };
@@ -108,7 +113,7 @@
     if (!bootstrap) return null;
     var previous = roomCache[roomId];
     var tasks = (bootstrap.tasks || []).filter(function (t) { return t.roomId === roomId; });
-    var history = previous && previous.data && previous.data.history || [];
+    var history = applyPendingTaskStatuses(roomId, previous && previous.data && previous.data.history || []);
     var data = { open: tasks.slice(), history: history.slice() };
     roomCache[roomId] = { at: cacheNow(), data: data };
     return data;
@@ -119,6 +124,21 @@
     var data = buildRoomTaskCache(roomId);
     preloadTargets(roomId);
     return Promise.resolve(data);
+  }
+
+  function targetDeleteMap(roomId) {
+    if (!targetDeletePending[roomId]) targetDeletePending[roomId] = {};
+    return targetDeletePending[roomId];
+  }
+
+  function targetDeleteIsPending(roomId, targetId) {
+    return !!(targetDeletePending[roomId] && targetDeletePending[roomId][String(targetId || '')]);
+  }
+
+  function setTargetDeletePending(roomId, targetId, pending) {
+    var map = targetDeleteMap(roomId), id = String(targetId || '');
+    if (pending) map[id] = true;
+    else delete map[id];
   }
 
   function preloadTargets(roomId, force) {
@@ -136,8 +156,9 @@
           if (event.type === 'DELETE' && event.payload.id) creates[event.payload.id] = Object.assign({}, creates[event.payload.id] || {}, { deleted: true, deletedAt: item.createdAt });
         });
       });
-      var items = Object.keys(creates).filter(function (id) { return !creates[id].deleted; }).map(function (id) {
+      var items = Object.keys(creates).filter(function (id) { return !!creates[id].goal; }).map(function (id) {
         var target = creates[id];
+        target.deleted = !!target.deleted || targetDeleteIsPending(roomId, id);
         target.completion = completes[id] || null;
         return target;
       });
@@ -156,7 +177,7 @@
     var list = cached ? cached.items.slice() : [];
     var idx = list.findIndex(function(t){return t.id === meta.id;});
     if (mode === 'delete') {
-      if (idx >= 0) list.splice(idx, 1);
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], { deleted: true, deletedAt: new Date().toISOString() });
     } else if (mode === 'complete') {
       if (idx >= 0) list[idx] = Object.assign({}, list[idx], { completion: meta.completion || meta });
     } else {
@@ -182,6 +203,38 @@
     }
   }
 
+  function taskStatusKey(roomId, taskId) {
+    return String(roomId || '') + '|' + String(taskId || '');
+  }
+
+  function applyPendingTaskStatuses(roomId, history) {
+    var list = (history || []).slice();
+    Object.keys(taskStatusPending).forEach(function (key) {
+      var pending = taskStatusPending[key];
+      if (!pending || pending.roomId !== roomId) return;
+      var idx = list.findIndex(function (task) { return String(task.id) === String(pending.task.id); });
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], pending.task);
+      else list.push(Object.assign({}, pending.task));
+    });
+    return list;
+  }
+
+  function applyHostTaskStatus(detail) {
+    var task = detail && detail.task;
+    if (!task || !task.id || !task.roomId) return;
+    var key = taskStatusKey(task.roomId, task.id);
+    if (detail.rollback) delete taskStatusPending[key];
+    else taskStatusPending[key] = { roomId: task.roomId, task: Object.assign({}, task) };
+    var cached = getCachedRoomData(task.roomId) || buildRoomTaskCache(task.roomId) || { open: [], history: [] };
+    var history = (cached.history || []).slice();
+    var idx = history.findIndex(function (item) { return String(item.id) === String(task.id); });
+    if (idx >= 0) history[idx] = Object.assign({}, history[idx], task);
+    else history.push(Object.assign({}, task));
+    cached.history = history;
+    roomCache[task.roomId] = { at: cacheNow(), data: cached };
+    renderCurrentTaskPanel(task.roomId);
+  }
+
   function injectStyles() {
     if (q('biChatEnhanceStyle')) return;
     var style = document.createElement('style');
@@ -191,7 +244,7 @@
       '.bi-pop{position:fixed;z-index:90;min-width:190px;padding:6px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 16px 45px rgba(45,24,30,.2);display:none}.bi-pop.open{display:grid;gap:3px}.bi-pop button{border:0;background:#fff;border-radius:10px;padding:10px 12px;text-align:left;cursor:pointer;color:var(--ink);font-weight:600}.bi-pop button:hover{background:#fff0f3;color:var(--wine)}.bi-attach-option{display:flex!important;align-items:center;gap:9px}',
       '.bi-panel-layer{position:fixed;inset:0;z-index:90;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-panel-layer.open{display:flex}.bi-panel{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:hidden;background:#fff;border-radius:22px;box-shadow:0 25px 70px rgba(48,19,27,.35);display:flex;flex-direction:column}.bi-panel-head{display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--line)}.bi-panel-head strong{font-size:18px;line-height:1.25;font-weight:700;flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.bi-x{width:36px;height:36px;border:1px solid var(--line);border-radius:11px;background:#fff;cursor:pointer}.bi-tabs{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}.bi-tab{border:0;background:#fff;padding:12px;font-weight:800;color:var(--muted);cursor:pointer}.bi-tab.active{color:var(--wine);box-shadow:inset 0 -2px var(--wine)}.bi-panel-body{padding:16px 18px 20px;overflow-y:auto;overflow-x:hidden;min-width:0}.bi-monthbar{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-bottom:14px}.bi-monthbar select{border:1px solid var(--line);border-radius:11px;padding:9px 10px;background:#fff}.bi-refresh{border:0;border-radius:11px;background:#f4edef;color:var(--wine);padding:0 12px;font-weight:800;cursor:pointer}',
       '.bi-summary{display:block;padding:13px 14px;border:1px solid #f0d8de;border-radius:15px;background:#fff8fa;margin-bottom:12px}.bi-summary strong{font-size:24px;color:var(--wine);display:block}.bi-summary span{font-size:11px;color:var(--muted)}.bi-progress{height:8px;border-radius:8px;background:#eee7e9;overflow:hidden;margin-top:8px}.bi-progress i{display:block;height:100%;background:linear-gradient(90deg,var(--wine-dark),var(--wine));border-radius:inherit}.bi-list{display:grid;gap:8px;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:13px;background:#fff;width:100%;max-width:100%;min-width:0;overflow:hidden}.bi-row.done{opacity:.72;background:#fafafa}.bi-row-copy{flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden}.bi-row-copy strong{display:block;font-size:12px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-copy span{display:block;font-size:10px;color:var(--muted);margin-top:3px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}.bi-row-action{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:#fff;cursor:pointer;display:grid;place-items:center;flex:0 0 auto}.bi-row-action.complete{background:#1fa361;color:#fff;border-color:#1a8a53}.bi-row-action.menu{color:var(--wine);font-size:18px}.bi-empty{text-align:center;padding:30px 10px;color:var(--muted);font-size:12px}',
-      '.bi-form-layer{position:fixed;inset:0;z-index:100;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-form-layer.open{display:flex}.bi-form{width:min(520px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:#fff;border-radius:22px;padding:20px;box-shadow:0 25px 70px rgba(48,19,27,.35)}.bi-form-head{display:flex;align-items:center;gap:10px;margin-bottom:15px}.bi-form-head h3{margin:0;flex:1}.bi-field{margin:12px 0}.bi-field label{display:block;font-size:10px;font-weight:800;color:#665b5f;margin-bottom:6px}.bi-field input,.bi-field select{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px;outline:none}.bi-rule{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bi-rule label{border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center;cursor:pointer}.bi-rule label:has(input:checked){border-color:var(--wine);background:#fff0f3;color:var(--wine)}.bi-number-wrap{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.bi-percent{height:44px;min-width:52px;border:1px solid var(--line);border-radius:12px;display:flex!important;align-items:center;justify-content:center;gap:5px;padding:0 9px;margin:0!important}.bi-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.bi-secondary,.bi-primary{border:0;border-radius:12px;padding:10px 15px;cursor:pointer}.bi-secondary{background:#f4edef}.bi-primary{background:var(--wine);color:#fff;font-weight:800}',
+      '.bi-form-layer{position:fixed;inset:0;z-index:100;background:rgba(37,19,24,.52);display:none;align-items:center;justify-content:center;padding:16px}.bi-form-layer.open{display:flex}.bi-form{width:min(520px,100%);max-height:calc(100dvh - 32px);overflow:auto;background:#fff;border-radius:22px;padding:20px;box-shadow:0 25px 70px rgba(48,19,27,.35)}.bi-form-head{display:flex;align-items:center;gap:10px;margin-bottom:15px}.bi-form-head h3{margin:0;flex:1}.bi-field{margin:12px 0}.bi-field label{display:block;font-size:10px;font-weight:800;color:#665b5f;margin-bottom:6px}.bi-field input,.bi-field select,.bi-field textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px;outline:none}.bi-field textarea{min-height:92px;resize:vertical;font:inherit}.bi-rule{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bi-rule label{border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center;cursor:pointer}.bi-rule label:has(input:checked){border-color:var(--wine);background:#fff0f3;color:var(--wine)}.bi-number-wrap{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.bi-percent{height:44px;min-width:52px;border:1px solid var(--line);border-radius:12px;display:flex!important;align-items:center;justify-content:center;gap:5px;padding:0 9px;margin:0!important}.bi-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}.bi-secondary,.bi-primary{border:0;border-radius:12px;padding:10px 15px;cursor:pointer}.bi-secondary{background:#f4edef}.bi-primary{background:var(--wine);color:#fff;font-weight:800}.bi-target-description{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;color:#5f5559}.bi-target-info-row{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line)}.bi-target-info-row span{font-size:10px;color:var(--muted);font-weight:800}.bi-target-info-row strong{text-align:right;font-size:12px}',
       '.top #roomTitle{font-size:34px!important;line-height:1.08!important;font-weight:800!important;letter-spacing:-.02em;white-space:normal;overflow-wrap:anywhere;word-break:break-word}.group-title{min-width:0;flex:1 1 auto}',
       '.bi-pop .bi-create-icon,.bi-attach-option span{width:30px;height:30px;border-radius:9px;background:#f3f4f5;color:#71767d;display:grid;place-items:center;flex:0 0 auto}.bi-create-icon svg,.bi-attach-option span svg,.bi-target-menu svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.bi-create-option{display:flex!important;align-items:center;gap:10px;color:#4f555b!important}.bi-create-option:hover,.bi-attach-option:hover{color:#2f3438!important;background:#f7f8f9!important}.top #chatSearch,.top #roomCreateTask,.top .close{width:40px!important;height:40px!important;min-width:40px!important;border:1px solid var(--line)!important;border-radius:13px!important;background:#fff!important;color:var(--wine)!important;display:grid!important;place-items:center!important;padding:0!important;box-shadow:none!important}.top #chatSearch:hover,.top #roomCreateTask:hover,.top .close:hover{background:#fff0f3!important}.bi-target-menu{position:fixed;z-index:120;min-width:150px;padding:6px;border:1px solid var(--line);border-radius:13px;background:#fff;box-shadow:0 14px 40px rgba(45,24,30,.2);display:none}.bi-target-menu.open{display:grid}.bi-target-menu button{border:0;background:#fff;padding:10px 12px;border-radius:9px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:9px;color:#555b61}.bi-target-menu button:hover{background:#fff0f3;color:var(--wine)}.bi-camera-layer{position:fixed;inset:0;z-index:140;background:#111;display:none;flex-direction:column}.bi-camera-layer.open{display:flex}.bi-camera-video{flex:1;width:100%;min-height:0;object-fit:cover;background:#000}.bi-camera-controls{display:flex;align-items:center;justify-content:center;gap:18px;padding:18px max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom));background:#111}.bi-camera-shot{width:68px;height:68px;border:6px solid #fff;border-radius:50%;background:#ddd;cursor:pointer}.bi-camera-close{position:absolute;z-index:2;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));width:42px;height:42px;border:1px solid rgba(255,255,255,.5);border-radius:13px;background:rgba(0,0,0,.35);color:#fff;font-size:20px;cursor:pointer}',
       '.bi-goodjob{text-align:center}.bi-thumb{font-size:58px;display:block;animation:biThumb .65s ease both}.bi-goodjob h3{font-size:24px;margin:8px 0 4px;color:#197149}.bi-goodjob p{font-size:12px;color:var(--muted);line-height:1.5}@keyframes biThumb{0%{transform:scale(.25) rotate(-18deg);opacity:0}65%{transform:scale(1.18) rotate(8deg);opacity:1}100%{transform:scale(1) rotate(0)}}',
@@ -410,6 +463,7 @@
   function createTargetMessage(meta) {
     var period = periodKey(meta.month, meta.year);
     var human = '🎯 Target dibuat: ' + meta.goal + '\n' + (meta.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(meta.value) + (meta.percent ? '%' : '') + ' · ' + monthName(meta.month) + ' ' + meta.year;
+    if (meta.description) human += '\nDeskripsi: ' + meta.description;
     return human + '\n' + targetMarker(period, 'CREATE', meta);
   }
   function completeTargetMessage(target, actual, achieved) {
@@ -431,8 +485,9 @@
           if (event.type === 'DELETE' && event.payload.id) creates[event.payload.id] = Object.assign({}, creates[event.payload.id] || {}, { deleted: true, deletedAt: item.createdAt });
         });
       });
-      return Object.keys(creates).filter(function (id) { return !creates[id].deleted; }).map(function (id) {
+      return Object.keys(creates).filter(function (id) { return !!creates[id].goal; }).map(function (id) {
         var target = creates[id], completion = completes[id] || null;
+        target.deleted = !!target.deleted || targetDeleteIsPending(roomId, id);
         target.completion = completion;
         return target;
       });
@@ -486,6 +541,7 @@
   function editTargetMessage(meta) {
     var period = periodKey(meta.month, meta.year);
     var human = '🎯 Target diperbarui: ' + meta.goal + '\n' + (meta.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(meta.value) + (meta.percent ? '%' : '') + ' · ' + monthName(meta.month) + ' ' + meta.year;
+    if (meta.description) human += '\nDeskripsi: ' + meta.description;
     return human + '\n' + targetMarker(period, 'EDIT', meta);
   }
 
@@ -501,7 +557,7 @@
     menu = document.createElement('div');
     menu.id = 'biTargetMenu';
     menu.className = 'bi-target-menu';
-    menu.innerHTML = '<button type="button" id="biTargetEdit">'+svgIcon('edit')+'<span>Edit</span></button><button type="button" id="biTargetDelete">'+svgIcon('delete')+'<span>Hapus</span></button>';
+    menu.innerHTML = '<button type="button" id="biTargetDescription">'+svgIcon('document')+'<span>Deskripsi</span></button><button type="button" id="biTargetCompletionInfo">'+svgIcon('info')+'<span>Informasi Penyelesaian</span></button><button type="button" id="biTargetEdit">'+svgIcon('edit')+'<span>Edit</span></button><button type="button" id="biTargetDelete">'+svgIcon('delete')+'<span>Hapus</span></button>';
     document.body.appendChild(menu);
     document.addEventListener('click', function (e) {
       if (!e.target.closest('#biTargetMenu') && !e.target.closest('[data-target-menu]')) menu.classList.remove('open');
@@ -514,13 +570,30 @@
     selectedTarget = target;
     menu.classList.add('open');
     var rect = anchor.getBoundingClientRect();
-    var width = 160;
+    var width = 220;
     menu.style.left = Math.max(10, Math.min(global.innerWidth - width - 10, rect.right - width)) + 'px';
-    menu.style.top = Math.min(global.innerHeight - 110, rect.bottom + 6) + 'px';
+    menu.style.top = Math.max(10, Math.min(global.innerHeight - 218, rect.bottom + 6)) + 'px';
+    q('biTargetDescription').onclick = function () {
+      menu.classList.remove('open');
+      q('biTargetDetailTitle').textContent = 'Deskripsi Target';
+      q('biTargetDetailBody').innerHTML = '<h4>' + esc(target.goal) + '</h4><p class="bi-target-description">' + esc(target.description || 'Tidak ada deskripsi.') + '</p>';
+      q('biTargetDetailLayer').classList.add('open');
+    };
+    q('biTargetCompletionInfo').onclick = function () {
+      menu.classList.remove('open');
+      var completion = target.completion, unit = target.percent ? '%' : '';
+      var status = completion ? (completion.achieved ? 'Tercapai' : 'Tidak tercapai') : 'Belum diselesaikan';
+      var details = '<div class="bi-target-info-row"><span>STATUS</span><strong>' + esc(status) + '</strong></div>' +
+        '<div class="bi-target-info-row"><span>TARGET</span><strong>' + esc((target.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(target.value) + unit) + '</strong></div>';
+      if (completion) details += '<div class="bi-target-info-row"><span>REALISASI</span><strong>' + esc(formatThousands(completion.actual) + unit) + '</strong></div><div class="bi-target-info-row"><span>DISELESAIKAN OLEH</span><strong>' + esc(completion.completedBy || '-') + '</strong></div><div class="bi-target-info-row"><span>WAKTU</span><strong>' + esc(completion.completedAt ? new Date(completion.completedAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) + ' WIB' : '-') + '</strong></div>';
+      q('biTargetDetailTitle').textContent = 'Informasi Penyelesaian';
+      q('biTargetDetailBody').innerHTML = '<h4>' + esc(target.goal) + '</h4>' + details;
+      q('biTargetDetailLayer').classList.add('open');
+    };
     q('biTargetEdit').onclick = function () {
       menu.classList.remove('open');
       openTargetForm({
-        id: target.id, goal: target.goal, rule: target.rule, value: target.value,
+        id: target.id, goal: target.goal, description: target.description, rule: target.rule, value: target.value,
         percent: target.percent, month: target.month, year: target.year
       });
     };
@@ -528,12 +601,28 @@
       menu.classList.remove('open');
       if (!global.confirm('Hapus target "' + target.goal + '"?')) return;
       var roomId = activeRoomId();
+      var previousItems = targetPanelRoomId === roomId ? targetPanelItems.slice() : [];
+      setTargetDeletePending(roomId, target.id, true);
       updateTargetCacheOptimistically(roomId, target, 'delete');
-      renderTargetPanel();
+      if (targetPanelRoomId === roomId) {
+        targetPanelItems = previousItems.map(function (item) {
+          return item.id === target.id ? Object.assign({}, item, { deleted: true, deletedAt: new Date().toISOString() }) : item;
+        });
+        renderTargetSnapshot(targetPanelItems, panelRenderRequest, roomId);
+      }
       toast('Target dihapus.');
       api('chatSend', [token, { roomId: roomId, body: deleteTargetMessage(target), attachments: [] }])
-        .then(function () { preloadTargets(roomId, true); })
-        .catch(function (e) { toast('Target gagal dihapus: ' + e.message); });
+        .then(function () { return preloadTargets(roomId, true); })
+        .catch(function (e) {
+          setTargetDeletePending(roomId, target.id, false);
+          updateTargetCacheOptimistically(roomId, target, 'restore');
+          if (activeRoomId() === roomId && q('biPanelLayer').classList.contains('open') && q('biPanelLayer').dataset.tab === 'target') {
+            targetPanelItems = previousItems;
+            targetPanelRoomId = roomId;
+            renderTargetSnapshot(targetPanelItems, panelRenderRequest, roomId);
+          }
+          toast('Target gagal dihapus: ' + e.message);
+        });
     };
   }
 
@@ -747,7 +836,8 @@
     for (var m = 1; m <= 12; m += 1) months += '<option value="' + m + '">' + monthName(m) + '</option>';
     for (var y = now.getFullYear() - 2; y <= now.getFullYear() + 3; y += 1) years += '<option value="' + y + '">' + y + '</option>';
     document.body.insertAdjacentHTML('beforeend',
-      '<div class="bi-form-layer" id="biTargetFormLayer"><div class="bi-form"><div class="bi-form-head"><h3>Create Target</h3><button class="bi-x" data-bi-close="biTargetFormLayer">✕</button></div><div class="bi-field"><label>APA YANG INGIN DICAPAI</label><input id="biTargetGoal" maxlength="180" placeholder="Contoh: Tambahan Sales B2B"></div><div class="bi-field"><label>TARGET</label><div class="bi-rule"><label><input type="radio" name="biTargetRule" value="MIN" checked> Minimal</label><label><input type="radio" name="biTargetRule" value="MAX"> Maksimal</label></div></div><div class="bi-field"><label>NILAI TARGET</label><div class="bi-number-wrap"><input id="biTargetValue" type="text" inputmode="numeric" autocomplete="off" placeholder="0"><label class="bi-percent"><input id="biTargetPercent" type="checkbox"> %</label></div></div><div class="bi-field"><label>BULAN & TAHUN</label><div class="bi-rule"><select id="biTargetMonth">' + months + '</select><select id="biTargetYear">' + years + '</select></div></div><div class="bi-actions"><button class="bi-secondary" data-bi-close="biTargetFormLayer">Batal</button><button class="bi-primary" id="biSaveTarget">Buat Target</button></div></div></div>' +
+      '<div class="bi-form-layer" id="biTargetFormLayer"><div class="bi-form"><div class="bi-form-head"><h3>Create Target</h3><button class="bi-x" data-bi-close="biTargetFormLayer">✕</button></div><div class="bi-field"><label>APA YANG INGIN DICAPAI</label><input id="biTargetGoal" maxlength="180" placeholder="Contoh: Tambahan Sales B2B"></div><div class="bi-field"><label>DESKRIPSI</label><textarea id="biTargetDescription" maxlength="1200" placeholder="Tambahkan penjelasan target..."></textarea></div><div class="bi-field"><label>TARGET</label><div class="bi-rule"><label><input type="radio" name="biTargetRule" value="MIN" checked> Minimal</label><label><input type="radio" name="biTargetRule" value="MAX"> Maksimal</label></div></div><div class="bi-field"><label>NILAI TARGET</label><div class="bi-number-wrap"><input id="biTargetValue" type="text" inputmode="numeric" autocomplete="off" placeholder="0"><label class="bi-percent"><input id="biTargetPercent" type="checkbox"> %</label></div></div><div class="bi-field"><label>BULAN & TAHUN</label><div class="bi-rule"><select id="biTargetMonth">' + months + '</select><select id="biTargetYear">' + years + '</select></div></div><div class="bi-actions"><button class="bi-secondary" data-bi-close="biTargetFormLayer">Batal</button><button class="bi-primary" id="biSaveTarget">Buat Target</button></div></div></div>' +
+      '<div class="bi-form-layer" id="biTargetDetailLayer"><div class="bi-form"><div class="bi-form-head"><h3 id="biTargetDetailTitle">Target</h3><button class="bi-x" data-bi-close="biTargetDetailLayer">✕</button></div><div id="biTargetDetailBody"></div></div></div>' +
       '<div class="bi-form-layer" id="biActualLayer"><div class="bi-form"><div class="bi-form-head"><h3>Realisasi Target</h3><button class="bi-x" data-bi-close="biActualLayer">✕</button></div><p id="biActualQuestion" style="font-size:13px;line-height:1.5"></p><div class="bi-field"><label>REALISASI</label><div class="bi-number-wrap"><input id="biActualValue" type="text" inputmode="numeric" autocomplete="off"><strong id="biActualUnit"></strong></div></div><div class="bi-actions"><button class="bi-secondary" data-bi-close="biActualLayer">Batal</button><button class="bi-primary" id="biSubmitActual">OK</button></div></div></div>' +
       '<div class="bi-form-layer" id="biResultLayer"><div class="bi-form"><div id="biResultBody"></div><div class="bi-actions" style="justify-content:center"><button class="bi-primary" id="biResultNext">Lanjut</button></div></div></div>' +
       '<div class="bi-form-layer" id="biRepeatLayer"><div class="bi-form"><div class="bi-form-head"><h3>Target Bulan Depan</h3></div><p style="font-size:13px;line-height:1.5">Apakah target ini akan diulang untuk bulan depan?</p><div class="bi-actions"><button class="bi-secondary" id="biRepeatNo">Tidak</button><button class="bi-primary" id="biRepeatYes">Ya</button></div></div></div>' +
@@ -767,6 +857,7 @@
     if (!currentRoomObject()) { toast('Pilih group terlebih dahulu.'); return; }
     var now = new Date();
     q('biTargetGoal').value = prefill.goal || '';
+    q('biTargetDescription').value = prefill.description || '';
     q('biTargetValue').value = prefill.value != null ? formatThousands(prefill.value) : '';
     q('biTargetPercent').checked = !!prefill.percent;
     q('biTargetMonth').value = String(prefill.month || now.getMonth() + 1);
@@ -776,12 +867,12 @@
   }
 
   function saveTarget() {
-    var roomId = activeRoomId(), goal = q('biTargetGoal').value.trim(), raw = q('biTargetValue').value.trim(), value = parseFormattedNumber(raw);
+    var roomId = activeRoomId(), goal = q('biTargetGoal').value.trim(), description = q('biTargetDescription').value.trim(), raw = q('biTargetValue').value.trim(), value = parseFormattedNumber(raw);
     var rule = (document.querySelector('input[name="biTargetRule"]:checked') || {}).value || 'MIN';
     var month = Number(q('biTargetMonth').value), year = Number(q('biTargetYear').value), percent = q('biTargetPercent').checked;
     if (!goal) return toast('Apa yang ingin dicapai wajib diisi.');
     if (!raw || !isFinite(value)) return toast('Target harus berupa angka.');
-    var editId = q('biTargetFormLayer').dataset.editId || ''; var meta = { id: editId || uuid(), goal: goal, rule: rule, value: value, percent: percent, month: month, year: year, createdAt: new Date().toISOString() };
+    var editId = q('biTargetFormLayer').dataset.editId || ''; var meta = { id: editId || uuid(), goal: goal, description: description, rule: rule, value: value, percent: percent, month: month, year: year, createdAt: new Date().toISOString() };
     var button = q('biSaveTarget'); button.disabled = true; button.textContent = 'Menyimpan...';
     q('biTargetFormLayer').classList.remove('open'); q('biTargetFormLayer').dataset.editId = '';
     updateTargetCacheOptimistically(roomId, meta, 'upsert');
@@ -829,7 +920,7 @@
     var raw = q('biRepeatValue').value.trim(), value = parseFormattedNumber(raw);
     if (!raw || !isFinite(value)) return toast('Target bulan depan harus berupa angka.');
     var month = Number(q('biRepeatValueLayer').dataset.month), year = Number(q('biRepeatValueLayer').dataset.year);
-    var meta = { id: uuid(), goal: selectedTarget.goal, rule: selectedTarget.rule, value: value, percent: selectedTarget.percent, month: month, year: year, repeatFrom: selectedTarget.id, createdAt: new Date().toISOString() };
+    var meta = { id: uuid(), goal: selectedTarget.goal, description: selectedTarget.description || '', rule: selectedTarget.rule, value: value, percent: selectedTarget.percent, month: month, year: year, repeatFrom: selectedTarget.id, createdAt: new Date().toISOString() };
     api('chatSend', [token, { roomId: activeRoomId(), body: createTargetMessage(meta), attachments: [] }]).then(function () {
       q('biRepeatValueLayer').classList.remove('open'); toast('Target bulan depan berhasil dibuat.'); selectedTarget = null; openGroupPanel('target');
     }).catch(function (e) { toast(e.message); });
@@ -873,24 +964,54 @@
     return request === panelRenderRequest && q('biPanelLayer').classList.contains('open') && q('biPanelLayer').dataset.tab === tab;
   }
 
+  function renderTargetSnapshot(targets, request, roomId) {
+    if (!panelRenderIsCurrent(request, 'target') || activeRoomId() !== roomId) return;
+    targets = (targets || []).slice().sort(function (a, b) {
+      var ax = !!a.deleted, bx = !!b.deleted;
+      if (ax !== bx) return ax ? 1 : -1;
+      var ad = !!a.completion, bd = !!b.completion;
+      if (ad !== bd) return ad ? 1 : -1;
+      return String(a.goal).localeCompare(String(b.goal));
+    });
+    targetPanelItems = targets.slice();
+    targetPanelRoomId = roomId;
+    var activeTargets = targets.filter(function (t) { return !t.deleted; });
+    var done = activeTargets.filter(function (t) { return !!t.completion; }).length, percent = activeTargets.length ? Math.round(done * 100 / activeTargets.length) : 0;
+    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Target complete · ' + done + ' dari ' + activeTargets.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
+    q('biDashList').innerHTML = targets.length ? targets.map(function (t, index) {
+      var deleted = !!t.deleted, comp = t.completion;
+      var desc = deleted ? 'Dihapus' : (t.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(t.value) + (t.percent ? '%' : '');
+      if (!deleted && comp) desc += ' · Realisasi ' + formatThousands(comp.actual) + (t.percent ? '%' : '') + (comp.achieved ? ' · Tercapai' : ' · Tidak tercapai');
+      else if (!deleted) desc += ' · Belum diselesaikan';
+      return '<article class="bi-row' + (comp || deleted ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.goal) + '</strong><span>' + esc(desc) + '</span></div>' + (!deleted && !comp ? '<button class="bi-row-action complete" data-target-index="' + index + '" title="Isi realisasi">✓</button>' : '') + (!deleted ? '<button class="bi-row-action menu" data-target-menu="' + index + '" title="Edit / Hapus">⋮</button>' : '') + '</article>';
+    }).join('') : '<div class="bi-empty">Belum ada Target pada ' + monthName(Number(q('biDashMonth').value)) + ' ' + Number(q('biDashYear').value) + '.</div>';
+    Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-target-index]'), function (b) { b.onclick = function () { startTargetCompletion(targets[Number(b.dataset.targetIndex)]); }; });
+    Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-target-menu]'), function (b) { b.onclick = function () { openTargetMenu(targets[Number(b.dataset.targetMenu)], b); }; });
+  }
+
   function renderTargetPanel(request) {
-    var month = Number(q('biDashMonth').value), year = Number(q('biDashYear').value);
+    var roomId = activeRoomId(), month = Number(q('biDashMonth').value), year = Number(q('biDashYear').value);
     fetchTargets(month, year).then(function (targets) {
-      if (!panelRenderIsCurrent(request, 'target')) return;
-      targets.sort(function (a, b) { var ad = !!a.completion, bd = !!b.completion; if (ad !== bd) return ad ? 1 : -1; return String(a.goal).localeCompare(String(b.goal)); });
-      var done = targets.filter(function (t) { return !!t.completion; }).length, percent = targets.length ? Math.round(done * 100 / targets.length) : 0;
-      q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Target complete · ' + done + ' dari ' + targets.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
-      q('biDashList').innerHTML = targets.length ? targets.map(function (t, index) {
-        var comp = t.completion, desc = (t.rule === 'MAX' ? 'Maksimal ' : 'Minimal ') + formatThousands(t.value) + (t.percent ? '%' : '');
-        if (comp) desc += ' · Realisasi ' + formatThousands(comp.actual) + (t.percent ? '%' : '') + (comp.achieved ? ' · Tercapai' : ' · Tidak tercapai');
-        else desc += ' · Belum diselesaikan';
-        return '<article class="bi-row' + (comp ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.goal) + '</strong><span>' + esc(desc) + '</span></div>' + (!comp ? '<button class="bi-row-action complete" data-target-index="' + index + '" title="Isi realisasi">✓</button>' : '') + '<button class="bi-row-action menu" data-target-menu="' + index + '" title="Edit / Hapus">⋮</button></article>';
-      }).join('') : '<div class="bi-empty">Belum ada Target pada ' + monthName(month) + ' ' + year + '.</div>';
-      Array.prototype.forEach.call(document.querySelectorAll('[data-target-index]'), function (b) { b.onclick = function () { startTargetCompletion(targets[Number(b.dataset.targetIndex)]); }; });
-      Array.prototype.forEach.call(document.querySelectorAll('[data-target-menu]'), function (b) { b.onclick = function () { openTargetMenu(targets[Number(b.dataset.targetMenu)], b); }; });
+      renderTargetSnapshot(targets, request, roomId);
     }).catch(function (e) {
-      if (!panelRenderIsCurrent(request, 'target')) return;
+      if (!panelRenderIsCurrent(request, 'target') || activeRoomId() !== roomId) return;
       q('biDashList').innerHTML = '<div class="bi-empty">' + esc(e.message) + '</div>';
+    });
+  }
+
+  function taskViewForMonth(task, month, year) {
+    var created = new Date(task.createdAt || 0), start = new Date(year, month - 1, 1), next = new Date(year, month, 1);
+    if (isNaN(created.getTime()) || created >= next) return null;
+    var currentStatus = String(task.status || 'OPEN').toUpperCase();
+    var terminal = task.completedAt ? new Date(task.completedAt) : null;
+    var hasTerminal = terminal && !isNaN(terminal.getTime());
+    if (currentStatus !== 'OPEN' && hasTerminal && terminal < start) return null;
+    if (currentStatus !== 'OPEN' && !hasTerminal && (created < start || created >= next)) return null;
+    var statusInMonth = currentStatus !== 'OPEN' && hasTerminal && terminal >= next ? 'OPEN' : currentStatus;
+    return Object.assign({}, task, {
+      status: statusInMonth,
+      carriedFromPreviousMonth: created < start,
+      originalCreatedAt: task.createdAt
     });
   }
 
@@ -898,15 +1019,25 @@
     data = data || { open: [], history: [] };
     var openById = {};
     var open = (data.open || []).map(function (t) { openById[t.id] = true; return Object.assign({}, t, { status: 'OPEN' }); });
-    var tasks = open.concat(data.history || []).filter(function (t) { var d = new Date(t.createdAt || 0); return !isNaN(d.getTime()) && d.getMonth() + 1 === month && d.getFullYear() === year; });
-    var uniq = {}, merged = []; tasks.forEach(function (t) { if (!uniq[t.id]) { uniq[t.id] = true; merged.push(t); } }); tasks = merged;
-    tasks.sort(function (a, b) { var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
-    var done = tasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = tasks.length ? Math.round(done * 100 / tasks.length) : 0;
-    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
+    var candidates = open.concat(data.history || []), uniq = {}, tasks = [];
+    candidates.forEach(function (task) {
+      if (uniq[task.id]) return;
+      uniq[task.id] = true;
+      var view = taskViewForMonth(task, month, year);
+      if (view) tasks.push(view);
+    });
+    tasks.sort(function (a, b) { var ax = a.status === 'DELETED', bx = b.status === 'DELETED'; if (ax !== bx) return ax ? 1 : -1; var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
+    var activeTasks = tasks.filter(function (t) { return t.status !== 'DELETED'; });
+    var done = activeTasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = activeTasks.length ? Math.round(done * 100 / activeTasks.length) : 0;
+    q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + activeTasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
     q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) {
       var isDone = t.status !== 'OPEN', canComplete = !isDone && !!openById[t.id], completed = Number(t.completed || 0), total = Number(t.total || 0);
       var statusText = isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : canComplete ? 'Belum selesai' : total ? completed + ' dari ' + total + ' selesai' : 'Sedang berjalan';
-      return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + esc(statusText) + '</span></div>' + (canComplete ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>';
+      if (t.carriedFromPreviousMonth) {
+        var created = new Date(t.originalCreatedAt || 0);
+        statusText += ' · Lanjutan dari ' + monthName(created.getMonth() + 1) + ' ' + created.getFullYear();
+      }
+      return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + esc(statusText) + '</span></div>' + (canComplete ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + (t.status !== 'DELETED' ? '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button>' : '') + '</article>';
     }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
     Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-task-complete]'), function (b) {
       b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); openTaskCompleteFromPanel(b.dataset.taskComplete); };
@@ -926,7 +1057,14 @@
     var openRequest = refreshBootstrap().then(function () { renderCurrentTaskPanel(roomId); });
     var historyRequest = api('chatRoomDetails', [token, roomId]).then(function (details) {
       var cached = getCachedRoomData(roomId) || buildRoomTaskCache(roomId) || { open: [], history: [] };
-      cached.history = (details.history || []).slice();
+      var history = (details.history || []).slice();
+      Object.keys(taskStatusPending).forEach(function (key) {
+        var pending = taskStatusPending[key];
+        if (!pending || pending.roomId !== roomId) return;
+        var serverTask = history.find(function (task) { return String(task.id) === String(pending.task.id); });
+        if (serverTask && String(serverTask.status || '').toUpperCase() === String(pending.task.status || '').toUpperCase()) delete taskStatusPending[key];
+      });
+      cached.history = applyPendingTaskStatuses(roomId, history);
       roomCache[roomId] = { at: cacheNow(), data: cached };
       renderCurrentTaskPanel(roomId);
     });
@@ -949,7 +1087,7 @@
   }
 
   function boot() {
-    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
+    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); global.addEventListener('bi:task-status', function (event) { applyHostTaskStatus(event.detail || {}); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });
