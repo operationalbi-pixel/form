@@ -944,18 +944,43 @@
     });
   }
 
+  function taskViewForMonth(task, month, year) {
+    var created = new Date(task.createdAt || 0), start = new Date(year, month - 1, 1), next = new Date(year, month, 1);
+    if (isNaN(created.getTime()) || created >= next) return null;
+    var currentStatus = String(task.status || 'OPEN').toUpperCase();
+    var terminal = task.completedAt ? new Date(task.completedAt) : null;
+    var hasTerminal = terminal && !isNaN(terminal.getTime());
+    if (currentStatus !== 'OPEN' && hasTerminal && terminal < start) return null;
+    if (currentStatus !== 'OPEN' && !hasTerminal && (created < start || created >= next)) return null;
+    var statusInMonth = currentStatus !== 'OPEN' && hasTerminal && terminal >= next ? 'OPEN' : currentStatus;
+    return Object.assign({}, task, {
+      status: statusInMonth,
+      carriedFromPreviousMonth: created < start,
+      originalCreatedAt: task.createdAt
+    });
+  }
+
   function renderTaskSnapshot(roomId, month, year, data) {
     data = data || { open: [], history: [] };
     var openById = {};
     var open = (data.open || []).map(function (t) { openById[t.id] = true; return Object.assign({}, t, { status: 'OPEN' }); });
-    var tasks = open.concat(data.history || []).filter(function (t) { var d = new Date(t.createdAt || 0); return !isNaN(d.getTime()) && d.getMonth() + 1 === month && d.getFullYear() === year; });
-    var uniq = {}, merged = []; tasks.forEach(function (t) { if (!uniq[t.id]) { uniq[t.id] = true; merged.push(t); } }); tasks = merged;
+    var candidates = open.concat(data.history || []), uniq = {}, tasks = [];
+    candidates.forEach(function (task) {
+      if (uniq[task.id]) return;
+      uniq[task.id] = true;
+      var view = taskViewForMonth(task, month, year);
+      if (view) tasks.push(view);
+    });
     tasks.sort(function (a, b) { var ad = a.status !== 'OPEN', bd = b.status !== 'OPEN'; if (ad !== bd) return ad ? 1 : -1; return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); });
     var done = tasks.filter(function (t) { return t.status !== 'OPEN'; }).length, percent = tasks.length ? Math.round(done * 100 / tasks.length) : 0;
     q('biDashSummary').innerHTML = '<strong>' + percent + '%</strong><span>Penyelesaian Task · ' + done + ' dari ' + tasks.length + '</span><div class="bi-progress"><i style="width:' + percent + '%"></i></div>';
     q('biDashList').innerHTML = tasks.length ? tasks.map(function (t) {
       var isDone = t.status !== 'OPEN', canComplete = !isDone && !!openById[t.id], completed = Number(t.completed || 0), total = Number(t.total || 0);
       var statusText = isDone ? (t.status === 'DELETED' ? 'Dihapus' : 'Selesai') : canComplete ? 'Belum selesai' : total ? completed + ' dari ' + total + ' selesai' : 'Sedang berjalan';
+      if (t.carriedFromPreviousMonth) {
+        var created = new Date(t.originalCreatedAt || 0);
+        statusText += ' · Lanjutan dari ' + monthName(created.getMonth() + 1) + ' ' + created.getFullYear();
+      }
       return '<article class="bi-row' + (isDone ? ' done' : '') + '"><div class="bi-row-copy"><strong>' + esc(t.title) + '</strong><span>' + esc(statusText) + '</span></div>' + (canComplete ? '<button class="bi-row-action complete" data-task-complete="' + esc(t.id) + '">✓</button>' : '') + '<button class="bi-row-action menu" data-task-menu="' + esc(t.id) + '">⋮</button></article>';
     }).join('') : '<div class="bi-empty">Belum ada Task pada ' + monthName(month) + ' ' + year + '.</div>';
     Array.prototype.forEach.call(q('biDashList').querySelectorAll('[data-task-complete]'), function (b) {
