@@ -14033,9 +14033,16 @@ return Object.freeze({
 }());
 
 function salesAnalysisOutletDirectory_() {
-  var codes = readActiveOutlets_();
-  var directory = null;
-  try { directory = readStoreCodeDirectory_(); } catch (error) { console.warn(error.message); }
+  var directory = null, codes = [];
+  try {
+    directory = readStoreCodeDirectory_();
+    codes = Object.keys(directory.byCode || {}).sort();
+  } catch (error) {
+    console.warn(error.message);
+    // Keep Sales Analysis available if the outlet master is temporarily unreadable.
+    // Employee status is only a fallback and must not control the normal outlet list.
+    codes = readActiveOutlets_();
+  }
   var rows = [{ code: 'BIHQ', name: 'Head Office (Summary)', role: 'admin' }];
   codes.forEach(function (code) {
     code = String(code || '').trim().toUpperCase();
