@@ -529,6 +529,9 @@ if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.inclu
 if (!backend.includes("return code === 'BIPM' ? 'BIPIM' : code")) {
   failures.push('Alias outlet BIPM/BIPIM Analisa Sales belum dinormalisasi');
 }
+if (!backend.includes('var reportOutlets = outlets.filter') || !backend.includes('excludedOutlets:excludedOutlets')) {
+  failures.push('Daily Report belum mengecualikan outlet tanpa target pada bulan berjalan');
+}
 const clientActions = new Set();
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   for (const match of (await text(path)).matchAll(/(?:server|call)\(\s*['"]([^'"]+)['"]/g)) clientActions.add(match[1]);

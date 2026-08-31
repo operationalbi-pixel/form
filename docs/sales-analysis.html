@@ -896,7 +896,7 @@ document.getElementById('dailyTargetFile').addEventListener('change', async even
     delete state.targetsCache[state.year+'-'+pad2(state.month)];
     toast(result.savedRows+' target harian tersimpan');
     if(result.missingOutlets && result.missingOutlets.length){
-      window.alert('Upload berhasil untuk '+result.uploadedOutlets.length+' outlet.\n\nOutlet yang belum ada di file: '+result.missingOutlets.join(', ')+'.\nDaily Report belum dapat disalin sampai target outlet tersebut dilengkapi.');
+      window.alert('Upload berhasil untuk '+result.uploadedOutlets.length+' outlet.\n\nOutlet tanpa target bulan ini: '+result.missingOutlets.join(', ')+'.\nOutlet tersebut tidak akan masuk ranking maupun total Daily Report.');
     }
     await loadMonth(state.year,state.month,true);
   }catch(error){ toast(error.message||'Upload target harian gagal', true); }

@@ -14210,15 +14210,28 @@ function getDailyReport(token, reportDate, outletRows) {
     var salesMap = bqGetDailyReportSales_(outletCodes, key);
     var monthlyTargets = bqGetTargetsMap_(year, month);
     var targetProgress = bqGetDailyTargetProgress_(outletCodes, year, month, day);
-    var missingOutlets = outletCodes.filter(function (code) {
-      var progress = targetProgress[code];
-      return !monthlyTargets[code] || !progress || progress.targetDays !== day;
+    var reportOutlets = outlets.filter(function (outlet) {
+      return Boolean(targetProgress[salesAnalysisCanonicalOutletCode_(outlet.code)]);
     });
-    if (missingOutlets.length) {
-      return { ok:false, error:'Target harian belum lengkap sampai tanggal ' + day + ' untuk: ' + missingOutlets.join(', ') + '.', missingOutlets:missingOutlets };
+    var excludedOutlets = outlets.filter(function (outlet) {
+      return !targetProgress[salesAnalysisCanonicalOutletCode_(outlet.code)];
+    }).map(function (outlet) {
+      return salesAnalysisCanonicalOutletCode_(outlet.code);
+    });
+    if (!reportOutlets.length) {
+      return { ok:false, error:'Belum ada target harian yang di-upload untuk bulan ini.' };
+    }
+    var incompleteOutlets = reportOutlets.map(function (outlet) {
+      return salesAnalysisCanonicalOutletCode_(outlet.code);
+    }).filter(function (code) {
+      var progress = targetProgress[code];
+      return !monthlyTargets[code] || progress.targetDays !== day;
+    });
+    if (incompleteOutlets.length) {
+      return { ok:false, error:'Target harian belum lengkap sampai tanggal ' + day + ' untuk: ' + incompleteOutlets.join(', ') + '.', incompleteOutlets:incompleteOutlets };
     }
 
-    var rows = outlets.map(function (outlet) {
+    var rows = reportOutlets.map(function (outlet) {
       var code = salesAnalysisCanonicalOutletCode_(outlet.code);
       var sales = salesMap[code] || { dailySales:0, mtdSales:0 };
       var monthlyTarget = Number(monthlyTargets[code]) || 0;
@@ -14255,7 +14268,7 @@ function getDailyReport(token, reportDate, outletRows) {
     lines.push('MTD ' + reportMillionsId_(total.mtdSales, 0) + '/' + reportMillionsId_(total.monthlyTarget, 0) + '/' +
       reportPercentId_(total.achievementPct, false) + '/' + reportPercentId_(total.variancePct, true));
 
-    return { ok:true, date:key, text:lines.join('\n'), rows:rows, total:total, dataSource:'BigQuery' };
+    return { ok:true, date:key, text:lines.join('\n'), rows:rows, total:total, excludedOutlets:excludedOutlets, dataSource:'BigQuery' };
   } catch (e) {
     Logger.log('Daily Report gagal: ' + e.message);
     return { ok:false, error:'Gagal membuat Daily Report: ' + e.message };
