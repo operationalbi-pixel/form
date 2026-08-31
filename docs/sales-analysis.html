@@ -81,6 +81,13 @@
   .topbar .actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
   .btn-icon{background:transparent;border:1px solid var(--rule);width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink);font-family:"JetBrains Mono",monospace;font-size:13px}
   .btn-icon:hover{background:var(--ink);color:#fff}
+  .daily-report-tools{display:none;align-items:center;gap:6px}
+  .daily-report-tools input[type=date]{height:30px;border:1px solid var(--rule);background:#fff;color:var(--ink);padding:0 7px;font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:700}
+  .btn-top{height:30px;border:1px solid var(--ink);background:#fff;color:var(--ink);padding:0 10px;font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:800;white-space:nowrap}
+  .btn-top:hover{background:var(--ink);color:#fff}
+  .btn-top.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn-top.primary:hover{background:#95172e}
+  .btn-top:disabled{opacity:.45;cursor:not-allowed}
 
   /* MAIN GRID */
   .main{display:grid;grid-template-columns:minmax(0,1fr) 380px;min-height:0;overflow:hidden}
@@ -416,6 +423,10 @@
     html,body{font-size:13px;overflow:auto;height:auto}
     .app{height:auto;min-height:100vh;grid-template-rows:auto 1fr}
     .topbar{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
+    .topbar .actions{width:100%;margin-left:0;flex-wrap:wrap}
+    .daily-report-tools{order:2;width:100%;display:none;flex-wrap:wrap}
+    .daily-report-tools input[type=date]{flex:1;min-width:125px}
+    .daily-report-tools .btn-top{flex:1}
     .meta{order:3;width:100%;flex-wrap:wrap;gap:8px}
     .meta .item{font-size:9px}
     .divider{display:none}
@@ -528,6 +539,12 @@
       <div class="item"><span class="live" id="syncStatus">Sinkron</span></div>
     </div>
     <div class="actions">
+      <div class="daily-report-tools" id="dailyReportTools">
+        <button class="btn-top" id="btnUploadDailyTargets" type="button">↑ Target Daily</button>
+        <input id="dailyReportDate" type="date" aria-label="Tanggal Daily Report" />
+        <button class="btn-top primary" id="btnCopyDailyReport" type="button">Copy Daily Report</button>
+        <input id="dailyTargetFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
+      </div>
       <button class="btn-icon" id="btnSettings" title="Set Target Bulanan" style="display:none">⚙</button>
       <button class="btn-icon" id="btnPrint" title="Cetak">⎙</button>
       <button class="btn-icon dashboard-back-standard" id="btnLogout" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
@@ -741,6 +758,8 @@
       getMonthDashboard:function(proxyToken,year,month,outlet){invoke('salesAnalysisDashboard',[year,month,outlet],success,failure)},
       getTargets:function(proxyToken,year,month){invoke('salesAnalysisTargets',[year,month],success,failure)},
       saveTargets:function(proxyToken,year,month,updates){invoke('salesAnalysisSaveTargets',[year,month,updates],success,failure)},
+      uploadDailyTargets:function(proxyToken,base64,fileName,year,month){invoke('salesAnalysisUploadDailyTargets',[base64,fileName,year,month],success,failure)},
+      getDailyReport:function(proxyToken,reportDate){invoke('salesAnalysisDailyReport',[reportDate],success,failure)},
       saveDaily:function(proxyToken,payload){invoke('salesAnalysisSaveDaily',[payload],success,failure)},
       saveWeekly:function(proxyToken,payload){invoke('salesAnalysisSaveWeekly',[payload],success,failure)},
       saveMonthly:function(proxyToken,payload){invoke('salesAnalysisSaveMonthly',[payload],success,failure)},
@@ -833,6 +852,71 @@ document.getElementById('btnLogout').addEventListener('click', ()=>{
   location.href='index.html';
 });
 
+function fileAsBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>resolve(String(reader.result||'').split(',').pop()||'');
+    reader.onerror = ()=>reject(new Error('File Excel tidak dapat dibaca.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function copyPlainText(text){
+  if(navigator.clipboard && window.isSecureContext){
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly','');
+  area.style.position='fixed'; area.style.opacity='0'; area.style.pointerEvents='none';
+  document.body.appendChild(area); area.select();
+  const copied = document.execCommand('copy');
+  area.remove();
+  if(!copied) throw new Error('Clipboard tidak tersedia.');
+}
+
+document.getElementById('btnUploadDailyTargets').addEventListener('click', ()=>{
+  const input = document.getElementById('dailyTargetFile');
+  input.value='';
+  input.click();
+});
+
+document.getElementById('dailyTargetFile').addEventListener('change', async event=>{
+  const file = event.target.files && event.target.files[0];
+  if(!file) return;
+  if(!/\.xlsx$/i.test(file.name)){ toast('Pilih file Excel .xlsx', true); return; }
+  const period = ID_MONTHS_LONG[state.month-1]+' '+state.year;
+  if(!window.confirm('Upload '+file.name+' sebagai target harian '+period+'?')) return;
+  showLoader(true);
+  try{
+    const base64 = await fileAsBase64(file);
+    const result = await call('uploadDailyTargets', session.token, base64, file.name, state.year, state.month);
+    if(!result || !result.ok) throw new Error(result&&result.error||'Upload target harian gagal.');
+    delete state.targetsCache[state.year+'-'+pad2(state.month)];
+    toast(result.savedRows+' target harian tersimpan');
+    if(result.missingOutlets && result.missingOutlets.length){
+      window.alert('Upload berhasil untuk '+result.uploadedOutlets.length+' outlet.\n\nOutlet tanpa target bulan ini: '+result.missingOutlets.join(', ')+'.\nOutlet tersebut tidak akan masuk ranking maupun total Daily Report.');
+    }
+    await loadMonth(state.year,state.month,true);
+  }catch(error){ toast(error.message||'Upload target harian gagal', true); }
+  finally{ showLoader(false); }
+});
+
+document.getElementById('btnCopyDailyReport').addEventListener('click', async event=>{
+  const button = event.currentTarget;
+  const reportDate = document.getElementById('dailyReportDate').value;
+  if(!reportDate){ toast('Pilih tanggal laporan', true); return; }
+  button.disabled=true; button.textContent='Menyiapkan…';
+  try{
+    const result = await call('getDailyReport', session.token, reportDate);
+    if(!result || !result.ok) throw new Error(result&&result.error||'Daily Report gagal dibuat.');
+    await copyPlainText(result.text);
+    toast('Daily Report '+reportDate+' disalin');
+  }catch(error){ toast(error.message||'Daily Report gagal dibuat', true); }
+  finally{ button.disabled=false; button.textContent='Copy Daily Report'; }
+});
+
 /* ENTER APP */
 function enterApp(){
   document.body.classList.remove('login-mode');
@@ -845,6 +929,13 @@ function enterApp(){
   document.getElementById('todayLabel').textContent = `${ID_DOW_SHORT[today.getDay()]}, ${pad2(today.getDate())} ${ID_MONTHS_SHORT[today.getMonth()]}`;
 
   if(session.role==='admin'){
+    const tools = document.getElementById('dailyReportTools');
+    tools.style.display='flex';
+    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate()-1);
+    const yesterdayKey = yesterday.getFullYear()+'-'+pad2(yesterday.getMonth()+1)+'-'+pad2(yesterday.getDate());
+    const reportDate = document.getElementById('dailyReportDate');
+    reportDate.value=yesterdayKey;
+    reportDate.max=yesterdayKey;
     document.getElementById('filterItem').style.display='';
     const sel = document.getElementById('outletFilter');
     sel.innerHTML='<option value="ALL">ALL · Semua Outlet</option>';

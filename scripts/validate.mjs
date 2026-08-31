@@ -516,9 +516,21 @@ for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems'
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
 }
-for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisSaveTargets', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
+for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisSaveTargets', 'salesAnalysisUploadDailyTargets', 'salesAnalysisDailyReport', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
   if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
+}
+if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"') || !salesAnalysisHtml.includes('id="dailyReportDate"')) {
+  failures.push('Kontrol BIHQ untuk upload target harian dan Copy Daily Report belum lengkap');
+}
+if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.includes("function parseDailyTargetWorkbook_(base64, fileName, year, month, outletRows)") || !backend.includes("function getDailyReport(token, reportDate, outletRows)")) {
+  failures.push('Backend target harian dan Daily Report belum lengkap');
+}
+if (!backend.includes("return code === 'BIPM' ? 'BIPIM' : code")) {
+  failures.push('Alias outlet BIPM/BIPIM Analisa Sales belum dinormalisasi');
+}
+if (!backend.includes('var reportOutlets = outlets.filter') || !backend.includes('excludedOutlets:excludedOutlets')) {
+  failures.push('Daily Report belum mengecualikan outlet tanpa target pada bulan berjalan');
 }
 const clientActions = new Set();
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
