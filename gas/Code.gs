@@ -13803,12 +13803,16 @@ function deleteGlobalDailyAnalysisItem(token, payload) {
 
 function saveDaily(token, payload) {
   var sess = validateSession_(token);
-  if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input sales.' };
   if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
 
   var dt = parseDateKey_(payload.date);
   var key = dateKey_(dt);
   var oc = sess.outlet_code;
+  if (sess.role === 'admin') {
+    oc = String(payload.outlet_code || '').trim().toUpperCase();
+    var validOutlet = OUTLETS.some(function(outlet){ return outlet.role !== 'admin' && outlet.code === oc; });
+    if (!validOutlet) return { ok:false, error:'Pilih outlet yang valid sebelum menyimpan sales.' };
+  }
   var analisa = (payload.analisa || '').trim();
   var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
   var sales = Number(payload.sales) || 0;
