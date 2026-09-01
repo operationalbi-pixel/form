@@ -523,6 +523,9 @@ for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'sales
 if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"') || !salesAnalysisHtml.includes('id="dailyReportDate"')) {
   failures.push('Kontrol BIHQ untuk upload target harian dan Copy Daily Report belum lengkap');
 }
+if (!salesAnalysisHtml.includes('id="dayAmount" inputmode="numeric"') || !salesAnalysisHtml.includes("dayAmount').addEventListener('input'") || !salesAnalysisHtml.includes('const fmtIDRInput = value =>')) {
+  failures.push('Input Sales Harian belum memformat pemisah ribuan secara realtime');
+}
 if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.includes("function parseDailyTargetWorkbook_(base64, fileName, year, month, outletRows)") || !backend.includes("function getDailyReport(token, reportDate, outletRows)")) {
   failures.push('Backend target harian dan Daily Report belum lengkap');
 }

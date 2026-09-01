@@ -644,7 +644,7 @@
         <div class="h"><span>Input Sales Harian</span><span class="meta" id="inpMeta">—</span></div>
         <div class="dayinput-body">
           <span class="rp">Rp</span>
-          <input class="num mono" type="text" id="dayAmount" placeholder="0" />
+          <input class="num mono" type="text" id="dayAmount" inputmode="numeric" autocomplete="off" placeholder="0" />
           <button class="save" id="saveDay">Simpan</button>
         </div>
       </div>
@@ -795,6 +795,10 @@ const state = {
 };
 
 const fmtIDR = n => Math.round(n||0).toLocaleString('id-ID');
+const fmtIDRInput = value => {
+  const digits = String(value == null ? '' : value).replace(/[^\d]/g,'').replace(/^0+(?=\d)/,'');
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+};
 const fmtShort = n => { if(!n) return '0'; if(n>=1e9) return (n/1e9).toFixed(2).replace('.',',')+'M'; if(n>=1e6) return (n/1e6).toFixed(1).replace('.',',')+'jt'; if(n>=1e3) return (n/1e3).toFixed(0)+'rb'; return String(n); };
 const pad2 = n => n<10?'0'+n:''+n;
 function parseDateKey(key){
@@ -1567,9 +1571,23 @@ document.getElementById('tplBtn').addEventListener('click', ()=>{
   ana.setSelectionRange(pos, pos);
 });
 
-document.getElementById('dayAmount').addEventListener('blur', e=>{
-  const raw = e.target.value.replace(/[^\d]/g,'');
-  if(raw) e.target.value = fmtIDR(parseInt(raw,10));
+document.getElementById('dayAmount').addEventListener('input', e=>{
+  const input = e.target;
+  const oldValue = input.value;
+  const oldCaret = input.selectionStart == null ? oldValue.length : input.selectionStart;
+  const digitsAfterCaret = oldValue.slice(oldCaret).replace(/[^\d]/g,'').length;
+  const formatted = fmtIDRInput(oldValue);
+  input.value = formatted;
+
+  let newCaret = formatted.length;
+  if(digitsAfterCaret > 0){
+    let remaining = digitsAfterCaret;
+    for(let i=formatted.length-1; i>=0; i--){
+      if(/\d/.test(formatted[i])) remaining--;
+      if(remaining===0){ newCaret=i; break; }
+    }
+  }
+  input.setSelectionRange(newCaret,newCaret);
 });
 
 document.getElementById('saveDay').addEventListener('click', async ()=>{
