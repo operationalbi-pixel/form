@@ -14190,6 +14190,12 @@ function reportPercentId_(value, signed) {
   return sign + Math.abs(value).toFixed(2).replace('.', ',') + '%';
 }
 
+function reportMtdGapPct_(mtdSales, mtdTarget, monthlyTarget) {
+  monthlyTarget = Number(monthlyTarget) || 0;
+  if (!monthlyTarget) return 0;
+  return ((Number(mtdSales) || 0) - (Number(mtdTarget) || 0)) / monthlyTarget * 100;
+}
+
 function reportDateId_(key) {
   var parts = String(key || '').split('-').map(Number);
   var months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
@@ -14246,7 +14252,7 @@ function getDailyReport(token, reportDate, outletRows) {
         mtdSales:Number(sales.mtdSales) || 0,
         monthlyTarget:monthlyTarget,
         achievementPct:monthlyTarget ? Number(sales.mtdSales) / monthlyTarget * 100 : 0,
-        variancePct:mtdTarget ? (Number(sales.mtdSales) / mtdTarget - 1) * 100 : 0,
+        variancePct:reportMtdGapPct_(sales.mtdSales, mtdTarget, monthlyTarget),
         mtdTarget:mtdTarget
       };
     }).sort(function (a, b) {
@@ -14259,7 +14265,7 @@ function getDailyReport(token, reportDate, outletRows) {
       return sum;
     }, { dailySales:0, mtdSales:0, monthlyTarget:0, mtdTarget:0 });
     total.achievementPct = total.monthlyTarget ? total.mtdSales / total.monthlyTarget * 100 : 0;
-    total.variancePct = total.mtdTarget ? (total.mtdSales / total.mtdTarget - 1) * 100 : 0;
+    total.variancePct = reportMtdGapPct_(total.mtdSales, total.mtdTarget, total.monthlyTarget);
 
     var lines = ['*Sales Bakerzin ' + reportDateId_(key) + '*'];
     rows.forEach(function (row, index) {

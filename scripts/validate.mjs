@@ -541,6 +541,12 @@ if (!backend.includes("return code === 'BIPM' ? 'BIPIM' : code")) {
 if (!backend.includes('var reportOutlets = outlets.filter') || !backend.includes('excludedOutlets:excludedOutlets')) {
   failures.push('Daily Report belum mengecualikan outlet tanpa target pada bulan berjalan');
 }
+if (!backend.includes('function reportMtdGapPct_(mtdSales, mtdTarget, monthlyTarget)') || !backend.includes('return ((Number(mtdSales) || 0) - (Number(mtdTarget) || 0)) / monthlyTarget * 100')) {
+  failures.push('Selisih persentase Daily Report belum dihitung sebagai gap pencapaian terhadap target bulanan');
+}
+if (backend.includes('(Number(sales.mtdSales) / mtdTarget - 1) * 100') || backend.includes('(total.mtdSales / total.mtdTarget - 1) * 100')) {
+  failures.push('Daily Report masih memakai selisih relatif terhadap target MTD');
+}
 const clientActions = new Set();
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   for (const match of (await text(path)).matchAll(/(?:server|call)\(\s*['"]([^'"]+)['"]/g)) clientActions.add(match[1]);
