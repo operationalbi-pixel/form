@@ -108,6 +108,8 @@ if (!salesAnalysisHtml.includes('src="config.js"') || !salesAnalysisHtml.include
 if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Analisa Sales belum memakai sesi login BI-Space');
 if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
 if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
+if (salesAnalysisHtml.includes('id="copyFallbackModal"') || salesAnalysisHtml.includes('showCopyFallback(')) failures.push('Copy Daily Report masih membuka modal salin manual');
+if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('prepareDailyReport(yesterdayKey)')) failures.push('Daily Report belum dipersiapkan sebelum aksi clipboard mobile');
 const salesAnalysisStaticHtml = salesAnalysisHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
 const salesAnalysisIds = [...salesAnalysisStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
 const salesAnalysisDuplicateIds = [...new Set(salesAnalysisIds.filter((id, index) => salesAnalysisIds.indexOf(id) !== index))];
@@ -526,8 +528,8 @@ if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisH
 if (salesAnalysisStaticHtml.includes('id="btnPrint"') || salesAnalysisStaticHtml.includes('id="btnSettings"') || salesAnalysisStaticHtml.includes('id="targetBanner"')) {
   failures.push('Kontrol cetak atau input target bulanan masih tampil di Analisa Sales');
 }
-if (!salesAnalysisHtml.includes("catch(error){ /* WebView dapat menolak Clipboard API") || !salesAnalysisHtml.includes('id="copyFallbackModal"')) {
-  failures.push('Copy Daily Report belum memiliki fallback aman untuk WebView mobile');
+if (!salesAnalysisHtml.includes("catch(error){ /* WebView dapat menolak Clipboard API") || !salesAnalysisHtml.includes("document.execCommand('copy')") || !salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)')) {
+  failures.push('Copy Daily Report belum menjaga aksi clipboard langsung pada WebView mobile');
 }
 if (!salesAnalysisHtml.includes('Report <b>${reportDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('Analisa <b>${analysisDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('className=\'daily-target\'')) {
   failures.push('Kalender belum menampilkan Report, Analisa, dan target harian ringkas');
