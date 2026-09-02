@@ -279,7 +279,9 @@
   .cell-foot{display:flex;align-items:flex-end;justify-content:space-between;gap:3px;margin-top:auto;min-width:0}
   .done-counts{display:flex;flex-direction:column;gap:1px;min-width:0;font-family:"JetBrains Mono",monospace;font-size:6px;line-height:1.15;color:var(--mute);text-transform:uppercase;letter-spacing:.01em}
   .done-counts span{white-space:nowrap}.done-counts b{color:var(--ink);font-size:7px}
-  .daily-target{margin-left:auto;border:0;background:transparent;color:#99938a;padding:0;font-family:"JetBrains Mono",monospace;font-size:7px;line-height:1;white-space:nowrap;text-align:right}
+  .daily-target{margin-left:auto;border:0;background:transparent;padding:0;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-family:"JetBrains Mono",monospace;line-height:1;white-space:nowrap;text-align:right}
+  .daily-target .target-label{color:#99938a;font-size:6px;font-weight:500;text-transform:uppercase;letter-spacing:.06em}
+  .daily-target strong{color:var(--ok);font-size:10.5px;font-weight:800}
   button.daily-target{cursor:pointer;border-bottom:1px dotted #aaa49b}
   button.daily-target:hover{color:var(--ink)}
 
@@ -433,7 +435,8 @@
     .cell .date .dow{display:none} .cell .delta{display:none}
     .cell-foot{flex-direction:column;align-items:stretch;gap:2px}
     .daily-target{align-self:flex-end}
-    .done-counts{font-size:6px}.done-counts b{font-size:7px}.daily-target{font-size:7px}
+    .cell .sales{font-size:11px}
+    .done-counts{font-size:6px}.done-counts b{font-size:7px}
     .totals{grid-template-columns:repeat(2,1fr)}
     .spinners{grid-template-columns:repeat(2,1fr)}
     textarea.analisa{min-height:120px}
@@ -1130,8 +1133,8 @@ function render(){
   // legend
   document.getElementById('legendBar').innerHTML = isHQ ? `
     <strong>HQ:</strong>
-    <span class="lg">Done Report = outlet sudah mengisi sales</span>
-    <span class="lg">Done Analisa = outlet sudah mengisi analisa sales</span>
+    <span class="lg">Report = outlet sudah mengisi sales</span>
+    <span class="lg">Analisa = outlet sudah mengisi analisa sales</span>
     <span class="lg">Angka pembagi = seluruh outlet aktif selain BIHQ</span>
   ` : `
     <strong>Store:</strong>
@@ -1357,7 +1360,7 @@ function renderCalendar(){
           const reportDone = dInfo.contributors.filter(c=>c.reported!==undefined?c.reported:c.status!=='na').length;
           const analysisDone = dInfo.contributors.filter(c=>c.status==='done').length;
           const counts = document.createElement('div'); counts.className='done-counts';
-          counts.innerHTML=`<span>Done Report <b>${reportDone}/${allOutlets.length}</b></span><span>Done Analisa <b>${analysisDone}/${allOutlets.length}</b></span>`;
+          counts.innerHTML=`<span>Report <b>${reportDone}/${allOutlets.length}</b></span><span>Analisa <b>${analysisDone}/${allOutlets.length}</b></span>`;
           const foot=document.createElement('div'); foot.className='cell-foot';
           foot.append(counts,makeCalendarTarget(dInfo,dayNum));
           cell.append(foot);
@@ -1410,7 +1413,7 @@ function makeCalendarTarget(dayInfo, dayNum){
   const tag=document.createElement('button');
   tag.className='daily-target';
   tag.type='button';
-  tag.textContent='Target '+fmtTargetJt(dayInfo&&dayInfo.dailyTarget);
+  tag.innerHTML=`<span class="target-label">Target</span><strong>${fmtTargetJt(dayInfo&&dayInfo.dailyTarget)}</strong>`;
   tag.title=session.role==='admin'?'Klik untuk lihat dan edit target harian per outlet':'Klik untuk lihat target harian outlet';
   tag.addEventListener('click',event=>{ event.stopPropagation(); openDailyTargetModal(dayNum); });
   return tag;
