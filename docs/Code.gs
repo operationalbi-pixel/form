@@ -151,6 +151,7 @@ function apiActions_() {
     salesAnalysisTargets: getSalesAnalysisTargets,
     salesAnalysisSaveTargets: saveSalesAnalysisTargets,
     salesAnalysisUploadDailyTargets: uploadSalesAnalysisDailyTargets,
+    salesAnalysisSaveDailyTargets: saveSalesAnalysisDailyTargets,
     salesAnalysisDailyReport: getSalesAnalysisDailyReport,
     salesAnalysisSaveDaily: saveSalesAnalysisDaily,
     salesAnalysisSaveWeekly: saveSalesAnalysisWeekly,
@@ -12918,7 +12919,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   outletFilter = (outletFilter || sess.outlet_code).toUpperCase();
   if (sess.role !== 'admin') outletFilter = sess.outlet_code;
 
-  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_BQ';
+  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_BQ_DAILY_CAL_V1';
   var cached = getCacheJson_(cacheKey);
   if (cached) {
     cached.fromCache = true;
@@ -12951,6 +12952,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   var weeklyRows = bqFetchWeeklyRows_(outletList, year, month);
   var monthlyRows = bqFetchMonthlyRows_(outletList, year, month);
   var targetsMap = bqGetTargetsMap_(year, month);
+  var dailyTargetsByDate = bqGetDailyTargetsByDate_(outletList, year, month);
   var comparison = bqFetchComparisonSums_(outletList, year, month);
   var globalRows = bqFetchGlobalDailyRows_(firstRowStart, lastRowEnd);
 
@@ -13039,14 +13041,19 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
       prevSales: salesByDate[prevKey] || 0,
       global: globalByDate[key] || defaultGlobalDailyAnalysis_(key),
       daily: { status:'na', text:'' },
+      dailyTarget: 0,
+      targetsByOutlet: {},
       contributors: []
     };
 
     outletList.forEach(function(oc){
       var row = dailyByOutletDate[oc + '|' + key];
+      var dailyTarget = dailyTargetsByDate[key] && dailyTargetsByDate[key][oc] != null ? Number(dailyTargetsByDate[key][oc]) || 0 : 0;
       var sales = row ? (Number(row.sales)||0) : 0;
       var prevSales = salesByOutletDate[oc + '|' + prevKey] || 0;
       rec.sales += sales;
+      rec.dailyTarget += dailyTarget;
+      rec.targetsByOutlet[oc] = dailyTarget;
       if (perOutlet[oc]) perOutlet[oc].total += sales;
       rec.contributors.push({
         outlet: oc,
@@ -13056,6 +13063,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
         prevSales: prevSales,
         deltaNominal: sales - prevSales,
         deltaPct: prevSales > 0 ? ((sales - prevSales) / prevSales * 100) : null,
+        reported: !!row,
         status: row ? (row.analisa_status || 'pending') : 'na',
         text: row ? (row.analisa_harian || '') : ''
       });
@@ -13130,9 +13138,9 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
 
   var monthTotal = days.reduce(function(sum, d){ return sum + (Number(d.sales)||0); }, 0);
   var aggregateTarget = outletList.reduce(function(sum, oc){
-    return sum + (targetsMap[oc] != null ? Number(targetsMap[oc])||0 : defaultTarget);
+    return sum + (targetsMap[oc] != null ? Number(targetsMap[oc])||0 : 0);
   }, 0);
-  var singleTarget = targetsMap[outletFilter] != null ? Number(targetsMap[outletFilter])||0 : defaultTarget;
+  var singleTarget = targetsMap[outletFilter] != null ? Number(targetsMap[outletFilter])||0 : 0;
   var finalTarget = outletFilter === 'ALL' ? aggregateTarget : singleTarget;
 
   var result = {
@@ -13731,6 +13739,57 @@ function bqGetDailyTargetProgress_(outletCodes, year, month, throughDay) {
   return out;
 }
 
+function bqGetDailyTargetsByDate_(outletCodes, year, month) {
+  var out = {};
+  if (!outletCodes || !outletCodes.length) return out;
+  bqEnsureDailyTargetsTable_();
+  var sql = "SELECT UPPER(outlet_code) AS outlet_code, FORMAT_DATE('%F', date) AS date, " +
+    "CAST(IFNULL(daily_target,0) AS FLOAT64) AS daily_target FROM " + bqTable_('daily_targets') + " " +
+    "WHERE UPPER(outlet_code) IN (" + bqInList_(outletCodes) + ") " +
+    "AND CAST(year AS INT64)=" + bqInt_(year) + " AND CAST(month AS INT64)=" + bqInt_(month) + " " +
+    "QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(outlet_code), date ORDER BY updated_at DESC NULLS LAST, submitted_at DESC NULLS LAST)=1";
+  bqQuery_(sql).forEach(function(row){
+    var key = String(row.date || '').slice(0,10);
+    var code = String(row.outlet_code || '').toUpperCase();
+    if (!key || !code) return;
+    if (!out[key]) out[key] = {};
+    out[key][code] = Number(row.daily_target) || 0;
+  });
+  return out;
+}
+
+function bqSaveDailyTargetUpdates_(key, updates, submittedBy) {
+  if (!BQ_WRITE_ENABLED || !bqIsAvailable_()) return;
+  bqEnsureDailyTargetsTable_();
+  var dt = parseDateKey_(key);
+  var year = dt.getFullYear(), month = dt.getMonth()+1, day = dt.getDate();
+  var codes = Object.keys(updates || {}).sort();
+  var structs = codes.map(function(code){
+    return "STRUCT(" + bqQuote_(code) + " AS outlet_code," + bqDateLiteral_(key) + " AS date," +
+      bqInt_(year) + " AS year," + bqInt_(month) + " AS month," + bqInt_(day) + " AS day," +
+      "CAST(" + bqNum_(updates[code]) + " AS NUMERIC) AS daily_target)";
+  });
+  var source = "SELECT * FROM UNNEST([" + structs.join(',') + "])";
+  var monthTotals = "SELECT UPPER(outlet_code) AS outlet_code, CAST(year AS INT64) AS year, CAST(month AS INT64) AS month, " +
+    "CAST(SUM(daily_target) AS NUMERIC) AS monthly_target FROM " + bqTable_('daily_targets') + " " +
+    "WHERE CAST(year AS INT64)=" + bqInt_(year) + " AND CAST(month AS INT64)=" + bqInt_(month) +
+    " AND UPPER(outlet_code) IN (" + bqInList_(codes) + ") GROUP BY UPPER(outlet_code), year, month";
+  var sql = "BEGIN TRANSACTION; " +
+    "MERGE " + bqTable_('daily_targets') + " T USING (" + source + ") S " +
+    "ON UPPER(T.outlet_code)=UPPER(S.outlet_code) AND T.date=S.date " +
+    "WHEN MATCHED THEN UPDATE SET daily_target=S.daily_target,source_file='MANUAL_BIHQ',submitted_by=" + bqQuote_(submittedBy) + ",updated_at=CURRENT_TIMESTAMP() " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,date,year,month,day,daily_target,monthly_target,source_file,submitted_by,submitted_at,updated_at) " +
+    "VALUES (S.outlet_code,S.date,S.year,S.month,S.day,S.daily_target,0,'MANUAL_BIHQ'," + bqQuote_(submittedBy) + ",CURRENT_TIMESTAMP(),CURRENT_TIMESTAMP()); " +
+    "UPDATE " + bqTable_('daily_targets') + " T SET monthly_target=S.monthly_target,updated_at=CURRENT_TIMESTAMP() FROM (" + monthTotals + ") S " +
+    "WHERE UPPER(T.outlet_code)=S.outlet_code AND CAST(T.year AS INT64)=S.year AND CAST(T.month AS INT64)=S.month; " +
+    "MERGE " + bqTable_('targets') + " T USING (" + monthTotals + ") S " +
+    "ON UPPER(T.outlet_code)=S.outlet_code AND CAST(T.year AS INT64)=S.year AND CAST(T.month AS INT64)=S.month " +
+    "WHEN MATCHED THEN UPDATE SET target=S.monthly_target " +
+    "WHEN NOT MATCHED THEN INSERT (outlet_code,year,month,target) VALUES (S.outlet_code,S.year,S.month,S.monthly_target); " +
+    "COMMIT TRANSACTION;";
+  bqRunDml_(sql);
+}
+
 function bqGetDailyReportSales_(outletCodes, reportDate) {
   var out = {};
   if (!outletCodes || !outletCodes.length) return out;
@@ -14171,6 +14230,36 @@ function uploadDailyTargets(token, base64, fileName, year, month, outletRows) {
   }
 }
 
+function saveDailyTargets(token, payload) {
+  var sess = validateSession_(token);
+  if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh mengubah target harian.' };
+  if (!bqIsAvailable_()) return { ok:false, error:'BigQuery API belum aktif.' };
+  payload = payload || {};
+  var key = String(payload.date || '').slice(0,10);
+  var dt = parseDateKey_(key);
+  if (!dt || dateKey_(dt) !== key) return { ok:false, error:'Tanggal target tidak valid.' };
+  var validOutlets = {};
+  OUTLETS.forEach(function(outlet){ if (outlet.role !== 'admin') validOutlets[outlet.code] = true; });
+  var updates = {}, rawUpdates = payload.updates || {};
+  Object.keys(rawUpdates).forEach(function(rawCode){
+    var code = String(rawCode || '').trim().toUpperCase();
+    var value = Number(rawUpdates[rawCode]);
+    if (!validOutlets[code]) throw new Error('Outlet target tidak valid: ' + code);
+    if (!isFinite(value) || value < 0) throw new Error('Target harian ' + code + ' tidak valid.');
+    updates[code] = value;
+  });
+  if (!Object.keys(updates).length) return { ok:false, error:'Tidak ada perubahan target harian.' };
+  try {
+    bqSaveDailyTargetUpdates_(key, updates, sess.outlet_code);
+    clearDashboardCache_();
+    audit_('ALL', sess.outlet_code, 'save_daily_targets', 'daily_targets', key, { updates:updates });
+    return { ok:true, date:key, updated:Object.keys(updates).length, syncedTo:'BigQuery', dataSource:'BigQuery' };
+  } catch (e) {
+    Logger.log('Save target harian gagal: ' + e.message);
+    return { ok:false, error:'Gagal simpan target harian: ' + e.message };
+  }
+}
+
 function reportIntegerId_(value) {
   var text = String(Math.round(Number(value) || 0));
   return text.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
@@ -14188,6 +14277,12 @@ function reportPercentId_(value, signed) {
   value = Number(value) || 0;
   var sign = signed ? (value >= 0 ? '+' : '-') : '';
   return sign + Math.abs(value).toFixed(2).replace('.', ',') + '%';
+}
+
+function reportMtdGapPct_(mtdSales, mtdTarget, monthlyTarget) {
+  monthlyTarget = Number(monthlyTarget) || 0;
+  if (!monthlyTarget) return 0;
+  return ((Number(mtdSales) || 0) - (Number(mtdTarget) || 0)) / monthlyTarget * 100;
 }
 
 function reportDateId_(key) {
@@ -14246,7 +14341,7 @@ function getDailyReport(token, reportDate, outletRows) {
         mtdSales:Number(sales.mtdSales) || 0,
         monthlyTarget:monthlyTarget,
         achievementPct:monthlyTarget ? Number(sales.mtdSales) / monthlyTarget * 100 : 0,
-        variancePct:mtdTarget ? (Number(sales.mtdSales) / mtdTarget - 1) * 100 : 0,
+        variancePct:reportMtdGapPct_(sales.mtdSales, mtdTarget, monthlyTarget),
         mtdTarget:mtdTarget
       };
     }).sort(function (a, b) {
@@ -14259,7 +14354,7 @@ function getDailyReport(token, reportDate, outletRows) {
       return sum;
     }, { dailySales:0, mtdSales:0, monthlyTarget:0, mtdTarget:0 });
     total.achievementPct = total.monthlyTarget ? total.mtdSales / total.monthlyTarget * 100 : 0;
-    total.variancePct = total.mtdTarget ? (total.mtdSales / total.mtdTarget - 1) * 100 : 0;
+    total.variancePct = reportMtdGapPct_(total.mtdSales, total.mtdTarget, total.monthlyTarget);
 
     var lines = ['*Sales Bakerzin ' + reportDateId_(key) + '*'];
     rows.forEach(function (row, index) {
@@ -14318,6 +14413,7 @@ return Object.freeze({
   getTargets: getTargets,
   saveTargets: saveTargets,
   uploadDailyTargets: uploadDailyTargets,
+  saveDailyTargets: saveDailyTargets,
   getDailyReport: getDailyReport,
   saveDaily: saveDaily,
   saveWeekly: saveWeekly,
@@ -14408,6 +14504,13 @@ function uploadSalesAnalysisDailyTargets(token, base64, fileName, year, month) {
   return safe_(function () {
     var context = salesAnalysisContext_(token);
     return SALES_ANALYSIS.uploadDailyTargets(context.session.token, base64, fileName, year, month, context.outlets);
+  });
+}
+
+function saveSalesAnalysisDailyTargets(token, payload) {
+  return safe_(function () {
+    var context = salesAnalysisContext_(token);
+    return SALES_ANALYSIS.saveDailyTargets(context.session.token, payload || {});
   });
 }
 

@@ -106,23 +106,10 @@
   .kpis .kpi{padding:6px 12px;min-width:0;position:relative}
   .kpis .kpi+.kpi{border-left:1px solid #232323}
   .kpi .lbl{font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:#9c9588;font-weight:700;display:flex;align-items:center;gap:5px}
-  .kpi .lbl .edit-ico{opacity:0;font-family:"JetBrains Mono",monospace;font-size:10px;color:#fff;transition:.15s}
-  .kpi.editable{cursor:pointer}
-  .kpi.editable:hover{background:#1a1a1a}
-  .kpi.editable:hover .edit-ico{opacity:.7}
-  .kpi .val-custom{display:inline-block;margin-left:5px;background:var(--accent);color:#fff;font-family:"JetBrains Mono",monospace;font-size:8px;padding:0 4px;letter-spacing:.04em;font-weight:700;vertical-align:middle}
   .kpi .val{font-family:"JetBrains Mono",monospace;font-weight:700;font-size:14px;margin-top:1px;font-feature-settings:"tnum";white-space:nowrap}
   .kpi.accent{background:var(--accent)} .kpi.accent .lbl{color:#ffd9c5}
   .kpi .progress{height:2px;background:rgba(255,255,255,.1);margin-top:4px;position:relative;overflow:hidden}
   .kpi .progress span{position:absolute;inset:0;background:#fff;transform-origin:left center;transform:scaleX(0);transition:transform .6s ease}
-
-  /* target banner */
-  .target-banner{display:none;align-items:center;gap:10px;padding:7px 12px;background:#fff6e9;border:1px dashed var(--accent);color:#7a3208;font-size:11px;line-height:1.3}
-  .target-banner.show{display:flex}
-  .target-banner .dot{width:6px;height:6px;background:var(--accent);border-radius:50%;flex-shrink:0}
-  .target-banner b{font-weight:800}
-  .target-banner button{margin-left:auto;background:var(--ink);color:#fff;border:none;padding:5px 10px;font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;cursor:pointer;flex-shrink:0}
-  .target-banner button:hover{background:var(--accent)}
 
   /* target modal */
   .modal-bg{position:fixed;inset:0;background:rgba(10,10,10,.45);display:none;align-items:center;justify-content:center;z-index:200;padding:24px}
@@ -154,15 +141,6 @@
   .modal .footer button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
   .modal .footer button.primary:hover{background:#c84a10}
   .modal .footer button:disabled{opacity:.4;cursor:not-allowed}
-
-  .pop{position:absolute;top:calc(100% + 4px);left:0;background:#fff;border:1.5px solid var(--ink);padding:8px 10px;display:flex;flex-direction:column;gap:6px;z-index:30;box-shadow:4px 4px 0 var(--accent);min-width:240px}
-  .pop .row{display:flex;align-items:center;gap:6px}
-  .pop input{font:inherit;font-family:"JetBrains Mono",monospace;font-weight:700;font-size:14px;padding:5px 8px;border:1px solid var(--rule);background:#fff;outline:none;width:160px;text-align:right;flex:1}
-  .pop input:focus{border-color:var(--accent)}
-  .pop button{font-family:"JetBrains Mono",monospace;font-weight:700;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border:1px solid var(--ink);background:#fff;cursor:pointer}
-  .pop button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .pop .rp{font-family:"JetBrains Mono",monospace;color:var(--mute);font-size:11px;font-weight:500}
-  .pop .hint{font-size:9px;color:var(--mute);font-family:"JetBrains Mono",monospace;letter-spacing:.04em}
 
   /* ===== DAY DETAIL MODAL ===== */
   .day-modal{max-width:960px}
@@ -298,12 +276,12 @@
   .b.na{opacity:.25}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(226,90,24,.45)}50%{box-shadow:0 0 0 3px rgba(226,90,24,0)}}
 
-  /* hq contributor dots */
-  .contrib{display:flex;flex-wrap:wrap;gap:1.5px;margin-top:auto;align-items:center}
-  .contrib .c{width:6px;height:6px;background:var(--ok);border-radius:50%;flex-shrink:0}
-  .contrib .c.due{background:var(--accent);animation:pulse 1.6s infinite}
-  .contrib .c.na{background:#d4d0c4}
-  .contrib .count{font-family:"JetBrains Mono",monospace;font-size:8px;color:var(--mute);font-weight:700;margin-left:3px;letter-spacing:.04em}
+  .cell-foot{display:flex;align-items:flex-end;justify-content:space-between;gap:3px;margin-top:auto;min-width:0}
+  .done-counts{display:flex;flex-direction:column;gap:1px;min-width:0;font-family:"JetBrains Mono",monospace;font-size:6px;line-height:1.15;color:var(--mute);text-transform:uppercase;letter-spacing:.01em}
+  .done-counts span{white-space:nowrap}.done-counts b{color:var(--ink);font-size:7px}
+  .daily-target{margin-left:auto;border:0;background:transparent;color:#99938a;padding:0;font-family:"JetBrains Mono",monospace;font-size:7px;line-height:1;white-space:nowrap;text-align:right}
+  button.daily-target{cursor:pointer;border-bottom:1px dotted #aaa49b}
+  button.daily-target:hover{color:var(--ink)}
 
   .wkcell{border-right:1px solid var(--rule);border-bottom:1px solid var(--rule);background:var(--paper-2);padding:5px 7px;display:flex;flex-direction:column;justify-content:space-between;gap:2px;border-left:1px solid var(--ink);min-height:0}
   .wkcell .wlbl{font-size:8px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute);font-weight:700;line-height:1}
@@ -443,14 +421,19 @@
     .pane-right{overflow:visible;padding:10px}
     .monthhead{flex-direction:column;align-items:start;gap:6px}
     .month-title h2{font-size:32px} .month-title .yr{font-size:22px}
-    .kpis{grid-template-columns:repeat(3,1fr)}
+    .kpis{grid-template-columns:repeat(2,1fr)}
+    .kpis .kpi:nth-child(3){grid-column:1/-1;border-left:none;border-top:1px solid #232323}
     .kpis .kpi:nth-child(4){display:none}
-    .calhead{grid-template-columns:repeat(7,1fr)}
+    .calwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .calhead{grid-template-columns:repeat(7,1fr);min-width:700px}
     .calhead .ch:last-child{display:none}
-    .calgrid{grid-template-columns:repeat(7,1fr)}
+    .calgrid{grid-template-columns:repeat(7,1fr);min-width:700px}
     .wkcell{display:none}
-    .cell{min-height:64px}
+    .cell{min-height:90px}
     .cell .date .dow{display:none} .cell .delta{display:none}
+    .cell-foot{flex-direction:column;align-items:stretch;gap:2px}
+    .daily-target{align-self:flex-end}
+    .done-counts{font-size:6px}.done-counts b{font-size:7px}.daily-target{font-size:7px}
     .totals{grid-template-columns:repeat(2,1fr)}
     .spinners{grid-template-columns:repeat(2,1fr)}
     textarea.analisa{min-height:120px}
@@ -552,8 +535,6 @@
         <button class="btn-top primary" id="btnCopyDailyReport" type="button">Copy Daily Report</button>
         <input id="dailyTargetFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
       </div>
-      <button class="btn-icon" id="btnSettings" title="Set Target Bulanan" style="display:none">⚙</button>
-      <button class="btn-icon" id="btnPrint" title="Cetak">⎙</button>
       <button class="btn-icon dashboard-back-standard" id="btnLogout" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
     </div>
   </header>
@@ -576,16 +557,10 @@
       </div>
 
       <div class="kpis">
-        <div class="kpi" id="kpiTarget" title="Klik untuk set target bulan ini"><div class="lbl">Target Bulan <span class="edit-ico">✎</span></div><div class="val" id="targetVal">—</div></div>
+        <div class="kpi" id="kpiTarget"><div class="lbl">Target Bulan</div><div class="val" id="targetVal">—</div></div>
         <div class="kpi"><div class="lbl">Realisasi MTD</div><div class="val" id="mtdVal">—</div><div class="progress"><span id="mtdBar"></span></div></div>
         <div class="kpi accent"><div class="lbl">Pencapaian</div><div class="val" id="mtdPct">—</div></div>
         <div class="kpi"><div class="lbl">Sisa Hari</div><div class="val" id="daysLeft">—</div></div>
-      </div>
-
-      <div class="target-banner" id="targetBanner">
-        <div class="dot"></div>
-        <div><b>Target belum di-set</b> untuk <span id="banPeriod"></span>. Saat ini pakai default <span id="banDefault"></span>.</div>
-        <button id="banSetBtn" style="display:none">Set sekarang →</button>
       </div>
 
       <div class="calwrap">
@@ -707,28 +682,16 @@
   </div>
 </div>
 
-<!-- ===== TARGET MODAL ===== -->
+<!-- ===== DAILY TARGET MODAL ===== -->
 <div class="modal-bg" id="targetModal">
   <div class="modal">
     <div class="mh">
-      <h3>⚙ Set Target Bulanan</h3>
+      <h3 id="targetModalTitle">Target Harian</h3>
       <button class="close" id="closeModal">×</button>
-    </div>
-    <div class="toolbar">
-      <div class="tb-grp">Periode
-        <select id="modalYear"></select>
-        <select id="modalMonth"></select>
-      </div>
-      <div class="tb-grp">Bulk
-        <input type="number" id="bulkInput" placeholder="450000000" style="width:130px" />
-        <button id="bulkApply">Apply Semua</button>
-      </div>
-      <button id="copyPrev">Copy Bulan Lalu</button>
-      <button id="resetDefault">Reset Default</button>
     </div>
     <div class="tbl">
       <table>
-        <thead><tr><th style="width:80px">Kode</th><th>Outlet</th><th style="width:200px;text-align:right">Target (Rp)</th></tr></thead>
+        <thead><tr><th style="width:80px">Kode</th><th>Outlet</th><th style="width:200px;text-align:right">Target Harian (Rp)</th></tr></thead>
         <tbody id="modalTbody"></tbody>
       </table>
     </div>
@@ -736,9 +699,20 @@
       <div class="info" id="modalInfo">0 outlet berubah</div>
       <div class="acts">
         <button id="modalCancel">Batal</button>
-        <button class="primary" id="modalSave" disabled>Simpan Semua</button>
+        <button class="primary" id="modalSave" disabled>Simpan Perubahan</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="copyFallbackModal">
+  <div class="modal" style="max-width:560px">
+    <div class="mh"><h3>Salin Daily Report</h3><button class="close" id="copyFallbackClose">×</button></div>
+    <div style="padding:14px 16px;background:#fff">
+      <p style="margin:0 0 8px;color:var(--mute);font-size:12px">Izin clipboard tidak tersedia. Tekan lama pada teks, lalu pilih Salin.</p>
+      <textarea id="copyFallbackText" readonly style="width:100%;min-height:300px;padding:10px;border:1px solid var(--rule);font-family:JetBrains Mono,monospace;font-size:11px;line-height:1.45"></textarea>
+    </div>
+    <div class="footer"><div class="info">Teks laporan siap dipilih</div><div class="acts"><button id="copyFallbackSelect">Pilih Semua</button><button class="primary" id="copyFallbackDone">Selesai</button></div></div>
   </div>
 </div>
 
@@ -764,8 +738,8 @@
       logout:function(){if(success)success({ok:true})},
       getMonthDashboard:function(proxyToken,year,month,outlet){invoke('salesAnalysisDashboard',[year,month,outlet],success,failure)},
       getTargets:function(proxyToken,year,month){invoke('salesAnalysisTargets',[year,month],success,failure)},
-      saveTargets:function(proxyToken,year,month,updates){invoke('salesAnalysisSaveTargets',[year,month,updates],success,failure)},
       uploadDailyTargets:function(proxyToken,base64,fileName,year,month){invoke('salesAnalysisUploadDailyTargets',[base64,fileName,year,month],success,failure)},
+      saveDailyTargets:function(proxyToken,payload){invoke('salesAnalysisSaveDailyTargets',[payload],success,failure)},
       getDailyReport:function(proxyToken,reportDate){invoke('salesAnalysisDailyReport',[reportDate],success,failure)},
       saveDaily:function(proxyToken,payload){invoke('salesAnalysisSaveDaily',[payload],success,failure)},
       saveWeekly:function(proxyToken,payload){invoke('salesAnalysisSaveWeekly',[payload],success,failure)},
@@ -823,6 +797,7 @@ function formatIDRInputElement(input){
   input.setSelectionRange(newCaret,newCaret);
 }
 const fmtShort = n => { if(!n) return '0'; if(n>=1e9) return (n/1e9).toFixed(2).replace('.',',')+'M'; if(n>=1e6) return (n/1e6).toFixed(1).replace('.',',')+'jt'; if(n>=1e3) return (n/1e3).toFixed(0)+'rb'; return String(n); };
+const fmtTargetJt = n => ((Number(n)||0)/1000000).toFixed(1).replace(/\.0$/, '').replace('.',',')+' jt';
 const pad2 = n => n<10?'0'+n:''+n;
 function parseDateKey(key){
   if(!key) return null;
@@ -890,18 +865,38 @@ function fileAsBase64(file){
 
 async function copyPlainText(text){
   if(navigator.clipboard && window.isSecureContext){
-    await navigator.clipboard.writeText(text);
-    return;
+    try{
+      await navigator.clipboard.writeText(text);
+      return true;
+    }catch(error){ /* WebView dapat menolak Clipboard API; lanjut ke fallback DOM. */ }
   }
   const area = document.createElement('textarea');
   area.value = text;
   area.setAttribute('readonly','');
-  area.style.position='fixed'; area.style.opacity='0'; area.style.pointerEvents='none';
-  document.body.appendChild(area); area.select();
-  const copied = document.execCommand('copy');
+  area.style.position='fixed'; area.style.left='-9999px'; area.style.top='0';
+  document.body.appendChild(area); area.focus(); area.select(); area.setSelectionRange(0,area.value.length);
+  let copied=false;
+  try{ copied=document.execCommand('copy'); }catch(error){ copied=false; }
   area.remove();
-  if(!copied) throw new Error('Clipboard tidak tersedia.');
+  if(copied) return true;
+  showCopyFallback(text);
+  return false;
 }
+
+function showCopyFallback(text){
+  const modal=document.getElementById('copyFallbackModal');
+  const area=document.getElementById('copyFallbackText');
+  area.value=text;
+  modal.classList.add('show');
+  setTimeout(()=>{ area.focus(); area.select(); area.setSelectionRange(0,area.value.length); },50);
+}
+function closeCopyFallback(){ document.getElementById('copyFallbackModal').classList.remove('show'); }
+document.getElementById('copyFallbackClose').addEventListener('click',closeCopyFallback);
+document.getElementById('copyFallbackDone').addEventListener('click',closeCopyFallback);
+document.getElementById('copyFallbackSelect').addEventListener('click',()=>{
+  const area=document.getElementById('copyFallbackText'); area.focus(); area.select(); area.setSelectionRange(0,area.value.length);
+});
+document.getElementById('copyFallbackModal').addEventListener('click',event=>{ if(event.target.id==='copyFallbackModal') closeCopyFallback(); });
 
 document.getElementById('btnUploadDailyTargets').addEventListener('click', ()=>{
   const input = document.getElementById('dailyTargetFile');
@@ -938,8 +933,8 @@ document.getElementById('btnCopyDailyReport').addEventListener('click', async ev
   try{
     const result = await call('getDailyReport', session.token, reportDate);
     if(!result || !result.ok) throw new Error(result&&result.error||'Daily Report gagal dibuat.');
-    await copyPlainText(result.text);
-    toast('Daily Report '+reportDate+' disalin');
+    const copied=await copyPlainText(result.text);
+    toast(copied?'Daily Report '+reportDate+' disalin':'Pilih teks lalu salin manual');
   }catch(error){ toast(error.message||'Daily Report gagal dibuat', true); }
   finally{ button.disabled=false; button.textContent='Copy Daily Report'; }
 });
@@ -1057,7 +1052,6 @@ function render(){
   document.getElementById('totMonth').textContent= fmtIDR(m.total);
   document.getElementById('totYear').textContent = fmtIDR(ytdTotal);
   document.getElementById('targetVal').textContent = 'Rp '+fmtIDR(m.target);
-  updateTargetIndicators();
   document.getElementById('mtdVal').textContent    = 'Rp '+fmtIDR(m.total);
   document.getElementById('mtdPct').textContent    = m.pct.toFixed(1).replace('.',',')+' %';
   document.getElementById('daysLeft').textContent  = (dim-day)+' hari';
@@ -1136,10 +1130,9 @@ function render(){
   // legend
   document.getElementById('legendBar').innerHTML = isHQ ? `
     <strong>HQ:</strong>
-    <span class="lg"><span class="c"></span> sudah analisa</span>
-    <span class="lg"><span class="c due"></span> belum</span>
-    <span class="lg"><span class="c na"></span> n/a</span>
-    <span class="lg" style="margin-left:6px">format <b style="color:var(--ink);font-family:JetBrains Mono;letter-spacing:.04em">8/11</b> = done/total per hari</span>
+    <span class="lg">Done Report = outlet sudah mengisi sales</span>
+    <span class="lg">Done Analisa = outlet sudah mengisi analisa sales</span>
+    <span class="lg">Angka pembagi = seluruh outlet aktif selain BIHQ</span>
   ` : `
     <strong>Store:</strong>
     <span class="lg"><span class="b on">D</span> Harian</span>
@@ -1361,25 +1354,13 @@ function renderCalendar(){
         appendGlobalCalendarTags(cell, dInfo.global);
 
         if (isHQ){
-          // contributor dots
-          const cs = document.createElement('div'); cs.className='contrib';
-          let done=0, total=0;
-          allOutlets.forEach(o=>{
-            const c = dInfo.contributors.find(x=>x.outlet===o.code);
-            if (!c || c.status==='na') return;
-            total++;
-            const d = document.createElement('span');
-            d.className = 'c' + (c.status==='pending'?' due':'');
-            d.title = o.code + ' — ' + (c.status==='done'?'sudah':(c.status==='pending'?'belum':'n/a'));
-            cs.append(d);
-            if (c.status==='done') done++;
-          });
-          if (total>0){
-            const cnt = document.createElement('span'); cnt.className='count';
-            cnt.textContent = `${done}/${total}`;
-            cs.append(cnt);
-          }
-          cell.append(cs);
+          const reportDone = dInfo.contributors.filter(c=>c.reported!==undefined?c.reported:c.status!=='na').length;
+          const analysisDone = dInfo.contributors.filter(c=>c.status==='done').length;
+          const counts = document.createElement('div'); counts.className='done-counts';
+          counts.innerHTML=`<span>Done Report <b>${reportDone}/${allOutlets.length}</b></span><span>Done Analisa <b>${analysisDone}/${allOutlets.length}</b></span>`;
+          const foot=document.createElement('div'); foot.className='cell-foot';
+          foot.append(counts,makeCalendarTarget(dInfo,dayNum));
+          cell.append(foot);
         } else {
           // store badges
           const bd = document.createElement('div'); bd.className='badges';
@@ -1389,7 +1370,9 @@ function renderCalendar(){
             bd.append(makeBadge('W', wk?wk.status:'na'));
           } else bd.append(makeBadge('W','na'));
           bd.append(makeBadge('M', dayNum===dim?dash.month.status:'na'));
-          cell.append(bd);
+          const foot=document.createElement('div'); foot.className='cell-foot';
+          foot.append(bd,makeCalendarTarget(dInfo,dayNum));
+          cell.append(foot);
         }
         cell.addEventListener('click', ()=>{ state.day = dayNum; render(); openDayModal(dayNum); });
       }
@@ -1421,6 +1404,16 @@ function renderCalendar(){
       </div>`;
     grid.append(cellW);
   }
+}
+
+function makeCalendarTarget(dayInfo, dayNum){
+  const tag=document.createElement('button');
+  tag.className='daily-target';
+  tag.type='button';
+  tag.textContent='Target '+fmtTargetJt(dayInfo&&dayInfo.dailyTarget);
+  tag.title=session.role==='admin'?'Klik untuk lihat dan edit target harian per outlet':'Klik untuk lihat target harian outlet';
+  tag.addEventListener('click',event=>{ event.stopPropagation(); openDailyTargetModal(dayNum); });
+  return tag;
 }
 
 
@@ -1648,8 +1641,6 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     refreshMonthInBackground();
   } catch(e){ toast('Gagal submit', true); } finally { showLoader(false); }
 });
-
-document.getElementById('btnPrint').addEventListener('click', ()=>window.print());
 
 /* ============= DAY DETAIL MODAL ============= */
 function openDayModal(day){
@@ -1939,7 +1930,9 @@ function closeDayModal(){ document.getElementById('dayModal').classList.remove('
 document.getElementById('dmClose').addEventListener('click', closeDayModal);
 document.getElementById('dayModal').addEventListener('click', e=>{ if(e.target.id==='dayModal') closeDayModal(); });
 
-/* ============= TARGET INDICATORS + INLINE EDIT + MODAL ============= */
+/* Monthly target editor removed: target bulanan berasal dari akumulasi upload target harian. */
+function legacyMonthlyTargetEditorRemoved_(){
+/* ============= LEGACY TARGET INDICATORS + INLINE EDIT + MODAL ============= */
 function updateTargetIndicators(){
   const {year, month, outletFilter, defaultTarget} = state;
   const isHQ = state.dash && state.dash.isAggregate;
@@ -2182,11 +2175,91 @@ document.getElementById('modalSave').addEventListener('click', async ()=>{
   await saveTargetUpdates(y, m, updates);
 });
 document.getElementById('banSetBtn').addEventListener('click', ()=>openModal());
+}
+
+let dailyTargetModalDay=0;
+let dailyTargetDraft={};
+function openDailyTargetModal(day){
+  if(!state.dash || day<1 || day>state.dash.daysInMonth) return;
+  dailyTargetModalDay=day;
+  dailyTargetDraft={};
+  const dt=new Date(state.year,state.month-1,day);
+  document.getElementById('targetModalTitle').textContent=`Target Harian · ${ID_DOW_LONG[dt.getDay()]}, ${pad2(day)} ${ID_MONTHS_SHORT[state.month-1]} ${state.year}`;
+  renderDailyTargetModal();
+  document.getElementById('targetModal').classList.add('show');
+}
+function renderDailyTargetModal(){
+  const dayInfo=state.dash.days[dailyTargetModalDay-1]||{};
+  const targetMap=dayInfo.targetsByOutlet||{};
+  const allStores=BOOT.outlets.filter(o=>o.role!=='admin');
+  const stores=state.dash.isAggregate?allStores:allStores.filter(o=>o.code===state.outletFilter);
+  const body=document.getElementById('modalTbody');
+  body.innerHTML='';
+  stores.forEach(outlet=>{
+    const current=Number(targetMap[outlet.code])||0;
+    const shown=dailyTargetDraft[outlet.code]!==undefined?dailyTargetDraft[outlet.code]:current;
+    const tr=document.createElement('tr');
+    if(dailyTargetDraft[outlet.code]!==undefined) tr.classList.add('changed');
+    tr.innerHTML=`<td class="code">${escapeHtml(outlet.code)}</td><td class="nm">${escapeHtml(outlet.name)}</td><td class="tg">${session.role==='admin'?`<input type="text" inputmode="numeric" autocomplete="off" class="tg-input" value="${fmtIDRInput(shown)}" aria-label="Target harian ${escapeHtml(outlet.code)}">`:`<span class="mono">Rp ${fmtIDR(shown)}</span>`}</td>`;
+    if(session.role==='admin'){
+      const input=tr.querySelector('input');
+      input.addEventListener('input',()=>{
+        formatIDRInputElement(input);
+        const value=parseInt(input.value.replace(/[^\d]/g,'')||'0',10);
+        if(value===current) delete dailyTargetDraft[outlet.code]; else dailyTargetDraft[outlet.code]=value;
+        tr.classList.toggle('changed',dailyTargetDraft[outlet.code]!==undefined);
+        updateDailyTargetModalFooter();
+      });
+    }
+    body.append(tr);
+  });
+  document.getElementById('modalSave').style.display=session.role==='admin'?'':'none';
+  document.getElementById('modalCancel').textContent=session.role==='admin'?'Batal':'Tutup';
+  updateDailyTargetModalFooter();
+}
+function updateDailyTargetModalFooter(){
+  const dayInfo=state.dash.days[dailyTargetModalDay-1]||{};
+  const targetMap=Object.assign({},dayInfo.targetsByOutlet||{},dailyTargetDraft);
+  const total=Object.keys(targetMap).reduce((sum,code)=>sum+(Number(targetMap[code])||0),0);
+  const changed=Object.keys(dailyTargetDraft).length;
+  document.getElementById('modalInfo').textContent=`Total ${fmtTargetJt(total)}${changed?` · ${changed} outlet berubah`:''}`;
+  document.getElementById('modalSave').disabled=changed===0;
+}
+function closeDailyTargetModal(){
+  document.getElementById('targetModal').classList.remove('show');
+  dailyTargetModalDay=0;
+  dailyTargetDraft={};
+}
+document.getElementById('closeModal').addEventListener('click',closeDailyTargetModal);
+document.getElementById('modalCancel').addEventListener('click',closeDailyTargetModal);
+document.getElementById('targetModal').addEventListener('click',event=>{ if(event.target.id==='targetModal') closeDailyTargetModal(); });
+document.getElementById('modalSave').addEventListener('click',async()=>{
+  if(session.role!=='admin' || !Object.keys(dailyTargetDraft).length) return;
+  const day=dailyTargetModalDay;
+  const date=`${state.year}-${pad2(state.month)}-${pad2(day)}`;
+  const updates=Object.assign({},dailyTargetDraft);
+  const button=document.getElementById('modalSave');
+  button.disabled=true; button.textContent='Menyimpan…';
+  try{
+    const result=await call('saveDailyTargets',session.token,{date,updates});
+    if(!result || !result.ok) throw new Error(result&&result.error||'Gagal menyimpan target harian.');
+    const dayInfo=state.dash.days[day-1];
+    dayInfo.targetsByOutlet=Object.assign({},dayInfo.targetsByOutlet||{},updates);
+    dayInfo.dailyTarget=Object.keys(dayInfo.targetsByOutlet).reduce((sum,code)=>sum+(Number(dayInfo.targetsByOutlet[code])||0),0);
+    delete state.targetsCache[state.year+'-'+pad2(state.month)];
+    closeDailyTargetModal();
+    renderCalendar();
+    toast('Target harian tersimpan');
+    await loadMonth(state.year,state.month,true);
+  }catch(error){ toast(error.message||'Gagal menyimpan target harian',true); }
+  finally{ button.disabled=false; button.textContent='Simpan Perubahan'; }
+});
 
 window.addEventListener('keydown', e=>{
   if (e.key==='Escape'){
     if (document.getElementById('dayModal').classList.contains('show')) { closeDayModal(); return; }
-    if (document.getElementById('targetModal').classList.contains('show')) { closeModal(); return; }
+    if (document.getElementById('targetModal').classList.contains('show')) { closeDailyTargetModal(); return; }
+    if (document.getElementById('copyFallbackModal').classList.contains('show')) { closeCopyFallback(); return; }
   }
   if(document.getElementById('appView').style.display==='none') return;
   if(['TEXTAREA','INPUT','SELECT'].includes(e.target.tagName)) return;
