@@ -529,8 +529,11 @@ if (salesAnalysisStaticHtml.includes('id="btnPrint"') || salesAnalysisStaticHtml
 if (!salesAnalysisHtml.includes("catch(error){ /* WebView dapat menolak Clipboard API") || !salesAnalysisHtml.includes('id="copyFallbackModal"')) {
   failures.push('Copy Daily Report belum memiliki fallback aman untuk WebView mobile');
 }
-if (!salesAnalysisHtml.includes('Done Report <b>${reportDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('Done Analisa <b>${analysisDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('className=\'daily-target\'')) {
-  failures.push('Kalender belum menampilkan Done Report, Done Analisa, dan target harian ringkas');
+if (!salesAnalysisHtml.includes('Report <b>${reportDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('Analisa <b>${analysisDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('className=\'daily-target\'')) {
+  failures.push('Kalender belum menampilkan Report, Analisa, dan target harian ringkas');
+}
+if (salesAnalysisHtml.includes('Done Report <b>') || salesAnalysisHtml.includes('Done Analisa <b>') || !salesAnalysisHtml.includes('class="target-label">Target</span><strong>')) {
+  failures.push('Label DONE belum dihapus atau susunan label Target di atas angka belum diterapkan');
 }
 if (!salesAnalysisHtml.includes('id="dayAmount" inputmode="numeric"') || !salesAnalysisHtml.includes("dayAmount').addEventListener('input'") || !salesAnalysisHtml.includes('const fmtIDRInput = value =>')) {
   failures.push('Input Sales Harian belum memformat pemisah ribuan secara realtime');
