@@ -516,12 +516,21 @@ for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems'
   if (!allowedActions.has(action)) failures.push(`Endpoint Lost And Found '${action}' belum tersedia`);
   if (!lostFoundHtml.includes(`"${action}"`)) failures.push(`UI Lost And Found belum memanggil '${action}'`);
 }
-for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisSaveTargets', 'salesAnalysisUploadDailyTargets', 'salesAnalysisDailyReport', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
+for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisUploadDailyTargets', 'salesAnalysisSaveDailyTargets', 'salesAnalysisDailyReport', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
   if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
 }
 if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"') || !salesAnalysisHtml.includes('id="dailyReportDate"')) {
   failures.push('Kontrol BIHQ untuk upload target harian dan Copy Daily Report belum lengkap');
+}
+if (salesAnalysisStaticHtml.includes('id="btnPrint"') || salesAnalysisStaticHtml.includes('id="btnSettings"') || salesAnalysisStaticHtml.includes('id="targetBanner"')) {
+  failures.push('Kontrol cetak atau input target bulanan masih tampil di Analisa Sales');
+}
+if (!salesAnalysisHtml.includes("catch(error){ /* WebView dapat menolak Clipboard API") || !salesAnalysisHtml.includes('id="copyFallbackModal"')) {
+  failures.push('Copy Daily Report belum memiliki fallback aman untuk WebView mobile');
+}
+if (!salesAnalysisHtml.includes('Done Report <b>${reportDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('Done Analisa <b>${analysisDone}/${allOutlets.length}</b>') || !salesAnalysisHtml.includes('className=\'daily-target\'')) {
+  failures.push('Kalender belum menampilkan Done Report, Done Analisa, dan target harian ringkas');
 }
 if (!salesAnalysisHtml.includes('id="dayAmount" inputmode="numeric"') || !salesAnalysisHtml.includes("dayAmount').addEventListener('input'") || !salesAnalysisHtml.includes('const fmtIDRInput = value =>')) {
   failures.push('Input Sales Harian belum memformat pemisah ribuan secara realtime');
@@ -534,6 +543,15 @@ if (!backend.includes("oc = String(payload.outlet_code || '').trim().toUpperCase
 }
 if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.includes("function parseDailyTargetWorkbook_(base64, fileName, year, month, outletRows)") || !backend.includes("function getDailyReport(token, reportDate, outletRows)")) {
   failures.push('Backend target harian dan Daily Report belum lengkap');
+}
+if (!backend.includes('function bqGetDailyTargetsByDate_(outletCodes, year, month)') || !backend.includes('function bqSaveDailyTargetUpdates_(key, updates, submittedBy)') || !backend.includes('function saveDailyTargets(token, payload)')) {
+  failures.push('Backend baca/edit target harian per outlet belum lengkap');
+}
+if (!backend.includes("'_BQ_DAILY_CAL_V1'") || backend.includes('Number(targetsMap[oc])||0 : defaultTarget')) {
+  failures.push('Target bulanan kalender belum murni berasal dari akumulasi target harian atau cache belum dinaikkan');
+}
+if (!backend.includes('reported: !!row') || !backend.includes("if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh mengubah target harian.' }")) {
+  failures.push('Done Report atau pembatasan edit target harian BIHQ belum aman');
 }
 if (!backend.includes("return code === 'BIPM' ? 'BIPIM' : code")) {
   failures.push('Alias outlet BIPM/BIPIM Analisa Sales belum dinormalisasi');
