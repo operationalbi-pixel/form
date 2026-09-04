@@ -109,7 +109,9 @@ if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) fai
 if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
 if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
 if (salesAnalysisHtml.includes('id="copyFallbackModal"') || salesAnalysisHtml.includes('showCopyFallback(')) failures.push('Copy Daily Report masih membuka modal salin manual');
-if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('if(showCopyButton) prepareDailyReport(reportDate)')) failures.push('Daily Report belum dipersiapkan dari tanggal modal sebelum aksi clipboard mobile');
+if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('if(selDay && Number(selDay.sales)>0) prepareDailyReport(reportDate)')) failures.push('Daily Report belum dipersiapkan dari tanggal modal sebelum aksi clipboard mobile');
+if (salesAnalysisHtml.includes("button.textContent='Coba Lagi'") || !salesAnalysisHtml.includes("button.textContent='Sales Belum Diisi'") || !salesAnalysisHtml.includes("toast('Sales Belum Diisi',true)")) failures.push('Daily Report tanpa sales belum dibekukan dengan status dan notifikasi yang sesuai');
+if (salesAnalysisHtml.includes('<strong>HQ:</strong>') || salesAnalysisHtml.includes('Angka pembagi = seluruh outlet aktif selain BIHQ')) failures.push('Catatan penjelasan kalender HQ masih ditampilkan');
 const salesAnalysisStaticHtml = salesAnalysisHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
 const salesAnalysisIds = [...salesAnalysisStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
 const salesAnalysisDuplicateIds = [...new Set(salesAnalysisIds.filter((id, index) => salesAnalysisIds.indexOf(id) !== index))];

@@ -150,6 +150,7 @@
   .day-modal .copy-daily-report{height:28px;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:0 10px;font-family:"JetBrains Mono",monospace;font-size:8px;letter-spacing:.1em;text-transform:uppercase;font-weight:800;white-space:nowrap}
   .day-modal .copy-daily-report:hover{background:#95172e;border-color:#95172e}
   .day-modal .copy-daily-report:disabled{opacity:.55;cursor:wait}
+  .day-modal .copy-daily-report.unavailable,.day-modal .copy-daily-report.unavailable:hover{background:#777;border-color:#777;color:#eee;cursor:not-allowed}
   .dm-summary{padding:12px 16px;background:var(--paper-2);border-bottom:1px solid var(--rule);display:flex;align-items:end;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .dm-summary .left{display:flex;align-items:end;gap:14px;flex-wrap:wrap}
   .dm-summary .sum-block{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -887,6 +888,9 @@ async function copyPlainText(text){
 async function prepareDailyReport(reportDate){
   const button=document.getElementById('btnCopyDailyReport');
   const requestId=++dailyReportPrepareId;
+  button.classList.remove('unavailable');
+  button.removeAttribute('aria-disabled');
+  delete button.dataset.unavailable;
   button.disabled=true;
   button.textContent='Menyiapkan…';
   if(!reportDate){ button.disabled=false; button.textContent='Salin Daily Report'; return; }
@@ -901,11 +905,19 @@ async function prepareDailyReport(reportDate){
   }catch(error){
     dailyReportCopyCache.delete(reportDate);
     if(requestId===dailyReportPrepareId){
-      button.disabled=false;
-      button.textContent='Coba Lagi';
-      toast(error.message||'Daily Report gagal disiapkan',true);
+      setDailyReportUnavailable(button);
     }
   }
+}
+
+function setDailyReportUnavailable(button){
+  dailyReportPrepareId+=1;
+  if(button.dataset.reportDate) dailyReportCopyCache.delete(button.dataset.reportDate);
+  button.disabled=false;
+  button.classList.add('unavailable');
+  button.setAttribute('aria-disabled','true');
+  button.dataset.unavailable='true';
+  button.textContent='Sales Belum Diisi';
 }
 
 document.getElementById('btnUploadDailyTargets').addEventListener('click', ()=>{
@@ -937,6 +949,10 @@ document.getElementById('dailyTargetFile').addEventListener('change', async even
 
 document.getElementById('btnCopyDailyReport').addEventListener('click', async event=>{
   const button = event.currentTarget;
+  if(button.dataset.unavailable==='true'){
+    toast('Sales Belum Diisi',true);
+    return;
+  }
   const reportDate = button.dataset.reportDate;
   if(!reportDate){ toast('Tanggal laporan belum tersedia', true); return; }
   const reportText=dailyReportCopyCache.get(reportDate);
@@ -1131,12 +1147,9 @@ function render(){
   } else cta.style.display='none';
 
   // legend
-  document.getElementById('legendBar').innerHTML = isHQ ? `
-    <strong>HQ:</strong>
-    <span class="lg">Report = outlet sudah mengisi sales</span>
-    <span class="lg">Analisa = outlet sudah mengisi analisa sales</span>
-    <span class="lg">Angka pembagi = seluruh outlet aktif selain BIHQ</span>
-  ` : `
+  const legendBar=document.getElementById('legendBar');
+  legendBar.style.display=isHQ?'none':'flex';
+  legendBar.innerHTML = isHQ ? '' : `
     <strong>Store:</strong>
     <span class="lg"><span class="b on">D</span> Harian</span>
     <span class="lg"><span class="b on">W</span> Mingguan</span>
@@ -1655,17 +1668,20 @@ function openDayModal(day){
   const inner = document.getElementById('dayModalInner');
   inner.classList.toggle('store', !isHQ);
   const dt = new Date(year, month-1, day);
+  const selDay = dash.days[day-1];
   const reportDate = `${year}-${pad2(month)}-${pad2(day)}`;
   const copyButton = document.getElementById('btnCopyDailyReport');
   const showCopyButton = session.role==='admin' && isHQ;
   copyButton.style.display = showCopyButton ? '' : 'none';
   copyButton.dataset.reportDate = showCopyButton ? reportDate : '';
-  if(showCopyButton) prepareDailyReport(reportDate);
+  if(showCopyButton){
+    if(selDay && Number(selDay.sales)>0) prepareDailyReport(reportDate);
+    else setDailyReportUnavailable(copyButton);
+  }
   document.getElementById('dmTitle').textContent =
     `Detail Harian · ${ID_DOW_LONG[dt.getDay()]}, ${pad2(day)} ${ID_MONTHS_SHORT[month-1]} ${year}`;
 
   // summary header
-  const selDay = dash.days[day-1];
   const dSales = selDay?selDay.sales:0;
   const prevSales = selDay ? Number(selDay.prevSales)||0 : 0;
   const delta = prevSales>0 ? ((dSales-prevSales)/prevSales)*100 : 0;
