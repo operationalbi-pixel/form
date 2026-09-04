@@ -82,7 +82,6 @@
   .btn-icon{background:transparent;border:1px solid var(--rule);width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink);font-family:"JetBrains Mono",monospace;font-size:13px}
   .btn-icon:hover{background:var(--ink);color:#fff}
   .daily-report-tools{display:none;align-items:center;gap:6px}
-  .daily-report-tools input[type=date]{height:30px;border:1px solid var(--rule);background:#fff;color:var(--ink);padding:0 7px;font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:700}
   .btn-top{height:30px;border:1px solid var(--ink);background:#fff;color:var(--ink);padding:0 10px;font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:800;white-space:nowrap}
   .btn-top:hover{background:var(--ink);color:#fff}
   .btn-top.primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -145,6 +144,12 @@
   /* ===== DAY DETAIL MODAL ===== */
   .day-modal{max-width:960px}
   .day-modal.store{max-width:560px}
+  .day-modal .mh{gap:10px}
+  .day-modal .mh h3{min-width:0}
+  .day-modal .mh-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+  .day-modal .copy-daily-report{height:28px;border:1px solid var(--accent);background:var(--accent);color:#fff;padding:0 10px;font-family:"JetBrains Mono",monospace;font-size:8px;letter-spacing:.1em;text-transform:uppercase;font-weight:800;white-space:nowrap}
+  .day-modal .copy-daily-report:hover{background:#95172e;border-color:#95172e}
+  .day-modal .copy-daily-report:disabled{opacity:.55;cursor:wait}
   .dm-summary{padding:12px 16px;background:var(--paper-2);border-bottom:1px solid var(--rule);display:flex;align-items:end;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .dm-summary .left{display:flex;align-items:end;gap:14px;flex-wrap:wrap}
   .dm-summary .sum-block{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -228,6 +233,10 @@
     .ob-grid .ob:nth-child(3n){border-right:1px solid var(--rule)}
     .ob-grid .ob:nth-child(2n){border-right:none}
     .day-modal{max-width:100%}
+    .day-modal .mh{padding:9px 10px}
+    .day-modal .mh h3{font-size:10px;letter-spacing:.12em;line-height:1.25}
+    .day-modal .mh-actions{gap:5px}
+    .day-modal .copy-daily-report{height:26px;padding:0 7px;font-size:7px;letter-spacing:.06em}
   }
 
   /* calendar */
@@ -412,7 +421,6 @@
     .topbar{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
     .topbar .actions{width:100%;margin-left:0;flex-wrap:wrap}
     .daily-report-tools{order:2;width:100%;display:none;flex-wrap:wrap}
-    .daily-report-tools input[type=date]{flex:1;min-width:125px}
     .daily-report-tools .btn-top{flex:1}
     .meta{order:3;width:100%;flex-wrap:wrap;gap:8px}
     .meta .item{font-size:9px}
@@ -534,8 +542,6 @@
     <div class="actions">
       <div class="daily-report-tools" id="dailyReportTools">
         <button class="btn-top" id="btnUploadDailyTargets" type="button">↑ Target Daily</button>
-        <input id="dailyReportDate" type="date" aria-label="Tanggal Daily Report" />
-        <button class="btn-top primary" id="btnCopyDailyReport" type="button">Copy Daily Report</button>
         <input id="dailyTargetFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
       </div>
       <button class="btn-icon dashboard-back-standard" id="btnLogout" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
@@ -677,7 +683,10 @@
   <div class="modal day-modal" id="dayModalInner">
     <div class="mh">
       <h3 id="dmTitle">Detail Hari</h3>
-      <button class="close" id="dmClose">×</button>
+      <div class="mh-actions">
+        <button class="copy-daily-report" id="btnCopyDailyReport" type="button" style="display:none">Salin Daily Report</button>
+        <button class="close" id="dmClose">×</button>
+      </div>
     </div>
     <div class="dm-summary" id="dmSummary"></div>
     <div class="dm-divider" id="dmDivider"></div>
@@ -880,14 +889,14 @@ async function prepareDailyReport(reportDate){
   const requestId=++dailyReportPrepareId;
   button.disabled=true;
   button.textContent='Menyiapkan…';
-  if(!reportDate){ button.disabled=false; button.textContent='Copy Daily Report'; return; }
+  if(!reportDate){ button.disabled=false; button.textContent='Salin Daily Report'; return; }
   try{
     const result=await call('getDailyReport',session.token,reportDate);
     if(!result || !result.ok || !result.text) throw new Error(result&&result.error||'Daily Report gagal dibuat.');
     dailyReportCopyCache.set(reportDate,String(result.text));
-    if(requestId===dailyReportPrepareId && document.getElementById('dailyReportDate').value===reportDate){
+    if(requestId===dailyReportPrepareId && button.dataset.reportDate===reportDate){
       button.disabled=false;
-      button.textContent='Copy Daily Report';
+      button.textContent='Salin Daily Report';
     }
   }catch(error){
     dailyReportCopyCache.delete(reportDate);
@@ -928,18 +937,14 @@ document.getElementById('dailyTargetFile').addEventListener('change', async even
 
 document.getElementById('btnCopyDailyReport').addEventListener('click', async event=>{
   const button = event.currentTarget;
-  const reportDate = document.getElementById('dailyReportDate').value;
-  if(!reportDate){ toast('Pilih tanggal laporan', true); return; }
+  const reportDate = button.dataset.reportDate;
+  if(!reportDate){ toast('Tanggal laporan belum tersedia', true); return; }
   const reportText=dailyReportCopyCache.get(reportDate);
   if(!reportText){ prepareDailyReport(reportDate); return; }
   try{
     const copied=await copyPlainText(reportText);
     toast(copied?'Daily Report tersalin — siap ditempel di WhatsApp':'Clipboard tidak diizinkan oleh aplikasi',!copied);
   }catch(error){ toast(error.message||'Daily Report gagal disalin', true); }
-});
-
-document.getElementById('dailyReportDate').addEventListener('change',event=>{
-  prepareDailyReport(event.target.value);
 });
 
 /* ENTER APP */
@@ -956,12 +961,6 @@ function enterApp(){
   if(session.role==='admin'){
     const tools = document.getElementById('dailyReportTools');
     tools.style.display='flex';
-    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate()-1);
-    const yesterdayKey = yesterday.getFullYear()+'-'+pad2(yesterday.getMonth()+1)+'-'+pad2(yesterday.getDate());
-    const reportDate = document.getElementById('dailyReportDate');
-    reportDate.value=yesterdayKey;
-    reportDate.max=yesterdayKey;
-    prepareDailyReport(yesterdayKey);
     document.getElementById('filterItem').style.display='';
     const sel = document.getElementById('outletFilter');
     sel.innerHTML='<option value="ALL">ALL · Semua Outlet</option>';
@@ -1656,6 +1655,12 @@ function openDayModal(day){
   const inner = document.getElementById('dayModalInner');
   inner.classList.toggle('store', !isHQ);
   const dt = new Date(year, month-1, day);
+  const reportDate = `${year}-${pad2(month)}-${pad2(day)}`;
+  const copyButton = document.getElementById('btnCopyDailyReport');
+  const showCopyButton = session.role==='admin' && isHQ;
+  copyButton.style.display = showCopyButton ? '' : 'none';
+  copyButton.dataset.reportDate = showCopyButton ? reportDate : '';
+  if(showCopyButton) prepareDailyReport(reportDate);
   document.getElementById('dmTitle').textContent =
     `Detail Harian · ${ID_DOW_LONG[dt.getDay()]}, ${pad2(day)} ${ID_MONTHS_SHORT[month-1]} ${year}`;
 

@@ -109,7 +109,7 @@ if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) fai
 if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
 if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
 if (salesAnalysisHtml.includes('id="copyFallbackModal"') || salesAnalysisHtml.includes('showCopyFallback(')) failures.push('Copy Daily Report masih membuka modal salin manual');
-if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('prepareDailyReport(yesterdayKey)')) failures.push('Daily Report belum dipersiapkan sebelum aksi clipboard mobile');
+if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('if(showCopyButton) prepareDailyReport(reportDate)')) failures.push('Daily Report belum dipersiapkan dari tanggal modal sebelum aksi clipboard mobile');
 const salesAnalysisStaticHtml = salesAnalysisHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
 const salesAnalysisIds = [...salesAnalysisStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
 const salesAnalysisDuplicateIds = [...new Set(salesAnalysisIds.filter((id, index) => salesAnalysisIds.indexOf(id) !== index))];
@@ -522,8 +522,11 @@ for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'sales
   if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
   if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
 }
-if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"') || !salesAnalysisHtml.includes('id="dailyReportDate"')) {
+if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"')) {
   failures.push('Kontrol BIHQ untuk upload target harian dan Copy Daily Report belum lengkap');
+}
+if (salesAnalysisHtml.includes('id="dailyReportDate"') || !/<div class="modal-bg" id="dayModal">[\s\S]{0,500}id="btnCopyDailyReport"/.test(salesAnalysisHtml)) {
+  failures.push('Salin Daily Report belum dipindahkan tanpa pilihan tanggal ke modal Sales Harian');
 }
 if (salesAnalysisStaticHtml.includes('id="btnPrint"') || salesAnalysisStaticHtml.includes('id="btnSettings"') || salesAnalysisStaticHtml.includes('id="targetBanner"')) {
   failures.push('Kontrol cetak atau input target bulanan masih tampil di Analisa Sales');
