@@ -196,7 +196,13 @@ try {
   failures.push(`Uji batch BigQuery gagal: ${error.message}`);
 }
 const frontendStockCard = await text('docs/stock-card.html');
+const modernUiCss = await text('docs/ui-modern.css');
 if (!frontendStockCard.includes('id="stockOpnameButton"') || !frontendStockCard.includes('id="stockOpnameDate"') || !frontendStockCard.includes('id="stockOpnameProgressBar"')) failures.push('UI Upload Stock Opname belum memiliki tombol, pilihan tanggal, dan progress upload');
+if (!frontendStockCard.includes('grid-template-columns:repeat(7,minmax(0,1fr))') || !modernUiCss.includes('grid-template-columns: repeat(7, minmax(0, 1fr))')) failures.push('Toolbar Stock Card desktop belum menampung tujuh aksi dalam satu baris');
+if (!modernUiCss.includes('.logout-icon-button.dashboard-back-standard') || !modernUiCss.includes('grid-template-columns: 36px minmax(0, auto) auto')) failures.push('Tombol Dashboard pada header Stock Card/Showcase masih berisiko keluar layar');
+for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
+  if (!(await text(path)).includes('ui-modern.css?v=20260910-ui-fit2')) failures.push(`${path} belum memaksa browser mengambil perbaikan UI terbaru`);
+}
 if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
 if (!backend.includes('verifyStockOpname: previewStockOpnameUpload') || !backend.includes('uploadStockOpname: uploadStockOpname')) failures.push('Endpoint Upload Stock Opname belum terdaftar');
 if (!backend.includes("event_date: prepared.eventDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung saldo pada tanggal pilihan dan menyimpan adjustment pada tanggal tersebut');
