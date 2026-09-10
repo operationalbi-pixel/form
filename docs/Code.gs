@@ -3169,7 +3169,9 @@ function prepareStockOpnameImport_(token, payload) {
   const session = requireSession_(token), employee = findEmployee_(session.nik);
   assertEmployeeActive_(employee);
   ensureStockCardInfrastructure_();
-  const location = normalizeLocation_(payload.location), reportOutlets = report.outlets.slice();
+  // BIHQ can upload a multi-branch workbook without selecting one outlet first.
+  // In that state the page has no active storage, so Stock Opname defaults to Store.
+  const location = normalizeLocation_(payload.location || 'Store') || 'Store', reportOutlets = report.outlets.slice();
   const activeOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
   const unauthorized = reportOutlets.filter(function (outlet) { return activeOutlets.indexOf(outlet) < 0; });
   if (unauthorized.length) throw new Error('Branch tidak aktif atau tidak dapat diakses akun ini: ' + unauthorized.join(', ') + '.');
