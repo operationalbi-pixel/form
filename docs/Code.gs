@@ -3084,7 +3084,7 @@ function previewStockOpnameUpload(token, payload) {
     payload = payload || {};
     const prepared = prepareStockOpnameImport_(token, payload);
     return {
-      verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate,
+      verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
       outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
       location: prepared.location, outletCount: prepared.outletCount,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
@@ -3101,7 +3101,7 @@ function previewStockOpnameUpload(token, payload) {
   });
 }
 
-/** Makes each OPNAME STOCK value the balance at eventDate and lets later movements flow from it. */
+/** Makes each OPNAME STOCK value the opening balance on the day after the count date. */
 function uploadStockOpname(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -3109,7 +3109,7 @@ function uploadStockOpname(token, payload) {
     try {
       // Recalculate under the write lock so another upload cannot change the balance between preview and save.
       const prepared = prepareStockOpnameImport_(token, payload);
-      const now = new Date(), rows = [];
+      const openingCreatedAt = new Date(prepared.effectiveDate + 'T00:00:00+07:00').getTime() / 1000, rows = [];
       prepared.outlets.forEach(function (entry) {
         entry.items.forEach(function (line) {
           const direction = line.delta > 0 ? 'IN' : 'OUT';
@@ -3119,10 +3119,10 @@ function uploadStockOpname(token, payload) {
             outlet: entry.outlet, location: prepared.location, item_code: line.item.code,
             category: line.item.category, item_name: line.item.name, unit: line.item.unit,
             direction: direction, qty: Math.abs(line.delta), movement_type: 'Stock Opname',
-            info: cleanText_('Upload Stock Opname · Saldo ' + prepared.eventDate + ' ' + formatQty_(line.cardQty) +
-              ' → Stock Aktual ' + formatQty_(line.actualQty), 500),
-            expiry_date: null, source_arrival_date: direction === 'IN' ? prepared.eventDate : null,
-            event_date: prepared.eventDate, created_at: now.getTime() / 1000 + rowIndex / 1000000,
+            info: cleanText_('Upload Stock Opname ' + prepared.eventDate + ' · Saldo penutup ' + formatQty_(line.cardQty) +
+              ' → Stock awal ' + prepared.effectiveDate + ' ' + formatQty_(line.actualQty), 500),
+            expiry_date: null, source_arrival_date: direction === 'IN' ? prepared.effectiveDate : null,
+            event_date: prepared.effectiveDate, created_at: openingCreatedAt + rowIndex / 1000000,
             created_by: prepared.employee.nik, source_file: prepared.fileName,
             source_hash: prepared.sourceHash, source_row: line.sourceRow
           }});
@@ -3131,8 +3131,8 @@ function uploadStockOpname(token, payload) {
         rows.push({ insertId: importId, json: {
           record_id: importId, logical_id: importId, version: 1, record_type: 'IMPORT',
           outlet: entry.outlet, location: prepared.location, direction: null, qty: 0, movement_type: 'Stock Opname',
-          info: cleanText_('Import Stock Opname · ' + prepared.fileName + ' · ' + entry.sourceItemCount + ' item', 500),
-          expiry_date: null, event_date: prepared.eventDate, created_at: now.getTime() / 1000,
+          info: cleanText_('Import Stock Opname ' + prepared.eventDate + ' · Opening ' + prepared.effectiveDate + ' · ' + prepared.fileName + ' · ' + entry.sourceItemCount + ' item', 500),
+          expiry_date: null, event_date: prepared.effectiveDate, created_at: openingCreatedAt,
           created_by: prepared.employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
         }});
       });
@@ -3140,7 +3140,7 @@ function uploadStockOpname(token, payload) {
       return {
         uploaded: true, outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
         location: prepared.location, outletCount: prepared.outletCount,
-        eventDate: prepared.eventDate, adjustmentCount: prepared.items.length,
+        eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate, adjustmentCount: prepared.items.length,
         movementCount: prepared.items.length, unchangedCount: prepared.unchangedCount,
         increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
         outletResults: prepared.outlets.map(function (entry) {
@@ -3164,6 +3164,7 @@ function prepareStockOpnameImport_(token, payload) {
   const eventDate = normalizeDate_(payload.eventDate, false);
   if (!eventDate) throw new Error('Pilih tanggal Stock Opname terlebih dahulu.');
   if (eventDate > todayIso_()) throw new Error('Tanggal Stock Opname tidak boleh melewati hari ini.');
+  const effectiveDate = stockIsoDateOffset_(eventDate, 1);
   const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
   const session = requireSession_(token), employee = findEmployee_(session.nik);
   assertEmployeeActive_(employee);
@@ -3177,7 +3178,10 @@ function prepareStockOpnameImport_(token, payload) {
   }
   const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
   if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
-  const duplicates = reportOutlets.filter(function (outlet) { return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash); });
+  const duplicates = reportOutlets.filter(function (outlet) {
+    return stockOpnameAlreadyImported_(outlet, location, effectiveDate, sourceHash) ||
+      stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
+  });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
 
   const master = {};
@@ -3216,7 +3220,7 @@ function prepareStockOpnameImport_(token, payload) {
   if (missing.length) throw new Error(missing.length + ' item file tidak ditemukan pada Master Stock Card. Contoh: ' + missing.slice(0, 8).join(', ') + '.');
   if (unitMismatch.length) throw new Error(unitMismatch.length + ' unit file berbeda dari Unit Master. Contoh: ' + unitMismatch.slice(0, 8).join(', ') + '.');
   return {
-    employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate,
+    employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
     location: location, outletCount: outlets.length, outlets: outlets,
     sourceItemCount: report.rows.length, items: allItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount
