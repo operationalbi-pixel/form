@@ -3123,7 +3123,7 @@ function previewStockOpnameUpload(token, payload) {
   });
 }
 
-/** Makes each OPNAME STOCK value the opening balance on the day after the count date. */
+/** Makes each OPNAME STOCK value the closing balance on the selected count date. */
 function uploadStockOpname(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -3133,7 +3133,7 @@ function uploadStockOpname(token, payload) {
       const prepared = prepareStockOpnameImport_(token, payload);
       if (prepared.requiresConversion) throw new Error('Lengkapi seluruh konversi unit Stock Opname sebelum melanjutkan upload.');
       const masterItemsAdded = addStockOpnameMasterItems_(prepared.newItems);
-      const openingCreatedAt = new Date(prepared.effectiveDate + 'T00:00:00+07:00').getTime() / 1000, rows = [];
+      const opnameCreatedAt = new Date().getTime() / 1000, rows = [];
       prepared.outlets.forEach(function (entry) {
         (entry.auditItems || []).forEach(function (line, auditIndex) {
           const auditId = Utilities.getUuid();
@@ -3144,23 +3144,23 @@ function uploadStockOpname(token, payload) {
             direction: null, qty: line.actualQty, movement_type: 'Stock Opname Audit',
             info: JSON.stringify({ cardQty: line.cardQty, actualQty: line.actualQty, reportQty: line.reportQty,
               conversionFactor: line.conversionFactor, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate }),
-            expiry_date: null, event_date: prepared.effectiveDate, created_at: openingCreatedAt + auditIndex / 1000000,
+            expiry_date: null, event_date: prepared.eventDate, created_at: opnameCreatedAt + auditIndex / 1000000,
             created_by: prepared.employee.nik, source_file: prepared.fileName,
             source_hash: prepared.sourceHash, source_row: line.sourceRow
           }});
         });
-        entry.items.forEach(function (line) {
-          const direction = line.delta > 0 ? 'IN' : 'OUT';
+        (entry.auditItems || []).forEach(function (line) {
+          const direction = line.delta >= 0 ? 'IN' : 'OUT';
           const recordId = Utilities.getUuid(), rowIndex = rows.length;
           rows.push({ insertId: recordId, json: {
             record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
             outlet: entry.outlet, location: prepared.location, item_code: line.item.code,
             category: line.item.category, item_name: line.item.name, unit: line.item.unit,
             direction: direction, qty: Math.abs(line.delta), movement_type: 'Stock Opname',
-            info: cleanText_('Upload Stock Opname ' + prepared.eventDate + ' · Saldo penutup ' + formatQty_(line.cardQty) +
-              ' → Stock awal ' + prepared.effectiveDate + ' ' + formatQty_(line.actualQty), 500),
-            expiry_date: null, source_arrival_date: direction === 'IN' ? prepared.effectiveDate : null,
-            event_date: prepared.effectiveDate, created_at: openingCreatedAt + rowIndex / 1000000,
+            info: cleanText_('Hasil Stock Opname tanggal ' + prepared.eventDate + ' · Saldo sistem ' + formatQty_(line.cardQty) +
+              ' → Balance ' + formatQty_(line.actualQty), 500),
+            expiry_date: null, source_arrival_date: direction === 'IN' && line.delta > 0 ? prepared.eventDate : null,
+            event_date: prepared.eventDate, created_at: opnameCreatedAt + rowIndex / 1000000,
             created_by: prepared.employee.nik, source_file: prepared.fileName,
             source_hash: prepared.sourceHash, source_row: line.sourceRow
           }});
@@ -3169,8 +3169,8 @@ function uploadStockOpname(token, payload) {
         rows.push({ insertId: importId, json: {
           record_id: importId, logical_id: importId, version: 1, record_type: 'IMPORT',
           outlet: entry.outlet, location: prepared.location, direction: null, qty: 0, movement_type: 'Stock Opname',
-          info: cleanText_('Import Stock Opname ' + prepared.eventDate + ' · Opening ' + prepared.effectiveDate + ' · ' + prepared.fileName + ' · ' + entry.sourceItemCount + ' item', 500),
-          expiry_date: null, event_date: prepared.effectiveDate, created_at: openingCreatedAt,
+          info: cleanText_('Import Stock Opname ' + prepared.eventDate + ' · Balance tanggal yang sama · ' + prepared.fileName + ' · ' + entry.sourceItemCount + ' item', 500),
+          expiry_date: null, event_date: prepared.eventDate, created_at: opnameCreatedAt,
           created_by: prepared.employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
         }});
       });
@@ -3179,7 +3179,7 @@ function uploadStockOpname(token, payload) {
         uploaded: true, outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
         location: prepared.location, outletCount: prepared.outletCount,
         eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate, adjustmentCount: prepared.items.length,
-        movementCount: prepared.items.length, unchangedCount: prepared.unchangedCount,
+        movementCount: prepared.auditItems.length, unchangedCount: prepared.unchangedCount,
         increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
         newItemCount: prepared.newItems.length, masterItemsAdded: masterItemsAdded,
         conversionCount: prepared.conversionCount,
@@ -3264,7 +3264,7 @@ function prepareStockOpnameImport_(token, payload) {
   const eventDate = normalizeDate_(payload.eventDate, false);
   if (!eventDate) throw new Error('Pilih tanggal Stock Opname terlebih dahulu.');
   if (eventDate > todayIso_()) throw new Error('Tanggal Stock Opname tidak boleh melewati hari ini.');
-  const effectiveDate = stockIsoDateOffset_(eventDate, 1);
+  const effectiveDate = eventDate;
   const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
   const session = requireSession_(token), employee = findEmployee_(session.nik);
   assertEmployeeActive_(employee);
@@ -3281,8 +3281,7 @@ function prepareStockOpnameImport_(token, payload) {
   const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
   if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
   const duplicates = reportOutlets.filter(function (outlet) {
-    return stockOpnameAlreadyImported_(outlet, location, effectiveDate, sourceHash) ||
-      stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
+    return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
 
@@ -3397,6 +3396,15 @@ function stockUnique_(values) {
   });
 }
 
+function stockOpnameDisplayEventDate_(row) {
+  const storedDate = String(row && row.event_date || '').slice(0, 10);
+  const info = String(row && row.info || '');
+  let match = /Koreksi tanggal Stock Opname\s+\d{4}-\d{2}-\d{2}\s+→\s+(\d{4}-\d{2}-\d{2})/i.exec(info);
+  if (match) return match[1];
+  match = /Import Stock Opname\s+(\d{4}-\d{2}-\d{2})/i.exec(info);
+  return match ? match[1] : storedDate;
+}
+
 function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
   const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') ' +
     'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
@@ -3423,12 +3431,12 @@ function getStockOpnameUploadHistory(token, payload) {
     const countRows = runNamedQuery_('SELECT COUNT(*) AS total' + source + where, params, { useQueryCache: false });
     const total = Number(countRows.length && countRows[0].total || 0), pages = Math.max(1, Math.ceil(total / pageSize));
     const currentPage = Math.min(page, pages), offset = (currentPage - 1) * pageSize;
-    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, created_at, created_by' + source + where +
+    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, info, created_at, created_by' + source + where +
       'ORDER BY event_date DESC, created_at DESC, outlet ASC LIMIT ' + pageSize + ' OFFSET ' + offset, params, { useQueryCache: false });
     return { page: currentPage, pageSize: pageSize, total: total, pages: pages, rows: rows.map(function (row) {
       return { outlet: String(row.outlet || ''), location: String(row.location || ''), sourceHash: String(row.source_hash || ''),
         fileName: String(row.source_file || ''), effectiveDate: String(row.event_date || '').slice(0, 10),
-        eventDate: stockIsoDateOffset_(String(row.event_date || '').slice(0, 10), -1), createdAt: String(row.created_at || ''), createdBy: String(row.created_by || '') };
+        eventDate: stockOpnameDisplayEventDate_(row), createdAt: String(row.created_at || ''), createdBy: String(row.created_by || '') };
     }) };
   });
 }
@@ -3463,7 +3471,8 @@ function getStockOpnameUploadHistoryDetail(token, payload) {
           cardQty = Number(detail.cardQty); actualQty = Number(detail.actualQty);
         } catch (error) {}
       } else {
-        const match = String(row.info || '').match(/Saldo penutup\s+(-?[\d.,]+)\s+→\s+Stock awal\s+\d{4}-\d{2}-\d{2}\s+(-?[\d.,]+)/i);
+        const match = String(row.info || '').match(/Saldo penutup\s+(-?[\d.,]+)\s+→\s+Stock awal\s+\d{4}-\d{2}-\d{2}\s+(-?[\d.,]+)/i) ||
+          String(row.info || '').match(/Saldo sistem\s+(-?[\d.,]+)\s+→\s+Balance\s+(-?[\d.,]+)/i);
         if (match) { cardQty = parseReportNumber_(match[1]); actualQty = parseReportNumber_(match[2]); }
       }
       if (!isFinite(cardQty) || !isFinite(actualQty)) return;
@@ -3475,8 +3484,14 @@ function getStockOpnameUploadHistoryDetail(token, payload) {
     }).sort(function (a, b) { return a.code.localeCompare(b.code); });
     const pageSize = 20, requestedPage = Math.max(1, Math.floor(Number(payload.page || 1)) || 1), pages = Math.max(1, Math.ceil(allRows.length / pageSize));
     const page = Math.min(requestedPage, pages), start = (page - 1) * pageSize;
+    let displayEventDate = effectiveDate;
+    records.some(function (row) {
+      if (row.record_type !== 'OPNAME_DETAIL') return false;
+      try { displayEventDate = String(JSON.parse(String(row.info || '{}')).eventDate || effectiveDate).slice(0, 10); } catch (error) {}
+      return true;
+    });
     return { page: page, pageSize: pageSize, total: allRows.length, pages: pages, rows: allRows.slice(start, start + pageSize),
-      outlet: outlet, eventDate: stockIsoDateOffset_(effectiveDate, -1), effectiveDate: effectiveDate,
+      outlet: outlet, eventDate: displayEventDate, effectiveDate: effectiveDate,
       legacyPartial: records.length > 0 && !records.some(function (row) { return row.record_type === 'OPNAME_DETAIL'; }) };
   });
 }
@@ -3502,10 +3517,10 @@ function applyStockOpnameDateCorrection(token, payload) {
           record_type: 'MOVEMENT', outlet: prepared.outlet, location: prepared.location,
           item_code: line.code, category: line.category, item_name: line.name, unit: line.unit,
           direction: line.newDelta < 0 ? 'OUT' : 'IN', qty: Math.abs(line.newDelta), movement_type: 'Stock Opname',
-          info: cleanText_('Koreksi tanggal SO ' + prepared.oldEventDate + ' → ' + prepared.newEventDate + ' · Saldo penutup ' +
-            formatQty_(line.newCardQty) + ' → Stock awal ' + prepared.newEffectiveDate + ' ' + formatQty_(line.opnameQty) + ' · ' + prepared.reason, 500),
+          info: cleanText_('Koreksi tanggal SO ' + prepared.oldEventDate + ' → ' + prepared.newEventDate + ' · Saldo sistem ' +
+            formatQty_(line.newCardQty) + ' → Balance ' + formatQty_(line.opnameQty) + ' · ' + prepared.reason, 500),
           expiry_date: null, source_arrival_date: line.newDelta > 0 ? prepared.newEffectiveDate : null,
-          event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000 + index / 1000000,
+          event_date: prepared.newEventDate, created_at: now.getTime() / 1000 + index / 1000000,
           created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: line.sourceRow
         }});
 
@@ -3520,7 +3535,7 @@ function applyStockOpnameDateCorrection(token, payload) {
           record_type: 'OPNAME_DETAIL', outlet: prepared.outlet, location: prepared.location,
           item_code: line.code, category: line.category, item_name: line.name, unit: line.unit,
           direction: null, qty: line.opnameQty, movement_type: 'Stock Opname Audit', info: JSON.stringify(auditInfo),
-          expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000 + (prepared.items.length + index) / 1000000,
+          expiry_date: null, event_date: prepared.newEventDate, created_at: now.getTime() / 1000 + (prepared.items.length + index) / 1000000,
           created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: line.sourceRow
         }});
       });
@@ -3531,7 +3546,7 @@ function applyStockOpnameDateCorrection(token, payload) {
         version: Number(prepared.importRow.version || 1) + 1, record_type: 'IMPORT', outlet: prepared.outlet, location: prepared.location,
         direction: null, qty: 0, movement_type: 'Stock Opname',
         info: cleanText_('Koreksi tanggal Stock Opname ' + prepared.oldEventDate + ' → ' + prepared.newEventDate + ' · ' + prepared.reason, 500),
-        expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000,
+        expiry_date: null, event_date: prepared.newEventDate, created_at: now.getTime() / 1000,
         created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
       }});
       const correctionId = Utilities.getUuid();
@@ -3541,7 +3556,7 @@ function applyStockOpnameDateCorrection(token, payload) {
         info: JSON.stringify({ sourceHash: prepared.sourceHash, fileName: prepared.fileName, oldEventDate: prepared.oldEventDate,
           oldEffectiveDate: prepared.oldEffectiveDate, newEventDate: prepared.newEventDate, newEffectiveDate: prepared.newEffectiveDate,
           reason: prepared.reason, correctedBy: employee.nik, correctedAt: now.toISOString(), itemCount: prepared.items.length }),
-        expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000,
+        expiry_date: null, event_date: prepared.newEventDate, created_at: now.getTime() / 1000,
         created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
       }});
       insertStockCardRows_(rows);
@@ -3578,7 +3593,7 @@ function prepareStockOpnameDateCorrection_(employee, payload) {
   if (!importRow) throw new Error('Upload Stock Opname tidak ditemukan atau sudah berubah. Muat ulang History.');
   const oldEffectiveDate = String(importRow.event_date || '').slice(0, 10);
   if (oldEffectiveDate !== requestedEffectiveDate) throw new Error('Tanggal riwayat sudah berubah. Muat ulang History sebelum melakukan koreksi.');
-  const oldEventDate = stockIsoDateOffset_(oldEffectiveDate, -1), newEffectiveDate = stockIsoDateOffset_(newEventDate, 1);
+  const oldEventDate = stockOpnameDisplayEventDate_(importRow), newEffectiveDate = newEventDate;
   if (newEventDate === oldEventDate) throw new Error('Tanggal baru sama dengan tanggal Stock Opname saat ini.');
 
   const laterStart = oldEffectiveDate < newEffectiveDate ? oldEffectiveDate : newEffectiveDate;
@@ -4754,6 +4769,16 @@ function stockHistoryItemCondition_(location) {
 }
 
 function mapStockHistoryQueryRow_(r) {
+  const info = String(r.info || ''), isStockOpname = String(r.movement_type || '') === 'Stock Opname';
+  let opnameBalance = null, opnameDate = '';
+  if (isStockOpname) {
+    let match = /(?:→\s*Balance|Balance)\s+(-?[\d.,]+)/i.exec(info);
+    if (!match) match = /Stock awal\s+\d{4}-\d{2}-\d{2}\s+(-?[\d.,]+)/i.exec(info);
+    if (match) opnameBalance = parseReportNumber_(match[1]);
+    match = /(?:Hasil Stock Opname tanggal|Upload Stock Opname)\s+(\d{4}-\d{2}-\d{2})/i.exec(info) ||
+      /Koreksi tanggal SO\s+\d{4}-\d{2}-\d{2}\s+→\s+(\d{4}-\d{2}-\d{2})/i.exec(info);
+    opnameDate = match ? match[1] : String(r.event_date || '').slice(0, 10);
+  }
   return {
     recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
     date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
@@ -4761,7 +4786,8 @@ function mapStockHistoryQueryRow_(r) {
     sourceArrivalDate: String(r.source_arrival_date || ''), supplier: String(r.supplier || ''),
     sourceFile: String(r.source_file || ''), sourceRow: Number(r.source_row || 0),
     transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
-    createdBy: String(r.created_by || ''), createdAt: String(r.created_at || '')
+    createdBy: String(r.created_by || ''), createdAt: String(r.created_at || ''),
+    opnameBalance: opnameBalance !== null && isFinite(opnameBalance) ? Number(opnameBalance) : null, opnameDate: opnameDate
   };
 }
 
