@@ -214,6 +214,9 @@ if (!backend.includes("if (actualQty < 0) { negativeQty.push")) failures.push('S
 if (!backend.includes('const effectiveDate = stockIsoDateOffset_(eventDate, 1);') ||
     !backend.includes('event_date: prepared.effectiveDate') ||
     !frontendStockCard.includes('QTY hasil SO akan menjadi stok awal pada hari berikutnya.')) failures.push('Stock Opname belum diterapkan sebagai opening stock H+1');
+if (!backend.includes("normalizeLocation_(payload.location || 'Store') || 'Store'") ||
+    !frontendStockCard.includes("function stockOpnameLocation(){return APP.location||'Store'}")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
+if (!frontendStockCard.includes('>Daily Upload</span>') || !frontendStockCard.includes('stock-opname-modal')) failures.push('Label Daily Upload atau penyempurnaan modal Stock Opname belum tersedia');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
 if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);') ||
     !backend.includes('const baselineDate = stockDateOffset_(startDate, -1);')) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
