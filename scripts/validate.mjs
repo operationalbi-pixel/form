@@ -204,7 +204,14 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
   if (!(await text(path)).includes('ui-modern.css?v=20260910-toolbar1')) failures.push(`${path} belum memaksa browser mengambil perbaikan UI terbaru`);
 }
 if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
+if (!frontendStockCard.includes('id="stockOpnameConversionModal"') || !frontendStockCard.includes('function continueStockOpnameConversion()') ||
+    !frontendStockCard.includes("server('saveConversions'")) failures.push('Popup konfirmasi konversi unit Stock Opname belum tersedia');
+if (!frontendStockCard.includes('id="stockOpnameHistoryButton"') || !frontendStockCard.includes('id="stockOpnameHistorySearch"') ||
+    !frontendStockCard.includes('id="stockOpnameHistoryDetailSearch"') || !frontendStockCard.includes("server('stockOpnameHistory'") ||
+    !frontendStockCard.includes("server('stockOpnameHistoryDetail'")) failures.push('UI History Upload Stock Opname dan detailnya belum lengkap');
 if (!backend.includes('verifyStockOpname: previewStockOpnameUpload') || !backend.includes('uploadStockOpname: uploadStockOpname')) failures.push('Endpoint Upload Stock Opname belum terdaftar');
+if (!backend.includes('stockOpnameHistory: getStockOpnameUploadHistory') || !backend.includes('stockOpnameHistoryDetail: getStockOpnameUploadHistoryDetail') ||
+    !backend.includes("record_type: 'OPNAME_DETAIL'")) failures.push('Backend History Stock Opname atau audit detail seluruh item belum tersedia');
 if (!backend.includes("event_date: prepared.effectiveDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung saldo penutup tanggal SO dan menyimpan opening stock pada H+1');
 if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
 if (!backend.includes("'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'")) failures.push('Parser Stock Opname belum mengikuti header file Excel yang disediakan');
@@ -252,6 +259,7 @@ try {
     { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' },
     { code: 'ITEM2', category: 'Food', name: 'Item 2', unit: 'KG' }
   ];
+  backendContext.readStockUnitConversions_ = () => ({});
   backendContext.readStockCodeQtyMapAtDate_ = outlet => outlet === 'BICP' ? { ITEM1: 10 } : { ITEM2: 3 };
   backendContext.readCurrentStockCodeQtyMap_ = outlet => outlet === 'BICP' ? { ITEM1: 14 } : { ITEM2: 8 };
   const opname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO.xlsx', base64: 'DATA', eventDate: '2026-09-01', location: 'Store' });
@@ -260,7 +268,17 @@ try {
   if (opname.effectiveDate !== '2026-09-02') failures.push('Tanggal efektif Stock Opname belum otomatis berpindah ke H+1');
   if (backendContext.stockIsoDateOffset_('2026-08-31', 1) !== '2026-09-01') failures.push('Tanggal efektif Stock Opname belum aman saat melewati pergantian bulan');
   if (opname.outletCount !== 2 || opname.outlets.map(entry => entry.outlet).join(',') !== 'BICP,BIKK') failures.push('Stock Opname BIHQ belum mengelompokkan satu file berdasarkan multi-branch');
+  if (opname.auditItems.length !== 3 || opname.outlets.reduce((total, entry) => total + entry.auditItems.length, 0) !== 3) failures.push('Audit Stock Opname belum menyimpan seluruh item file untuk kebutuhan history');
   if (opname.newItems.length !== 1 || opname.newItems[0].code !== 'OTHO1041' || opname.newItems[0].name !== 'PAJANGAN DEKORASI') failures.push('Item file yang belum ada belum disiapkan sebagai Master Stock Card baru');
+  backendContext.parseStockOpnameReport_ = () => ({ outlets: ['BICP'], rows: [
+    { sourceRow: 2, outlet: 'BICP', code: 'ITEM1', name: 'Item 1', unit: 'BOX', actualQty: 2 }
+  ] });
+  const conversionKey = backendContext.stockConversionKey_('ITEM1', 'BOX', 'PCS');
+  const pendingConversion = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store' });
+  if (!pendingConversion.requiresConversion || pendingConversion.conversionRequests?.[0]?.key !== conversionKey) failures.push('Perbedaan unit Stock Opname belum menghasilkan permintaan konversi');
+  const convertedOpname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store', conversions: { [conversionKey]: 9 } });
+  const convertedLine = convertedOpname.items.find(item => item.item.code === 'ITEM1');
+  if (!convertedLine || convertedLine.actualQty !== 18 || convertedLine.delta !== 8 || convertedOpname.conversionCount !== 1) failures.push('QTY Stock Opname belum dikonversi ke Unit Master sebelum menghitung selisih');
   let inconsistentNewItemRejected = false;
   try {
     backendContext.prepareStockOpnameMasterItems_([
@@ -291,10 +309,21 @@ try {
     location: 'Store', outletCount: 1, sourceItemCount: 1, unchangedCount: 0, increaseCount: 1, decreaseCount: 0,
     newItems: [{ code: 'NEW-1', category: 'Food', name: 'Item Baru', unit: 'PCS' }],
     items: [{}], outlets: [{ outlet: 'BICP', sourceItemCount: 1, unchangedCount: 0, increaseCount: 1, decreaseCount: 0,
+      auditItems: [{ sourceRow: 2, item: { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' }, cardQty: 5, actualQty: 7, reportQty: 7, conversionFactor: 1, delta: 2, currentQtyAfter: 9 }],
       items: [{ sourceRow: 2, item: { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' }, cardQty: 5, actualQty: 7, delta: 2, currentQtyAfter: 9 }] }]
   });
   const uploadedOpname = backendContext.uploadStockOpname('TOKEN', {});
-  if (uploadedOpname.effectiveDate !== '2026-09-01' || uploadedOpname.masterItemsAdded !== 1 || savedOpnameRows[0]?.json?.event_date !== '2026-09-01' || savedOpnameRows[0]?.json?.source_arrival_date !== '2026-09-01') failures.push('Jurnal Stock Opname atau penambahan Master Item belum tersimpan bersama opening stock H+1');
+  const savedOpnameMovement = savedOpnameRows.find(row => row.json.record_type === 'MOVEMENT');
+  const savedOpnameAudit = savedOpnameRows.find(row => row.json.record_type === 'OPNAME_DETAIL');
+  if (uploadedOpname.effectiveDate !== '2026-09-01' || uploadedOpname.masterItemsAdded !== 1 || savedOpnameMovement?.json?.event_date !== '2026-09-01' || savedOpnameMovement?.json?.source_arrival_date !== '2026-09-01') failures.push('Jurnal Stock Opname atau penambahan Master Item belum tersimpan bersama opening stock H+1');
+  if (!savedOpnameAudit || savedOpnameAudit.json.qty !== 7 || JSON.parse(savedOpnameAudit.json.info).cardQty !== 5) failures.push('Audit detail Stock Opname belum menyimpan QTY sebelum dan hasil SO');
+  backendContext.stockCardTable_ = () => '`test.stock_card`';
+  backendContext.runNamedQuery_ = sql => sql.includes('COUNT(*)') ? [{ total: 11 }] : [{ outlet: 'BICP', location: 'Store', source_hash: 'HASH-SO', source_file: 'SO.xlsx', event_date: '2026-09-01', created_at: '2026-09-01T00:00:00Z', created_by: 'HQ-1' }];
+  const uploadHistory = backendContext.getStockOpnameUploadHistory('TOKEN', { page: 2, query: 'bicp' });
+  if (uploadHistory.page !== 2 || uploadHistory.pages !== 2 || uploadHistory.rows[0]?.eventDate !== '2026-08-31') failures.push('Pagination 10 baris atau tanggal History Upload Stock Opname belum benar');
+  backendContext.runNamedQuery_ = () => [{ record_type: 'OPNAME_DETAIL', item_code: 'ITEM1', item_name: 'Item 1', unit: 'PCS', qty: 7, direction: null, info: JSON.stringify({ cardQty: 5, actualQty: 7 }), source_row: 2 }];
+  const uploadDetail = backendContext.getStockOpnameUploadHistoryDetail('TOKEN', { outlet: 'BICP', location: 'Store', sourceHash: 'HASH-SO', effectiveDate: '2026-09-01', page: 1, query: 'item' });
+  if (uploadDetail.pageSize !== 20 || uploadDetail.rows[0]?.openingQty !== 5 || uploadDetail.rows[0]?.opnameQty !== 7) failures.push('Detail History Stock Opname belum memuat QTY sebelum dan hasil SO dengan pagination 20 baris');
   backendContext.extractReportCells_ = () => ({
     A1: 'BRANCH', B1: 'LOCATION', C1: 'PRODUCT', D1: 'PRODUCT CODE', E1: 'CATEGORY', F1: 'SUBCATEGORY', G1: 'UNIT', H1: 'OPNAME STOCK',
     A2: 'Bakerzin Central Park', B2: 'Bakerzin Central Park', C2: 'Item Negatif', D2: 'NEG-1', E2: 'Food', F2: 'Raw', G2: 'KG', H2: -0.3
