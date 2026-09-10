@@ -196,6 +196,12 @@ try {
   failures.push(`Uji batch BigQuery gagal: ${error.message}`);
 }
 const frontendStockCard = await text('docs/stock-card.html');
+if (!frontendStockCard.includes('id="stockOpnameButton"') || !frontendStockCard.includes('id="stockOpnameDate"') || !frontendStockCard.includes('id="stockOpnameProgressBar"')) failures.push('UI Upload Stock Opname belum memiliki tombol, pilihan tanggal, dan progress upload');
+if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
+if (!backend.includes('verifyStockOpname: previewStockOpnameUpload') || !backend.includes('uploadStockOpname: uploadStockOpname')) failures.push('Endpoint Upload Stock Opname belum terdaftar');
+if (!backend.includes("event_date: prepared.eventDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung saldo pada tanggal pilihan dan menyimpan adjustment pada tanggal tersebut');
+if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
+if (!backend.includes("'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'")) failures.push('Parser Stock Opname belum mengikuti header file Excel yang disediakan');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
 if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);') ||
     !backend.includes('const baselineDate = stockDateOffset_(startDate, -1);')) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
@@ -204,6 +210,26 @@ if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStoc
 try {
   const backendContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#fifo-fefo-test' }).runInContext(backendContext);
+  backendContext.cleanText_ = value => String(value || '');
+  backendContext.digest_ = () => 'HASH-SO';
+  backendContext.todayIso_ = () => '2026-09-10';
+  backendContext.normalizeDate_ = value => String(value || '');
+  backendContext.stockOpnameAlreadyImported_ = () => false;
+  backendContext.parseStockOpnameReport_ = () => ({ outlet: 'BICP', rows: [
+    { sourceRow: 2, code: 'ITEM1', name: 'Item 1', unit: 'PCS', actualQty: 7 },
+    { sourceRow: 3, code: 'ITEM2', name: 'Item 2', unit: 'KG', actualQty: -0.3 }
+  ] });
+  backendContext.readStockMaster_ = () => [
+    { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' },
+    { code: 'ITEM2', category: 'Food', name: 'Item 2', unit: 'KG' }
+  ];
+  backendContext.readStockCodeQtyMapAtDate_ = () => ({ ITEM1: 10, ITEM2: 0 });
+  backendContext.readCurrentStockCodeQtyMap_ = () => ({ ITEM1: 14, ITEM2: 2 });
+  const opname = backendContext.prepareStockOpnameImport_({ outlet: 'BICP', location: 'Store' }, { fileName: 'SO.xlsx', base64: 'DATA', eventDate: '2026-09-01' });
+  const item1Opname = opname.items.find(item => item.item.code === 'ITEM1');
+  const item2Opname = opname.items.find(item => item.item.code === 'ITEM2');
+  if (!item1Opname || item1Opname.delta !== -3 || item1Opname.currentQtyAfter !== 11) failures.push('Backdate Stock Opname belum mempertahankan flow transaksi setelah tanggal opname');
+  if (!item2Opname || Math.abs(item2Opname.actualQty + 0.3) > 0.0000001 || Math.abs(item2Opname.currentQtyAfter - 1.7) > 0.0000001) failures.push('Stock Opname belum menerima QTY aktual negatif dari format file');
   const outbound = { recordId: 'OUT-1', logicalId: 'OUT-1', date: '2026-08-05', createdAt: '2026-08-05T10:00:00Z', direction: 'OUT', qty: 3, movementType: 'Pemakaian' };
   const testHistory = [
     { recordId: 'IN-1', logicalId: 'IN-1', date: '2026-07-31', createdAt: '2026-07-31T10:00:00Z', direction: 'IN', qty: 10, movementType: 'Goods Receipt', expiryDate: '', sourceArrivalDate: '2026-07-31' },
