@@ -205,13 +205,15 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
 }
 if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
 if (!frontendStockCard.includes('id="stockOpnameConversionModal"') || !frontendStockCard.includes('function continueStockOpnameConversion()') ||
-    !frontendStockCard.includes("server('saveConversions'")) failures.push('Popup konfirmasi konversi unit Stock Opname belum tersedia');
+    !frontendStockCard.includes("server('changeDefaultUnit'") || !frontendStockCard.includes('Unit Default baru')) failures.push('Popup perubahan Unit Default dari Stock Opname belum tersedia');
 if (!frontendStockCard.includes('id="stockOpnameHistoryButton"') || !frontendStockCard.includes('id="stockOpnameHistorySearch"') ||
     !frontendStockCard.includes('id="stockOpnameHistoryDetailSearch"') || !frontendStockCard.includes("server('stockOpnameHistory'") ||
     !frontendStockCard.includes("server('stockOpnameHistoryDetail'")) failures.push('UI History Upload Stock Opname dan detailnya belum lengkap');
 if (!backend.includes('verifyStockOpname: previewStockOpnameUpload') || !backend.includes('uploadStockOpname: uploadStockOpname')) failures.push('Endpoint Upload Stock Opname belum terdaftar');
 if (!backend.includes('stockOpnameHistory: getStockOpnameUploadHistory') || !backend.includes('stockOpnameHistoryDetail: getStockOpnameUploadHistoryDetail') ||
     !backend.includes("record_type: 'OPNAME_DETAIL'")) failures.push('Backend History Stock Opname atau audit detail seluruh item belum tersedia');
+if (!backend.includes('payload.useProvidedFactor === true') || !backend.includes('const convertedAuditInfo') ||
+    !backend.includes('JSON_SET(PARSE_JSON(info)')) failures.push('Perubahan Unit Default belum mengonversi saldo, riwayat, transfer, dan audit Stock Opname secara konsisten');
 if (!backend.includes("event_date: prepared.effectiveDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung saldo penutup tanggal SO dan menyimpan opening stock pada H+1');
 if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
 if (!backend.includes("'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'")) failures.push('Parser Stock Opname belum mengikuti header file Excel yang disediakan');
@@ -273,12 +275,13 @@ try {
   backendContext.parseStockOpnameReport_ = () => ({ outlets: ['BICP'], rows: [
     { sourceRow: 2, outlet: 'BICP', code: 'ITEM1', name: 'Item 1', unit: 'BOX', actualQty: 2 }
   ] });
-  const conversionKey = backendContext.stockConversionKey_('ITEM1', 'BOX', 'PCS');
+  const conversionKey = backendContext.stockConversionKey_('ITEM1', 'PCS', 'BOX');
   const pendingConversion = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store' });
-  if (!pendingConversion.requiresConversion || pendingConversion.conversionRequests?.[0]?.key !== conversionKey) failures.push('Perbedaan unit Stock Opname belum menghasilkan permintaan konversi');
-  const convertedOpname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store', conversions: { [conversionKey]: 9 } });
+  if (!pendingConversion.requiresConversion || pendingConversion.conversionRequests?.[0]?.key !== conversionKey || pendingConversion.conversionRequests?.[0]?.oldUnit !== 'PCS' || pendingConversion.conversionRequests?.[0]?.newUnit !== 'BOX') failures.push('Perbedaan unit Stock Opname belum meminta Unit file menjadi Unit Default baru');
+  backendContext.readStockMaster_ = () => [{ code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'BOX' }];
+  const convertedOpname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store' });
   const convertedLine = convertedOpname.items.find(item => item.item.code === 'ITEM1');
-  if (!convertedLine || convertedLine.actualQty !== 18 || convertedLine.delta !== 8 || convertedOpname.conversionCount !== 1) failures.push('QTY Stock Opname belum dikonversi ke Unit Master sebelum menghitung selisih');
+  if (!convertedLine || convertedLine.actualQty !== 2 || convertedLine.delta !== -8 || convertedLine.item.unit !== 'BOX') failures.push('Stock Opname belum memakai QTY file setelah Unit file menjadi Unit Default Master');
   let inconsistentNewItemRejected = false;
   try {
     backendContext.prepareStockOpnameMasterItems_([

@@ -1987,7 +1987,9 @@ function changeStockItemDefaultUnit(token, payload) {
     if (!oldUnit) throw new Error(itemCode + ' · Unit Default lama masih kosong.');
     if (oldUnit === newUnit) throw new Error(itemCode + ' sudah menggunakan Unit Default ' + newUnit + '.');
     const savedFactor = resolveUnitConversionFactor_(itemCode, oldUnit, newUnit, {}, readStockUnitConversions_());
-    const factor = defaultUnitConversionFactor_(oldUnit, newUnit) || savedFactor || Number(payload.factor);
+    const providedFactor = Number(payload.factor);
+    const factor = payload.useProvidedFactor === true && isFinite(providedFactor) && providedFactor > 0
+      ? providedFactor : defaultUnitConversionFactor_(oldUnit, newUnit) || savedFactor || providedFactor;
     if (!isFinite(factor) || factor <= 0) throw new Error('Masukkan faktor: 1 ' + oldUnit + ' setara dengan berapa ' + newUnit + '.');
 
     ensureStockCardInfrastructure_();
@@ -2054,8 +2056,11 @@ function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor) {
   const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
   const balances = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
   const condition = '(item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))';
-  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
-  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
+  const convertedAuditInfo = 'CASE WHEN record_type = \'OPNAME_DETAIL\' AND JSON_VALUE(info, \'$.cardQty\') IS NOT NULL THEN ' +
+    'TO_JSON_STRING(JSON_SET(PARSE_JSON(info), \'$.cardQty\', CAST(JSON_VALUE(info, \'$.cardQty\') AS FLOAT64) * CAST(@factor AS FLOAT64), ' +
+    '\'$.actualQty\', CAST(JSON_VALUE(info, \'$.actualQty\') AS FLOAT64) * CAST(@factor AS FLOAT64))) ELSE info END';
+  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
+  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
   sql += 'UPDATE ' + transfers + ' SET qty = qty * CAST(@factor AS FLOAT64), received_qty = IF(received_qty IS NULL, NULL, received_qty * CAST(@factor AS FLOAT64)), unit = @newUnit WHERE ' + condition + '; ' +
     'DELETE FROM ' + balances + ' WHERE ' + condition + '; ' +
     'INSERT INTO ' + balances + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
@@ -3281,7 +3286,6 @@ function prepareStockOpnameImport_(token, payload) {
 
   const masterPrepared = prepareStockOpnameMasterItems_(report.rows, readStockMaster_(true));
   const master = masterPrepared.master;
-  const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
   const savedConversions = readStockUnitConversions_(), conversionMap = {};
   const allItems = [], allAuditItems = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0, conversionCount = 0;
@@ -3294,17 +3298,15 @@ function prepareStockOpnameImport_(token, payload) {
     rows.forEach(function (row) {
       const item = master[row.code];
       const reportUnit = normalizeUnit_(row.unit), masterUnit = normalizeUnit_(item.unit);
-      let factor = 1;
       if (reportUnit !== masterUnit) {
-        factor = resolveUnitConversionFactor_(item.code, reportUnit, masterUnit, providedConversions, savedConversions);
-        if (!factor) {
-          const key = stockConversionKey_(item.code, reportUnit, masterUnit);
-          conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: reportUnit, toUnit: masterUnit };
-          return;
-        }
-        conversionCount++;
+        const key = stockConversionKey_(item.code, masterUnit, reportUnit);
+        const suggestedFactor = defaultUnitConversionFactor_(masterUnit, reportUnit) ||
+          resolveUnitConversionFactor_(item.code, masterUnit, reportUnit, {}, savedConversions) || 0;
+        conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name,
+          oldUnit: masterUnit, newUnit: reportUnit, fromUnit: masterUnit, toUnit: reportUnit, suggestedFactor: suggestedFactor };
+        return;
       }
-      const actualQty = row.actualQty * factor;
+      const factor = 1, actualQty = row.actualQty;
       const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
       const auditLine = {
         sourceRow: row.sourceRow, item: item, cardQty: cardQty, actualQty: actualQty,
@@ -3325,6 +3327,7 @@ function prepareStockOpnameImport_(token, payload) {
   });
   const conversionRequests = Object.keys(conversionMap).sort().map(function (key) { return conversionMap[key]; });
   if (conversionRequests.length) {
+    if (employee.outlet !== 'BIHQ') throw new Error('Unit file berbeda dari Unit Default Master. Perubahan Unit Default seluruh saldo dan riwayat hanya dapat dikonfirmasi oleh BIHQ.');
     return {
       employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
       location: location, outletCount: reportOutlets.length, outlets: [], newItems: masterPrepared.newItems,
