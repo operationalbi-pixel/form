@@ -3089,7 +3089,9 @@ function previewStockOpnameUpload(token, payload) {
       location: prepared.location, outletCount: prepared.outletCount,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
       unchangedCount: prepared.unchangedCount, increaseCount: prepared.increaseCount,
-      decreaseCount: prepared.decreaseCount, outletResults: prepared.outlets.map(function (entry) {
+      decreaseCount: prepared.decreaseCount, newItemCount: prepared.newItems.length,
+      newItems: prepared.newItems.map(function (item) { return { code: item.code, name: item.name, category: item.category, unit: item.unit }; }),
+      outletResults: prepared.outlets.map(function (entry) {
         return {
           outlet: entry.outlet, sourceItemCount: entry.sourceItemCount,
           adjustmentCount: entry.items.length, unchangedCount: entry.unchangedCount,
@@ -3109,6 +3111,7 @@ function uploadStockOpname(token, payload) {
     try {
       // Recalculate under the write lock so another upload cannot change the balance between preview and save.
       const prepared = prepareStockOpnameImport_(token, payload);
+      const masterItemsAdded = addStockOpnameMasterItems_(prepared.newItems);
       const openingCreatedAt = new Date(prepared.effectiveDate + 'T00:00:00+07:00').getTime() / 1000, rows = [];
       prepared.outlets.forEach(function (entry) {
         entry.items.forEach(function (line) {
@@ -3143,6 +3146,7 @@ function uploadStockOpname(token, payload) {
         eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate, adjustmentCount: prepared.items.length,
         movementCount: prepared.items.length, unchangedCount: prepared.unchangedCount,
         increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
+        newItemCount: prepared.newItems.length, masterItemsAdded: masterItemsAdded,
         outletResults: prepared.outlets.map(function (entry) {
           return {
             outlet: entry.outlet, sourceItemCount: entry.sourceItemCount,
@@ -3156,6 +3160,66 @@ function uploadStockOpname(token, payload) {
       lock.releaseLock();
     }
   });
+}
+
+function prepareStockOpnameMasterItems_(reportRows, masterItems) {
+  const master = {}, pending = {}, issues = [];
+  (masterItems || []).forEach(function (item) { master[String(item.code || '').trim().toUpperCase()] = item; });
+  (reportRows || []).forEach(function (row) {
+    const code = String(row.code || '').trim().toUpperCase();
+    if (!code || master[code]) return;
+    const name = cleanText_(row.name, 180), unit = normalizeUnit_(row.unit);
+    const category = cleanText_(row.category || row.subcategory || 'Uncategorized', 100) || 'Uncategorized';
+    if (!name || !unit) {
+      issues.push(code + ' · ' + (name || 'nama kosong') + ' · ' + (unit || 'unit kosong'));
+      return;
+    }
+    const existing = pending[code];
+    if (existing) {
+      if (normalizeStoreName_(existing.name) !== normalizeStoreName_(name) || existing.unit !== unit) {
+        issues.push(code + ' memiliki nama/unit berbeda antar branch (' + existing.name + ' · ' + existing.unit + ' ≠ ' + name + ' · ' + unit + ')');
+      } else if (existing.category === 'Uncategorized' && category !== 'Uncategorized') {
+        existing.category = category;
+      }
+      return;
+    }
+    pending[code] = { code: code, category: category, name: name, unit: unit, active: true };
+  });
+  if (issues.length) throw new Error('Item baru dari file belum dapat dibuat otomatis. Periksa PRODUCT, PRODUCT CODE, dan UNIT: ' + issues.slice(0, 10).join('; ') + '.');
+  const newItems = Object.keys(pending).sort().map(function (code) {
+    master[code] = pending[code];
+    return pending[code];
+  });
+  return { master: master, newItems: newItems };
+}
+
+function addStockOpnameMasterItems_(items) {
+  if (!(items || []).length) return 0;
+  const sheet = ensureStockMasterSheet_(), existing = {};
+  if (sheet.getLastRow() >= 2) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getDisplayValues().forEach(function (row) {
+      const code = String(row[0] || '').trim().toUpperCase();
+      if (code) existing[code] = { name: cleanText_(row[2], 180), unit: normalizeUnit_(row[3]) };
+    });
+  }
+  const additions = [];
+  items.forEach(function (item) {
+    const found = existing[item.code];
+    if (found) {
+      if (normalizeStoreName_(found.name) !== normalizeStoreName_(item.name) || found.unit !== item.unit) {
+        throw new Error(item.code + ' sudah ditambahkan ke Master Stock Card dengan nama/unit berbeda. Muat ulang lalu periksa file.');
+      }
+      return;
+    }
+    additions.push([item.code, item.category, item.name, item.unit, true]);
+    existing[item.code] = { name: item.name, unit: item.unit };
+  });
+  if (additions.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
+    SpreadsheetApp.flush();
+    removeScriptCacheKeys_(['stock-master-active', 'stock-master-all']);
+  }
+  return additions.length;
 }
 
 function prepareStockOpnameImport_(token, payload) {
@@ -3186,9 +3250,9 @@ function prepareStockOpnameImport_(token, payload) {
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
 
-  const master = {};
-  readStockMaster_(true).forEach(function (item) { master[item.code.toUpperCase()] = item; });
-  const allItems = [], missing = [], unitMismatch = [], outlets = [];
+  const masterPrepared = prepareStockOpnameMasterItems_(report.rows, readStockMaster_(true));
+  const master = masterPrepared.master;
+  const allItems = [], unitMismatch = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0;
   reportOutlets.forEach(function (outlet) {
     const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate);
@@ -3198,7 +3262,6 @@ function prepareStockOpnameImport_(token, payload) {
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
       const item = master[row.code];
-      if (!item) { missing.push(outlet + ' · ' + row.code + ' · ' + row.name); return; }
       if (normalizeUnit_(item.unit) !== normalizeUnit_(row.unit)) {
         unitMismatch.push(outlet + ' · ' + row.code + ' (' + row.unit + ' ≠ ' + item.unit + ')');
         return;
@@ -3219,11 +3282,10 @@ function prepareStockOpnameImport_(token, payload) {
       unchangedCount: outletUnchanged, increaseCount: outletIncrease, decreaseCount: outletDecrease
     });
   });
-  if (missing.length) throw new Error(missing.length + ' item file tidak ditemukan pada Master Stock Card. Contoh: ' + missing.slice(0, 8).join(', ') + '.');
   if (unitMismatch.length) throw new Error(unitMismatch.length + ' unit file berbeda dari Unit Master. Contoh: ' + unitMismatch.slice(0, 8).join(', ') + '.');
   return {
     employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
-    location: location, outletCount: outlets.length, outlets: outlets,
+    location: location, outletCount: outlets.length, outlets: outlets, newItems: masterPrepared.newItems,
     sourceItemCount: report.rows.length, items: allItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount
   };
