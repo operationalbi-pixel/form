@@ -217,6 +217,9 @@ if (!backend.includes('const effectiveDate = stockIsoDateOffset_(eventDate, 1);'
 if (!backend.includes("normalizeLocation_(payload.location || 'Store') || 'Store'") ||
     !frontendStockCard.includes("function stockOpnameLocation(){return APP.location||'Store'}")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
 if (!frontendStockCard.includes('>Daily Upload</span>') || !frontendStockCard.includes('stock-opname-modal')) failures.push('Label Daily Upload atau penyempurnaan modal Stock Opname belum tersedia');
+if (!frontendStockCard.includes("openExpiryAlertModal(\\'TRANSFER\\')") ||
+    !frontendStockCard.includes('function openPendingTransferFromAlerts(index)') ||
+    frontendStockCard.includes('id="transferNotifications"')) failures.push('Transfer pending belum diringkas bersama notifikasi Expired dan FIFO/FEFO');
 if (!backend.includes('function prepareStockOpnameMasterItems_(') || !backend.includes('function addStockOpnameMasterItems_(') ||
     !frontendStockCard.includes('ITEM MASTER BARU')) failures.push('Item baru Stock Opname belum otomatis disiapkan dan ditambahkan ke Master Stock Card');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
