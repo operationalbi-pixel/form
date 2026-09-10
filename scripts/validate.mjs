@@ -204,6 +204,8 @@ for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog
   if (!(await text(path)).includes('ui-modern.css?v=20260910-toolbar1')) failures.push(`${path} belum memaksa browser mengambil perbaikan UI terbaru`);
 }
 if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
+if (!frontendStockCard.includes('id="stockOpnameConversionModal"') || !frontendStockCard.includes('function continueStockOpnameConversion()') ||
+    !frontendStockCard.includes("server('saveConversions'")) failures.push('Popup konfirmasi konversi unit Stock Opname belum tersedia');
 if (!backend.includes('verifyStockOpname: previewStockOpnameUpload') || !backend.includes('uploadStockOpname: uploadStockOpname')) failures.push('Endpoint Upload Stock Opname belum terdaftar');
 if (!backend.includes("event_date: prepared.effectiveDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung saldo penutup tanggal SO dan menyimpan opening stock pada H+1');
 if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
@@ -252,6 +254,7 @@ try {
     { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' },
     { code: 'ITEM2', category: 'Food', name: 'Item 2', unit: 'KG' }
   ];
+  backendContext.readStockUnitConversions_ = () => ({});
   backendContext.readStockCodeQtyMapAtDate_ = outlet => outlet === 'BICP' ? { ITEM1: 10 } : { ITEM2: 3 };
   backendContext.readCurrentStockCodeQtyMap_ = outlet => outlet === 'BICP' ? { ITEM1: 14 } : { ITEM2: 8 };
   const opname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO.xlsx', base64: 'DATA', eventDate: '2026-09-01', location: 'Store' });
@@ -261,6 +264,15 @@ try {
   if (backendContext.stockIsoDateOffset_('2026-08-31', 1) !== '2026-09-01') failures.push('Tanggal efektif Stock Opname belum aman saat melewati pergantian bulan');
   if (opname.outletCount !== 2 || opname.outlets.map(entry => entry.outlet).join(',') !== 'BICP,BIKK') failures.push('Stock Opname BIHQ belum mengelompokkan satu file berdasarkan multi-branch');
   if (opname.newItems.length !== 1 || opname.newItems[0].code !== 'OTHO1041' || opname.newItems[0].name !== 'PAJANGAN DEKORASI') failures.push('Item file yang belum ada belum disiapkan sebagai Master Stock Card baru');
+  backendContext.parseStockOpnameReport_ = () => ({ outlets: ['BICP'], rows: [
+    { sourceRow: 2, outlet: 'BICP', code: 'ITEM1', name: 'Item 1', unit: 'BOX', actualQty: 2 }
+  ] });
+  const conversionKey = backendContext.stockConversionKey_('ITEM1', 'BOX', 'PCS');
+  const pendingConversion = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store' });
+  if (!pendingConversion.requiresConversion || pendingConversion.conversionRequests?.[0]?.key !== conversionKey) failures.push('Perbedaan unit Stock Opname belum menghasilkan permintaan konversi');
+  const convertedOpname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store', conversions: { [conversionKey]: 9 } });
+  const convertedLine = convertedOpname.items.find(item => item.item.code === 'ITEM1');
+  if (!convertedLine || convertedLine.actualQty !== 18 || convertedLine.delta !== 8 || convertedOpname.conversionCount !== 1) failures.push('QTY Stock Opname belum dikonversi ke Unit Master sebelum menghitung selisih');
   let inconsistentNewItemRejected = false;
   try {
     backendContext.prepareStockOpnameMasterItems_([

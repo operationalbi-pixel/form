@@ -3083,6 +3083,16 @@ function previewStockOpnameUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const prepared = prepareStockOpnameImport_(token, payload);
+    if (prepared.requiresConversion) {
+      return {
+        verified: false, requiresConversion: true, fileName: prepared.fileName,
+        eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
+        location: prepared.location, outletCount: prepared.outletCount,
+        sourceItemCount: prepared.sourceItemCount, newItemCount: prepared.newItems.length,
+        newItems: prepared.newItems.map(function (item) { return { code: item.code, name: item.name, category: item.category, unit: item.unit }; }),
+        conversions: prepared.conversionRequests
+      };
+    }
     return {
       verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
       outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
@@ -3090,6 +3100,7 @@ function previewStockOpnameUpload(token, payload) {
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
       unchangedCount: prepared.unchangedCount, increaseCount: prepared.increaseCount,
       decreaseCount: prepared.decreaseCount, newItemCount: prepared.newItems.length,
+      conversionCount: prepared.conversionCount,
       newItems: prepared.newItems.map(function (item) { return { code: item.code, name: item.name, category: item.category, unit: item.unit }; }),
       outletResults: prepared.outlets.map(function (entry) {
         return {
@@ -3111,6 +3122,7 @@ function uploadStockOpname(token, payload) {
     try {
       // Recalculate under the write lock so another upload cannot change the balance between preview and save.
       const prepared = prepareStockOpnameImport_(token, payload);
+      if (prepared.requiresConversion) throw new Error('Lengkapi seluruh konversi unit Stock Opname sebelum melanjutkan upload.');
       const masterItemsAdded = addStockOpnameMasterItems_(prepared.newItems);
       const openingCreatedAt = new Date(prepared.effectiveDate + 'T00:00:00+07:00').getTime() / 1000, rows = [];
       prepared.outlets.forEach(function (entry) {
@@ -3147,6 +3159,7 @@ function uploadStockOpname(token, payload) {
         movementCount: prepared.items.length, unchangedCount: prepared.unchangedCount,
         increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
         newItemCount: prepared.newItems.length, masterItemsAdded: masterItemsAdded,
+        conversionCount: prepared.conversionCount,
         outletResults: prepared.outlets.map(function (entry) {
           return {
             outlet: entry.outlet, sourceItemCount: entry.sourceItemCount,
@@ -3252,8 +3265,10 @@ function prepareStockOpnameImport_(token, payload) {
 
   const masterPrepared = prepareStockOpnameMasterItems_(report.rows, readStockMaster_(true));
   const master = masterPrepared.master;
-  const allItems = [], unitMismatch = [], outlets = [];
-  let increaseCount = 0, decreaseCount = 0, unchangedCount = 0;
+  const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
+  const savedConversions = readStockUnitConversions_(), conversionMap = {};
+  const allItems = [], outlets = [];
+  let increaseCount = 0, decreaseCount = 0, unchangedCount = 0, conversionCount = 0;
   reportOutlets.forEach(function (outlet) {
     const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate);
     const currentBalance = readCurrentStockCodeQtyMap_(outlet, location);
@@ -3262,16 +3277,24 @@ function prepareStockOpnameImport_(token, payload) {
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
       const item = master[row.code];
-      if (normalizeUnit_(item.unit) !== normalizeUnit_(row.unit)) {
-        unitMismatch.push(outlet + ' · ' + row.code + ' (' + row.unit + ' ≠ ' + item.unit + ')');
-        return;
+      const reportUnit = normalizeUnit_(row.unit), masterUnit = normalizeUnit_(item.unit);
+      let factor = 1;
+      if (reportUnit !== masterUnit) {
+        factor = resolveUnitConversionFactor_(item.code, reportUnit, masterUnit, providedConversions, savedConversions);
+        if (!factor) {
+          const key = stockConversionKey_(item.code, reportUnit, masterUnit);
+          conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: reportUnit, toUnit: masterUnit };
+          return;
+        }
+        conversionCount++;
       }
-      const cardQty = Number(balanceAtDate[row.code] || 0), delta = row.actualQty - cardQty;
+      const actualQty = row.actualQty * factor;
+      const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
       if (Math.abs(delta) <= 0.0000001) { unchangedCount++; outletUnchanged++; return; }
       if (delta > 0) { increaseCount++; outletIncrease++; } else { decreaseCount++; outletDecrease++; }
       const line = {
         sourceRow: row.sourceRow, item: item, cardQty: cardQty,
-        actualQty: row.actualQty, delta: delta,
+        actualQty: actualQty, reportQty: row.actualQty, conversionFactor: factor, delta: delta,
         currentQtyAfter: Number(currentBalance[row.code] || 0) + delta
       };
       items.push(line);
@@ -3282,12 +3305,21 @@ function prepareStockOpnameImport_(token, payload) {
       unchangedCount: outletUnchanged, increaseCount: outletIncrease, decreaseCount: outletDecrease
     });
   });
-  if (unitMismatch.length) throw new Error(unitMismatch.length + ' unit file berbeda dari Unit Master. Contoh: ' + unitMismatch.slice(0, 8).join(', ') + '.');
+  const conversionRequests = Object.keys(conversionMap).sort().map(function (key) { return conversionMap[key]; });
+  if (conversionRequests.length) {
+    return {
+      employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
+      location: location, outletCount: reportOutlets.length, outlets: [], newItems: masterPrepared.newItems,
+      sourceItemCount: report.rows.length, items: [], unchangedCount: 0, increaseCount: 0, decreaseCount: 0,
+      conversionCount: conversionCount, requiresConversion: true, conversionRequests: conversionRequests
+    };
+  }
   return {
     employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
     location: location, outletCount: outlets.length, outlets: outlets, newItems: masterPrepared.newItems,
     sourceItemCount: report.rows.length, items: allItems, unchangedCount: unchangedCount,
-    increaseCount: increaseCount, decreaseCount: decreaseCount
+    increaseCount: increaseCount, decreaseCount: decreaseCount, conversionCount: conversionCount,
+    requiresConversion: false, conversionRequests: []
   };
 }
 
