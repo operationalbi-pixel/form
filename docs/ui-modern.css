@@ -520,46 +520,59 @@ textarea {
   width: min(100%, 280px);
 }
 
-.stock-page #uploadMenuButton {
+.stock-page #uploadMenuButton { --action-start: #19769f; --action-end: #105574; --action-rgb: 16, 85, 116; }
+.stock-page #transferMenuButton { --action-start: #b45b22; --action-end: #813d14; --action-rgb: 129, 61, 20; }
+.stock-page #exportCurrentButton { --action-start: #7354ad; --action-end: #523982; --action-rgb: 82, 57, 130; }
+.stock-page #stockOpnameButton { --action-start: #287d68; --action-end: #185b4b; --action-rgb: 24, 91, 75; }
+.stock-page #manageConversionButton { --action-start: #398455; --action-end: #28613d; --action-rgb: 40, 97, 61; }
+.stock-page #wipProductionButton { --action-start: #ae2941; --action-end: #7f192c; --action-rgb: 127, 25, 44; }
+.stock-page #changeDefaultUnitButton { --action-start: #405b9a; --action-end: #2b4073; --action-rgb: 43, 64, 115; }
+.stock-page #mockRecallButton { --action-start: #70576a; --action-end: #4f3a49; --action-rgb: 79, 58, 73; }
+
+.stock-page #uploadMenuButton,
+.stock-page #transferMenuButton,
+.stock-page #exportCurrentButton,
+.stock-page #stockOpnameButton,
+.stock-page #manageConversionButton,
+.stock-page #wipProductionButton,
+.stock-page #changeDefaultUnitButton,
+.stock-page #mockRecallButton {
   color: #fff;
-  border-color: #0784c1;
-  background: linear-gradient(135deg, #19a6e3, #087db9);
-  box-shadow: 0 10px 22px rgba(8, 125, 185, .22);
+  border-color: var(--action-end);
+  background: linear-gradient(135deg, var(--action-start), var(--action-end));
+  box-shadow: 0 10px 22px rgba(var(--action-rgb), .23);
 }
 
-.stock-page #transferMenuButton {
+.stock-page #uploadMenuButton:hover,
+.stock-page #transferMenuButton:hover,
+.stock-page #exportCurrentButton:hover,
+.stock-page #stockOpnameButton:hover,
+.stock-page #manageConversionButton:hover,
+.stock-page #wipProductionButton:hover,
+.stock-page #changeDefaultUnitButton:hover,
+.stock-page #mockRecallButton:hover {
   color: #fff;
-  border-color: #e46813;
-  background: linear-gradient(135deg, #ff963f, #e96814);
-  box-shadow: 0 10px 22px rgba(233, 104, 20, .22);
+  border-color: var(--action-end);
+  background: linear-gradient(135deg, var(--action-end), var(--action-start));
+  box-shadow: 0 12px 25px rgba(var(--action-rgb), .3);
 }
 
-.stock-page #exportCurrentButton {
-  color: #fff;
-  border-color: #7454c5;
-  background: linear-gradient(135deg, #9876e5, #7050bf);
-  box-shadow: 0 10px 22px rgba(112, 80, 191, .22);
+.stock-page .head-controls .btn-icon > svg,
+.stock-page .head-controls .button-label > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.stock-page #manageConversionButton {
-  color: #fff;
-  border-color: #189861;
-  background: linear-gradient(135deg, #31c985, #15945d);
-  box-shadow: 0 10px 22px rgba(21, 148, 93, .22);
-}
-
-.stock-page #wipProductionButton {
-  color: #fff;
-  border-color: #98182e;
-  background: linear-gradient(135deg, #a81731, #cf3150);
-  box-shadow: 0 10px 22px rgba(168, 23, 49, .24);
-}
-
-.stock-page #changeDefaultUnitButton {
-  color: #fff;
-  border-color: #263d78;
-  background: linear-gradient(135deg, #405caa, #263d78);
-  box-shadow: 0 10px 22px rgba(38, 61, 120, .24);
+.stock-page .head-controls .button-label > .chevron,
+.stock-page .head-controls .chevron {
+  width: 13px;
+  height: 13px;
+  flex-basis: 13px;
+  opacity: .85;
 }
 
 .stock-page.bihq-awaiting-outlet #outletControl {
