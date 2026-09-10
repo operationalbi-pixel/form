@@ -217,6 +217,8 @@ if (!backend.includes('const effectiveDate = stockIsoDateOffset_(eventDate, 1);'
 if (!backend.includes("normalizeLocation_(payload.location || 'Store') || 'Store'") ||
     !frontendStockCard.includes("function stockOpnameLocation(){return APP.location||'Store'}")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
 if (!frontendStockCard.includes('>Daily Upload</span>') || !frontendStockCard.includes('stock-opname-modal')) failures.push('Label Daily Upload atau penyempurnaan modal Stock Opname belum tersedia');
+if (!backend.includes('function prepareStockOpnameMasterItems_(') || !backend.includes('function addStockOpnameMasterItems_(') ||
+    !frontendStockCard.includes('ITEM MASTER BARU')) failures.push('Item baru Stock Opname belum otomatis disiapkan dan ditambahkan ke Master Stock Card');
 if (!backend.includes('recalculateFifoFefo: recalculateStockFifoFefo')) failures.push('Endpoint rekalkulasi FIFO/FEFO belum terdaftar');
 if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecalcStartDate_(today, days);') ||
     !backend.includes('const baselineDate = stockDateOffset_(startDate, -1);')) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
@@ -240,7 +242,8 @@ try {
   backendContext.readStockLocations_ = () => ['Store'];
   backendContext.parseStockOpnameReport_ = () => ({ outlets: ['BICP', 'BIKK'], rows: [
     { sourceRow: 2, outlet: 'BICP', code: 'ITEM1', name: 'Item 1', unit: 'PCS', actualQty: 7 },
-    { sourceRow: 3, outlet: 'BIKK', code: 'ITEM2', name: 'Item 2', unit: 'KG', actualQty: 4 }
+    { sourceRow: 3, outlet: 'BIKK', code: 'ITEM2', name: 'Item 2', unit: 'KG', actualQty: 4 },
+    { sourceRow: 4, outlet: 'BICP', code: 'OTHO1041', name: 'PAJANGAN DEKORASI', category: 'OTHERS', unit: 'PCS', actualQty: 1 }
   ] });
   backendContext.readStockMaster_ = () => [
     { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' },
@@ -254,6 +257,24 @@ try {
   if (opname.effectiveDate !== '2026-09-02') failures.push('Tanggal efektif Stock Opname belum otomatis berpindah ke H+1');
   if (backendContext.stockIsoDateOffset_('2026-08-31', 1) !== '2026-09-01') failures.push('Tanggal efektif Stock Opname belum aman saat melewati pergantian bulan');
   if (opname.outletCount !== 2 || opname.outlets.map(entry => entry.outlet).join(',') !== 'BICP,BIKK') failures.push('Stock Opname BIHQ belum mengelompokkan satu file berdasarkan multi-branch');
+  if (opname.newItems.length !== 1 || opname.newItems[0].code !== 'OTHO1041' || opname.newItems[0].name !== 'PAJANGAN DEKORASI') failures.push('Item file yang belum ada belum disiapkan sebagai Master Stock Card baru');
+  let inconsistentNewItemRejected = false;
+  try {
+    backendContext.prepareStockOpnameMasterItems_([
+      { code: 'NEW-1', name: 'Item Baru', unit: 'PCS' },
+      { code: 'NEW-1', name: 'Item Baru Beda', unit: 'KG' }
+    ], []);
+  } catch (error) { inconsistentNewItemRejected = /berbeda antar branch/.test(error.message); }
+  if (!inconsistentNewItemRejected) failures.push('Item master baru dengan nama/unit berbeda antar branch belum ditolak');
+  let insertedMasterRows = [];
+  backendContext.ensureStockMasterSheet_ = () => ({
+    getLastRow: () => 1,
+    getRange: () => ({ setValues: rows => { insertedMasterRows = rows; } })
+  });
+  backendContext.SpreadsheetApp = { flush() {} };
+  backendContext.removeScriptCacheKeys_ = () => {};
+  const autoAdded = backendContext.addStockOpnameMasterItems_([{ code: 'OTHO1041', category: 'OTHERS', name: 'PAJANGAN DEKORASI', unit: 'PCS' }]);
+  if (autoAdded !== 1 || insertedMasterRows[0]?.join('|') !== 'OTHO1041|OTHERS|PAJANGAN DEKORASI|PCS|true') failures.push('Penulisan item baru ke kolom STOCK_ITEMS belum sesuai urutan master');
   let savedOpnameRows = [];
   let uuidCounter = 0;
   backendContext.safe_ = fn => fn();
@@ -261,14 +282,16 @@ try {
   backendContext.Utilities = { getUuid: () => `SO-${++uuidCounter}` };
   backendContext.formatQty_ = value => String(value);
   backendContext.insertStockCardRows_ = rows => { savedOpnameRows = rows; };
+  backendContext.addStockOpnameMasterItems_ = items => items.length;
   backendContext.prepareStockOpnameImport_ = () => ({
     employee: { nik: 'HQ-1' }, fileName: 'SO.xlsx', sourceHash: 'HASH-SO', eventDate: '2026-08-31', effectiveDate: '2026-09-01',
     location: 'Store', outletCount: 1, sourceItemCount: 1, unchangedCount: 0, increaseCount: 1, decreaseCount: 0,
+    newItems: [{ code: 'NEW-1', category: 'Food', name: 'Item Baru', unit: 'PCS' }],
     items: [{}], outlets: [{ outlet: 'BICP', sourceItemCount: 1, unchangedCount: 0, increaseCount: 1, decreaseCount: 0,
       items: [{ sourceRow: 2, item: { code: 'ITEM1', category: 'Food', name: 'Item 1', unit: 'PCS' }, cardQty: 5, actualQty: 7, delta: 2, currentQtyAfter: 9 }] }]
   });
   const uploadedOpname = backendContext.uploadStockOpname('TOKEN', {});
-  if (uploadedOpname.effectiveDate !== '2026-09-01' || savedOpnameRows[0]?.json?.event_date !== '2026-09-01' || savedOpnameRows[0]?.json?.source_arrival_date !== '2026-09-01') failures.push('Jurnal Stock Opname belum tersimpan sebagai opening stock pada H+1');
+  if (uploadedOpname.effectiveDate !== '2026-09-01' || uploadedOpname.masterItemsAdded !== 1 || savedOpnameRows[0]?.json?.event_date !== '2026-09-01' || savedOpnameRows[0]?.json?.source_arrival_date !== '2026-09-01') failures.push('Jurnal Stock Opname atau penambahan Master Item belum tersimpan bersama opening stock H+1');
   backendContext.extractReportCells_ = () => ({
     A1: 'BRANCH', B1: 'LOCATION', C1: 'PRODUCT', D1: 'PRODUCT CODE', E1: 'CATEGORY', F1: 'SUBCATEGORY', G1: 'UNIT', H1: 'OPNAME STOCK',
     A2: 'Bakerzin Central Park', B2: 'Bakerzin Central Park', C2: 'Item Negatif', D2: 'NEG-1', E2: 'Food', F2: 'Raw', G2: 'KG', H2: -0.3
