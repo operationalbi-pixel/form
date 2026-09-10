@@ -210,6 +210,8 @@ function apiActions_() {
     verifyStockOpname: previewStockOpnameUpload,
     stockOpnameHistory: getStockOpnameUploadHistory,
     stockOpnameHistoryDetail: getStockOpnameUploadHistoryDetail,
+    stockOpnameCorrectionPreview: previewStockOpnameDateCorrection,
+    stockOpnameCorrectionApply: applyStockOpnameDateCorrection,
     saveConversions: saveStockUnitConversions,
     getConversions: getStockUnitConversions,
     defaultUnitOptions: getStockDefaultUnitOptions,
@@ -1987,7 +1989,9 @@ function changeStockItemDefaultUnit(token, payload) {
     if (!oldUnit) throw new Error(itemCode + ' · Unit Default lama masih kosong.');
     if (oldUnit === newUnit) throw new Error(itemCode + ' sudah menggunakan Unit Default ' + newUnit + '.');
     const savedFactor = resolveUnitConversionFactor_(itemCode, oldUnit, newUnit, {}, readStockUnitConversions_());
-    const factor = defaultUnitConversionFactor_(oldUnit, newUnit) || savedFactor || Number(payload.factor);
+    const providedFactor = Number(payload.factor);
+    const factor = payload.useProvidedFactor === true && isFinite(providedFactor) && providedFactor > 0
+      ? providedFactor : defaultUnitConversionFactor_(oldUnit, newUnit) || savedFactor || providedFactor;
     if (!isFinite(factor) || factor <= 0) throw new Error('Masukkan faktor: 1 ' + oldUnit + ' setara dengan berapa ' + newUnit + '.');
 
     ensureStockCardInfrastructure_();
@@ -2054,8 +2058,11 @@ function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor) {
   const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
   const balances = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
   const condition = '(item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))';
-  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
-  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit WHERE ' + condition + '; ';
+  const convertedAuditInfo = 'CASE WHEN record_type = \'OPNAME_DETAIL\' AND JSON_VALUE(info, \'$.cardQty\') IS NOT NULL THEN ' +
+    'TO_JSON_STRING(JSON_SET(PARSE_JSON(info), \'$.cardQty\', CAST(JSON_VALUE(info, \'$.cardQty\') AS FLOAT64) * CAST(@factor AS FLOAT64), ' +
+    '\'$.actualQty\', CAST(JSON_VALUE(info, \'$.actualQty\') AS FLOAT64) * CAST(@factor AS FLOAT64))) ELSE info END';
+  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
+  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
   sql += 'UPDATE ' + transfers + ' SET qty = qty * CAST(@factor AS FLOAT64), received_qty = IF(received_qty IS NULL, NULL, received_qty * CAST(@factor AS FLOAT64)), unit = @newUnit WHERE ' + condition + '; ' +
     'DELETE FROM ' + balances + ' WHERE ' + condition + '; ' +
     'INSERT INTO ' + balances + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
@@ -3281,7 +3288,6 @@ function prepareStockOpnameImport_(token, payload) {
 
   const masterPrepared = prepareStockOpnameMasterItems_(report.rows, readStockMaster_(true));
   const master = masterPrepared.master;
-  const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
   const savedConversions = readStockUnitConversions_(), conversionMap = {};
   const allItems = [], allAuditItems = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0, conversionCount = 0;
@@ -3294,17 +3300,15 @@ function prepareStockOpnameImport_(token, payload) {
     rows.forEach(function (row) {
       const item = master[row.code];
       const reportUnit = normalizeUnit_(row.unit), masterUnit = normalizeUnit_(item.unit);
-      let factor = 1;
       if (reportUnit !== masterUnit) {
-        factor = resolveUnitConversionFactor_(item.code, reportUnit, masterUnit, providedConversions, savedConversions);
-        if (!factor) {
-          const key = stockConversionKey_(item.code, reportUnit, masterUnit);
-          conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name, fromUnit: reportUnit, toUnit: masterUnit };
-          return;
-        }
-        conversionCount++;
+        const key = stockConversionKey_(item.code, masterUnit, reportUnit);
+        const suggestedFactor = defaultUnitConversionFactor_(masterUnit, reportUnit) ||
+          resolveUnitConversionFactor_(item.code, masterUnit, reportUnit, {}, savedConversions) || 0;
+        conversionMap[key] = { key: key, itemCode: item.code, itemName: item.name,
+          oldUnit: masterUnit, newUnit: reportUnit, fromUnit: masterUnit, toUnit: reportUnit, suggestedFactor: suggestedFactor };
+        return;
       }
-      const actualQty = row.actualQty * factor;
+      const factor = 1, actualQty = row.actualQty;
       const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
       const auditLine = {
         sourceRow: row.sourceRow, item: item, cardQty: cardQty, actualQty: actualQty,
@@ -3325,6 +3329,7 @@ function prepareStockOpnameImport_(token, payload) {
   });
   const conversionRequests = Object.keys(conversionMap).sort().map(function (key) { return conversionMap[key]; });
   if (conversionRequests.length) {
+    if (employee.outlet !== 'BIHQ') throw new Error('Unit file berbeda dari Unit Default Master. Perubahan Unit Default seluruh saldo dan riwayat hanya dapat dikonfirmasi oleh BIHQ.');
     return {
       employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
       location: location, outletCount: reportOutlets.length, outlets: [], newItems: masterPrepared.newItems,
@@ -3393,8 +3398,9 @@ function stockUnique_(values) {
 }
 
 function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND location = @location ' +
+  const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+    'SELECT COUNT(*) AS total FROM latest WHERE outlet = @outlet AND location = @location ' +
     'AND movement_type = \'Stock Opname\' AND event_date = CAST(@eventDate AS DATE) AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
@@ -3409,13 +3415,15 @@ function getStockOpnameUploadHistory(token, payload) {
     const allowedOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
     const pageSize = 10, page = Math.max(1, Math.floor(Number(payload.page || 1)) || 1);
     const query = cleanText_(payload.query, 100).toLowerCase(), search = '%' + query + '%';
-    const where = ' WHERE record_type = \'IMPORT\' AND movement_type = \'Stock Opname\' AND outlet IN UNNEST(@outlets) ' +
+    const source = ' FROM (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'IMPORT\' AND movement_type = \'Stock Opname\' ' +
+      'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) AS latest_imports ';
+    const where = ' WHERE outlet IN UNNEST(@outlets) ' +
       'AND (@query = \'\' OR LOWER(CONCAT(IFNULL(outlet, \'\'), \' \' , IFNULL(source_file, \'\'), \' \' , CAST(DATE_SUB(event_date, INTERVAL 1 DAY) AS STRING))) LIKE @search) ';
     const params = { outlets: allowedOutlets, query: query, search: search };
-    const countRows = runNamedQuery_('SELECT COUNT(*) AS total FROM ' + stockCardTable_() + where, params, { useQueryCache: false });
+    const countRows = runNamedQuery_('SELECT COUNT(*) AS total' + source + where, params, { useQueryCache: false });
     const total = Number(countRows.length && countRows[0].total || 0), pages = Math.max(1, Math.ceil(total / pageSize));
     const currentPage = Math.min(page, pages), offset = (currentPage - 1) * pageSize;
-    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, created_at, created_by FROM ' + stockCardTable_() + where +
+    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, created_at, created_by' + source + where +
       'ORDER BY event_date DESC, created_at DESC, outlet ASC LIMIT ' + pageSize + ' OFFSET ' + offset, params, { useQueryCache: false });
     return { page: currentPage, pageSize: pageSize, total: total, pages: pages, rows: rows.map(function (row) {
       return { outlet: String(row.outlet || ''), location: String(row.location || ''), sourceHash: String(row.source_hash || ''),
@@ -3437,8 +3445,10 @@ function getStockOpnameUploadHistoryDetail(token, payload) {
     const location = normalizeLocation_(payload.location || 'Store') || 'Store';
     const sourceHash = String(payload.sourceHash || '').trim(), effectiveDate = normalizeDate_(payload.effectiveDate, false);
     if (!sourceHash || !effectiveDate) throw new Error('Identitas upload Stock Opname tidak lengkap.');
-    const sql = 'SELECT record_type, item_code, item_name, unit, qty, direction, info, source_row FROM ' + stockCardTable_() + ' ' +
-      'WHERE outlet = @outlet AND location = @location AND source_hash = @sourceHash AND event_date = CAST(@effectiveDate AS DATE) ' +
+    const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND location = @location AND source_hash = @sourceHash ' +
+      'AND record_type IN (\'OPNAME_DETAIL\', \'MOVEMENT\') QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
+      'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) SELECT record_type, item_code, item_name, unit, qty, direction, info, source_row FROM latest ' +
+      'WHERE event_date = CAST(@effectiveDate AS DATE) ' +
       'AND ((record_type = \'OPNAME_DETAIL\' AND movement_type = \'Stock Opname Audit\') OR (record_type = \'MOVEMENT\' AND movement_type = \'Stock Opname\')) ' +
       'ORDER BY CASE WHEN record_type = \'OPNAME_DETAIL\' THEN 0 ELSE 1 END, source_row, item_code';
     const records = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash, effectiveDate: effectiveDate }, { useQueryCache: false });
@@ -3469,6 +3479,173 @@ function getStockOpnameUploadHistoryDetail(token, payload) {
       outlet: outlet, eventDate: stockIsoDateOffset_(effectiveDate, -1), effectiveDate: effectiveDate,
       legacyPartial: records.length > 0 && !records.some(function (row) { return row.record_type === 'OPNAME_DETAIL'; }) };
   });
+}
+
+function previewStockOpnameDateCorrection(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    const prepared = prepareStockOpnameDateCorrection_(employee, payload || {});
+    return stockOpnameDateCorrectionResponse_(prepared);
+  });
+}
+
+function applyStockOpnameDateCorrection(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token), lock = acquireStockWriteLock_();
+    try {
+      const prepared = prepareStockOpnameDateCorrection_(employee, payload || {}), now = new Date(), rows = [];
+      prepared.items.forEach(function (line, index) {
+        const previous = line.previousMovement, movementId = Utilities.getUuid();
+        const logicalId = previous ? String(previous.logical_id || previous.record_id) : Utilities.getUuid();
+        rows.push({ insertId: movementId, json: {
+          record_id: movementId, logical_id: logicalId, version: previous ? Number(previous.version || 1) + 1 : 1,
+          record_type: 'MOVEMENT', outlet: prepared.outlet, location: prepared.location,
+          item_code: line.code, category: line.category, item_name: line.name, unit: line.unit,
+          direction: line.newDelta < 0 ? 'OUT' : 'IN', qty: Math.abs(line.newDelta), movement_type: 'Stock Opname',
+          info: cleanText_('Koreksi tanggal SO ' + prepared.oldEventDate + ' → ' + prepared.newEventDate + ' · Saldo penutup ' +
+            formatQty_(line.newCardQty) + ' → Stock awal ' + prepared.newEffectiveDate + ' ' + formatQty_(line.opnameQty) + ' · ' + prepared.reason, 500),
+          expiry_date: null, source_arrival_date: line.newDelta > 0 ? prepared.newEffectiveDate : null,
+          event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000 + index / 1000000,
+          created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: line.sourceRow
+        }});
+
+        const auditId = Utilities.getUuid(), auditInfo = Object.assign({}, line.auditInfo, {
+          cardQty: line.newCardQty, actualQty: line.opnameQty, eventDate: prepared.newEventDate,
+          effectiveDate: prepared.newEffectiveDate, correctedFromEventDate: prepared.oldEventDate,
+          correctedFromEffectiveDate: prepared.oldEffectiveDate, correctionReason: prepared.reason,
+          correctedBy: employee.nik, correctedAt: now.toISOString()
+        });
+        rows.push({ insertId: auditId, json: {
+          record_id: auditId, logical_id: String(line.audit.logical_id || line.audit.record_id), version: Number(line.audit.version || 1) + 1,
+          record_type: 'OPNAME_DETAIL', outlet: prepared.outlet, location: prepared.location,
+          item_code: line.code, category: line.category, item_name: line.name, unit: line.unit,
+          direction: null, qty: line.opnameQty, movement_type: 'Stock Opname Audit', info: JSON.stringify(auditInfo),
+          expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000 + (prepared.items.length + index) / 1000000,
+          created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: line.sourceRow
+        }});
+      });
+
+      const importId = Utilities.getUuid();
+      rows.push({ insertId: importId, json: {
+        record_id: importId, logical_id: String(prepared.importRow.logical_id || prepared.importRow.record_id),
+        version: Number(prepared.importRow.version || 1) + 1, record_type: 'IMPORT', outlet: prepared.outlet, location: prepared.location,
+        direction: null, qty: 0, movement_type: 'Stock Opname',
+        info: cleanText_('Koreksi tanggal Stock Opname ' + prepared.oldEventDate + ' → ' + prepared.newEventDate + ' · ' + prepared.reason, 500),
+        expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000,
+        created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
+      }});
+      const correctionId = Utilities.getUuid();
+      rows.push({ insertId: correctionId, json: {
+        record_id: correctionId, logical_id: correctionId, version: 1, record_type: 'OPNAME_CORRECTION',
+        outlet: prepared.outlet, location: prepared.location, direction: null, qty: 0, movement_type: 'Stock Opname Correction',
+        info: JSON.stringify({ sourceHash: prepared.sourceHash, fileName: prepared.fileName, oldEventDate: prepared.oldEventDate,
+          oldEffectiveDate: prepared.oldEffectiveDate, newEventDate: prepared.newEventDate, newEffectiveDate: prepared.newEffectiveDate,
+          reason: prepared.reason, correctedBy: employee.nik, correctedAt: now.toISOString(), itemCount: prepared.items.length }),
+        expiry_date: null, event_date: prepared.newEffectiveDate, created_at: now.getTime() / 1000,
+        created_by: employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
+      }});
+      insertStockCardRows_(rows);
+      const response = stockOpnameDateCorrectionResponse_(prepared);
+      response.corrected = true;
+      return response;
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function prepareStockOpnameDateCorrection_(employee, payload) {
+  payload = payload || {};
+  const outlet = String(payload.outlet || '').trim().toUpperCase(), allowed = readActiveOutlets_();
+  if (!outlet || allowed.indexOf(outlet) < 0) throw new Error('Outlet riwayat Stock Opname tidak valid atau sudah tidak aktif.');
+  const location = normalizeLocation_(payload.location || 'Store') || 'Store';
+  const sourceHash = String(payload.sourceHash || '').trim(), requestedEffectiveDate = normalizeDate_(payload.effectiveDate, false);
+  const newEventDate = normalizeDate_(payload.newEventDate, false), reason = cleanText_(payload.reason, 300);
+  if (!sourceHash || !requestedEffectiveDate) throw new Error('Identitas upload Stock Opname tidak lengkap. Muat ulang History lalu coba lagi.');
+  if (!newEventDate) throw new Error('Pilih tanggal Stock Opname yang benar.');
+  if (newEventDate > todayIso_()) throw new Error('Tanggal koreksi Stock Opname tidak boleh melewati hari ini.');
+  if (reason.length < 3) throw new Error('Alasan koreksi wajib diisi minimal 3 karakter.');
+
+  const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND location = @location AND source_hash = @sourceHash ' +
+    'AND record_type IN (\'IMPORT\', \'MOVEMENT\', \'OPNAME_DETAIL\') QUALIFY ROW_NUMBER() OVER (' +
+    'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
+    'SELECT record_id, logical_id, version, record_type, outlet, location, item_code, category, item_name, unit, direction, qty, movement_type, info, ' +
+    'event_date, source_file, source_hash, source_row, created_by, created_at FROM latest ORDER BY record_type, source_row, item_code';
+  const sourceRows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash }, { useQueryCache: false });
+  const importRow = sourceRows.filter(function (row) {
+    return row.record_type === 'IMPORT' && row.movement_type === 'Stock Opname' && String(row.event_date || '').slice(0, 10) === requestedEffectiveDate;
+  })[0];
+  if (!importRow) throw new Error('Upload Stock Opname tidak ditemukan atau sudah berubah. Muat ulang History.');
+  const oldEffectiveDate = String(importRow.event_date || '').slice(0, 10);
+  if (oldEffectiveDate !== requestedEffectiveDate) throw new Error('Tanggal riwayat sudah berubah. Muat ulang History sebelum melakukan koreksi.');
+  const oldEventDate = stockIsoDateOffset_(oldEffectiveDate, -1), newEffectiveDate = stockIsoDateOffset_(newEventDate, 1);
+  if (newEventDate === oldEventDate) throw new Error('Tanggal baru sama dengan tanggal Stock Opname saat ini.');
+
+  const laterStart = oldEffectiveDate < newEffectiveDate ? oldEffectiveDate : newEffectiveDate;
+  const laterUploads = runNamedQuery_('WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'IMPORT\' AND movement_type = \'Stock Opname\' ' +
+    'AND outlet = @outlet AND location = @location QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
+    'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) SELECT COUNT(*) AS total FROM latest WHERE event_date >= CAST(@laterStart AS DATE) ' +
+    'AND COALESCE(NULLIF(logical_id, \'\'), record_id) != @importLogicalId', {
+      outlet: outlet, location: location, laterStart: laterStart,
+      importLogicalId: String(importRow.logical_id || importRow.record_id)
+    }, { useQueryCache: false });
+  if (Number(laterUploads.length && laterUploads[0].total || 0) > 0) {
+    throw new Error('Terdapat Stock Opname lain setelah periode ini. Koreksi harus dimulai dari upload Stock Opname yang paling baru.');
+  }
+
+  const auditRows = sourceRows.filter(function (row) {
+    return row.record_type === 'OPNAME_DETAIL' && row.movement_type === 'Stock Opname Audit' && String(row.event_date || '').slice(0, 10) === oldEffectiveDate;
+  });
+  if (!auditRows.length) throw new Error('Upload lama ini belum memiliki audit QTY lengkap sehingga tanggal tidak dapat dikoreksi otomatis. Upload ulang dengan tanggal yang benar.');
+  const movementMap = {}, sourceMovements = sourceRows.filter(function (row) {
+    return row.record_type === 'MOVEMENT' && row.movement_type === 'Stock Opname' && String(row.event_date || '').slice(0, 10) === oldEffectiveDate;
+  });
+  sourceMovements.forEach(function (row) {
+    movementMap[String(row.item_code || '').trim().toUpperCase()] = row;
+  });
+  const excludedLogicalIds = sourceMovements.map(function (row) {
+    return String(row.logical_id || row.record_id || '');
+  }).filter(Boolean);
+  const balanceSql = latestStockMovementCte_() + ' SELECT item_code, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
+    'FROM latest WHERE outlet = @outlet AND location = @location AND event_date <= CAST(@newEventDate AS DATE) ' +
+    'AND COALESCE(NULLIF(logical_id, \'\'), record_id) NOT IN UNNEST(@excludedLogicalIds) ' +
+    'AND item_code IS NOT NULL AND item_code != \'\' GROUP BY item_code';
+  const balanceMap = {};
+  runNamedQuery_(balanceSql, { outlet: outlet, location: location, newEventDate: newEventDate, excludedLogicalIds: excludedLogicalIds }, { useQueryCache: false }).forEach(function (row) {
+    balanceMap[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
+  });
+  const items = auditRows.map(function (audit) {
+    const code = String(audit.item_code || '').trim().toUpperCase(), previous = movementMap[code] || null;
+    let auditInfo = {};
+    try { auditInfo = JSON.parse(String(audit.info || '{}')); } catch (error) {}
+    const opnameQty = Number(auditInfo.actualQty !== undefined ? auditInfo.actualQty : audit.qty);
+    if (!isFinite(opnameQty) || opnameQty < 0) throw new Error(code + ' · QTY hasil SO pada audit tidak valid.');
+    const newCardQty = Number(balanceMap[code] || 0), newDelta = opnameQty - newCardQty;
+    const oldDelta = previous ? (String(previous.direction || '').toUpperCase() === 'OUT' ? -Number(previous.qty || 0) : Number(previous.qty || 0)) : 0;
+    return { code: code, category: String(audit.category || ''), name: String(audit.item_name || ''), unit: String(audit.unit || ''),
+      sourceRow: Number(audit.source_row || 0), audit: audit, auditInfo: auditInfo, previousMovement: previous,
+      opnameQty: opnameQty, oldCardQty: Number(auditInfo.cardQty || 0), newCardQty: newCardQty,
+      oldDelta: oldDelta, newDelta: newDelta, currentImpact: newDelta - oldDelta };
+  });
+  return { employee: employee, outlet: outlet, location: location, sourceHash: sourceHash,
+    fileName: String(importRow.source_file || ''), importRow: importRow, reason: reason,
+    oldEventDate: oldEventDate, oldEffectiveDate: oldEffectiveDate,
+    newEventDate: newEventDate, newEffectiveDate: newEffectiveDate, items: items };
+}
+
+function stockOpnameDateCorrectionResponse_(prepared) {
+  let changedCount = 0, currentChangedCount = 0;
+  prepared.items.forEach(function (item) {
+    if (Math.abs(item.newDelta - item.oldDelta) > 0.0000001 || prepared.oldEffectiveDate !== prepared.newEffectiveDate) changedCount++;
+    if (Math.abs(item.currentImpact) > 0.0000001) currentChangedCount++;
+  });
+  return { previewed: true, outlet: prepared.outlet, location: prepared.location, fileName: prepared.fileName,
+    oldEventDate: prepared.oldEventDate, oldEffectiveDate: prepared.oldEffectiveDate,
+    newEventDate: prepared.newEventDate, newEffectiveDate: prepared.newEffectiveDate,
+    itemCount: prepared.items.length, changedCount: changedCount, currentChangedCount: currentChangedCount,
+    items: prepared.items.map(function (item) { return { code: item.code, name: item.name, unit: item.unit,
+      opnameQty: item.opnameQty, oldCardQty: item.oldCardQty, newCardQty: item.newCardQty,
+      oldDelta: item.oldDelta, newDelta: item.newDelta, currentImpact: item.currentImpact }; }) };
 }
 
 /** Validates an exported Stock Position workbook before any balance is changed. */
