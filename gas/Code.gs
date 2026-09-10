@@ -208,6 +208,8 @@ function apiActions_() {
     verifyGoodsDelivery: previewGoodsDeliveryUpload,
     verifyStockPosition: previewStockPositionUpload,
     verifyStockOpname: previewStockOpnameUpload,
+    stockOpnameHistory: getStockOpnameUploadHistory,
+    stockOpnameHistoryDetail: getStockOpnameUploadHistoryDetail,
     saveConversions: saveStockUnitConversions,
     getConversions: getStockUnitConversions,
     defaultUnitOptions: getStockDefaultUnitOptions,
@@ -3126,6 +3128,20 @@ function uploadStockOpname(token, payload) {
       const masterItemsAdded = addStockOpnameMasterItems_(prepared.newItems);
       const openingCreatedAt = new Date(prepared.effectiveDate + 'T00:00:00+07:00').getTime() / 1000, rows = [];
       prepared.outlets.forEach(function (entry) {
+        (entry.auditItems || []).forEach(function (line, auditIndex) {
+          const auditId = Utilities.getUuid();
+          rows.push({ insertId: auditId, json: {
+            record_id: auditId, logical_id: auditId, version: 1, record_type: 'OPNAME_DETAIL',
+            outlet: entry.outlet, location: prepared.location, item_code: line.item.code,
+            category: line.item.category, item_name: line.item.name, unit: line.item.unit,
+            direction: null, qty: line.actualQty, movement_type: 'Stock Opname Audit',
+            info: JSON.stringify({ cardQty: line.cardQty, actualQty: line.actualQty, reportQty: line.reportQty,
+              conversionFactor: line.conversionFactor, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate }),
+            expiry_date: null, event_date: prepared.effectiveDate, created_at: openingCreatedAt + auditIndex / 1000000,
+            created_by: prepared.employee.nik, source_file: prepared.fileName,
+            source_hash: prepared.sourceHash, source_row: line.sourceRow
+          }});
+        });
         entry.items.forEach(function (line) {
           const direction = line.delta > 0 ? 'IN' : 'OUT';
           const recordId = Utilities.getUuid(), rowIndex = rows.length;
@@ -3267,13 +3283,13 @@ function prepareStockOpnameImport_(token, payload) {
   const master = masterPrepared.master;
   const providedConversions = payload.conversions && typeof payload.conversions === 'object' ? payload.conversions : {};
   const savedConversions = readStockUnitConversions_(), conversionMap = {};
-  const allItems = [], outlets = [];
+  const allItems = [], allAuditItems = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0, conversionCount = 0;
   reportOutlets.forEach(function (outlet) {
     const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate);
     const currentBalance = readCurrentStockCodeQtyMap_(outlet, location);
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
-    const items = [];
+    const items = [], auditItems = [];
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
       const item = master[row.code];
@@ -3290,18 +3306,20 @@ function prepareStockOpnameImport_(token, payload) {
       }
       const actualQty = row.actualQty * factor;
       const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
-      if (Math.abs(delta) <= 0.0000001) { unchangedCount++; outletUnchanged++; return; }
-      if (delta > 0) { increaseCount++; outletIncrease++; } else { decreaseCount++; outletDecrease++; }
-      const line = {
-        sourceRow: row.sourceRow, item: item, cardQty: cardQty,
-        actualQty: actualQty, reportQty: row.actualQty, conversionFactor: factor, delta: delta,
+      const auditLine = {
+        sourceRow: row.sourceRow, item: item, cardQty: cardQty, actualQty: actualQty,
+        reportQty: row.actualQty, conversionFactor: factor, delta: delta,
         currentQtyAfter: Number(currentBalance[row.code] || 0) + delta
       };
-      items.push(line);
-      allItems.push(line);
+      auditItems.push(auditLine);
+      allAuditItems.push(auditLine);
+      if (Math.abs(delta) <= 0.0000001) { unchangedCount++; outletUnchanged++; return; }
+      if (delta > 0) { increaseCount++; outletIncrease++; } else { decreaseCount++; outletDecrease++; }
+      items.push(auditLine);
+      allItems.push(auditLine);
     });
     outlets.push({
-      outlet: outlet, sourceItemCount: rows.length, items: items,
+      outlet: outlet, sourceItemCount: rows.length, items: items, auditItems: auditItems,
       unchangedCount: outletUnchanged, increaseCount: outletIncrease, decreaseCount: outletDecrease
     });
   });
@@ -3317,7 +3335,7 @@ function prepareStockOpnameImport_(token, payload) {
   return {
     employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
     location: location, outletCount: outlets.length, outlets: outlets, newItems: masterPrepared.newItems,
-    sourceItemCount: report.rows.length, items: allItems, unchangedCount: unchangedCount,
+    sourceItemCount: report.rows.length, items: allItems, auditItems: allAuditItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount, conversionCount: conversionCount,
     requiresConversion: false, conversionRequests: []
   };
@@ -3380,6 +3398,77 @@ function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
     'AND movement_type = \'Stock Opname\' AND event_date = CAST(@eventDate AS DATE) AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
+}
+
+function getStockOpnameUploadHistory(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const session = requireSession_(token), employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    ensureStockCardInfrastructure_();
+    const allowedOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+    const pageSize = 10, page = Math.max(1, Math.floor(Number(payload.page || 1)) || 1);
+    const query = cleanText_(payload.query, 100).toLowerCase(), search = '%' + query + '%';
+    const where = ' WHERE record_type = \'IMPORT\' AND movement_type = \'Stock Opname\' AND outlet IN UNNEST(@outlets) ' +
+      'AND (@query = \'\' OR LOWER(CONCAT(IFNULL(outlet, \'\'), \' \' , IFNULL(source_file, \'\'), \' \' , CAST(DATE_SUB(event_date, INTERVAL 1 DAY) AS STRING))) LIKE @search) ';
+    const params = { outlets: allowedOutlets, query: query, search: search };
+    const countRows = runNamedQuery_('SELECT COUNT(*) AS total FROM ' + stockCardTable_() + where, params, { useQueryCache: false });
+    const total = Number(countRows.length && countRows[0].total || 0), pages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(page, pages), offset = (currentPage - 1) * pageSize;
+    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, created_at, created_by FROM ' + stockCardTable_() + where +
+      'ORDER BY event_date DESC, created_at DESC, outlet ASC LIMIT ' + pageSize + ' OFFSET ' + offset, params, { useQueryCache: false });
+    return { page: currentPage, pageSize: pageSize, total: total, pages: pages, rows: rows.map(function (row) {
+      return { outlet: String(row.outlet || ''), location: String(row.location || ''), sourceHash: String(row.source_hash || ''),
+        fileName: String(row.source_file || ''), effectiveDate: String(row.event_date || '').slice(0, 10),
+        eventDate: stockIsoDateOffset_(String(row.event_date || '').slice(0, 10), -1), createdAt: String(row.created_at || ''), createdBy: String(row.created_by || '') };
+    }) };
+  });
+}
+
+function getStockOpnameUploadHistoryDetail(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const session = requireSession_(token), employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    ensureStockCardInfrastructure_();
+    const allowedOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+    const outlet = String(payload.outlet || '').trim().toUpperCase();
+    if (allowedOutlets.indexOf(outlet) < 0) throw new Error('Riwayat Stock Opname outlet ini tidak dapat diakses.');
+    const location = normalizeLocation_(payload.location || 'Store') || 'Store';
+    const sourceHash = String(payload.sourceHash || '').trim(), effectiveDate = normalizeDate_(payload.effectiveDate, false);
+    if (!sourceHash || !effectiveDate) throw new Error('Identitas upload Stock Opname tidak lengkap.');
+    const sql = 'SELECT record_type, item_code, item_name, unit, qty, direction, info, source_row FROM ' + stockCardTable_() + ' ' +
+      'WHERE outlet = @outlet AND location = @location AND source_hash = @sourceHash AND event_date = CAST(@effectiveDate AS DATE) ' +
+      'AND ((record_type = \'OPNAME_DETAIL\' AND movement_type = \'Stock Opname Audit\') OR (record_type = \'MOVEMENT\' AND movement_type = \'Stock Opname\')) ' +
+      'ORDER BY CASE WHEN record_type = \'OPNAME_DETAIL\' THEN 0 ELSE 1 END, source_row, item_code';
+    const records = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash, effectiveDate: effectiveDate }, { useQueryCache: false });
+    const grouped = {};
+    records.forEach(function (row) {
+      const code = String(row.item_code || '').trim().toUpperCase();
+      if (!code || grouped[code]) return;
+      let cardQty = null, actualQty = null;
+      if (row.record_type === 'OPNAME_DETAIL') {
+        try {
+          const detail = JSON.parse(String(row.info || '{}'));
+          cardQty = Number(detail.cardQty); actualQty = Number(detail.actualQty);
+        } catch (error) {}
+      } else {
+        const match = String(row.info || '').match(/Saldo penutup\s+(-?[\d.,]+)\s+→\s+Stock awal\s+\d{4}-\d{2}-\d{2}\s+(-?[\d.,]+)/i);
+        if (match) { cardQty = parseReportNumber_(match[1]); actualQty = parseReportNumber_(match[2]); }
+      }
+      if (!isFinite(cardQty) || !isFinite(actualQty)) return;
+      grouped[code] = { outlet: outlet, code: code, name: String(row.item_name || ''), unit: String(row.unit || ''), openingQty: cardQty, opnameQty: actualQty };
+    });
+    const query = cleanText_(payload.query, 100).toLowerCase();
+    const allRows = Object.keys(grouped).map(function (code) { return grouped[code]; }).filter(function (row) {
+      return !query || [row.outlet, row.code, row.name, row.unit, String(row.openingQty), String(row.opnameQty)].join(' ').toLowerCase().indexOf(query) >= 0;
+    }).sort(function (a, b) { return a.code.localeCompare(b.code); });
+    const pageSize = 20, requestedPage = Math.max(1, Math.floor(Number(payload.page || 1)) || 1), pages = Math.max(1, Math.ceil(allRows.length / pageSize));
+    const page = Math.min(requestedPage, pages), start = (page - 1) * pageSize;
+    return { page: page, pageSize: pageSize, total: allRows.length, pages: pages, rows: allRows.slice(start, start + pageSize),
+      outlet: outlet, eventDate: stockIsoDateOffset_(effectiveDate, -1), effectiveDate: effectiveDate,
+      legacyPartial: records.length > 0 && !records.some(function (row) { return row.record_type === 'OPNAME_DETAIL'; }) };
+  });
 }
 
 /** Validates an exported Stock Position workbook before any balance is changed. */
