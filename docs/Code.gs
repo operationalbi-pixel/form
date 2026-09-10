@@ -3082,16 +3082,20 @@ function uploadSalesUsage(token, payload) {
 function previewStockOpnameUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const prepared = prepareStockOpnameImport_(context, payload);
+    const prepared = prepareStockOpnameImport_(token, payload);
     return {
       verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate,
-      outlet: context.outlet, location: context.location,
+      outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
+      location: prepared.location, outletCount: prepared.outletCount,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
       unchangedCount: prepared.unchangedCount, increaseCount: prepared.increaseCount,
-      decreaseCount: prepared.decreaseCount,
-      adjustedItems: prepared.items.map(function (line) {
-        return { itemCode: line.item.code, qty: line.currentQtyAfter };
+      decreaseCount: prepared.decreaseCount, outletResults: prepared.outlets.map(function (entry) {
+        return {
+          outlet: entry.outlet, sourceItemCount: entry.sourceItemCount,
+          adjustmentCount: entry.items.length, unchangedCount: entry.unchangedCount,
+          increaseCount: entry.increaseCount, decreaseCount: entry.decreaseCount,
+          adjustedItems: entry.items.map(function (line) { return { itemCode: line.item.code, qty: line.currentQtyAfter }; })
+        };
       })
     };
   });
@@ -3101,36 +3105,51 @@ function previewStockOpnameUpload(token, payload) {
 function uploadStockOpname(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const context = resolveStockContext_(token, payload.outlet, payload.location);
     const lock = acquireStockWriteLock_();
     try {
       // Recalculate under the write lock so another upload cannot change the balance between preview and save.
-      const prepared = prepareStockOpnameImport_(context, payload);
+      const prepared = prepareStockOpnameImport_(token, payload);
       const now = new Date(), rows = [];
-      prepared.items.forEach(function (line, index) {
-        const direction = line.delta > 0 ? 'IN' : 'OUT';
-        const recordId = Utilities.getUuid();
-        rows.push({ insertId: recordId, json: {
-          record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
-          outlet: context.outlet, location: context.location, item_code: line.item.code,
-          category: line.item.category, item_name: line.item.name, unit: line.item.unit,
-          direction: direction, qty: Math.abs(line.delta), movement_type: 'Stock Opname',
-          info: cleanText_('Upload Stock Opname · Saldo ' + prepared.eventDate + ' ' + formatQty_(line.cardQty) +
-            ' → Stock Aktual ' + formatQty_(line.actualQty), 500),
-          expiry_date: null, source_arrival_date: direction === 'IN' ? prepared.eventDate : null,
-          event_date: prepared.eventDate, created_at: now.getTime() / 1000 + index / 1000000,
-          created_by: context.employee.nik, source_file: prepared.fileName,
-          source_hash: prepared.sourceHash, source_row: line.sourceRow
+      prepared.outlets.forEach(function (entry) {
+        entry.items.forEach(function (line) {
+          const direction = line.delta > 0 ? 'IN' : 'OUT';
+          const recordId = Utilities.getUuid(), rowIndex = rows.length;
+          rows.push({ insertId: recordId, json: {
+            record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT',
+            outlet: entry.outlet, location: prepared.location, item_code: line.item.code,
+            category: line.item.category, item_name: line.item.name, unit: line.item.unit,
+            direction: direction, qty: Math.abs(line.delta), movement_type: 'Stock Opname',
+            info: cleanText_('Upload Stock Opname · Saldo ' + prepared.eventDate + ' ' + formatQty_(line.cardQty) +
+              ' → Stock Aktual ' + formatQty_(line.actualQty), 500),
+            expiry_date: null, source_arrival_date: direction === 'IN' ? prepared.eventDate : null,
+            event_date: prepared.eventDate, created_at: now.getTime() / 1000 + rowIndex / 1000000,
+            created_by: prepared.employee.nik, source_file: prepared.fileName,
+            source_hash: prepared.sourceHash, source_row: line.sourceRow
+          }});
+        });
+        const importId = Utilities.getUuid();
+        rows.push({ insertId: importId, json: {
+          record_id: importId, logical_id: importId, version: 1, record_type: 'IMPORT',
+          outlet: entry.outlet, location: prepared.location, direction: null, qty: 0, movement_type: 'Stock Opname',
+          info: cleanText_('Import Stock Opname · ' + prepared.fileName + ' · ' + entry.sourceItemCount + ' item', 500),
+          expiry_date: null, event_date: prepared.eventDate, created_at: now.getTime() / 1000,
+          created_by: prepared.employee.nik, source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: 0
         }});
       });
-      if (rows.length) insertStockCardRows_(rows);
+      insertStockCardRows_(rows);
       return {
-        uploaded: true, outlet: context.outlet, location: context.location,
+        uploaded: true, outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
+        location: prepared.location, outletCount: prepared.outletCount,
         eventDate: prepared.eventDate, adjustmentCount: prepared.items.length,
-        movementCount: rows.length, unchangedCount: prepared.unchangedCount,
+        movementCount: prepared.items.length, unchangedCount: prepared.unchangedCount,
         increaseCount: prepared.increaseCount, decreaseCount: prepared.decreaseCount,
-        adjustedItems: prepared.items.map(function (line) {
-          return { itemCode: line.item.code, qty: line.currentQtyAfter };
+        outletResults: prepared.outlets.map(function (entry) {
+          return {
+            outlet: entry.outlet, sourceItemCount: entry.sourceItemCount,
+            adjustmentCount: entry.items.length, unchangedCount: entry.unchangedCount,
+            increaseCount: entry.increaseCount, decreaseCount: entry.decreaseCount,
+            adjustedItems: entry.items.map(function (line) { return { itemCode: line.item.code, qty: line.currentQtyAfter }; })
+          };
         })
       };
     } finally {
@@ -3139,46 +3158,67 @@ function uploadStockOpname(token, payload) {
   });
 }
 
-function prepareStockOpnameImport_(context, payload) {
+function prepareStockOpnameImport_(token, payload) {
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const eventDate = normalizeDate_(payload.eventDate, false);
   if (!eventDate) throw new Error('Pilih tanggal Stock Opname terlebih dahulu.');
   if (eventDate > todayIso_()) throw new Error('Tanggal Stock Opname tidak boleh melewati hari ini.');
   const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
-  if (report.outlet !== context.outlet) throw new Error('File Stock Opname milik outlet ' + report.outlet +
-    ', bukan outlet yang sedang dipilih (' + context.outlet + ').');
-  if (stockOpnameAlreadyImported_(context.outlet, context.location, eventDate, sourceHash)) {
-    throw new Error('File Stock Opname yang sama sudah pernah di-upload untuk ' + context.outlet + ' · ' +
-      context.location + ' pada ' + eventDate + '.');
+  const session = requireSession_(token), employee = findEmployee_(session.nik);
+  assertEmployeeActive_(employee);
+  ensureStockCardInfrastructure_();
+  const location = normalizeLocation_(payload.location), reportOutlets = report.outlets.slice();
+  const activeOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+  const unauthorized = reportOutlets.filter(function (outlet) { return activeOutlets.indexOf(outlet) < 0; });
+  if (unauthorized.length) throw new Error('Branch tidak aktif atau tidak dapat diakses akun ini: ' + unauthorized.join(', ') + '.');
+  if (employee.outlet !== 'BIHQ' && (reportOutlets.length !== 1 || reportOutlets[0] !== employee.outlet)) {
+    throw new Error('Akun outlet ' + employee.outlet + ' hanya dapat upload file dengan BRANCH kolom A milik outlet tersebut. Ditemukan: ' + reportOutlets.join(', ') + '.');
   }
+  const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
+  if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
+  const duplicates = reportOutlets.filter(function (outlet) { return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash); });
+  if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
 
-  const master = {}, balanceAtDate = readStockCodeQtyMapAtDate_(context.outlet, context.location, eventDate);
-  const currentBalance = readCurrentStockCodeQtyMap_(context.outlet, context.location);
+  const master = {};
   readStockMaster_(true).forEach(function (item) { master[item.code.toUpperCase()] = item; });
-  const items = [], missing = [], unitMismatch = [];
+  const allItems = [], missing = [], unitMismatch = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0;
-  report.rows.forEach(function (row) {
-    const item = master[row.code];
-    if (!item) { missing.push(row.code + ' · ' + row.name); return; }
-    if (normalizeUnit_(item.unit) !== normalizeUnit_(row.unit)) {
-      unitMismatch.push(row.code + ' (' + row.unit + ' ≠ ' + item.unit + ')');
-      return;
-    }
-    const cardQty = Number(balanceAtDate[row.code] || 0), delta = row.actualQty - cardQty;
-    if (Math.abs(delta) <= 0.0000001) { unchangedCount++; return; }
-    if (delta > 0) increaseCount++; else decreaseCount++;
-    items.push({
-      sourceRow: row.sourceRow, item: item, cardQty: cardQty,
-      actualQty: row.actualQty, delta: delta,
-      currentQtyAfter: Number(currentBalance[row.code] || 0) + delta
+  reportOutlets.forEach(function (outlet) {
+    const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate);
+    const currentBalance = readCurrentStockCodeQtyMap_(outlet, location);
+    const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
+    const items = [];
+    let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
+    rows.forEach(function (row) {
+      const item = master[row.code];
+      if (!item) { missing.push(outlet + ' · ' + row.code + ' · ' + row.name); return; }
+      if (normalizeUnit_(item.unit) !== normalizeUnit_(row.unit)) {
+        unitMismatch.push(outlet + ' · ' + row.code + ' (' + row.unit + ' ≠ ' + item.unit + ')');
+        return;
+      }
+      const cardQty = Number(balanceAtDate[row.code] || 0), delta = row.actualQty - cardQty;
+      if (Math.abs(delta) <= 0.0000001) { unchangedCount++; outletUnchanged++; return; }
+      if (delta > 0) { increaseCount++; outletIncrease++; } else { decreaseCount++; outletDecrease++; }
+      const line = {
+        sourceRow: row.sourceRow, item: item, cardQty: cardQty,
+        actualQty: row.actualQty, delta: delta,
+        currentQtyAfter: Number(currentBalance[row.code] || 0) + delta
+      };
+      items.push(line);
+      allItems.push(line);
+    });
+    outlets.push({
+      outlet: outlet, sourceItemCount: rows.length, items: items,
+      unchangedCount: outletUnchanged, increaseCount: outletIncrease, decreaseCount: outletDecrease
     });
   });
   if (missing.length) throw new Error(missing.length + ' item file tidak ditemukan pada Master Stock Card. Contoh: ' + missing.slice(0, 8).join(', ') + '.');
   if (unitMismatch.length) throw new Error(unitMismatch.length + ' unit file berbeda dari Unit Master. Contoh: ' + unitMismatch.slice(0, 8).join(', ') + '.');
   return {
-    fileName: fileName, sourceHash: sourceHash, eventDate: eventDate,
-    sourceItemCount: report.rows.length, items: items, unchangedCount: unchangedCount,
+    employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate,
+    location: location, outletCount: outlets.length, outlets: outlets,
+    sourceItemCount: report.rows.length, items: allItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount
   };
 }
@@ -3188,40 +3228,40 @@ function parseStockOpnameReport_(base64, fileName) {
   const header = findReportHeader_(cells, [
     'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'
   ]);
-  const directory = readStoreCodeDirectory_(), rows = [], invalidQty = [], duplicateCodes = [], unknownOutlets = [];
+  if (header.columns.BRANCH !== 'A') throw new Error('Kolom BRANCH wajib berada di kolom A sesuai format Stock Opname.');
+  const directory = readStoreCodeDirectory_(), rows = [], invalidQty = [], negativeQty = [], duplicateCodes = [], unknownOutlets = [];
   const seenCodes = {}, outletCodes = {};
   reportDataRows_(cells, header, 'PRODUCT CODE').forEach(function (rowNumber) {
     const code = String(reportCell_(cells, header, 'PRODUCT CODE', rowNumber) || '').trim().toUpperCase();
     if (!code) return;
-    const branch = cleanText_(reportCell_(cells, header, 'BRANCH', rowNumber), 160);
-    const location = cleanText_(reportCell_(cells, header, 'LOCATION', rowNumber), 160);
-    [branch, location].forEach(function (name) {
-      const normalized = normalizeStoreName_(name), directCode = String(name || '').trim().toUpperCase();
-      const entry = directory.byName[normalized] || directory.byCode[directCode];
-      if (!entry) { if (name) unknownOutlets.push(name); return; }
-      outletCodes[entry.code] = true;
-    });
-    if (!branch || !location) unknownOutlets.push('baris ' + rowNumber + ' kosong');
-    if (seenCodes[code]) { duplicateCodes.push(code); return; }
-    seenCodes[code] = true;
+    // BRANCH is intentionally read from column A. LOCATION is report metadata and is not used to match Stock Card items.
+    const branch = cleanText_(cells['A' + rowNumber], 160);
+    const normalizedBranch = normalizeStoreName_(branch), directCode = String(branch || '').trim().toUpperCase();
+    const branchEntry = directory.byName[normalizedBranch] || directory.byCode[directCode];
+    if (!branchEntry) unknownOutlets.push(branch || ('baris ' + rowNumber + ' kosong'));
+    else outletCodes[branchEntry.code] = true;
+    const duplicateKey = (branchEntry ? branchEntry.code : normalizedBranch) + '|' + code;
+    if (seenCodes[duplicateKey]) { duplicateCodes.push((branchEntry ? branchEntry.code : branch) + ' · ' + code); return; }
+    seenCodes[duplicateKey] = true;
     const actualQty = parseReportNumber_(reportCell_(cells, header, 'OPNAME STOCK', rowNumber));
-    if (!isFinite(actualQty)) { invalidQty.push(code); return; }
+    const name = cleanText_(reportCell_(cells, header, 'PRODUCT', rowNumber), 180);
+    if (!isFinite(actualQty)) { invalidQty.push(code + ' · ' + name + ' · baris ' + rowNumber); return; }
+    if (actualQty < 0) { negativeQty.push(code + ' · ' + name + ' · ' + (branchEntry ? branchEntry.code : branch) + ' · QTY ' + formatQty_(actualQty)); return; }
     rows.push({
-      sourceRow: rowNumber, code: code,
-      name: cleanText_(reportCell_(cells, header, 'PRODUCT', rowNumber), 180),
+      sourceRow: rowNumber, outlet: branchEntry ? branchEntry.code : '', code: code, name: name,
       category: cleanText_(reportCell_(cells, header, 'CATEGORY', rowNumber), 100),
       subcategory: cleanText_(reportCell_(cells, header, 'SUBCATEGORY', rowNumber), 100),
       unit: cleanText_(reportCell_(cells, header, 'UNIT', rowNumber), 40).toUpperCase(),
       actualQty: actualQty
     });
   });
-  if (unknownOutlets.length) throw new Error('BRANCH/LOCATION tidak ditemukan pada sheet STORE CODE: ' + stockUnique_(unknownOutlets).slice(0, 8).join(', ') + '.');
+  if (negativeQty.length) throw new Error('Upload ditolak karena ' + negativeQty.length + ' item memiliki OPNAME STOCK negatif: ' + negativeQty.slice(0, 20).join('; ') + (negativeQty.length > 20 ? '; dan ' + (negativeQty.length - 20) + ' item lainnya.' : '.'));
+  if (unknownOutlets.length) throw new Error('BRANCH kolom A tidak ditemukan pada sheet STORE CODE: ' + stockUnique_(unknownOutlets).slice(0, 8).join(', ') + '.');
   const outlets = Object.keys(outletCodes);
-  if (outlets.length !== 1) throw new Error('File Stock Opname wajib hanya memuat satu outlet. Ditemukan: ' + outlets.join(', ') + '.');
   if (duplicateCodes.length) throw new Error('PRODUCT CODE duplikat pada file: ' + stockUnique_(duplicateCodes).slice(0, 10).join(', ') + '.');
   if (invalidQty.length) throw new Error('OPNAME STOCK wajib berupa angka untuk: ' + invalidQty.slice(0, 10).join(', ') + '.');
   if (!rows.length) throw new Error('File Stock Opname tidak memiliki baris item yang dapat diproses.');
-  return { outlet: outlets[0], rows: rows, headerRow: header.row };
+  return { outlets: outlets, rows: rows, headerRow: header.row };
 }
 
 function stockUnique_(values) {
@@ -3236,7 +3276,7 @@ function stockUnique_(values) {
 
 function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
   const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location ' +
+    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND location = @location ' +
     'AND movement_type = \'Stock Opname\' AND event_date = CAST(@eventDate AS DATE) AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
