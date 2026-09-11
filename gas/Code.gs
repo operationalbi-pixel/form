@@ -4796,29 +4796,23 @@ function stockHistorySelectFields_() {
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at';
 }
 
-function readStockHistoryMonthRows_(outlet, location, item, bounds) {
-  const sql = latestStockMovementCte_() + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ' +
-    'WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
-    'AND event_date >= CAST(@monthStart AS DATE) AND event_date < CAST(@monthEnd AS DATE) ' +
-    'ORDER BY event_date DESC, created_at DESC';
-  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, monthStart: bounds.start, monthEnd: bounds.end })
-    .map(mapStockHistoryQueryRow_);
+function stockHistoryScopedLatestCte_(location) {
+  return 'WITH latest AS (SELECT ' + stockHistorySelectFields_() + ' FROM ' + stockCardTable_() + ' ' +
+    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
+    'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1)';
 }
 
-function readStockHistoryBeforeMonthRows_(outlet, location, item, monthStart) {
-  const sql = latestStockMovementCte_() + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ' +
-    'WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
-    'AND event_date < CAST(@monthStart AS DATE) ORDER BY event_date DESC, created_at DESC LIMIT 500';
-  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, monthStart: monthStart })
-    .map(mapStockHistoryQueryRow_);
+function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
+  const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
+    String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
+  return 'stock-history-v3-' + digest_(identity).slice(0, 36);
 }
 
-function readStockNetMovementFromDate_(outlet, location, item, startDate) {
-  const sql = latestStockMovementCte_() + ' SELECT COALESCE(SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), 0) AS net_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
-    'AND event_date >= CAST(@startDate AS DATE)';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, startDate: startDate });
-  return rows.length ? Number(rows[0].net_qty || 0) : 0;
+function readStockHistoryPageRows_(outlet, location, item) {
+  const sql = stockHistoryScopedLatestCte_(location) + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ORDER BY event_date, created_at';
+  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name })
+    .map(mapStockHistoryQueryRow_);
 }
 
 function getStockHistory(token, payload) {
@@ -4833,14 +4827,14 @@ function getStockHistory(token, payload) {
     const location = normalizeLocation_(payload.location);
     const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
     const bounds = stockHistoryMonthBounds_(payload.month);
+    const cacheKey = stockHistoryCacheKey_(outlet, location, item, bounds.month, Boolean(payload.includeCurrentLots));
+    const cached = readScriptJsonCache_(cacheKey);
+    if (cached) return cached;
 
-    // Current QTY may come from the fast Stock API, while detail rows are always scoped
-    // to the requested month so opening a Stock Card no longer ships the latest 500 rows to the browser.
-    const fastHistory = isShowcaseLocation_(location) ? null : readFastStockHistory_(outlet, location, item);
-    const currentQty = fastHistory ? Number(fastHistory.currentQty || 0) : getCurrentStock_(outlet, location, item.code, item.name).qty;
-    let monthRows = readStockHistoryMonthRows_(outlet, location, item, bounds);
-    let priorRows = readStockHistoryBeforeMonthRows_(outlet, location, item, bounds.start);
-    let fifoInput = priorRows.concat(monthRows);
+    // A single item-scoped query replaces separate month, opening balance,
+    // after-period, Fast API, and FIFO status reads.
+    const stockHistoryRows = readStockHistoryPageRows_(outlet, location, item);
+    let fifoInput = stockHistoryRows;
     if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
 
     const monthStart = bounds.start, monthEnd = bounds.end;
@@ -4848,8 +4842,17 @@ function getStockHistory(token, payload) {
       const date = String(row.date || '').slice(0, 10);
       return date >= monthStart && date < monthEnd;
     });
-    const netAfterPeriod = bounds.month === bounds.currentMonth ? 0 : readStockNetMovementFromDate_(outlet, location, item, bounds.end);
-    const periodClosingQty = currentQty - netAfterPeriod;
+    const movementQtyUntil = function (endDate) {
+      return stockHistoryRows.reduce(function (total, row) {
+        const date = String(row.date || '').slice(0, 10);
+        if (endDate && date >= endDate) return total;
+        if (row.direction === 'IN') return total + Number(row.qty || 0);
+        if (row.direction === 'OUT') return total - Number(row.qty || 0);
+        return total;
+      }, 0);
+    };
+    const currentQty = movementQtyUntil('');
+    const periodClosingQty = movementQtyUntil(bounds.end);
     const snapshots = calculateFifoSnapshots_(fifoInput);
     const dayNet = {};
     visibleRows.forEach(function (row) {
@@ -4868,22 +4871,21 @@ function getStockHistory(token, payload) {
     visibleRows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
     let currentLots = null;
     if (payload.includeCurrentLots) {
-      let currentHistory = fastHistory && Array.isArray(fastHistory.history) ? fastHistory.history : readLatestStockHistory_(outlet, location, item);
-      if (isShowcaseLocation_(location)) currentHistory = enrichShowcaseHistoryLots_(currentHistory, outlet, item);
-      const currentSnapshots = calculateFifoSnapshots_(currentHistory), currentDates = Object.keys(currentSnapshots).sort();
+      const currentSnapshots = snapshots, currentDates = Object.keys(currentSnapshots).sort();
       currentLots = reconcileFifoLots_(currentDates.length ? currentSnapshots[currentDates[currentDates.length - 1]] : [], currentQty);
     }
 
-    const fifoFefoStatus = stockFifoFefoStatus_(readStockHistoryForFifoRecalculation_(outlet, location, item), item);
-    return {
+    const response = {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
       month: bounds.month, periodClosingQty: periodClosingQty,
       history: visibleRows, fifoLotsByDate: fifoLotsByDate,
-      hasPrevious: priorRows.length > 0, hasNext: bounds.month < bounds.currentMonth,
+      hasPrevious: fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < monthStart; }), hasNext: bounds.month < bounds.currentMonth,
       currentLots: currentLots,
-      fifoFefoStatus: fifoFefoStatus,
-      fastSource: fastHistory && fastHistory.meta ? fastHistory.meta.source : 'BIGQUERY_MONTHLY'
+      fifoFefoStatus: stockFifoFefoStatus_(fifoInput, item),
+      fastSource: 'BIGQUERY_SCOPED_SINGLE_QUERY'
     };
+    writeScriptJsonCache_(cacheKey, response, 300);
+    return response;
   });
 }
 
@@ -7462,8 +7464,21 @@ function invalidateStockItemCachesForRows_(rows) {
     const row = entry && entry.json ? entry.json : entry;
     if (!row || !row.outlet || !row.location) return;
     keys[stockItemsCacheKey_(row.outlet, row.location)] = true;
+    const item = { code: String(row.item_code || ''), name: String(row.item_name || '') };
     const date = String(row.event_date || '').slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) monitorKeys['stock-upload-monitor-v2-' + date.slice(0, 7)] = true;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      monitorKeys['stock-upload-monitor-v2-' + date.slice(0, 7)] = true;
+      const firstMonth = Number(row.version || 1) > 1 ? '2019-01' : date.slice(0, 7);
+      const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+      let cursor = firstMonth, count = 0;
+      while (/^\d{4}-\d{2}$/.test(cursor) && cursor <= currentMonth && count < 120) {
+        keys[stockHistoryCacheKey_(row.outlet, row.location, item, cursor, false)] = true;
+        keys[stockHistoryCacheKey_(row.outlet, row.location, item, cursor, true)] = true;
+        const parts = cursor.split('-'), next = new Date(Number(parts[0]), Number(parts[1]), 1, 12, 0, 0);
+        cursor = Utilities.formatDate(next, 'Asia/Jakarta', 'yyyy-MM');
+        count++;
+      }
+    }
   });
   removeScriptCacheKeys_(Object.keys(keys).concat(Object.keys(monitorKeys)));
 }
@@ -11365,12 +11380,23 @@ function runNamedQuery_(query, params, options) {
     }
     return { name: name, parameterType: { type: 'STRING' }, parameterValue: { value: String(value) } };
   });
+  const configuredMaximum = Number(PropertiesService.getScriptProperties().getProperty('BQ_MAX_BYTES_BILLED') || 2147483648);
+  const maximumBytesBilled = options && options.maximumBytesBilled !== undefined ? Number(options.maximumBytesBilled) : configuredMaximum;
   const request = {
     query: query, useLegacySql: false, location: CONFIG.BQ_LOCATION,
     parameterMode: 'NAMED', queryParameters: queryParameters, maxResults: 10000,
     useQueryCache: !(options && options.useQueryCache === false)
   };
-  let result = BigQuery.Jobs.query(request, CONFIG.BQ_PROJECT_ID);
+  if (isFinite(maximumBytesBilled) && maximumBytesBilled > 0) request.maximumBytesBilled = String(Math.floor(maximumBytesBilled));
+  let result;
+  try {
+    result = BigQuery.Jobs.query(request, CONFIG.BQ_PROJECT_ID);
+  } catch (error) {
+    if (/maximum bytes billed|bytes billed limit|billingTierLimitExceeded/i.test(String(error && error.message || error))) {
+      throw new Error('Query dihentikan karena melewati batas biaya BigQuery. Persempit periode/data atau hubungi BIHQ.');
+    }
+    throw error;
+  }
   let attempts = 0;
   while (!result.jobComplete && attempts < 20) {
     Utilities.sleep(150);
