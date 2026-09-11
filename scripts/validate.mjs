@@ -17,7 +17,7 @@ for (const [source, copy] of pairs) {
   if (await text(source) !== await text(copy)) failures.push(`${copy} tidak sinkron dengan ${source}`);
 }
 
-for (const path of ['docs/config.js', 'docs/api-client.js', 'docs/Code.gs']) {
+for (const path of ['docs/config.js', 'docs/api-client.js', 'docs/chat-enhancements.js', 'docs/Code.gs']) {
   try {
     new vm.Script(await text(path), { filename: path });
   } catch (error) {
@@ -31,6 +31,7 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
 }
 
 const chatHtml = await text('docs/chat.html');
+const chatEnhancements = await text('docs/chat-enhancements.js');
 const chatBackend = await text('docs/Code.gs');
 const stockCardHtml = await text('docs/stock-card.html');
 if (!chatBackend.includes('stockHistoryScopedLatestCte_') || !chatBackend.includes("fastSource: 'BIGQUERY_SCOPED_SINGLE_QUERY'")) {
@@ -74,6 +75,12 @@ if (!chatHtml.includes('function taskAgeLabel(') || !chatHtml.includes('UMUR TUG
 }
 if (!chatBackend.includes('function chatTaskAttachmentMap_()') || !chatHtml.includes('task-detail-attachments')) {
   failures.push('Lampiran task belum tersedia pada detail task');
+}
+if (!chatHtml.includes("q('roomTitle').dataset.roomId=room.id") || !chatHtml.includes("new CustomEvent('bi:room-change'")) {
+  failures.push('Room chat aktif belum dipublikasikan ke panel Task/Target');
+}
+if (!chatEnhancements.includes('title && title.dataset.roomId || currentRoom') || !chatEnhancements.includes("global.addEventListener('bi:chat-bootstrap'")) {
+  failures.push('Panel Task/Target belum memiliki fallback dan sinkronisasi group aktif');
 }
 
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
