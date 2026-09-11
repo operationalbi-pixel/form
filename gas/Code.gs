@@ -4865,24 +4865,53 @@ function intrinsicStockUnitConversionFactor_(fromUnit, toUnit) {
   return isFinite(factor) && factor > 0 ? factor : 0;
 }
 
+function savedStockUnitConversionPathFactor_(itemCode, fromUnit, toUnit, saved) {
+  itemCode = String(itemCode || '').trim().toUpperCase();
+  fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
+  if (!itemCode || !fromUnit || !toUnit || !saved) return 0;
+  const graph = {};
+  Object.keys(saved).forEach(function (key) {
+    const row = saved[key] || {}, code = String(row.itemCode || '').trim().toUpperCase();
+    const from = normalizeUnit_(row.fromUnit), to = normalizeUnit_(row.toUnit), factor = Number(row.factor);
+    if (code !== itemCode || !from || !to || !isFinite(factor) || factor <= 0) return;
+    if (!graph[from]) graph[from] = [];
+    if (!graph[to]) graph[to] = [];
+    graph[from].push({ unit: to, factor: factor });
+    graph[to].push({ unit: from, factor: 1 / factor });
+  });
+  const queue = [{ unit: fromUnit, factor: 1 }], visited = {};
+  while (queue.length) {
+    const current = queue.shift();
+    if (visited[current.unit]) continue;
+    visited[current.unit] = true;
+    if (current.unit === toUnit) return current.factor;
+    (graph[current.unit] || []).forEach(function (edge) {
+      if (!visited[edge.unit]) queue.push({ unit: edge.unit, factor: current.factor * edge.factor });
+    });
+  }
+  return 0;
+}
+
 function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
   fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
   if (fromUnit === toUnit) return 1;
-
-  // Konversi yang bisa dibuktikan dari nama unit selalu lebih dipercaya daripada
-  // faktor manual/saved. Contoh: 120 ML -> PCK@1LT = 0,12 PCK@1LT.
-  const intrinsic = intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
-  if (intrinsic) return intrinsic;
-
-  const standard = defaultUnitConversionFactor_(fromUnit, toUnit);
-  if (standard) return standard;
   const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
   let factor = Number(provided && provided[direct]);
   if (!isFinite(factor) || factor <= 0) factor = saved && saved[direct] && Number(saved[direct].factor);
   if (isFinite(factor) && factor > 0) return factor;
   let inverseFactor = Number(provided && provided[inverse]);
   if (!isFinite(inverseFactor) || inverseFactor <= 0) inverseFactor = saved && saved[inverse] && Number(saved[inverse].factor);
-  return isFinite(inverseFactor) && inverseFactor > 0 ? 1 / inverseFactor : 0;
+  if (isFinite(inverseFactor) && inverseFactor > 0) return 1 / inverseFactor;
+
+  // STOCK_UNIT_CONVERSIONS adalah sumber utama dan boleh memakai jalur bertingkat
+  // untuk item yang sama, misalnya PCS -> PACK -> BOX.
+  const savedPath = savedStockUnitConversionPathFactor_(itemCode, fromUnit, toUnit, saved);
+  if (savedPath) return savedPath;
+
+  // Nama kemasan dan pasangan standar hanya fallback ketika sheet belum memiliki rule.
+  const intrinsic = intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
+  if (intrinsic) return intrinsic;
+  return defaultUnitConversionFactor_(fromUnit, toUnit);
 }
 
 function stockHistoryMonthBounds_(requestedMonth) {
