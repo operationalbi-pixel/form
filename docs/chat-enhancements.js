@@ -60,13 +60,16 @@
   }
   function activeRoomId() {
     var active = document.querySelector('.room.active[data-room]');
-    return active ? active.getAttribute('data-room') : currentRoom;
+    var title = q('roomTitle');
+    return active ? active.getAttribute('data-room') : title && title.dataset.roomId || currentRoom;
   }
   function currentRoomObject() {
     var id = activeRoomId();
+    if (!id) return null;
     var rooms = bootstrap && bootstrap.rooms || [];
     for (var i = 0; i < rooms.length; i += 1) if (rooms[i].id === id) return rooms[i];
-    return null;
+    var title = q('roomTitle');
+    return { id: id, title: title && (title.dataset.roomTitle || (title.querySelector('span') && title.querySelector('span').textContent)) || 'Group' };
   }
   function monthName(month) {
     return ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'][Math.max(1, Math.min(12, Number(month))) - 1];
@@ -1088,7 +1091,7 @@
   }
 
   function boot() {
-    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); global.addEventListener('bi:task-status', function (event) { applyHostTaskStatus(event.detail || {}); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
+    injectStyles(); installGroupSearch(); installRoomCreateMenu(); installAttachmentMenu(); installForms(); installNumericFormatting(); installGroupPanel(); installSystemReplySupport(); installTerminologyObserver(); observeRooms(); installRealtimeMentions(); adjustOuterChatClose(); cleanTargetMarkersInView(); global.addEventListener('bi:chat-bootstrap', function (event) { var data = event.detail; if (data && Array.isArray(data.rooms)) { bootstrap = data; data.rooms.forEach(function (room) { buildRoomTaskCache(room.id); }); } }); global.addEventListener('bi:room-change', function (event) { var detail = event.detail || {}; if (detail.roomId) currentRoom = detail.roomId; }); global.addEventListener('bi:task-cache', function (event) { applyHostTaskCache(event.detail && event.detail.tasks || []); }); global.addEventListener('bi:task-status', function (event) { applyHostTaskStatus(event.detail || {}); }); refreshBootstrap().then(function(){var roomId=activeRoomId(); if(roomId){ preloadMentions(roomId); warmRoomCache(roomId); preloadTargets(roomId); }}).catch(function () {});
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(boot, 0); });

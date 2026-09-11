@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  var CHAT_ASSET_VERSION = '20260830-target-delete1';
+  var CHAT_ASSET_VERSION = '20260911-group-panel-state1';
 
   function apiUrl() {
     var value = global.BAKERZIN_CONFIG && global.BAKERZIN_CONFIG.API_URL || '';
