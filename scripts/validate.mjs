@@ -32,6 +32,19 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
 
 const chatHtml = await text('docs/chat.html');
 const chatBackend = await text('docs/Code.gs');
+const stockCardHtml = await text('docs/stock-card.html');
+if (!chatBackend.includes('stockHistoryScopedLatestCte_') || !chatBackend.includes("fastSource: 'BIGQUERY_SCOPED_SINGLE_QUERY'")) {
+  failures.push('Stock History belum menggunakan satu query yang dibatasi outlet/lokasi/item');
+}
+if (/stockFifoFefoStatus_\(readStockHistoryForFifoRecalculation_/.test(chatBackend)) {
+  failures.push('Stock History masih menjalankan full-history FIFO query terpisah saat drawer dibuka');
+}
+if (!chatBackend.includes('request.maximumBytesBilled') || !chatBackend.includes("getProperty('BQ_MAX_BYTES_BILLED')")) {
+  failures.push('Pengaman maksimum biaya per query BigQuery belum aktif');
+}
+if (!stockCardHtml.includes('readStockHistoryBrowserCache') || !stockCardHtml.includes('writeStockHistoryBrowserCache') || !stockCardHtml.includes('if(cached)applyStockHistoryData')) {
+  failures.push('Stock History belum memakai cache instan dengan refresh server di background');
+}
 let chatInlineIndex = 0;
 for (const match of chatHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   chatInlineIndex += 1;
