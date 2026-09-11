@@ -189,6 +189,7 @@ function apiActions_() {
     setItemHidden: setStockItemHidden,
     save: saveStockMovement,
     edit: updateStockMovement,
+    correctMovement: correctUploadedStockMovement,
     adjust: adjustStockBalance,
     completeExpiry: completeStockExpiryLots,
     recalculateFifoFefo: recalculateStockFifoFefo,
@@ -2396,6 +2397,141 @@ function updateStockMovement(token, payload) {
     } finally {
       lock.releaseLock();
     }
+  });
+}
+
+function uploadedStockCorrectionType_(movementType) {
+  return ['Terjual', 'Sold', 'Goods Receipt', 'Transfer Out', 'Transfer In', 'Transfer Out Antar Outlet', 'Item Journal'].indexOf(String(movementType || '')) >= 0;
+}
+
+function readUploadedStockCorrectionRow_(outlet, location, item, logicalId) {
+  const sql = 'SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+    'outlet, location, item_code, category, item_name, unit, direction, qty, movement_type, info, production_date, expiry_date, ' +
+    'source_arrival_date, supplier, transfer_id, source_file, source_hash, source_row, created_by, created_at, event_date ' +
+    'FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'AND COALESCE(NULLIF(logical_id, \'\'), record_id) = @logicalId QUALIFY ROW_NUMBER() OVER (' +
+    'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1';
+  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, logicalId: logicalId }, { useQueryCache: false });
+  return rows.length ? rows[0] : null;
+}
+
+function appendTransferQtyCorrection_(movement, newQty, reason, employee, now) {
+  const transferId = String(movement.transfer_id || '');
+  if (!transferId) return false;
+  const sql = 'SELECT ' + stockTransferSelectFields_() + ' FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` ' +
+    'WHERE transfer_id = @transferId AND item_code = @itemCode AND status IN (\'PENDING\', \'CORRECTED\') ORDER BY created_at';
+  const rows = runNamedQuery_(sql, { transferId: transferId, itemCode: String(movement.item_code || '') }, { useQueryCache: false });
+  const corrections = {};
+  rows.filter(function (row) { return String(row.status || '') === 'CORRECTED'; }).forEach(function (row) {
+    corrections[String(row.source_event_id || '')] = row;
+  });
+  const expiry = String(movement.expiry_date || '').slice(0, 10), oldQty = Number(movement.qty || 0);
+  const pending = rows.filter(function (row) {
+    if (String(row.status || '') !== 'PENDING') return false;
+    const corrected = corrections[String(row.event_id || '')];
+    const effectiveQty = Number(corrected ? corrected.qty : row.qty || 0);
+    return String(row.item_code || '') === String(movement.item_code || '') &&
+      String(row.expiry_date || '').slice(0, 10) === expiry && Math.abs(effectiveQty - oldQty) < 0.0000001;
+  })[0];
+  if (!pending) return false;
+  const eventId = Utilities.getUuid();
+  insertAll_('stock_transfers', [{ insertId: eventId, json: {
+    event_id: eventId, transfer_id: transferId, status: 'CORRECTED', source_event_id: String(pending.event_id || ''),
+    from_outlet: String(pending.from_outlet || ''), from_location: String(pending.from_location || ''),
+    to_outlet: String(pending.to_outlet || ''), to_location: pending.to_location || null,
+    item_code: String(pending.item_code || ''), category: String(pending.category || ''), item_name: String(pending.item_name || ''), unit: String(pending.unit || ''),
+    qty: newQty, note: cleanText_('Koreksi QTY ' + formatQty_(oldQty) + ' menjadi ' + formatQty_(newQty) + ' · Alasan: ' + reason, 500),
+    expiry_date: pending.expiry_date || null, delivery_date: pending.delivery_date || null,
+    created_by: employee.nik, created_by_name: employee.name, created_at: now.getTime() / 1000
+  }}]);
+  return true;
+}
+
+function appendLocalTransferCounterpartCorrection_(movement, newQty, reason, employee, now) {
+  const transferId = String(movement.transfer_id || '');
+  if (!transferId || !/^Transfer (?:In|Out)$/.test(String(movement.movement_type || ''))) return 0;
+  const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+    'outlet, location, item_code, category, item_name, unit, direction, qty, movement_type, info, production_date, expiry_date, ' +
+    'source_arrival_date, supplier, transfer_id, source_file, source_hash, source_row, event_date ' +
+    'FROM latest WHERE transfer_id = @transferId AND item_code = @itemCode AND movement_type IN (\'Transfer In\', \'Transfer Out\') ' +
+    'AND COALESCE(NULLIF(logical_id, \'\'), record_id) != @logicalId';
+  const expiry = String(movement.expiry_date || '').slice(0, 10), oldQty = Number(movement.qty || 0);
+  const counterparts = runNamedQuery_(sql, {
+    transferId: transferId, itemCode: String(movement.item_code || ''), logicalId: String(movement.logical_id || '')
+  }, { useQueryCache: false }).filter(function (row) {
+    return String(row.outlet || '') === String(movement.outlet || '') &&
+      String(row.direction || '') !== String(movement.direction || '') &&
+      String(row.expiry_date || '').slice(0, 10) === expiry && Math.abs(Number(row.qty || 0) - oldQty) < 0.0000001;
+  }).slice(0, 1);
+  if (!counterparts.length) return 0;
+  const correctionText = 'KOREKSI PASANGAN TRANSFER QTY ' + formatQty_(oldQty) + ' → ' + formatQty_(newQty) +
+    ' | Alasan: ' + reason + ' | Oleh: ' + employee.name + ' · ' + employee.nik + ' | ' + now.toISOString();
+  const rows = counterparts.map(function (previous, index) {
+    const recordId = Utilities.getUuid();
+    return { insertId: recordId, json: {
+      record_id: recordId, logical_id: String(previous.logical_id || previous.record_id || ''), version: Number(previous.version || 1) + 1,
+      record_type: 'MOVEMENT', outlet: String(previous.outlet || ''), location: String(previous.location || ''),
+      item_code: String(previous.item_code || ''), category: String(previous.category || ''), item_name: String(previous.item_name || ''), unit: String(previous.unit || ''),
+      direction: String(previous.direction || ''), qty: newQty, movement_type: String(previous.movement_type || ''),
+      info: cleanText_((String(previous.info || '') ? String(previous.info) + ' | ' : '') + correctionText, 500),
+      production_date: previous.production_date || null, expiry_date: previous.expiry_date || null,
+      source_arrival_date: previous.source_arrival_date || null, supplier: previous.supplier || null, transfer_id: transferId,
+      event_date: String(previous.event_date || '').slice(0, 10), created_at: (now.getTime() + index + 1) / 1000, created_by: employee.nik,
+      source_file: previous.source_file || null, source_hash: previous.source_hash || null, source_row: Number(previous.source_row || 0)
+    }};
+  });
+  insertStockCardRows_(rows);
+  return rows.length;
+}
+
+function correctUploadedStockMovement(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
+    const logicalId = cleanText_(payload.logicalId, 100), newQty = Number(payload.qty), reason = cleanText_(payload.reason, 300);
+    if (!logicalId) throw new Error('Transaksi yang akan dikoreksi tidak ditemukan.');
+    if (!isFinite(newQty) || newQty < 0) throw new Error('QTY koreksi harus berupa angka 0 atau lebih.');
+    if (reason.length < 5) throw new Error('Alasan koreksi wajib diisi minimal 5 karakter.');
+    const lock = acquireStockWriteLock_();
+    try {
+      const previous = readUploadedStockCorrectionRow_(context.outlet, context.location, item, logicalId);
+      if (!previous) throw new Error('Transaksi tidak ditemukan atau sudah berubah. Muat ulang Stock Card.');
+      if (!uploadedStockCorrectionType_(previous.movement_type) || (!String(previous.source_file || '') && !String(previous.transfer_id || ''))) {
+        throw new Error('Transaksi ini bukan hasil upload atau transfer yang dapat dikoreksi melalui menu ini.');
+      }
+      if (!String(previous.source_file || '') && /showcase/i.test(String(previous.info || ''))) {
+        throw new Error('Transfer Showcase otomatis harus dikoreksi dari transaksi sumber agar konversi resep tetap konsisten.');
+      }
+      const oldQty = Number(previous.qty || 0);
+      if (Math.abs(oldQty - newQty) < 0.0000001) throw new Error('QTY baru masih sama dengan QTY sebelumnya.');
+      const now = new Date(), recordId = Utilities.getUuid(), version = Number(previous.version || 1) + 1;
+      const correctionText = 'KOREKSI QTY ' + formatQty_(oldQty) + ' → ' + formatQty_(newQty) + ' | Alasan: ' + reason +
+        ' | Oleh: ' + context.employee.name + ' · ' + context.employee.nik + ' | ' + now.toISOString();
+      const info = cleanText_((String(previous.info || '') ? String(previous.info) + ' | ' : '') + correctionText, 500);
+      const row = { insertId: recordId, json: {
+        record_id: recordId, logical_id: logicalId, version: version, record_type: 'MOVEMENT',
+        outlet: context.outlet, location: context.location, item_code: String(previous.item_code || item.code),
+        category: String(previous.category || item.category), item_name: String(previous.item_name || item.name), unit: String(previous.unit || item.unit),
+        direction: String(previous.direction || ''), qty: newQty, movement_type: String(previous.movement_type || ''), info: info,
+        production_date: previous.production_date || null, expiry_date: previous.expiry_date || null,
+        source_arrival_date: previous.source_arrival_date || null, supplier: previous.supplier || null, transfer_id: previous.transfer_id || null,
+        event_date: String(previous.event_date || '').slice(0, 10), created_at: now.getTime() / 1000, created_by: context.employee.nik,
+        source_file: previous.source_file || null, source_hash: previous.source_hash || null, source_row: Number(previous.source_row || 0)
+      }};
+      insertStockCardRows_([row]);
+      const transferUpdated = appendTransferQtyCorrection_(previous, newQty, reason, context.employee, now);
+      const linkedMovementCount = transferUpdated ? 0 : appendLocalTransferCounterpartCorrection_(previous, newQty, reason, context.employee, now);
+      const correctionId = Utilities.getUuid();
+      insertAll_('stock_movement_corrections', [{ insertId: correctionId, json: {
+        correction_id: correctionId, logical_id: logicalId, transfer_id: previous.transfer_id || null,
+        outlet: context.outlet, location: context.location, item_code: item.code, item_name: item.name, movement_type: String(previous.movement_type || ''),
+        old_qty: oldQty, new_qty: newQty, reason: reason, corrected_by: context.employee.nik, corrected_by_name: context.employee.name,
+        corrected_at: now.getTime() / 1000, source_file: previous.source_file || null, source_row: Number(previous.source_row || 0)
+      }}]);
+      return { corrected: true, itemCode: item.code, itemName: item.name, oldQty: oldQty, newQty: newQty,
+        movementType: String(previous.movement_type || ''), transferUpdated: transferUpdated, linkedMovementCount: linkedMovementCount, correctionId: correctionId };
+    } finally { lock.releaseLock(); }
   });
 }
 
@@ -4784,7 +4920,7 @@ function mapStockHistoryQueryRow_(r) {
     date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
     movementType: String(r.movement_type || ''), info: String(r.info || ''), productionDate: String(r.production_date || ''), expiryDate: String(r.expiry_date || ''),
     sourceArrivalDate: String(r.source_arrival_date || ''), supplier: String(r.supplier || ''),
-    sourceFile: String(r.source_file || ''), sourceRow: Number(r.source_row || 0),
+    sourceFile: String(r.source_file || ''), sourceHash: String(r.source_hash || ''), sourceRow: Number(r.source_row || 0),
     transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
     createdBy: String(r.created_by || ''), createdAt: String(r.created_at || ''),
     opnameBalance: opnameBalance !== null && isFinite(opnameBalance) ? Number(opnameBalance) : null, opnameDate: opnameDate
@@ -4793,7 +4929,7 @@ function mapStockHistoryQueryRow_(r) {
 
 function stockHistorySelectFields_() {
   return 'record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at';
+    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_hash, source_row, created_by, created_at';
 }
 
 function stockHistoryScopedLatestCte_(location) {
@@ -5559,7 +5695,7 @@ function ensureStockCardReadInfrastructure_() {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v17') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v18') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -5619,7 +5755,14 @@ function ensureStockCardInfrastructure_() {
     bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING'),
     bqField_('delivery_date', 'DATE'), bqField_('source_event_id', 'STRING')
   ]);
-  infrastructureCache.put('stock-card-infrastructure-v17', 'ready', 21600);
+  ensureBigQueryTable_('stock_movement_corrections', [
+    bqField_('correction_id', 'STRING', 'REQUIRED'), bqField_('logical_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING'),
+    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'), bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
+    bqField_('movement_type', 'STRING'), bqField_('old_qty', 'FLOAT'), bqField_('new_qty', 'FLOAT'), bqField_('reason', 'STRING'),
+    bqField_('corrected_by', 'STRING'), bqField_('corrected_by_name', 'STRING'), bqField_('corrected_at', 'TIMESTAMP', 'REQUIRED'),
+    bqField_('source_file', 'STRING'), bqField_('source_row', 'INTEGER')
+  ], 'corrected_at', ['outlet', 'item_code', 'movement_type']);
+  infrastructureCache.put('stock-card-infrastructure-v18', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -5681,22 +5824,17 @@ function stockTransferMovementRow_(transferId, outlet, location, item, direction
 }
 
 function readPendingStockTransfers_(outlet) {
-  const sql = 'SELECT p.event_id, p.transfer_id, p.from_outlet, p.from_location, p.to_outlet, p.to_location, p.item_code, p.category, p.item_name, p.unit, p.qty, p.note, p.expiry_date, p.delivery_date, p.created_by, p.created_by_name, p.created_at ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` p WHERE p.status = \'PENDING\' AND p.to_outlet = @outlet ' +
+  const sql = 'SELECT ' + stockTransferSelectFields_() + ' FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` p ' +
+    'WHERE p.status IN (\'PENDING\', \'CORRECTED\') AND p.to_outlet = @outlet ' +
     'AND NOT EXISTS (SELECT 1 FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` a WHERE a.transfer_id = p.transfer_id AND a.status IN (\'ACCEPTED\', \'REJECTED\')) ORDER BY p.created_at DESC, p.item_name, p.expiry_date';
   const grouped = {};
   runNamedQuery_(sql, { outlet: outlet }).forEach(function (row) {
     const id = String(row.transfer_id || '');
-    if (!grouped[id]) grouped[id] = {
-      transferId: id, status: 'PENDING', fromOutlet: String(row.from_outlet || ''), fromLocation: String(row.from_location || ''),
-      toOutlet: String(row.to_outlet || ''), toLocation: String(row.to_location || ''), createdBy: String(row.created_by || ''),
-      createdByName: String(row.created_by_name || row.created_by || ''), createdAt: String(row.created_at || ''), deliveryDate: String(row.delivery_date || '').slice(0, 10), items: []
-    };
-    grouped[id].items.push({ lineId: String(row.event_id || ''), code: String(row.item_code || ''), category: String(row.category || ''), name: String(row.item_name || ''), unit: String(row.unit || ''), qty: Number(row.qty || 0), receivedQty: null, note: String(row.note || ''), expiryDate: String(row.expiry_date || '') });
+    if (!grouped[id]) grouped[id] = [];
+    grouped[id].push(row);
   });
-  return Object.keys(grouped).map(function (id) {
-    grouped[id].receiptNo = stockTransferReceiptNumber_(grouped[id]);
-    return grouped[id];
+  return Object.keys(grouped).map(function (id) { return buildStockTransferFromRows_(grouped[id]); }).filter(function (transfer) {
+    return transfer && transfer.status === 'PENDING';
   });
 }
 
@@ -6670,6 +6808,12 @@ function buildStockTransferFromRows_(rows) {
   if (!rows || !rows.length) return null;
   const pending = rows.filter(function (row) { return String(row.status || '') === 'PENDING'; });
   if (!pending.length) return null;
+  const corrections = {};
+  rows.filter(function (row) { return String(row.status || '') === 'CORRECTED'; }).forEach(function (row) {
+    const sourceId = String(row.source_event_id || '');
+    if (!sourceId) return;
+    if (!corrections[sourceId] || String(row.created_at || '') > String(corrections[sourceId].created_at || '')) corrections[sourceId] = row;
+  });
   const first = pending[0];
   const transfer = {
     transferId: String(first.transfer_id || ''), status: 'PENDING', fromOutlet: String(first.from_outlet || ''),
@@ -6686,10 +6830,13 @@ function buildStockTransferFromRows_(rows) {
   }
   if (!transfer.photoCount) transfer.photoCount = transfer.photoFileIds.length;
   pending.forEach(function (row) {
+    const correction = corrections[String(row.event_id || '')], effectiveQty = correction ? Number(correction.qty || 0) : Number(row.qty || 0);
     transfer.items.push({
       lineId: String(row.event_id || ''), code: String(row.item_code || ''), category: String(row.category || ''),
-      name: String(row.item_name || ''), unit: String(row.unit || ''), qty: Number(row.qty || 0), receivedQty: null,
-      note: String(row.note || ''), expiryDate: String(row.expiry_date || '')
+      name: String(row.item_name || ''), unit: String(row.unit || ''), qty: effectiveQty, receivedQty: null,
+      note: correction ? String(correction.note || row.note || '') : String(row.note || ''), expiryDate: String(row.expiry_date || ''),
+      corrected: Boolean(correction), correctedBy: correction ? String(correction.created_by_name || correction.created_by || '') : '',
+      correctedAt: correction ? String(correction.created_at || '') : ''
     });
   });
   const accepted = rows.filter(function (row) { return String(row.status || '') === 'ACCEPTED'; });
@@ -8255,7 +8402,7 @@ function prepareStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_PREPARED_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
   return syncStockCardV2Migration();
 }
 
@@ -8270,7 +8417,7 @@ function activateStockCardV2AfterAudit() {
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIGRATION_ACTIVATED_AT', new Date().toISOString());
   properties.deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
   return { activated: true, activeTable: 'stock_card_v2', rollbackMirror: 'stock_card', audit: audit };
 }
 
@@ -8280,7 +8427,7 @@ function rollbackStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_ROLLED_BACK_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v17');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
   return { rolledBack: true, activeTable: 'stock_card', mirrorTable: 'stock_card_v2' };
 }
 

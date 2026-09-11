@@ -254,6 +254,33 @@ if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecal
     !backend.includes('const baselineDate = stockDateOffset_(startDate, -1);')) failures.push('Baseline rekalkulasi belum ditempatkan sebelum tanggal awal periode');
 if (!frontendStockCard.includes('Recalculate FIFO &amp; FEFO')) failures.push('Tombol rekalkulasi FIFO/FEFO belum tersedia');
 if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStockCard.includes("openExpiryAlertModal(\\'FIFO\\')")) failures.push('Daftar detail item FIFO/FEFO belum tersedia');
+if (!backend.includes('correctMovement: correctUploadedStockMovement') || !backend.includes('function correctUploadedStockMovement(token, payload)')) failures.push('Endpoint koreksi transaksi upload Stock Card belum tersedia');
+if (!backend.includes("ensureBigQueryTable_('stock_movement_corrections'") || !backend.includes('old_qty: oldQty, new_qty: newQty, reason: reason')) failures.push('Audit QTY lama, QTY baru, dan alasan koreksi belum tersimpan');
+if (!backend.includes('function appendLocalTransferCounterpartCorrection_(') || !backend.includes("p.status IN (\\'PENDING\\', \\'CORRECTED\\')")) failures.push('Koreksi transfer belum menjaga pasangan lokal dan QTY transfer pending');
+if (!frontendStockCard.includes('id="uploadedCorrectionModal"') || !frontendStockCard.includes('id="uploadedCorrectionReason"') || !frontendStockCard.includes("server('correctMovement'")) failures.push('Modal koreksi transaksi dan alasan wajib belum tersedia di Stock Card');
+if (!frontendStockCard.includes('clone.summaryRows=[row]') || !frontendStockCard.includes('map[key].summaryRows.push(row)')) failures.push('Baris penjualan yang diringkas belum dapat dipilih satu per satu saat koreksi');
+if (!frontendStockCard.includes('inputmode="decimal"') || !frontendStockCard.includes("parseLocaleNumber(byId('uploadedCorrectionQty').value)")) failures.push('QTY koreksi belum menerima format desimal perangkat Indonesia');
+try {
+  const transferContext = vm.createContext({ console });
+  new vm.Script(backend, { filename: 'docs/Code.gs#transfer-correction-test' }).runInContext(transferContext);
+  const rows = [
+    { event_id: 'LINE-1', transfer_id: 'TRF-1', status: 'PENDING', from_outlet: 'BICP', from_location: 'Store', to_outlet: 'BIPS', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', qty: 638, created_at: '2026-09-04T01:00:00Z' },
+    { event_id: 'FIX-1', transfer_id: 'TRF-1', status: 'CORRECTED', source_event_id: 'LINE-1', from_outlet: 'BICP', from_location: 'Store', to_outlet: 'BIPS', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', qty: 6.38, created_at: '2026-09-04T02:00:00Z' },
+    { event_id: 'ACCEPT-1', transfer_id: 'TRF-1', status: 'ACCEPTED', source_event_id: 'LINE-1', from_outlet: 'BICP', from_location: 'Store', to_outlet: 'BIPS', to_location: 'Store', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', qty: 638, received_qty: 6.2, created_at: '2026-09-04T03:00:00Z' }
+  ];
+  const transfer = transferContext.buildStockTransferFromRows_(rows);
+  if (!transfer || Math.abs(transfer.items[0].qty - 6.38) > 0.000001) failures.push('QTY kirim terkoreksi belum dipakai pada detail transfer');
+  if (!transfer || Math.abs(transfer.items[0].receivedQty - 6.2) > 0.000001) failures.push('QTY aktual yang sudah diterima berubah akibat koreksi sisi pengirim');
+  let pairedRows = [];
+  transferContext.Utilities = { getUuid: () => 'NEW-PAIR' };
+  transferContext.latestStockMovementCte_ = () => 'WITH latest AS (SELECT 1)';
+  transferContext.runNamedQuery_ = () => [{ record_id: 'PAIR-1', logical_id: 'PAIR-1', version: 1, outlet: 'BICP', location: 'Gudang', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', direction: 'IN', qty: 638, movement_type: 'Transfer In', info: 'Transfer From Store', expiry_date: '2026-09-30', event_date: '2026-09-04' }];
+  transferContext.insertStockCardRows_ = value => { pairedRows = value; };
+  const pairedCount = transferContext.appendLocalTransferCounterpartCorrection_({ transfer_id: 'LOCAL-1', logical_id: 'SOURCE-1', outlet: 'BICP', item_code: 'ITEM-1', direction: 'OUT', qty: 638, movement_type: 'Transfer Out', expiry_date: '2026-09-30' }, 6.38, 'Salah desimal', { nik: 'EMP-1', name: 'User Test' }, new Date('2026-09-04T04:00:00Z'));
+  if (pairedCount !== 1 || !pairedRows.length || Math.abs(pairedRows[0].json.qty - 6.38) > 0.000001 || pairedRows[0].json.version !== 2) failures.push('Pasangan IN/OUT transfer internal belum dikoreksi sebagai versi baru');
+} catch (error) {
+  failures.push(`Uji koreksi transfer gagal: ${error.message}`);
+}
 try {
   const backendContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#fifo-fefo-test' }).runInContext(backendContext);
