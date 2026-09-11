@@ -256,6 +256,7 @@ if (!frontendStockCard.includes('Recalculate FIFO &amp; FEFO')) failures.push('T
 if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStockCard.includes("openExpiryAlertModal(\\'FIFO\\')")) failures.push('Daftar detail item FIFO/FEFO belum tersedia');
 if (!backend.includes('correctMovement: correctUploadedStockMovement') || !backend.includes('function correctUploadedStockMovement(token, payload)')) failures.push('Endpoint koreksi transaksi upload Stock Card belum tersedia');
 if (!backend.includes("ensureBigQueryTable_('stock_movement_corrections'") || !backend.includes('old_qty: oldQty, new_qty: newQty, reason: reason')) failures.push('Audit QTY lama, QTY baru, dan alasan koreksi belum tersimpan');
+if (!backend.includes("'UPDATE ' + corrections + ' SET old_qty = old_qty * CAST(@factor AS FLOAT64), new_qty = new_qty * CAST(@factor AS FLOAT64)")) failures.push('Audit koreksi QTY belum ikut berubah saat Unit Default dikonversi');
 if (!backend.includes('function appendLocalTransferCounterpartCorrection_(') || !backend.includes("p.status IN (\\'PENDING\\', \\'CORRECTED\\')")) failures.push('Koreksi transfer belum menjaga pasangan lokal dan QTY transfer pending');
 if (!frontendStockCard.includes('id="uploadedCorrectionModal"') || !frontendStockCard.includes('id="uploadedCorrectionReason"') || !frontendStockCard.includes("server('correctMovement'")) failures.push('Modal koreksi transaksi dan alasan wajib belum tersedia di Stock Card');
 if (!frontendStockCard.includes('clone.summaryRows=[row]') || !frontendStockCard.includes('map[key].summaryRows.push(row)')) failures.push('Baris penjualan yang diringkas belum dapat dipilih satu per satu saat koreksi');
@@ -278,6 +279,14 @@ try {
   transferContext.insertStockCardRows_ = value => { pairedRows = value; };
   const pairedCount = transferContext.appendLocalTransferCounterpartCorrection_({ transfer_id: 'LOCAL-1', logical_id: 'SOURCE-1', outlet: 'BICP', item_code: 'ITEM-1', direction: 'OUT', qty: 638, movement_type: 'Transfer Out', expiry_date: '2026-09-30' }, 6.38, 'Salah desimal', { nik: 'EMP-1', name: 'User Test' }, new Date('2026-09-04T04:00:00Z'));
   if (pairedCount !== 1 || !pairedRows.length || Math.abs(pairedRows[0].json.qty - 6.38) > 0.000001 || pairedRows[0].json.version !== 2) failures.push('Pasangan IN/OUT transfer internal belum dikoreksi sebagai versi baru');
+  const londonConversions = {
+    'LONDON-CAKE|PCS|PACK': { itemCode: 'LONDON-CAKE', fromUnit: 'PCS', toUnit: 'PACK', factor: 0.2 },
+    'LONDON-CAKE|PACK|BOX@15PCS': { itemCode: 'LONDON-CAKE', fromUnit: 'PACK', toUnit: 'BOX@15PCS', factor: 1 / 3 }
+  };
+  const londonFactor = transferContext.resolveUnitConversionFactor_('LONDON-CAKE', 'PCS', 'BOX@15PCS', {}, londonConversions);
+  const londonQty = transferContext.safeSalesConvertedQty_(5, londonFactor, { product: 'LONDON CAKE', sourceRow: 2, unit: 'PCS' }, { name: 'LONDON CAKE', unit: 'BOX@15PCS' });
+  if (Math.abs(londonFactor - (1 / 15)) > 0.000000001 || Math.abs(londonQty - (5 / 15)) > 0.000000001) failures.push('Sales PCS belum memakai rangkaian STOCK_UNIT_CONVERSIONS per item menuju BOX@15PCS');
+  if (Math.abs(transferContext.resolveUnitConversionFactor_('LONDON-CAKE', 'BOX@15PCS', 'PCS', {}, londonConversions) - 15) > 0.000000001) failures.push('Arah balik rangkaian STOCK_UNIT_CONVERSIONS belum dihitung otomatis');
 } catch (error) {
   failures.push(`Uji koreksi transfer gagal: ${error.message}`);
 }
