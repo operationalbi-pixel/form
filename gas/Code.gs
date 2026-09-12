@@ -2546,6 +2546,8 @@ function adjustStockBalance(token, payload) {
     const item = findStockItemForLocation_(context.location, payload.itemCode || payload.itemName);
     const targetQty = Number(payload.targetQty);
     const info = cleanText_(payload.info, 300);
+    const eventDate = normalizeDate_(payload.eventDate, true);
+    const requestedLotLogicalId = cleanText_(payload.lotLogicalId, 100);
     if (!isFinite(targetQty) || targetQty < 0) throw new Error('Hasil stock fisik harus 0 atau lebih.');
     if (info.length < 3) throw new Error('Catatan penyesuaian wajib diisi agar perubahan dapat diaudit.');
     const rawLots = Array.isArray(payload.lots) ? payload.lots : [];
@@ -2561,12 +2563,14 @@ function adjustStockBalance(token, payload) {
     const lock = acquireStockWriteLock_();
     try {
       const current = getCurrentStock_(context.outlet, context.location, item.code, item.name);
-      const direction = targetQty >= current.qty ? 'IN' : 'OUT';
-      const adjustmentQty = Math.abs(targetQty - current.qty);
+      const balanceAtDate = readStockCodeQtyMapAtDate_(context.outlet, context.location, eventDate);
+      const selectedDateQty = Number(balanceAtDate[String(item.code || '').trim().toUpperCase()] || 0);
+      const balanceDelta = targetQty - selectedDateQty;
+      const direction = balanceDelta >= 0 ? 'IN' : 'OUT';
+      const adjustmentQty = Math.abs(balanceDelta);
       const now = new Date();
       const logicalId = Utilities.getUuid();
       const recordId = Utilities.getUuid();
-      const eventDate = normalizeDate_(payload.eventDate, true);
       const adjustmentExpiry = lots.length ? lots[0].expiryDate : null;
       const rows = [];
       if (adjustmentQty > 0.0000001) rows.push({ insertId: recordId, json: {
@@ -2576,10 +2580,18 @@ function adjustStockBalance(token, payload) {
         movement_type: 'Stock Adjustment', info: info, expiry_date: adjustmentExpiry, event_date: eventDate,
         created_at: now.getTime() / 1000, created_by: context.employee.nik
       }});
-      const lotRecordId = Utilities.getUuid(), lotLogicalId = Utilities.getUuid();
-      const lotInfo = JSON.stringify({ note: info, lots: lots });
+      let previousLot = null;
+      if (requestedLotLogicalId) {
+        previousLot = readLatestStockHistory_(context.outlet, context.location, item, requestedLotLogicalId)[0] || null;
+        if (!previousLot || previousLot.direction !== 'LOT' || previousLot.movementType !== 'Lot Balance Override') {
+          throw new Error('Catatan Edit Balance & Lot yang akan diperbarui tidak ditemukan. Muat ulang Stock Card lalu coba kembali.');
+        }
+      }
+      const lotRecordId = Utilities.getUuid(), lotLogicalId = previousLot ? previousLot.logicalId : Utilities.getUuid();
+      const lotVersion = previousLot ? Number(previousLot.version || 1) + 1 : 1;
+      const lotInfo = JSON.stringify({ note: info, lots: lots, correctedFromDate: previousLot ? String(previousLot.date || '').slice(0, 10) : '' });
       rows.push({ insertId: lotRecordId, json: {
-        record_id: lotRecordId, logical_id: lotLogicalId, version: 1, record_type: 'MOVEMENT',
+        record_id: lotRecordId, logical_id: lotLogicalId, version: lotVersion, record_type: 'MOVEMENT',
         outlet: context.outlet, location: context.location, item_code: item.code, category: item.category,
         item_name: item.name, unit: item.unit, direction: 'LOT', qty: targetQty,
         movement_type: 'Lot Balance Override', info: lotInfo, event_date: eventDate,
@@ -2587,13 +2599,14 @@ function adjustStockBalance(token, payload) {
       }});
       insertStockCardRows_(rows);
       return {
-        saved: true, adjusted: true, itemCode: item.code, currentQty: targetQty,
+        saved: true, adjusted: true, moved: Boolean(previousLot && String(previousLot.date || '').slice(0, 10) !== eventDate),
+        itemCode: item.code, currentQty: current.qty + balanceDelta,
         movement: {
           recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty,
           movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik,
           createdByUser: context.employee.name + ' · ' + context.employee.nik, createdAt: now.toISOString()
         },
-        movements: (adjustmentQty > 0.0000001 ? [{ recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty, movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik, createdAt: now.toISOString() }] : []).concat([{ recordId: lotRecordId, logicalId: lotLogicalId, version: 1, date: eventDate, direction: 'LOT', qty: targetQty, movementType: 'Lot Balance Override', info: lotInfo, createdBy: context.employee.nik, createdAt: new Date(now.getTime() + 1).toISOString() }])
+        movements: (adjustmentQty > 0.0000001 ? [{ recordId: recordId, logicalId: logicalId, version: 1, date: eventDate, direction: direction, qty: adjustmentQty, movementType: 'Stock Adjustment', info: info, expiryDate: adjustmentExpiry, createdBy: context.employee.nik, createdAt: now.toISOString() }] : []).concat([{ recordId: lotRecordId, logicalId: lotLogicalId, version: lotVersion, date: eventDate, direction: 'LOT', qty: targetQty, movementType: 'Lot Balance Override', info: lotInfo, createdBy: context.employee.nik, createdAt: new Date(now.getTime() + 1).toISOString() }])
       };
     } finally {
       lock.releaseLock();
@@ -4992,7 +5005,7 @@ function stockHistoryScopedLatestCte_(location) {
 function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
   const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
     String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
-  return 'stock-history-v6-' + digest_(identity).slice(0, 36);
+  return 'stock-history-v7-' + digest_(identity).slice(0, 36);
 }
 
 function readStockHistoryPageRows_(outlet, location, item) {
