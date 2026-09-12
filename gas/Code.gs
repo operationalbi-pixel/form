@@ -4068,10 +4068,9 @@ function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
   const catalog = readWipRecipeCatalog_(), wipChoices = payload.wipChoices && typeof payload.wipChoices === 'object' ? payload.wipChoices : {};
   const wipChoiceRequests = [], autoWipPlans = [], autoProducedCodes = {}, rawTotals = {};
   Object.keys(usageTotals).forEach(function (code) {
-    const variants = catalog.byCode[code] || [], required = Number(usageTotals[code] || 0), available = Math.max(0, Number(currentMap[code] || 0));
+    const variants = catalog.byCode[code] || [], required = Number(usageTotals[code] || 0), available = Number(currentMap[code] || 0);
+    if (variants.length) assertSalesWipStartingBalance_(masterMap[code] || { code: code, name: code, unit: '' }, available);
     const shortage = Math.max(0, required - available);
-    // DIRECT_WIP tetap dipotong sebagai item jadi meskipun stoknya minus; resep hanya dipakai saat produksi manual.
-    if (wipCodeUsesDirectSales_(catalog, code)) return;
     if (!variants.length || shortage <= 0.0000001) return;
     let variant = null, selectedKey = cleanText_(wipChoices[code], 500);
     if (variants.length === 1) variant = variants[0];
@@ -9911,7 +9910,7 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
 function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes) {
   excludedSourceHashes = (excludedSourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
   const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
-  const byOutlet = {}, result = {}, chunkSize = 18;
+  const byOutlet = {}, result = { __balances: {} }, chunkSize = 18;
   refs.forEach(function (ref) {
     if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
     const code = String(ref.item.code || '').trim().toUpperCase();
@@ -9922,6 +9921,7 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
   Object.keys(byOutlet).forEach(function (outlet) {
     const entries = Object.keys(byOutlet[outlet]).map(function (code) { return byOutlet[outlet][code]; });
     result[outlet] = {};
+    result.__balances[outlet] = {};
     for (let offset = 0; offset < entries.length; offset += chunkSize) {
       const chunk = entries.slice(offset, offset + chunkSize), codes = [], names = [], nameToCode = {}, histories = {};
       let maxDate = '';
@@ -9937,13 +9937,13 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
         ? 'AND (source_hash IS NULL OR source_hash NOT IN UNNEST(@excludedSourceHashes)) '
         : '';
       const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' ' +
-        'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND event_date <= CAST(@maxDate AS DATE) ' +
+        'WHERE record_type IN (\'MOVEMENT\',\'OPNAME_DETAIL\') AND outlet = @outlet AND location = @location AND event_date <= CAST(@maxDate AS DATE) ' +
         exclusionSql +
         'AND (item_code IN UNNEST(@codes) OR ((item_code IS NULL OR item_code = \'\') AND item_name IN UNNEST(@names)))), ' +
         'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
         'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
         'ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(item_code, \'\'), item_name) ORDER BY event_date DESC, created_at DESC) AS item_rank FROM latest) ' +
-        'SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+        'SELECT record_id, record_type, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
         'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, ' +
         'transfer_id, supplier, source_file, source_row, created_by, created_at FROM ranked WHERE item_rank <= 500 ' +
         'ORDER BY item_code, item_name, event_date, created_at';
@@ -9954,25 +9954,50 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
         let code = String(row.item_code || '').trim().toUpperCase();
         if (!histories[code]) code = nameToCode[normalizeStoreName_(row.item_name)] || '';
         if (!code || !histories[code]) return;
-        histories[code].push(salesHistoryRowFromQuery_(row));
+        histories[code].push(mapStockHistoryQueryRow_(row));
       });
 
       chunk.forEach(function (entry) {
         const code = String(entry.item.code || '').trim().toUpperCase();
         result[outlet][code] = result[outlet][code] || {};
+        result.__balances[outlet][code] = result.__balances[outlet][code] || {};
         Object.keys(entry.dates).sort().forEach(function (date) {
           const history = (histories[code] || []).filter(function (movement) {
             return String(movement.date || '').slice(0, 10) <= date;
           });
-          const snapshots = calculateFifoSnapshots_(history), dates = Object.keys(snapshots).sort();
+          const movementHistory = history.filter(function (movement) { return movement.recordType === 'MOVEMENT'; });
+          const snapshots = calculateFifoSnapshots_(movementHistory), dates = Object.keys(snapshots).sort();
           result[outlet][code][date] = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
             return { qty: Number(lot.qty || 0), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
           }).filter(function (lot) { return lot.qty > 0.0000001; }) : [];
+          result.__balances[outlet][code][date] = salesHistoryBalanceAtDate_(history, date);
         });
       });
     }
   });
   return result;
+}
+
+function salesHistoryBalanceAtDate_(history, date) {
+  let checkpoint = null;
+  (history || []).forEach(function (row) {
+    if (row.recordType !== 'OPNAME_DETAIL' || row.opnameBalance === null || !isFinite(Number(row.opnameBalance))) return;
+    const checkpointDate = String(row.opnameDate || row.date || '').slice(0, 10);
+    if (!checkpointDate || checkpointDate > date) return;
+    const created = stockMovementCreatedMillis_(row);
+    if (!checkpoint || checkpointDate > checkpoint.date || (checkpointDate === checkpoint.date && created >= checkpoint.created)) {
+      checkpoint = { date: checkpointDate, qty: Number(row.opnameBalance), created: created };
+    }
+  });
+  return (history || []).reduce(function (balance, row) {
+    if (row.recordType !== 'MOVEMENT') return balance;
+    const movementDate = String(row.date || '').slice(0, 10);
+    if (!movementDate || movementDate > date || row.movementType === 'Stock Opname') return balance;
+    if (checkpoint && movementDate <= checkpoint.date) return balance;
+    if (row.direction === 'IN') return balance + Number(row.qty || 0);
+    if (row.direction === 'OUT') return balance - Number(row.qty || 0);
+    return balance;
+  }, checkpoint ? checkpoint.qty : 0);
 }
 
 function salesFifoLotsFor_(fifoState, outlet, code, transactionDate) {
@@ -9983,6 +10008,24 @@ function salesFifoLotsFor_(fifoState, outlet, code, transactionDate) {
   return fifoState[outlet][code][transactionDate];
 }
 
+function salesBalanceFor_(fifoState, outlet, code, transactionDate) {
+  code = String(code || '').toUpperCase();
+  fifoState.__balances = fifoState.__balances || {};
+  fifoState.__balances[outlet] = fifoState.__balances[outlet] || {};
+  fifoState.__balances[outlet][code] = fifoState.__balances[outlet][code] || {};
+  if (fifoState.__balances[outlet][code][transactionDate] === undefined) fifoState.__balances[outlet][code][transactionDate] = 0;
+  return Number(fifoState.__balances[outlet][code][transactionDate] || 0);
+}
+
+function salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, delta) {
+  code = String(code || '').toUpperCase();
+  salesBalanceFor_(fifoState, outlet, code, transactionDate);
+  const byDate = fifoState.__balances[outlet][code];
+  Object.keys(byDate).filter(function (date) { return date >= transactionDate; }).forEach(function (date) {
+    byDate[date] = Number(byDate[date] || 0) + Number(delta || 0);
+  });
+}
+
 function salesAvailableLotQty_(lots) {
   return (lots || []).reduce(function (sum, lot) { return sum + Math.max(0, Number(lot.qty || 0)); }, 0);
 }
@@ -9990,9 +10033,9 @@ function salesAvailableLotQty_(lots) {
 function salesConsolidateLots_(lots) {
   const map = {}, order = [];
   (lots || []).forEach(function (lot) {
-    const key = [String(lot.productionDate || ''), String(lot.sourceDate || ''), String(lot.expiryDate || '')].join('|');
+    const key = [lot.uncovered ? 'UNCOVERED' : 'COVERED', String(lot.productionDate || ''), String(lot.sourceDate || ''), String(lot.expiryDate || '')].join('|');
     if (!map[key]) {
-      map[key] = { qty: 0, productionDate: lot.productionDate || '', sourceDate: lot.sourceDate || '', expiryDate: lot.expiryDate || '' };
+      map[key] = { qty: 0, productionDate: lot.productionDate || '', sourceDate: lot.sourceDate || '', expiryDate: lot.expiryDate || '', uncovered: Boolean(lot.uncovered) };
       order.push(key);
     }
     map[key].qty += Number(lot.qty || 0);
@@ -10017,6 +10060,7 @@ function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qt
   Object.keys(byDate).filter(function (date) { return date > transactionDate; }).sort().forEach(function (date) {
     consumeSalesFifoLots_(byDate[date], qty);
   });
+  salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, -qty);
   return allocated;
 }
 
@@ -10025,6 +10069,7 @@ function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qt
 function salesAddGeneratedWipLot_(fifoState, outlet, code, transactionDate, qty) {
   const lots = salesFifoLotsFor_(fifoState, outlet, code, transactionDate);
   lots.push({ qty: Number(qty || 0), productionDate: transactionDate, expiryDate: '', sourceDate: transactionDate });
+  salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, qty);
 }
 
 /** Mengambil lot secara FIFO/FEFO dari state memory dan langsung mengurangi sisa lot. */
@@ -10041,8 +10086,23 @@ function consumeSalesFifoLots_(lots, qty) {
     allocated.push({ qty: taken, productionDate: lots[i].productionDate || '', expiryDate: lots[i].expiryDate || '', sourceDate: lots[i].sourceDate || '' });
   }
   for (let i = lots.length - 1; i >= 0; i--) if (Number(lots[i].qty || 0) <= 0.0000001) lots.splice(i, 1);
-  if (remaining > 0.0000001) allocated.push({ qty: remaining, productionDate: '', expiryDate: '', sourceDate: '' });
+  if (remaining > 0.0000001) allocated.push({ qty: remaining, productionDate: '', expiryDate: '', sourceDate: '', uncovered: true });
   return allocated;
+}
+
+function assertSalesWipFullyCovered_(item, lots, contextLabel) {
+  const uncovered = (lots || []).reduce(function (sum, lot) { return sum + (lot.uncovered ? Number(lot.qty || 0) : 0); }, 0);
+  if (uncovered > 0.0000001) {
+    throw new Error(String(item.code || '') + ' · ' + String(item.name || '') + ': Production IN otomatis tidak menutup kebutuhan WIP ' +
+      formatQty_(uncovered) + ' ' + String(item.unit || '') + (contextLabel ? ' untuk ' + contextLabel : '') + '. Upload dihentikan agar saldo WIP tidak menjadi minus.');
+  }
+}
+
+function assertSalesWipStartingBalance_(item, balance) {
+  if (Number(balance || 0) < -0.0000001) {
+    throw new Error(String(item.code || '') + ' · ' + String(item.name || '') + ': saldo WIP sebelum upload sudah minus ' +
+      formatQty_(Math.abs(Number(balance))) + ' ' + String(item.unit || '') + '. Jalankan Repair Upload Lama untuk transaksi yang membentuk minus sebelum melanjutkan upload baru.');
+  }
 }
 
 
@@ -10074,8 +10134,6 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
   if (depth > 10) throw new Error('Struktur WIP terlalu dalam untuk ' + item.code + ' · ' + item.name + '.');
   path = path || {};
   const code = String(item.code || '').toUpperCase();
-  // Item DIRECT_WIP sengaja boleh minus saat penjualan. Produksi manual tetap memakai resep yang sama.
-  if (wipCodeUsesDirectSales_(state.wipCatalog, code)) return null;
   if (path[code]) throw new Error('Resep WIP berputar/circular terdeteksi pada ' + code + ' · ' + item.name + '.');
   const nextPath = Object.assign({}, path); nextPath[code] = true;
 
@@ -10112,8 +10170,8 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     const materialIsWip = Boolean(state.wipCatalog.byCode[materialCode] && state.wipCatalog.byCode[materialCode].length);
 
     if (materialIsWip) {
-      const materialLots = salesFifoLotsFor_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate);
-      const available = salesAvailableLotQty_(materialLots);
+      const available = salesBalanceFor_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate);
+      assertSalesWipStartingBalance_(material, available);
       const shortage = Math.max(0, qty - available);
       if (shortage > 0.0000001) {
         autoProduceSalesWipRecursive_(state, material, material.name, shortage, nextPath, depth + 1);
@@ -10121,6 +10179,7 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     }
 
     const allocatedLots = salesConsumeInventoryLots_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate, qty);
+    if (materialIsWip) assertSalesWipFullyCovered_(material, allocatedLots, 'bahan ' + item.name);
     allocatedLots.forEach(function (lot) {
       const usageId = Utilities.getUuid();
       state.rows.push({ insertId: usageId, json: {
@@ -10160,8 +10219,10 @@ function uploadSalesCogs(token, payload) {
       const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
       let soldLots = [];
 
-      if (salesTargetIsWip_(sale, wipCatalog)) {
-        const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
+      const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
+      if (targetIsWip) {
+        const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
+        assertSalesWipStartingBalance_(sale.item, available);
         const shortage = Math.max(0, sale.qtyDefault - available);
         if (shortage > 0.0000001) {
           const state = {
@@ -10178,6 +10239,7 @@ function uploadSalesCogs(token, payload) {
       } else {
         soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
       }
+      if (targetIsWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'Sold ' + sale.menu);
 
       const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
       const allocationTolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
@@ -10245,8 +10307,10 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
     let soldLots = [];
 
-    if (salesTargetIsWip_(sale, wipCatalog)) {
-      const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
+    const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
+    if (targetIsWip) {
+      const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
+      assertSalesWipStartingBalance_(sale.item, available);
       const shortage = Math.max(0, sale.qtyDefault - available);
       if (shortage > 0.0000001) {
         const state = {
@@ -10261,6 +10325,7 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     } else {
       soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
     }
+    if (targetIsWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'repair Sold ' + sale.menu);
 
     const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
     const tolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
