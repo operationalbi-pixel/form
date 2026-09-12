@@ -3739,6 +3739,15 @@
       return BAKERZIN_API.call(action, [token].concat(args || [])).then(unwrapApiResponse);
     }
 
+    function requestedMppModule() {
+      try {
+        const view = String(new URLSearchParams(window.location.search).get('view') || '').toLowerCase();
+        if (view === 'schedule') return 'page-schedule';
+        if (view === 'tip') return 'page-rekap-tip';
+      } catch (error) {}
+      return 'page-employee';
+    }
+
     // Adapter agar modul lama tetap memakai fungsi yang sama, tetapi seluruh
     // permintaan kini divalidasi oleh sesi BI-Space di backend utama.
     window.google = window.google || {};
@@ -3806,8 +3815,8 @@
             }
         }).apiGetMPPData(app.user);
 
-        // MODIFIED: Load page employee but DO NOT expand menu (second param false)
-        app.nav('page-employee', false);
+        // Setiap tombol dashboard membuka modul yang dipilih secara langsung.
+        app.nav(requestedMppModule(), false);
       },
 
       setupEmpOutletFilter: () => {
