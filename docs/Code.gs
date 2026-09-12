@@ -198,6 +198,8 @@ function apiActions_() {
     expiryUploadStatus: getMissingExpiryUploadStatus,
     history: getStockHistory,
     verifyUsage: previewSalesCogsUpload,
+    queueUsageUpload: queueSalesCogsUpload,
+    usageUploadStatus: getSalesCogsUploadStatus,
     previewSalesRepair: previewSalesCogsRepair,
     repairSalesUpload: repairSalesCogsUpload,
     previewTransactionRepair: previewTransactionConversionRepair,
@@ -8388,6 +8390,8 @@ function refreshDirtyStockBalances() {
   });
   try { processMissingExpiryUploadJobs(); }
   catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
+  try { processSalesCogsUploadJobs(); }
+  catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
 }
 
 function ensureStockMaintenanceTrigger_() {
@@ -10696,6 +10700,236 @@ function stockCheckpointBalanceSql_(movementAlias, checkpointAlias) {
   return 'COALESCE(ANY_VALUE(' + checkpointAlias + '.checkpoint_qty), 0) + SUM(CASE ' +
     'WHEN ' + checkpointAlias + '.checkpoint_date IS NULL THEN ' + signed + ' ' +
     'WHEN ' + movementAlias + '.movement_type != \'Stock Opname\' AND ' + movementAlias + '.event_date > ' + checkpointAlias + '.checkpoint_date THEN ' + signed + ' ELSE 0 END)';
+}
+
+function salesCogsJobKey_(jobId) { return 'sales-cogs-upload-job-' + String(jobId || '').trim(); }
+
+function writeSalesCogsJob_(job) {
+  job.updatedAt = new Date().toISOString();
+  PropertiesService.getScriptProperties().setProperty(salesCogsJobKey_(job.jobId), JSON.stringify(job));
+  return job;
+}
+
+function readSalesCogsJob_(jobId) {
+  const raw = PropertiesService.getScriptProperties().getProperty(salesCogsJobKey_(jobId));
+  return raw ? JSON.parse(raw) : null;
+}
+
+function salesCogsJobView_(job) {
+  return {
+    jobId: job.jobId, fileName: String(job.sourceFileName || ''), status: job.status, stage: String(job.stage || ''), progress: Number(job.progress || 0),
+    processed: Number(job.processed || 0), total: Number(job.total || 0), movementRows: Number(job.movementRows || 0),
+    itemCount: Number(job.itemCount || 0), showcaseRowsSkipped: Number(job.showcaseRowsSkipped || 0),
+    autoWipProductionCount: Number(job.autoWipProductionCount || 0), negativeItemCount: 0,
+    outlet: String(job.outlet || ''), outlets: job.outlets || [], transactionDate: String(job.transactionDate || ''),
+    transactionDates: job.transactionDates || [], error: String(job.error || '')
+  };
+}
+
+function queueSalesCogsUpload(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
+    const fileName = cleanText_(payload.fileName, 180);
+    if (!/\.xlsx$/i.test(fileName)) throw new Error('Pilih file Sales Menu COGS Detail Report dengan format .xlsx.');
+    let bytes;
+    try { bytes = Utilities.base64Decode(String(payload.base64 || '').replace(/^data:[^,]+,/, '')); }
+    catch (error) { throw new Error('File Excel tidak dapat dibaca. Download ulang report ESB.'); }
+    if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error('Ukuran file harus lebih dari 0 dan maksimal 10 MB.');
+    if (bytes[0] !== 80 || bytes[1] !== 75) throw new Error('File bukan workbook Excel .xlsx yang valid.');
+    const sourceHash = digest_(Utilities.base64Encode(bytes)), properties = PropertiesService.getScriptProperties();
+    const active = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; })
+      .map(function (key) { try { return JSON.parse(properties.getProperty(key)); } catch (error) { return null; } })
+      .filter(function (job) { return job && job.ownerNik === employee.nik && job.sourceHash === sourceHash && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0; })[0];
+    if (active) return salesCogsJobView_(active);
+
+    const jobId = Utilities.getUuid(), now = new Date().toISOString();
+    const sourceFile = DriveApp.createFile(Utilities.newBlob(bytes,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'TEMP_SALES_COGS_' + jobId + '.xlsx'));
+    const request = {
+      outlet: payload.outlet || '', location: payload.location || 'Store', fileName: fileName,
+      conversions: payload.conversions || {}, wipChoices: payload.wipChoices || {}
+    };
+    const requestFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json', 'TEMP_SALES_COGS_REQUEST_' + jobId + '.json'));
+    const job = {
+      jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
+      sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
+      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3,
+      processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
+      outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
+    };
+    writeSalesCogsJob_(job);
+    try { ensureStockMaintenanceTrigger_(); } catch (triggerError) { console.error('Trigger maintenance Sales COGS belum tersedia: ' + triggerError.message); }
+    scheduleSalesCogsWorker_();
+    return salesCogsJobView_(job);
+  });
+}
+
+function getSalesCogsUploadStatus(token, jobId) {
+  return safe_(function () {
+    const session = requireSession_(token), job = readSalesCogsJob_(cleanText_(jobId, 100));
+    if (!job || job.ownerNik !== session.nik) throw new Error('Job upload Sales COGS tidak ditemukan atau bukan milik akun ini.');
+    return salesCogsJobView_(job);
+  });
+}
+
+function scheduleSalesCogsWorker_() {
+  try {
+    const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; });
+    if (!exists) ScriptApp.newTrigger('processSalesCogsUploadJobs').timeBased().after(1000).create();
+  } catch (error) { console.error('Worker Sales COGS menunggu trigger maintenance: ' + error.message); }
+}
+
+function readSalesCogsJobJson_(driveId) {
+  return JSON.parse(DriveApp.getFileById(driveId).getBlob().getDataAsString('UTF-8'));
+}
+
+function cleanupSalesCogsJobFiles_(job) {
+  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId].filter(Boolean).forEach(function (id) {
+    try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
+  });
+  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = '';
+}
+
+function prepareSalesCogsJob_(job) {
+  job.status = 'PREPARING'; job.stage = 'Membaca dan memvalidasi ulang file Sales COGS.'; job.progress = 7; writeSalesCogsJob_(job);
+  const request = readSalesCogsJobJson_(job.requestDriveId);
+  request.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+  const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
+  const prepared = prepareSalesCogsImport_(employee, request, false);
+  const preparedFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(prepared), 'application/json', 'TEMP_SALES_COGS_PREPARED_' + job.jobId + '.json'));
+  job.preparedDriveId = preparedFile.getId(); job.total = prepared.rows.length + prepared.showcaseRows.length;
+  job.itemCount = prepared.rows.length; job.showcaseRowsSkipped = prepared.showcaseRows.length;
+  job.outlets = prepared.outlets || []; job.outlet = job.outlets.join(', ');
+  job.transactionDates = prepared.dates || []; job.transactionDate = job.transactionDates[0] || '';
+  job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyiapkan batch pertama.'; job.progress = 15;
+  try { DriveApp.getFileById(job.sourceDriveId).setTrashed(true); } catch (cleanupError) {}
+  job.sourceDriveId = '';
+  return writeSalesCogsJob_(job);
+}
+
+function writePreparedSalesCogsChunk_(prepared, employee, payload) {
+  const rows = [], now = new Date();
+  const wipCatalog = readWipRecipeCatalog_(), savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, salesMappings = readSalesProductMappings_();
+  const masterByCode = {}, writeClock = { sequence: 0 };
+  let autoWipCount = 0;
+  readStockMaster_(true).forEach(function (item) { masterByCode[String(item.code || '').toUpperCase()] = item; });
+  const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings);
+  prepared.rows.forEach(function (sale) {
+    const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
+    let soldLots = [];
+    if (salesTargetIsWip_(sale, wipCatalog)) {
+      const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
+      const shortage = Math.max(0, sale.qtyDefault - available);
+      if (shortage > 0.0000001) {
+        const state = { rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
+          masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
+          now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0 };
+        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
+        autoWipCount += Number(state.autoWipCount || 0);
+      }
+    }
+    soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+    const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
+    const tolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
+    if (!isFinite(allocatedQty) || Math.abs(allocatedQty - Number(sale.qtyDefault || 0)) > tolerance) {
+      throw new Error(sale.product + ' baris ' + sale.sourceRow + ': hasil alokasi FIFO (' + allocatedQty + ') tidak sama dengan QTY penjualan (' + sale.qtyDefault + ').');
+    }
+    soldLots.forEach(function (lot) {
+      if (!isFinite(Number(lot.qty)) || Number(lot.qty) < 0 || Number(lot.qty) > 100000000) {
+        throw new Error(sale.product + ' baris ' + sale.sourceRow + ': QTY lot FIFO tidak wajar (' + lot.qty + ').');
+      }
+      const id = Utilities.getUuid();
+      rows.push({ insertId: id, json: {
+        record_id: id, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', outlet: sale.outlet, location: 'Store',
+        item_code: sale.item.code, category: sale.item.category, item_name: sale.item.name, unit: sale.item.unit,
+        direction: 'OUT', qty: lot.qty, movement_type: 'Sold', info: cleanText_('Sold · ' + sale.menu + ' · Sales Number ' + sale.salesNumber, 500),
+        production_date: lot.productionDate || null, expiry_date: lot.expiryDate || null, source_arrival_date: lot.sourceDate || null,
+        event_date: sale.transactionDate, created_at: salesUploadCreatedAt_(writeClock, now), created_by: employee.nik,
+        source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: traceId
+      }});
+    });
+  });
+  prepared.showcaseRows.forEach(function (sale) {
+    const id = Utilities.getUuid();
+    rows.push({ insertId: id, json: {
+      record_id: id, logical_id: id, version: 1, record_type: 'IMPORT', outlet: sale.outlet, location: 'Showcase',
+      item_code: sale.target.code, item_name: sale.target.name, unit: sale.unit, direction: null, qty: 0, movement_type: 'Sold',
+      info: cleanText_('Sold Showcase (tanpa potong stock) · ' + sale.menu + ' · Sales Number ' + sale.salesNumber, 500),
+      expiry_date: null, event_date: sale.transactionDate, created_at: salesUploadCreatedAt_(writeClock, now), created_by: employee.nik,
+      source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: 'SALE|' + sale.rowHash
+    }});
+  });
+  if (rows.length) {
+    const lock = acquireStockWriteLock_();
+    try { insertStockCardRows_(rows); } finally { lock.releaseLock(); }
+  }
+  return { movementRows: rows.length, autoWipProductionCount: autoWipCount };
+}
+
+function processSalesCogsJobChunk_(job) {
+  if (!job.preparedDriveId) return prepareSalesCogsJob_(job);
+  const prepared = readSalesCogsJobJson_(job.preparedDriveId), request = readSalesCogsJobJson_(job.requestDriveId);
+  const salesTotal = prepared.rows.length, start = Number(job.processed || 0), batchSize = 25;
+  let rows = [], showcaseRows = [];
+  if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
+  else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + 100);
+  const count = rows.length + showcaseRows.length;
+  if (!count && start < job.total) throw new Error('Batch Sales COGS tidak dapat dibentuk pada posisi ' + start + '.');
+  job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
+  job.progress = Math.min(96, 15 + Math.round(start / Math.max(1, job.total) * 81)); writeSalesCogsJob_(job);
+  const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
+  const result = writePreparedSalesCogsChunk_({ fileName: prepared.fileName, rows: rows, showcaseRows: showcaseRows }, employee, request);
+  job.processed = start + count; job.movementRows = Number(job.movementRows || 0) + Number(result.movementRows || 0);
+  job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(result.autoWipProductionCount || 0);
+  job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83)); writeSalesCogsJob_(job);
+  if (job.processed >= job.total) {
+    (job.outlets || []).forEach(function (outlet) { (job.transactionDates || []).forEach(function (date) {
+      markStockTaskCompleteFromUploads_({ outlet: outlet, location: 'Store', employee: employee }, date, 'Sold');
+    }); });
+    job.status = 'COMPLETE'; job.stage = 'Seluruh transaksi Sales COGS berhasil disimpan.'; job.progress = 100;
+    cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
+  }
+  return job;
+}
+
+function processSalesCogsUploadJobs() {
+  const scopeLock = acquireStockScopeLock_('sales-cogs-background-worker', 1000);
+  try {
+    ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; })
+      .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+    const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), jobs = [];
+    Object.keys(all).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; }).forEach(function (key) {
+      try {
+        const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
+        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 7 * 86400000) properties.deleteProperty(key);
+        else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
+      } catch (error) { properties.deleteProperty(key); }
+    });
+    jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
+    if (!jobs.length) return { processed: false };
+    let job = jobs[0];
+    if (Number(job.workerLeaseUntil || 0) > Date.now()) {
+      return { processed: false, jobId: job.jobId, status: job.status, leased: true };
+    }
+    job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
+    try { job = processSalesCogsJobChunk_(job); job.workerLeaseUntil = 0; writeSalesCogsJob_(job); }
+    catch (error) {
+      job.workerLeaseUntil = 0;
+      job.retryCount = Number(job.retryCount || 0) + 1;
+      if (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error))) {
+        job.status = 'QUEUED'; job.stage = 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
+      } else {
+        job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
+        job.error = String(error.message || error); cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
+      }
+    }
+    const pending = PropertiesService.getScriptProperties().getProperties();
+    if (Object.keys(pending).some(function (key) { if (key.indexOf('sales-cogs-upload-job-') !== 0) return false; try {
+      return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(JSON.parse(pending[key]).status) >= 0;
+    } catch (error) { return false; } })) scheduleSalesCogsWorker_();
+    return { processed: true, jobId: job.jobId, status: job.status };
+  } finally { scopeLock.releaseLock(); }
 }
 
 function transactionRepairPreviewResult_(plan, repairType) {

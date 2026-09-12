@@ -279,6 +279,15 @@ if (!backend.includes('previewTransactionRepair: previewTransactionConversionRep
     !backend.includes('function prepareItemJournalRepairPlan_(')) {
   failures.push('Backend Bulk Repair belum mencakup Sales COGS dan Item Journal');
 }
+if (!frontendStockCard.includes("server('queueUsageUpload'") || !frontendStockCard.includes("server('usageUploadStatus'") ||
+    !frontendStockCard.includes('function pollUsageUploadJob(') || !frontendStockCard.includes('rememberUsageJob(')) {
+  failures.push('Upload Sales COGS belum memakai job background dengan progress polling dan resume');
+}
+if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.includes('usageUploadStatus: getSalesCogsUploadStatus') ||
+    !backend.includes('function processSalesCogsUploadJobs()') || !backend.includes('function processSalesCogsJobChunk_(') ||
+    !backend.includes("processSalesCogsUploadJobs();")) {
+  failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
+}
 if (!frontendStockCard.includes("openExpiryAlertModal(\\'TRANSFER\\')") ||
     !frontendStockCard.includes('function openPendingTransferFromAlerts(index)') ||
     frontendStockCard.includes('id="transferNotifications"')) failures.push('Transfer pending belum diringkas bersama notifikasi Expired dan FIFO/FEFO');
@@ -332,6 +341,28 @@ try {
   }
 } catch (error) {
   failures.push(`Uji koreksi transfer gagal: ${error.message}`);
+}
+try {
+  const backgroundContext = vm.createContext({ console });
+  new vm.Script(backend, { filename: 'docs/Code.gs#sales-background-job-test' }).runInContext(backgroundContext);
+  const preparedJob = { fileName: 'sales.xlsx', rows: Array.from({ length: 30 }, (_, index) => ({ sourceRow: index + 2 })), showcaseRows: [] };
+  let lastBatchSize = 0, completed = 0;
+  backgroundContext.readSalesCogsJobJson_ = id => id === 'PREPARED' ? preparedJob : { conversions: {}, wipChoices: {} };
+  backgroundContext.writePreparedSalesCogsChunk_ = chunk => { lastBatchSize = chunk.rows.length + chunk.showcaseRows.length; return { movementRows: lastBatchSize, autoWipProductionCount: 0 }; };
+  backgroundContext.writeSalesCogsJob_ = job => job;
+  backgroundContext.markStockTaskCompleteFromUploads_ = () => { completed++; };
+  backgroundContext.cleanupSalesCogsJobFiles_ = () => {};
+  const job = { jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 30,
+    itemCount: 30, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
+    ownerNik: 'HQ-1', ownerName: 'HQ', ownerOutlet: 'BIHQ' };
+  backgroundContext.processSalesCogsJobChunk_(job);
+  if (lastBatchSize !== 25 || job.processed !== 25 || job.status !== 'PROCESSING') failures.push('Batch pertama Sales COGS background belum dibatasi 25 baris');
+  backgroundContext.processSalesCogsJobChunk_(job);
+  if (lastBatchSize !== 5 || job.processed !== 30 || job.status !== 'COMPLETE' || job.progress !== 100 || completed !== 1) {
+    failures.push('Job Sales COGS background belum menyelesaikan cursor dan status secara bertahap');
+  }
+} catch (error) {
+  failures.push(`Uji job background Sales COGS gagal: ${error.message}`);
 }
 try {
   const repairContext = vm.createContext({ console });
