@@ -102,6 +102,15 @@
       position: absolute; top: calc(100% + 6px); right: 0; left: 0; z-index: 1080;
       max-height: 220px; overflow-y: auto;
     }
+    .loan-entry-badge {
+      display: inline-flex; align-items: center; gap: 5px; margin: 2px;
+      padding: 4px 6px; border-radius: 7px; background: #ffc107; color: #1f2937;
+      font-size: .65rem; font-weight: 700;
+    }
+    .loan-edit-button {
+      display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0;
+      border: 0; border-radius: 5px; background: rgba(255,255,255,.72); color: #9f172b;
+    }
 
     /* --- SIDEBAR COMPONENTS --- */
     .brand-logo {
@@ -1975,8 +1984,8 @@
                    </div>
                    <div class="mb-3">
                       <label class="small fw-700 text-muted">Value</label>
-                      <input type="text" id="inp-rwpn-value" class="form-control fw-bold" required
-                             placeholder="0" oninput="app.formatInputCurrency(this)">
+                      <input type="text" id="inp-rwpn-value" class="form-control fw-bold" required inputmode="numeric"
+                             placeholder="0" oninput="app.handleRwPnValueInput(this)">
                       <div class="form-text small text-muted" id="rwpn-help-text">Masukkan angka.</div>
                    </div>
                    <div class="mb-3">
@@ -2084,11 +2093,12 @@
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="fw-700">Tambah Pinjaman</h5>
+        <h5 class="fw-700" id="loan-modal-title">Tambah Pinjaman</h5>
         <button type="button" class="btn-close" onclick="ui.modal.close('mod-add-loan')"></button>
       </div>
       <div class="modal-body">
          <form id="form-loan">
+            <input type="hidden" id="inp-loan-id">
             <div class="mb-3 position-relative">
                <label class="small fw-700 text-muted">Nama Staff</label>
                <input type="text" id="inp-loan-staff" class="form-control" placeholder="Ketik nama staff..." autocomplete="off" required>
@@ -2111,7 +2121,7 @@
       </div>
       <div class="modal-footer">
          <button class="btn btn-light" onclick="ui.modal.close('mod-add-loan')">Batal</button>
-         <button class="btn btn-warning fw-bold" onclick="app.submitLoan()">Simpan</button>
+         <button class="btn btn-warning fw-bold" id="loan-submit-button" onclick="app.submitLoan()">Simpan</button>
       </div>
     </div>
   </div>
@@ -2350,8 +2360,10 @@
                raw.rwpn.forEach(r => {
                    if(staffReportMap[r.nik]) {
                        staffReportMap[r.nik].history.rwpn.push(r);
-                       if(r.category === 'REWARD') staffReportMap[r.nik].personalReward += Number(r.value);
-                       else staffReportMap[r.nik].personalPunish += Number(r.value);
+                       let adjustment = Number(r.value);
+                       if(r.type === 'PERCENT') adjustment = (Math.max(0, Math.min(100, adjustment)) / 100) * staffReportMap[r.nik].tipDaily;
+                       if(r.category === 'REWARD') staffReportMap[r.nik].personalReward += adjustment;
+                       else staffReportMap[r.nik].personalPunish += adjustment;
                    }
                });
            }
@@ -2368,8 +2380,8 @@
            // 5. Calculate Final Tip per Staff
            let finalReport = Object.values(staffReportMap).map(s => {
                const incomes = s.tipDaily + s.shareOtherIncome + s.personalReward;
-               const outcomes = s.shareExpense + s.personalPunish + s.loan;
-               s.finalTip = Math.floor(incomes - outcomes);
+               const nonLoanBalance = Math.max(0, incomes - (s.shareExpense + s.personalPunish));
+               s.finalTip = Math.floor(nonLoanBalance - s.loan);
                s.totalTip = Math.floor(s.tipDaily); // "Tip Harian Murni" for table display
                return s;
            });
@@ -2382,6 +2394,7 @@
        // NEW: Fetch Raw Transactions (Combined Call)
        app.fetchRawTransactionData = (outlet, m, y) => {
            google.script.run.withSuccessHandler(raw => {
+               app.tipRawData = raw;
                // 1. Render Expense Table
                const tbodyExp = document.getElementById('tbody-tip-expense');
                tbodyExp.innerHTML = '';
@@ -2601,7 +2614,8 @@
           loans.forEach(l => {
              const d = new Date(l.date).getDate();
              if(!loanMap[l.nik]) loanMap[l.nik] = { name: l.name, days: {}, total: 0 };
-             loanMap[l.nik].days[d] = (loanMap[l.nik].days[d] || 0) + Number(l.nominal);
+             if(!loanMap[l.nik].days[d]) loanMap[l.nik].days[d] = [];
+             loanMap[l.nik].days[d].push(l);
              loanMap[l.nik].total += Number(l.nominal);
           });
 
@@ -2609,7 +2623,11 @@
              const l = loanMap[emp.nik] || { days: {}, total: 0 };
              let rHtml = `<tr><td class="sticky-col text-start ps-3 fw-600 bg-white" style="left:0;">${emp.name}</td>`;
              for(let d=1; d<=days; d++) {
-                const val = l.days[d] ? `<span class="badge bg-warning text-dark" style="font-size:0.65rem;">${l.days[d]/1000}k</span>` : '';
+                const val = (l.days[d] || []).map(entry => `
+                   <span class="loan-entry-badge">
+                     ${Number(entry.nominal)/1000}k
+                     <button type="button" class="loan-edit-button" title="Edit pinjaman" aria-label="Edit pinjaman" onclick="app.openEditLoan('${entry.id}')"><i class="fas fa-pencil-alt"></i></button>
+                   </span>`).join('');
                 rHtml += `<td>${val}</td>`;
              }
              rHtml += `<td class="text-end pe-3 fw-bold">${l.total > 0 ? app.fmtRupiah(l.total) : '-'}</td></tr>`;
@@ -2682,7 +2700,26 @@
        app.toggleRwPnPlaceholder = () => {
            const type = document.getElementById('inp-rwpn-type').value;
            const inp = document.getElementById('inp-rwpn-value');
-           if(type === 'PERCENT') { inp.placeholder = 'Contoh: 10 (tanpa %)'; } else { inp.placeholder = 'Contoh: 100000 (tanpa Rp)'; }
+           if(type === 'PERCENT') {
+              inp.placeholder = 'Maksimal 100';
+              inp.setAttribute('maxlength', '3');
+              app.handleRwPnValueInput(inp);
+           } else {
+              inp.placeholder = 'Contoh: 100000 (tanpa Rp)';
+              inp.removeAttribute('maxlength');
+              document.getElementById('rwpn-help-text').innerText = 'Masukkan nominal rupiah.';
+              app.formatInputCurrency(inp);
+           }
+       };
+
+       app.handleRwPnValueInput = input => {
+          const isPercent = document.getElementById('inp-rwpn-type').value === 'PERCENT';
+          if(!isPercent) return app.formatInputCurrency(input);
+          const digits = input.value.replace(/\D/g, '');
+          if(!digits) { input.value = ''; return; }
+          const value = Math.min(100, Math.max(0, parseInt(digits, 10) || 0));
+          input.value = String(value);
+          document.getElementById('rwpn-help-text').innerText = value === 100 ? 'Persentase maksimal 100%.' : 'Masukkan persentase 0–100.';
        };
 
        app.submitRwPn = () => {
@@ -2695,19 +2732,24 @@
            let finalNik = nikVal;
            if(!finalNik) { const found = app.getTipStaffList().find(e => e.name === nameVal); if(found) finalNik = found.nik; }
 
+           const valueType = document.getElementById('inp-rwpn-type').value;
+           const value = app.parseCurrency(document.getElementById('inp-rwpn-value').value);
+           if(valueType === 'PERCENT' && (value < 0 || value > 100)) return ui.toast('Persentase maksimal 100%.', 'error');
            const payload = {
               outlet: app.getTipOutlet(),
               date: document.getElementById('inp-rwpn-date').value,
               nik: finalNik, name: nameVal,
               category: document.getElementById('inp-rwpn-category').value,
-              type: document.getElementById('inp-rwpn-type').value,
-              value: app.parseCurrency(document.getElementById('inp-rwpn-value').value),
+              type: valueType,
+              value: value,
               desc: document.getElementById('inp-rwpn-desc').value,
               user: app.user.name
            };
            ui.loader(true);
            google.script.run.withSuccessHandler(() => {
               ui.loader(false); ui.toast('Tersimpan'); document.getElementById('form-rwpn').reset(); document.getElementById('inp-rwpn-staff').value = ''; app.loadRekapTip();
+           }).withFailureHandler(err => {
+              ui.loader(false); ui.toast('Reward/Punishment gagal disimpan: ' + (err.message || err), 'error');
            }).apiSaveTipTransaction('REWARD_PUNISH', payload);
        };
 
@@ -2752,6 +2794,8 @@
                   dot.classList.remove('text-warning');
                   dot.classList.add('text-success');
               }
+              clearTimeout(app.tipAutoRefreshTimer);
+              app.tipAutoRefreshTimer = setTimeout(() => app.loadRekapTip(), 350);
           }).withFailureHandler((err) => {
               // Fail: Set status to Red
               if(dot) {
@@ -2789,10 +2833,30 @@
        };
 
        app.openAddLoanModal = () => {
+          document.getElementById('form-loan').reset();
+          document.getElementById('inp-loan-id').value = '';
+          document.getElementById('loan-modal-title').innerText = 'Tambah Pinjaman';
+          document.getElementById('loan-submit-button').innerText = 'Simpan';
           const input = document.getElementById('inp-loan-staff');
           input.value = '';
           input.removeAttribute('data-nik');
           app.setupLoanAutocomplete();
+          ui.modal.open('mod-add-loan');
+       };
+
+       app.openEditLoan = id => {
+          const loan = (app.tipRawData?.loan || []).find(item => String(item.id) === String(id));
+          if(!loan) return ui.toast('Data pinjaman tidak ditemukan. Muat ulang halaman.', 'error');
+          document.getElementById('form-loan').reset();
+          document.getElementById('inp-loan-id').value = loan.id;
+          document.getElementById('loan-modal-title').innerText = 'Edit Pinjaman';
+          document.getElementById('loan-submit-button').innerText = 'Simpan Perubahan';
+          const input = document.getElementById('inp-loan-staff');
+          input.value = loan.name;
+          input.setAttribute('data-nik', loan.nik);
+          document.getElementById('inp-loan-date').value = loan.date;
+          document.getElementById('inp-loan-nominal').value = new Intl.NumberFormat('id-ID').format(Number(loan.nominal) || 0);
+          document.getElementById('inp-loan-desc').value = loan.desc || '';
           ui.modal.open('mod-add-loan');
        };
 
@@ -2811,10 +2875,16 @@
              desc: document.getElementById('inp-loan-desc').value,
              nik, name, user: app.user.name
           };
+          if(!payload.date || !payload.nominal) return ui.toast('Tanggal dan nominal pinjaman wajib diisi.', 'error');
           ui.loader(true);
-          google.script.run.withSuccessHandler(() => {
-             ui.loader(false); ui.modal.close('mod-add-loan'); ui.toast('Pinjaman Tersimpan'); app.loadRekapTip();
-          }).apiSaveTipTransaction('LOAN', payload);
+          const loanId = document.getElementById('inp-loan-id').value;
+          const runner = google.script.run.withSuccessHandler(() => {
+             ui.loader(false); ui.modal.close('mod-add-loan'); ui.toast(loanId ? 'Pinjaman berhasil diperbarui' : 'Pinjaman tersimpan'); app.loadRekapTip();
+          }).withFailureHandler(err => {
+             ui.loader(false); ui.toast('Pinjaman gagal disimpan: ' + (err.message || err), 'error');
+          });
+          if(loanId) runner.apiUpdateTipTransaction('LOAN', loanId, payload);
+          else runner.apiSaveTipTransaction('LOAN', payload);
        };
 
        app.deleteTipTx = (type, id) => {
@@ -3754,6 +3824,7 @@
       apiSaveSchedule: 'mppSaveSchedule',
       apiGetTipData: 'mppGetTipData',
       apiSaveTipTransaction: 'mppSaveTipTransaction',
+      apiUpdateTipTransaction: 'mppUpdateTipTransaction',
       apiDeleteTipTransaction: 'mppDeleteTipTransaction',
       apiCalculateTipDistribution: 'mppCalculateTipDistribution'
     });

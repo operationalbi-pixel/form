@@ -159,6 +159,9 @@ if (!mppHtml.includes('Total Kehadiran Outlet') || !mppHtml.includes('Tip Dasar 
 if (!mppHtml.includes("orientation: 'landscape'") || !mppHtml.includes("'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Diterima'")) failures.push('Laporan summary bulanan belum menampilkan komponen pembagian tip terbaru');
 if (!mppHtml.includes('app.tipEmployeesLoaded') || !mppHtml.includes("app.setupStaffAutocomplete('inp-rwpn-staff'") || !mppHtml.includes("app.setupStaffAutocomplete('inp-loan-staff'")) failures.push('Daftar staff Uang Tip belum dimuat untuk autocomplete Reward/Punishment dan Pinjaman');
 if (!mppHtml.includes("moduleToolbar.classList.toggle('d-none', !isMppPage)") || !mppHtml.includes('id="tip-year"') || !mppHtml.includes('dashboard-back-standard')) failures.push('Tombol Dashboard modul langsung belum dirapikan bersama filter periode');
+if (!chatBackend.includes('mppUpdateTipTransaction: updateMppTipTransaction') || !chatBackend.includes('function updateMppTipTransaction(') || !mppHtml.includes("app.openEditLoan('${entry.id}')")) failures.push('Pinjaman Uang Tip belum mendukung edit dari ikon pensil');
+if (!chatBackend.includes('Math.max(0, Math.min(100, val))') || !chatBackend.includes('const nonLoanBalance = Math.max(0, incomes -') || !mppHtml.includes('app.handleRwPnValueInput')) failures.push('Persentase Reward/Punishment belum dibatasi 0–100% atau masih dapat membuat saldo non-pinjaman minus');
+if (!mppHtml.includes('app.tipAutoRefreshTimer') || !mppHtml.includes('setTimeout(() => app.loadRekapTip(), 350)')) failures.push('Daily Income Tip belum memperbarui perhitungan secara otomatis');
 try {
   const tipContext = vm.createContext({ Intl });
   new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);
