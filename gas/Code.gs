@@ -3418,19 +3418,17 @@ function prepareStockOpnameImport_(token, payload) {
   if (!eventDate) throw new Error('Pilih tanggal Stock Opname terlebih dahulu.');
   if (eventDate > todayIso_()) throw new Error('Tanggal Stock Opname tidak boleh melewati hari ini.');
   const effectiveDate = eventDate;
-  const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
   const session = requireSession_(token), employee = findEmployee_(session.nik);
   assertEmployeeActive_(employee);
+  if (employee.outlet !== 'BIHQ') throw new Error('Upload Stock Opname hanya dapat dilakukan oleh BIHQ.');
+  const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
   ensureStockCardInfrastructure_();
   // BIHQ can upload a multi-branch workbook without selecting one outlet first.
   // In that state the page has no active storage, so Stock Opname defaults to Store.
   const location = normalizeLocation_(payload.location || 'Store') || 'Store', reportOutlets = report.outlets.slice();
-  const activeOutlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+  const activeOutlets = readActiveOutlets_();
   const unauthorized = reportOutlets.filter(function (outlet) { return activeOutlets.indexOf(outlet) < 0; });
   if (unauthorized.length) throw new Error('Branch tidak aktif atau tidak dapat diakses akun ini: ' + unauthorized.join(', ') + '.');
-  if (employee.outlet !== 'BIHQ' && (reportOutlets.length !== 1 || reportOutlets[0] !== employee.outlet)) {
-    throw new Error('Akun outlet ' + employee.outlet + ' hanya dapat upload file dengan BRANCH kolom A milik outlet tersebut. Ditemukan: ' + reportOutlets.join(', ') + '.');
-  }
   const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
   if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
   const duplicates = reportOutlets.filter(function (outlet) {
