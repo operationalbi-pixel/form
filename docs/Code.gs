@@ -4992,7 +4992,7 @@ function stockHistoryScopedLatestCte_(location) {
 function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
   const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
     String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
-  return 'stock-history-v5-' + digest_(identity).slice(0, 36);
+  return 'stock-history-v6-' + digest_(identity).slice(0, 36);
 }
 
 function readStockHistoryPageRows_(outlet, location, item) {
@@ -5076,9 +5076,13 @@ function getStockHistory(token, payload) {
     const snapshots = calculateFifoSnapshots_(fifoInput);
     const dayNet = {};
     visibleRows.forEach(function (row) {
+      const date = String(row.date || '').slice(0, 10);
+      if (!date) return;
+      // A LOT-only Edit Balance must still create a history day. Otherwise the
+      // table stops at the previous IN/OUT date and displays the pre-edit lots.
+      if (dayNet[date] === undefined) dayNet[date] = 0;
       if (row.direction !== 'IN' && row.direction !== 'OUT') return;
       if (row.movementType === 'Stock Opname' && row.opnameBalance !== null) return;
-      const date = String(row.date || '').slice(0, 10);
       dayNet[date] = Number(dayNet[date] || 0) + (row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0));
     });
     const fifoLotsByDate = {}, balancesByDate = {}, visibleDates = Object.keys(dayNet).sort().reverse();
