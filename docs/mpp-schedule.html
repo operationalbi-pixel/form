@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
   <base target="_top">
-  <title>MPP · Schedule · Uang Tip — BI-Space</title>
+  <title>MPP — BI-Space</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
@@ -429,10 +429,21 @@
   <div id="session-loading" class="session-loading">
     <div class="session-loading-card">
       <div class="spinner-border text-danger mb-3" role="status"></div>
-      <div class="fw-700">Membuka MPP · Schedule · Uang Tip…</div>
+      <div class="fw-700" id="session-loading-title">Membuka MPP…</div>
       <div class="small text-muted mt-1">Memakai sesi BI-Space Anda.</div>
     </div>
   </div>
+
+  <script>
+    (function syncRequestedModuleLabel() {
+      var view = '';
+      try { view = String(new URLSearchParams(window.location.search).get('view') || '').toLowerCase(); } catch (error) {}
+      var label = view === 'schedule' ? 'Schedule' : (view === 'tip' ? 'Uang Tip' : 'MPP');
+      var loadingTitle = document.getElementById('session-loading-title');
+      if (loadingTitle) loadingTitle.textContent = 'Membuka ' + label + '…';
+      document.title = label + ' — BI-Space';
+    })();
+  </script>
 
   <!-- VIEW 2: MAIN APPLICATION -->
   <div id="app-view" class="d-none">
