@@ -152,6 +152,8 @@ if (mppHtml.includes('<?!= include(')) failures.push('MPP · Schedule · Uang Ti
 if (!mppHtml.includes('@media (max-width: 900px)')) failures.push('MPP · Schedule · Uang Tip belum memiliki layout mobile');
 if (!chatBackend.includes('function mppAllocateTipPoolByAttendance_(') || !chatBackend.includes('const netPool = totalIncome - totalExpense') || !chatBackend.includes('totalAttendance: attendanceAllocation.totalAttendance')) failures.push('Uang Tip belum membagi pendapatan dikurangi pengeluaran secara proporsional terhadap kehadiran');
 if (!mppHtml.includes('POOL TIP BERSIH (PENDAPATAN - PENGELUARAN)') || !mppHtml.includes('TIP DASAR PROPORSIONAL')) failures.push('Ringkasan Uang Tip belum menjelaskan mekanisme pembagian proporsional');
+if (!mppHtml.includes('Total Kehadiran Outlet') || !mppHtml.includes('Tip Dasar Proporsional') || !mppHtml.includes('app.tipStaffAdjustment')) failures.push('Laporan detail per staff belum mengikuti format pembagian proporsional terbaru');
+if (!mppHtml.includes("orientation: 'landscape'") || !mppHtml.includes("'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Diterima'")) failures.push('Laporan summary bulanan belum menampilkan komponen pembagian tip terbaru');
 try {
   const tipContext = vm.createContext({ Intl });
   new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);

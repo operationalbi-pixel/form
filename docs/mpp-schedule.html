@@ -2789,6 +2789,11 @@
           google.script.run.withSuccessHandler(() => { ui.loader(false); app.loadRekapTip(); }).apiDeleteTipTransaction(type, id);
        };
 
+       app.tipStaffAdjustment = (staff) => {
+          return Number(staff.personalReward || 0) + Number(staff.sharePunishAddition || 0)
+             - Number(staff.personalPunish || 0) - Number(staff.shareRewardDeduction || 0);
+       };
+
        // === COMPLEX REPORT GENERATOR & PDF EXPORT ===
        app.showStaffTipDetail = (nik) => {
           const s = app.tipData.staffReport.find(s => s.nik === nik);
@@ -2802,9 +2807,19 @@
           btn.onclick = () => app.exportStaffTipPDF(nik);
 
           const raw = app.tipData.rawData;
+          const meta = app.tipData.meta;
+          const adjustment = app.tipStaffAdjustment(s);
 
-          // 1. Pembagian pool bersih berdasarkan bobot kehadiran
-          let html = `<div class="alert alert-primary border-0 small"><strong>Rumus:</strong> ${app.fmtRupiah(raw.netPool || 0)} × ${s.daysCount || 0} hari hadir ÷ ${raw.totalAttendance || 0} total kehadiran = <strong>${app.fmtRupiah(s.tipDaily)}</strong></div>`;
+          // Ringkasan audit rumus terbaru
+          let html = `<div class="row g-2 mb-3">
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Total Pendapatan</small><div class="fw-800 text-success">${app.fmtRupiah(meta.totalIncome || 0)}</div></div></div>
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Total Pengeluaran</small><div class="fw-800 text-danger">${app.fmtRupiah(meta.totalExpense || 0)}</div></div></div>
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Pool Bersih</small><div class="fw-800">${app.fmtRupiah(raw.netPool || 0)}</div></div></div>
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Total Kehadiran</small><div class="fw-800">${raw.totalAttendance || 0} hari</div></div></div>
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Kehadiran Staff</small><div class="fw-800">${s.daysCount || 0} hari</div></div></div>
+             <div class="col-6 col-md-4"><div class="bg-light rounded p-2 h-100"><small class="text-muted">Nilai per Kehadiran</small><div class="fw-800">${app.fmtRupiah(raw.ratePerAttendance || 0)}</div></div></div>
+          </div>`;
+          html += `<div class="alert alert-primary border-0 small"><strong>Tip proporsional:</strong> ${app.fmtRupiah(raw.netPool || 0)} × ${s.daysCount || 0} ÷ ${raw.totalAttendance || 0} = <strong>${app.fmtRupiah(s.tipDaily)}</strong><br><strong>Penyesuaian:</strong> ${app.fmtRupiah(adjustment)} · <strong>Pinjaman:</strong> -${app.fmtRupiah(s.loan || 0)}</div>`;
           html += `<h6 class="fw-bold text-dark border-bottom pb-2 mb-2">1. Pembagian Proporsional Kehadiran</h6>`;
           html += `<table class="table table-bordered table-sm small mb-4"><thead><tr class="table-light"><th>Tgl</th><th>Status</th><th class="text-end">Tip Masuk</th><th class="text-end">Nilai/Hadir</th></tr></thead><tbody>`;
 
@@ -2879,7 +2894,8 @@
 
           // GRAND TOTAL
           html += `<div class="alert ${s.finalTip < 0 ? 'alert-danger' : 'alert-success'} border-0 shadow-sm">`;
-          html += `<div class="d-flex justify-content-between align-items-center mb-0"><h4 class="fw-800 mb-0">GRAND TOTAL</h4><h3 class="fw-800 mb-0">${app.fmtRupiah(s.finalTip)}</h3></div>`;
+          html += `<div class="small mb-1">Tip Proporsional ${app.fmtRupiah(s.tipDaily)} + Penyesuaian ${app.fmtRupiah(adjustment)} − Pinjaman ${app.fmtRupiah(s.loan || 0)}</div>`;
+          html += `<div class="d-flex justify-content-between align-items-center mb-0"><h4 class="fw-800 mb-0">TOTAL DITERIMA</h4><h3 class="fw-800 mb-0">${app.fmtRupiah(s.finalTip)}</h3></div>`;
           if(s.finalTip < 0) {
               html += `<hr><div class="small fw-bold text-danger"><i class="fas fa-exclamation-triangle me-2"></i>Segera bayar hutang Anda sebelum tanggal 05, silahkan hubungi captain.</div>`;
           }
@@ -2893,6 +2909,8 @@
            const s = app.tipData.staffReport.find(s => s.nik === nik);
            if(!s) return;
            const raw = app.tipData.rawData;
+           const meta = app.tipData.meta;
+           const adjustment = app.tipStaffAdjustment(s);
            const monthName = document.getElementById('tip-month').options[document.getElementById('tip-month').selectedIndex].text;
            const year = document.getElementById('tip-year').value;
 
@@ -2945,6 +2963,26 @@
                alternateRowStyles: { fillColor: [245, 247, 250] },
            };
 
+           doc.autoTable({
+               startY: currentY,
+               head: [['Komponen Perhitungan', 'Nilai']],
+               body: [
+                   ['Total Pendapatan', app.fmtRupiah(meta.totalIncome || 0)],
+                   ['Total Pengeluaran', '-' + app.fmtRupiah(meta.totalExpense || 0)],
+                   ['Pool Tip Bersih', app.fmtRupiah(raw.netPool || 0)],
+                   ['Total Kehadiran Outlet', `${raw.totalAttendance || 0} hari`],
+                   ['Kehadiran Staff', `${s.daysCount || 0} hari`],
+                   ['Nilai per Kehadiran', app.fmtRupiah(raw.ratePerAttendance || 0)],
+                   ['Tip Dasar Proporsional', app.fmtRupiah(s.tipDaily || 0)],
+                   ['Penyesuaian Reward/Punishment', app.fmtRupiah(adjustment)],
+                   ['Pinjaman', '-' + app.fmtRupiah(s.loan || 0)],
+                   ['Total Diterima', app.fmtRupiah(s.finalTip || 0)]
+               ],
+               ...tableStyles,
+               columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } }
+           });
+           currentY = doc.lastAutoTable.finalY + 10;
+
            // 1. DAILY TIP TABLE
            doc.setFont("helvetica", "bold");
            doc.setTextColor(...themeColor);
@@ -2956,7 +2994,7 @@
                r.d,
                r.code,
                r.tipIn > 0 ? app.fmtRupiah(r.tipIn) : '-',
-               r.share > 0 ? app.fmtRupiah(r.share) : '-'
+               r.share !== 0 ? app.fmtRupiah(r.share) : '-'
            ]);
 
            doc.autoTable({
@@ -3169,7 +3207,9 @@
                const year = document.getElementById('tip-year').value;
 
                const { jsPDF } = window.jspdf;
-               const doc = new jsPDF();
+               const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+               const pageWidth = doc.internal.pageSize.getWidth();
+               const pageHeight = doc.internal.pageSize.getHeight();
 
                const themeColor = [26, 35, 126]; // Dark Blue
                const redColor = [198, 40, 40];
@@ -3178,7 +3218,7 @@
                // --- HEADER ---
                doc.setDrawColor(...themeColor);
                doc.setLineWidth(1.5);
-               doc.line(14, 15, 196, 15);
+               doc.line(14, 15, pageWidth - 14, 15);
 
                doc.setFont("helvetica", "bold");
                doc.setTextColor(...themeColor);
@@ -3191,7 +3231,27 @@
                doc.text(`Outlet : ${app.tipData.meta.outlet}`, 14, 30);
                doc.text(`Periode: ${monthName} ${year}`, 14, 35);
 
-               let currentY = 45;
+               let currentY = 42;
+
+               const meta = app.tipData.meta;
+               const raw = app.tipData.rawData;
+               const totalFinal = app.tipData.staffReport.reduce((total, staff) => total + Number(staff.finalTip || 0), 0);
+               doc.autoTable({
+                   startY: currentY,
+                   head: [['Total Pendapatan', 'Total Pengeluaran', 'Pool Bersih', 'Total Kehadiran', 'Nilai/Hadir', 'Total Setelah Penyesuaian']],
+                   body: [[
+                       app.fmtRupiah(meta.totalIncome || 0),
+                       app.fmtRupiah(meta.totalExpense || 0),
+                       app.fmtRupiah(meta.finalBalance || 0),
+                       `${meta.totalAttendance || 0} hari`,
+                       app.fmtRupiah(meta.ratePerAttendance || 0),
+                       app.fmtRupiah(totalFinal)
+                   ]],
+                   theme: 'grid',
+                   headStyles: { fillColor: themeColor, textColor: 255, fontStyle: 'bold', halign: 'center' },
+                   styles: { fontSize: 8, cellPadding: 3, halign: 'right' }
+               });
+               currentY = doc.lastAutoTable.finalY + 10;
 
                // Helper to Sort: Group by Position Rank -> Grade DESC
                const sortLogic = (list) => {
@@ -3231,18 +3291,21 @@
                    const bodyPos = [];
 
                    posList.forEach(s => {
-                       bodyPos.push([s.name, s.nik, s.position, s.daysCount || 0, app.fmtRupiah(s.finalTip)]);
+                       bodyPos.push([s.name, s.nik, s.position, s.daysCount || 0, app.fmtRupiah(s.totalTip || 0), app.fmtRupiah(app.tipStaffAdjustment(s)), app.fmtRupiah(s.loan || 0), app.fmtRupiah(s.finalTip)]);
                    });
 
                    doc.autoTable({
                        startY: currentY,
-                       head: [['Nama Staff', 'NIK', 'Posisi', 'Hadir', 'Nominal Diterima']],
+                       head: [['Nama Staff', 'NIK', 'Posisi', 'Hadir', 'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Diterima']],
                        body: bodyPos,
                        ...tableStyles,
                        headStyles: { fillColor: greenColor, textColor: 255, fontStyle: 'bold', halign: 'center' },
                        columnStyles: {
-                           3: { halign: 'center' }, // Grade center
-                           4: { halign: 'right', fontStyle: 'bold', textColor: greenColor }
+                           3: { halign: 'center' },
+                           4: { halign: 'right' },
+                           5: { halign: 'right' },
+                           6: { halign: 'right', textColor: redColor },
+                           7: { halign: 'right', fontStyle: 'bold', textColor: greenColor }
                        }
                    });
                    currentY = doc.lastAutoTable.finalY + 10;
@@ -3251,24 +3314,27 @@
                // --- GROUP 2: KEWAJIBAN BAYAR (NEGATIF) ---
                if (negList.length > 0) {
                    // Check page break
-                   if (currentY > 250) { doc.addPage(); currentY = 20; }
+                   if (currentY > pageHeight - 45) { doc.addPage(); currentY = 20; }
 
                    doc.setFont("helvetica", "bold");
                    doc.setTextColor(...redColor);
                    doc.text(`DAFTAR KEWAJIBAN BAYAR / MINUS (${negList.length} Staff)`, 14, currentY);
                    currentY += 2;
 
-                   const bodyNeg = negList.map(s => [s.name, s.nik, s.position, s.daysCount || 0, app.fmtRupiah(s.finalTip)]);
+                   const bodyNeg = negList.map(s => [s.name, s.nik, s.position, s.daysCount || 0, app.fmtRupiah(s.totalTip || 0), app.fmtRupiah(app.tipStaffAdjustment(s)), app.fmtRupiah(s.loan || 0), app.fmtRupiah(s.finalTip)]);
 
                    doc.autoTable({
                        startY: currentY,
-                       head: [['Nama Staff', 'NIK', 'Posisi', 'Hadir', 'Nominal Bayar']],
+                       head: [['Nama Staff', 'NIK', 'Posisi', 'Hadir', 'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Akhir']],
                        body: bodyNeg,
                        ...tableStyles,
                        headStyles: { fillColor: redColor, textColor: 255, fontStyle: 'bold', halign: 'center' },
                        columnStyles: {
                            3: { halign: 'center' },
-                           4: { halign: 'right', fontStyle: 'bold', textColor: redColor }
+                           4: { halign: 'right' },
+                           5: { halign: 'right' },
+                           6: { halign: 'right' },
+                           7: { halign: 'right', fontStyle: 'bold', textColor: redColor }
                        }
                    });
                    currentY = doc.lastAutoTable.finalY + 10;
@@ -3281,7 +3347,7 @@
                    doc.setFontSize(8);
                    doc.setTextColor(150, 150, 150);
                    doc.setFont("helvetica", "italic");
-                   doc.text(`© 2026 | Bakerzin | System Developed by Hamba Allah - Dara Zainal Anwar Musadad | Generated: ${new Date().toLocaleString()} | Halaman ${i} dari ${pageCount}`, 14, 285);
+                   doc.text(`© 2026 | Bakerzin | System Developed by Hamba Allah - Dara Zainal Anwar Musadad | Generated: ${new Date().toLocaleString()} | Halaman ${i} dari ${pageCount}`, 14, pageHeight - 8);
                }
 
                doc.save(`Rekap_Tip_Summary_${app.tipData.meta.outlet}_${monthName}_${year}.pdf`);
