@@ -251,6 +251,15 @@ if (!frontendStockCard.includes('stock-opname-history-highlight') || !frontendSt
 if (!backend.includes("normalizeLocation_(payload.location || 'Store') || 'Store'") ||
     !frontendStockCard.includes("function stockOpnameLocation(){return APP.location||'Store'}")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
 if (!frontendStockCard.includes('>Daily Upload</span>') || !frontendStockCard.includes('stock-opname-modal')) failures.push('Label Daily Upload atau penyempurnaan modal Stock Opname belum tersedia');
+if (!frontendStockCard.includes('Bulk Repair Konversi Transaksi (BIHQ)') || !frontendStockCard.includes('id="salesRepairType"') ||
+    !frontendStockCard.includes("server('previewTransactionRepair'") || !frontendStockCard.includes("server('repairTransactionConversions'")) {
+  failures.push('Tombol atau modal Bulk Repair Konversi Transaksi BIHQ belum lengkap');
+}
+if (!backend.includes('previewTransactionRepair: previewTransactionConversionRepair') ||
+    !backend.includes('repairTransactionConversions: repairTransactionConversions') ||
+    !backend.includes('function prepareItemJournalRepairPlan_(')) {
+  failures.push('Backend Bulk Repair belum mencakup Sales COGS dan Item Journal');
+}
 if (!frontendStockCard.includes("openExpiryAlertModal(\\'TRANSFER\\')") ||
     !frontendStockCard.includes('function openPendingTransferFromAlerts(index)') ||
     frontendStockCard.includes('id="transferNotifications"')) failures.push('Transfer pending belum diringkas bersama notifikasi Expired dan FIFO/FEFO');
@@ -296,6 +305,36 @@ try {
   if (Math.abs(transferContext.resolveUnitConversionFactor_('LONDON-CAKE', 'BOX@15PCS', 'PCS', {}, londonConversions) - 15) > 0.000000001) failures.push('Arah balik rangkaian STOCK_UNIT_CONVERSIONS belum dihitung otomatis');
 } catch (error) {
   failures.push(`Uji koreksi transfer gagal: ${error.message}`);
+}
+try {
+  const repairContext = vm.createContext({ console });
+  new vm.Script(backend, { filename: 'docs/Code.gs#item-journal-repair-test' }).runInContext(repairContext);
+  repairContext.cleanText_ = value => String(value || '');
+  repairContext.parseItemJournalReport_ = () => ({ unauthorizedRowsSkipped: 0, rows: [{
+    sourceRow: 2, journalNumber: 'IJ-1', transactionDate: '2026-09-01', outletName: 'Bakerzin Central Park',
+    code: 'ITEM1', name: 'London Cake', unit: 'PCS', qty: 5, additionalInfo: 'Koreksi test'
+  }] });
+  repairContext.readStoreCodeDirectory_ = () => ({ byName: { 'BAKERZIN CENTRAL PARK': { code: 'BICP' } } });
+  repairContext.normalizeStoreName_ = value => String(value || '').trim().toUpperCase();
+  repairContext.readStockMaster_ = () => [{ code: 'ITEM1', category: 'Food', name: 'London Cake', unit: 'BOX@15PCS' }];
+  repairContext.readStockUnitConversions_ = () => ({});
+  repairContext.resolveUnitConversionFactor_ = () => 1 / 15;
+  repairContext.stockCardTable_ = () => '`test.stock_card`';
+  repairContext.digest_ = value => String(value).includes('BICP|2026-09-01|IJ-1') ? 'ROW-HASH' : 'REPAIR-TOKEN';
+  repairContext.Utilities = { getUuid: (() => { let id = 0; return () => `ID-${++id}`; })() };
+  repairContext.runNamedQuery_ = () => [{
+    record_id: 'OLD-1', logical_id: 'OLD-1', version: 1, outlet: 'BICP', location: 'Store', item_code: 'ITEM1',
+    category: 'Food', item_name: 'London Cake', unit: 'BOX@15PCS', direction: 'OUT', qty: 5,
+    movement_type: 'Item Journal', info: 'Item Journal Number: IJ-1', event_date: '2026-09-01',
+    source_file: 'ITEM_JOURNAL|old.xlsx', source_hash: 'ROW-HASH', source_row: 2
+  }];
+  const journalPlan = repairContext.prepareItemJournalRepairPlan_({ nik: 'HQ-1', outlet: 'BIHQ' }, { fileName: 'journal.xlsx', base64: 'DATA' });
+  const journalChange = journalPlan.changes[0];
+  if (journalPlan.changedHashes.length !== 1 || !journalChange || Math.abs(journalChange.correctedSoldQty - (5 / 15)) > 0.0000001 || journalChange.sourceUnit !== 'PCS') {
+    failures.push('Bulk Repair Item Journal belum menghitung ulang QTY menggunakan konversi unit terbaru');
+  }
+} catch (error) {
+  failures.push(`Uji Bulk Repair Item Journal gagal: ${error.message}`);
 }
 try {
   const backendContext = vm.createContext({ console });
