@@ -157,6 +157,8 @@ if (!chatBackend.includes('function mppAllocateTipPoolByAttendance_(') || !chatB
 if (!mppHtml.includes('POOL TIP BERSIH (PENDAPATAN - PENGELUARAN)') || !mppHtml.includes('TIP DASAR PROPORSIONAL')) failures.push('Ringkasan Uang Tip belum menjelaskan mekanisme pembagian proporsional');
 if (!mppHtml.includes('Total Kehadiran Outlet') || !mppHtml.includes('Tip Dasar Proporsional') || !mppHtml.includes('app.tipStaffAdjustment')) failures.push('Laporan detail per staff belum mengikuti format pembagian proporsional terbaru');
 if (!mppHtml.includes("orientation: 'landscape'") || !mppHtml.includes("'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Diterima'")) failures.push('Laporan summary bulanan belum menampilkan komponen pembagian tip terbaru');
+if (!mppHtml.includes('app.tipEmployeesLoaded') || !mppHtml.includes("app.setupStaffAutocomplete('inp-rwpn-staff'") || !mppHtml.includes("app.setupStaffAutocomplete('inp-loan-staff'")) failures.push('Daftar staff Uang Tip belum dimuat untuk autocomplete Reward/Punishment dan Pinjaman');
+if (!mppHtml.includes("moduleToolbar.classList.toggle('d-none', !isMppPage)") || !mppHtml.includes('id="tip-year"') || !mppHtml.includes('dashboard-back-standard')) failures.push('Tombol Dashboard modul langsung belum dirapikan bersama filter periode');
 try {
   const tipContext = vm.createContext({ Intl });
   new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);

@@ -97,6 +97,11 @@
     .dashboard-return {
       white-space: nowrap; margin-left: auto;
     }
+    .staff-entry-card { overflow: visible; }
+    .staff-suggestions {
+      position: absolute; top: calc(100% + 6px); right: 0; left: 0; z-index: 1080;
+      max-height: 220px; overflow-y: auto;
+    }
 
     /* --- SIDEBAR COMPONENTS --- */
     .brand-logo {
@@ -413,7 +418,7 @@
       #toast-wrapper { right: 14px; left: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); }
     }
   </style>
-  <link rel="stylesheet" href="ui-navigation.css?v=20260827-nav1">
+  <link rel="stylesheet" href="ui-navigation.css?v=20260912-boga-back1">
 </head>
 <body>
 
@@ -451,7 +456,7 @@
     <!-- CONTENT -->
     <div class="main-content">
 
-      <div class="module-toolbar">
+      <div class="module-toolbar" id="mpp-module-toolbar">
         <nav id="mpp-context-nav" class="module-context-nav d-none" aria-label="Navigasi MPP">
           <button class="nav-btn" id="nav-teams" type="button" onclick="app.nav('page-employee')"><i class="fas fa-users"></i> Teams</button>
           <button class="nav-btn" id="nav-budget" type="button" onclick="app.nav('page-budget')"><i class="fas fa-calculator"></i> Budget MPP</button>
@@ -816,7 +821,7 @@
       <h3 class="fw-800 text-dark mb-1">Input Schedule</h3>
       <p class="text-muted mb-0">Atur jadwal kerja outlet.</p>
     </div>
-    <div class="d-flex gap-3">
+    <div class="d-flex gap-3 flex-wrap justify-content-end">
        <button class="btn btn-outline-danger shadow-sm fw-700 rounded-3" onclick="app.openExportModal()">
           <i class="fas fa-file-pdf me-2"></i> Export PDF
        </button>
@@ -831,6 +836,7 @@
        </select>
        <select id="sch-year" class="form-select shadow-sm fw-700 text-dark" style="width:120px; border-radius:10px;" onchange="app.loadSchedule()">
        </select>
+       <button onclick="app.logout()" class="dashboard-back-standard" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
     </div>
   </div>
 
@@ -1737,7 +1743,7 @@
       <h3 class="fw-800 text-dark mb-1">Rekap Uang Tip</h3>
       <p class="text-muted mb-0">Kelola pembagian uang tip</p>
     </div>
-    <div class="d-flex gap-2 align-items-center">
+    <div class="d-flex gap-2 align-items-center flex-wrap justify-content-end">
        <!-- AREA FILTER OUTLET UTK SUPERADMIN (Akan diisi via JS) -->
        <div id="tip-outlet-filter-container"></div>
 
@@ -1749,6 +1755,7 @@
        </select>
        <select id="tip-year" class="form-select shadow-sm fw-700" style="width:100px; border-radius:10px;" onchange="app.loadRekapTip()">
        </select>
+       <button onclick="app.logout()" class="dashboard-back-standard" type="button" title="Kembali ke Dashboard" aria-label="Kembali ke Dashboard">← Dashboard</button>
     </div>
   </div>
 
@@ -1934,7 +1941,7 @@
     <div class="tab-pane fade" id="content-tip-rwpn">
        <div class="row g-4">
           <div class="col-md-5">
-             <div class="card-std p-4">
+             <div class="card-std staff-entry-card p-4">
                 <h6 class="fw-700 mb-3 text-dark">Input Reward / Punishment</h6>
                 <form id="form-rwpn" onsubmit="event.preventDefault(); app.submitRwPn();">
                    <div class="mb-3">
@@ -1946,8 +1953,7 @@
                    <div class="mb-3 position-relative">
                       <label class="small fw-700 text-muted">Nama Staff</label>
                       <input type="text" id="inp-rwpn-staff" class="form-control" placeholder="Ketik nama staff..." autocomplete="off">
-                      <ul id="rwpn-staff-suggestions" class="dropdown-menu w-100 shadow-lg border-0"
-                          style="bottom: 100%; top: auto; max-height: 200px; overflow-y: auto; display: none;">
+                      <ul id="rwpn-staff-suggestions" class="dropdown-menu staff-suggestions w-100 shadow-lg border-0" style="display: none;">
                       </ul>
                    </div>
 
@@ -2083,9 +2089,10 @@
       </div>
       <div class="modal-body">
          <form id="form-loan">
-            <div class="mb-3">
+            <div class="mb-3 position-relative">
                <label class="small fw-700 text-muted">Nama Staff</label>
-               <select id="inp-loan-staff" class="form-select" required></select>
+               <input type="text" id="inp-loan-staff" class="form-control" placeholder="Ketik nama staff..." autocomplete="off" required>
+               <ul id="loan-staff-suggestions" class="dropdown-menu staff-suggestions w-100 shadow-lg border-0" style="display: none;"></ul>
             </div>
             <div class="mb-3">
                <label class="small fw-700 text-muted">Tanggal</label>
@@ -2142,6 +2149,19 @@
        if (typeof app === 'undefined') { setTimeout(attachTipLogic, 50); return; }
 
        app.tipData = null; // Cache
+       app.tipEmployeesLoaded = false;
+       app.tipEmployeesLoading = false;
+
+       app.getTipOutlet = () => {
+          if(app.user.role !== 'SUPERADMIN') return app.user.outlet;
+          return document.getElementById('tip-filter-outlet')?.value || 'ALL';
+       };
+
+       app.getTipStaffList = () => {
+          const outlet = app.getTipOutlet();
+          if(outlet === 'ALL') return app.dataEmp.slice();
+          return app.dataEmp.filter(e => String(e.outlet || '').trim().toLowerCase() === String(outlet || '').trim().toLowerCase());
+       };
 
        // --- INIT & LOAD ---
        app.initTipControls = () => {
@@ -2155,10 +2175,31 @@
           selMonth.value = now.getMonth();
 
           app.setupRwPnAutocomplete();
+          app.setupLoanAutocomplete();
        };
 
        app.loadRekapTip = () => {
           if (!document.getElementById('tip-year').value) app.initTipControls();
+
+          // Halaman Tip dapat dibuka langsung dari Dashboard. Pastikan master staff
+          // sudah tersedia sebelum membuat autocomplete dan matriks pinjaman.
+          if(!app.tipEmployeesLoaded) {
+             if(app.tipEmployeesLoading) return;
+             app.tipEmployeesLoading = true;
+             ui.loader(true);
+             google.script.run.withSuccessHandler(data => {
+                app.dataEmp = data || [];
+                app.tipEmployeesLoaded = true;
+                app.tipEmployeesLoading = false;
+                ui.loader(false);
+                app.loadRekapTip();
+             }).withFailureHandler(err => {
+                app.tipEmployeesLoading = false;
+                ui.loader(false);
+                ui.toast('Daftar staff gagal dimuat: ' + (err.message || err), 'error');
+             }).apiGetEmployees(app.user);
+             return;
+          }
 
           const m = document.getElementById('tip-month').value;
           const y = document.getElementById('tip-year').value;
@@ -2195,9 +2236,7 @@
           }
 
           // Get selected outlet from filter (if exists) or user default
-          let outlet = app.user.role === 'SUPERADMIN'
-              ? (document.getElementById('tip-filter-outlet')?.value || 'ALL')
-              : app.user.outlet;
+          let outlet = app.getTipOutlet();
 
           ui.loader(true);
           google.script.run.withSuccessHandler(res => {
@@ -2566,7 +2605,7 @@
              loanMap[l.nik].total += Number(l.nominal);
           });
 
-          app.dataEmp.forEach(emp => {
+          app.getTipStaffList().forEach(emp => {
              const l = loanMap[emp.nik] || { days: {}, total: 0 };
              let rHtml = `<tr><td class="sticky-col text-start ps-3 fw-600 bg-white" style="left:0;">${emp.name}</td>`;
              for(let d=1; d<=days; d++) {
@@ -2578,39 +2617,49 @@
           });
        };
 
-       app.setupRwPnAutocomplete = () => {
-           const input = document.getElementById('inp-rwpn-staff');
-           const list = document.getElementById('rwpn-staff-suggestions');
+       app.setupStaffAutocomplete = (inputId, listId) => {
+           const input = document.getElementById(inputId);
+           const list = document.getElementById(listId);
+           if(!input || !list || input.dataset.autocompleteReady === 'true') return;
+           input.dataset.autocompleteReady = 'true';
 
-           if(!input || !list) return;
-
-           input.addEventListener('input', function() {
-               const val = this.value.toLowerCase();
+           const renderSuggestions = () => {
+               const query = input.value.trim().toLowerCase();
+               input.removeAttribute('data-nik');
                list.innerHTML = '';
-               list.style.display = 'none';
+               const matches = app.getTipStaffList().filter(e => {
+                  return !query || String(e.name || '').toLowerCase().includes(query) || String(e.nik || '').toLowerCase().includes(query);
+               }).slice(0, 30);
 
-               if(val.length < 1) return;
+               matches.forEach(e => {
+                   const item = document.createElement('button');
+                   item.type = 'button';
+                   item.className = 'dropdown-item cursor-pointer py-2';
+                   const name = document.createElement('div');
+                   name.className = 'fw-bold';
+                   name.textContent = e.name;
+                   const meta = document.createElement('div');
+                   meta.className = 'small text-muted';
+                   meta.textContent = e.nik + (e.position ? ' · ' + e.position : '');
+                   item.append(name, meta);
+                   item.onmousedown = evt => {
+                       evt.preventDefault();
+                       input.value = e.name;
+                       input.setAttribute('data-nik', e.nik);
+                       list.style.display = 'none';
+                   };
+                   list.appendChild(item);
+               });
+               list.style.display = matches.length ? 'block' : 'none';
+           };
 
-               const matches = app.dataEmp.filter(e => e.name.toLowerCase().includes(val));
-               if(matches.length > 0) {
-                   list.style.display = 'block';
-                   matches.forEach(e => {
-                       const li = document.createElement('li');
-                       li.className = 'dropdown-item cursor-pointer py-2';
-                       li.innerHTML = `<div class="fw-bold">${e.name}</div><div class="small text-muted">${e.nik}</div>`;
-                       li.onmousedown = (evt) => {
-                           evt.preventDefault(); // Prevent input blur
-                           input.value = e.name;
-                           input.setAttribute('data-nik', e.nik);
-                           list.style.display = 'none';
-                       };
-                       list.appendChild(li);
-                   });
-               }
-           });
-
+           input.addEventListener('input', renderSuggestions);
+           input.addEventListener('focus', renderSuggestions);
            input.addEventListener('blur', () => { setTimeout(() => list.style.display = 'none', 200); });
        };
+
+       app.setupRwPnAutocomplete = () => app.setupStaffAutocomplete('inp-rwpn-staff', 'rwpn-staff-suggestions');
+       app.setupLoanAutocomplete = () => app.setupStaffAutocomplete('inp-loan-staff', 'loan-staff-suggestions');
 
        app.renderRwPnHistory = (rwpnList) => {
            const tbody = document.getElementById('tbody-rwpn');
@@ -2637,16 +2686,17 @@
        };
 
        app.submitRwPn = () => {
+           if(app.getTipOutlet() === 'ALL') return ui.toast('Pilih outlet terlebih dahulu.', 'error');
            const nameVal = document.getElementById('inp-rwpn-staff').value;
            const nikVal = document.getElementById('inp-rwpn-staff').getAttribute('data-nik');
-           const isValid = app.dataEmp.some(e => e.name === nameVal);
+           const isValid = app.getTipStaffList().some(e => e.name === nameVal);
            if(!nameVal || !isValid) return ui.toast('Pilih Staff dari daftar (Auto Suggest)', 'error');
 
            let finalNik = nikVal;
-           if(!finalNik) { const found = app.dataEmp.find(e => e.name === nameVal); if(found) finalNik = found.nik; }
+           if(!finalNik) { const found = app.getTipStaffList().find(e => e.name === nameVal); if(found) finalNik = found.nik; }
 
            const payload = {
-              outlet: app.user.role === 'SUPERADMIN' ? (document.getElementById('filter-emp-outlet')?.value || app.user.outlet) : app.user.outlet,
+              outlet: app.getTipOutlet(),
               date: document.getElementById('inp-rwpn-date').value,
               nik: finalNik, name: nameVal,
               category: document.getElementById('inp-rwpn-category').value,
@@ -2721,9 +2771,10 @@
        };
 
        app.submitTipTransaction = (type) => {
+          if(app.getTipOutlet() === 'ALL') return ui.toast('Pilih outlet terlebih dahulu.', 'error');
           let prefix = type === 'INCOME' ? 'inc' : 'exp';
           const payload = {
-             outlet: app.user.role === 'SUPERADMIN' ? (document.getElementById('filter-emp-outlet')?.value || app.user.outlet) : app.user.outlet,
+             outlet: app.getTipOutlet(),
              date: document.getElementById(`inp-${prefix}-date`).value,
              nominal: app.parseCurrency(document.getElementById(`inp-${prefix}-nominal`).value),
              desc: document.getElementById(`inp-${prefix}-desc`).value,
@@ -2737,14 +2788,24 @@
           }).apiSaveTipTransaction(type, payload);
        };
 
-       app.openAddLoanModal = () => { ui.fillSelect('inp-loan-staff', app.dataEmp.map(e => e.name + '|' + e.nik), 'Pilih Staff'); ui.modal.open('mod-add-loan'); };
+       app.openAddLoanModal = () => {
+          const input = document.getElementById('inp-loan-staff');
+          input.value = '';
+          input.removeAttribute('data-nik');
+          app.setupLoanAutocomplete();
+          ui.modal.open('mod-add-loan');
+       };
 
        app.submitLoan = () => {
-          const staffVal = document.getElementById('inp-loan-staff').value;
-          if(!staffVal) return;
-          const [name, nik] = staffVal.split('|');
+          if(app.getTipOutlet() === 'ALL') return ui.toast('Pilih outlet terlebih dahulu.', 'error');
+          const staffInput = document.getElementById('inp-loan-staff');
+          const name = staffInput.value.trim();
+          let nik = staffInput.getAttribute('data-nik');
+          const matchedStaff = app.getTipStaffList().find(e => e.name.toLowerCase() === name.toLowerCase());
+          if(!nik && matchedStaff) nik = matchedStaff.nik;
+          if(!name || !nik) return ui.toast('Pilih staff dari daftar saran.', 'error');
           const payload = {
-             outlet: app.user.role === 'SUPERADMIN' ? (document.getElementById('filter-emp-outlet')?.value || app.user.outlet) : app.user.outlet,
+             outlet: app.getTipOutlet(),
              date: document.getElementById('inp-loan-date').value,
              nominal: app.parseCurrency(document.getElementById('inp-loan-nominal').value),
              desc: document.getElementById('inp-loan-desc').value,
@@ -3814,8 +3875,10 @@
         // MPP tetap memiliki tab internal Teams, Budget, dan Summary.
         // Schedule serta Uang Tip dibuka langsung tanpa navigasi silang.
         const contextNav = document.getElementById('mpp-context-nav');
+        const moduleToolbar = document.getElementById('mpp-module-toolbar');
         const isMppPage = ['page-employee', 'page-budget', 'page-summary'].includes(pageId);
         if(contextNav) contextNav.classList.toggle('d-none', !isMppPage);
+        if(moduleToolbar) moduleToolbar.classList.toggle('d-none', !isMppPage);
 
         // 3. Update Active Button
         document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
