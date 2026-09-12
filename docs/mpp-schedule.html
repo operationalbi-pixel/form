@@ -107,10 +107,11 @@
       padding: 4px 6px; border-radius: 7px; background: #ffc107; color: #1f2937;
       font-size: .65rem; font-weight: 700;
     }
-    .loan-edit-button {
+    .loan-edit-button, .loan-delete-button {
       display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0;
       border: 0; border-radius: 5px; background: rgba(255,255,255,.72); color: #9f172b;
     }
+    .loan-delete-button { color: #dc2626; }
 
     /* --- SIDEBAR COMPONENTS --- */
     .brand-logo {
@@ -2188,7 +2189,8 @@
           app.setupLoanAutocomplete();
        };
 
-       app.loadRekapTip = () => {
+       app.loadRekapTip = (options = {}) => {
+          const silent = Boolean(options.silent);
           if (!document.getElementById('tip-year').value) app.initTipControls();
 
           // Halaman Tip dapat dibuka langsung dari Dashboard. Pastikan master staff
@@ -2248,9 +2250,9 @@
           // Get selected outlet from filter (if exists) or user default
           let outlet = app.getTipOutlet();
 
-          ui.loader(true);
+          if(!silent) ui.loader(true);
           google.script.run.withSuccessHandler(res => {
-             ui.loader(false);
+             if(!silent) ui.loader(false);
              if(res.status === 'SUCCESS') {
                 app.tipData = res;
                 app.renderTipSummary(res); // Handles Switching between ALL/SINGLE View
@@ -2263,7 +2265,39 @@
              } else {
                 ui.toast('Gagal memuat data tip', 'error');
              }
+          }).withFailureHandler(err => {
+             if(!silent) ui.loader(false);
+             ui.toast('Perhitungan tip gagal diperbarui: ' + (err.message || err), 'error');
           }).apiCalculateTipDistribution(outlet, m, y);
+       };
+
+       app.applyTipOptimisticDelta = (type, amount) => {
+          if(!app.tipData || app.tipData.mode === 'ALL_OUTLETS') return;
+          const meta = app.tipData.meta || {};
+          if(type === 'INCOME') meta.totalIncome = Number(meta.totalIncome || 0) + Number(amount || 0);
+          if(type === 'EXPENSE') meta.totalExpense = Number(meta.totalExpense || 0) + Number(amount || 0);
+          meta.finalBalance = Number(meta.totalIncome || 0) - Number(meta.totalExpense || 0);
+          if(app.tipData.rawData) app.tipData.rawData.netPool = meta.finalBalance;
+          document.getElementById('tip-total-income').innerText = app.fmtRupiah(meta.totalIncome || 0);
+          document.getElementById('tip-total-expense').innerText = app.fmtRupiah(meta.totalExpense || 0);
+          document.getElementById('tip-grand-total').innerText = app.fmtRupiah(meta.finalBalance || 0);
+       };
+
+       app.refreshTipSilently = () => {
+          clearTimeout(app.tipAutoRefreshTimer);
+          app.tipAutoRefreshTimer = setTimeout(() => app.loadRekapTip({ silent: true }), 250);
+       };
+
+       app.setTipSubmitState = (button, saving) => {
+          if(!button) return;
+          if(saving) {
+             button.dataset.originalLabel = button.innerHTML;
+             button.disabled = true;
+             button.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Menyimpan…';
+          } else {
+             button.disabled = false;
+             if(button.dataset.originalLabel) button.innerHTML = button.dataset.originalLabel;
+          }
        };
 
        // --- NEW: CLIENT SIDE RECALCULATION LOGIC (FIXED) ---
@@ -2627,6 +2661,7 @@
                    <span class="loan-entry-badge">
                      ${Number(entry.nominal)/1000}k
                      <button type="button" class="loan-edit-button" title="Edit pinjaman" aria-label="Edit pinjaman" onclick="app.openEditLoan('${entry.id}')"><i class="fas fa-pencil-alt"></i></button>
+                     <button type="button" class="loan-delete-button" title="Hapus pinjaman" aria-label="Hapus pinjaman" onclick="app.deleteTipTx('LOAN', '${entry.id}')"><i class="fas fa-trash-alt"></i></button>
                    </span>`).join('');
                 rHtml += `<td>${val}</td>`;
              }
@@ -2794,8 +2829,10 @@
                   dot.classList.remove('text-warning');
                   dot.classList.add('text-success');
               }
-              clearTimeout(app.tipAutoRefreshTimer);
-              app.tipAutoRefreshTimer = setTimeout(() => app.loadRekapTip(), 350);
+              const previous = Number(app.tipData?.daily?.[day] || 0);
+              if(app.tipData?.daily) app.tipData.daily[day] = val;
+              app.applyTipOptimisticDelta('INCOME', val - previous);
+              app.refreshTipSilently();
           }).withFailureHandler((err) => {
               // Fail: Set status to Red
               if(dot) {
@@ -2826,9 +2863,18 @@
              user: app.user.name
           };
           if(!payload.date || !payload.nominal) return ui.toast('Lengkapi Data', 'error');
-          ui.loader(true);
+          const form = document.getElementById(`form-${type === 'INCOME' ? 'income-other' : 'expense'}`);
+          const submitButton = form?.querySelector('button[type="submit"]');
+          app.setTipSubmitState(submitButton, true);
           google.script.run.withSuccessHandler(() => {
-             ui.loader(false); ui.toast('Tersimpan'); document.getElementById(`form-${type === 'INCOME' ? 'income-other' : 'expense'}`).reset(); app.loadRekapTip();
+             app.setTipSubmitState(submitButton, false);
+             ui.toast('Tersimpan');
+             form.reset();
+             app.applyTipOptimisticDelta(type, payload.nominal);
+             app.refreshTipSilently();
+          }).withFailureHandler(err => {
+             app.setTipSubmitState(submitButton, false);
+             ui.toast('Data gagal disimpan: ' + (err.message || err), 'error');
           }).apiSaveTipTransaction(type, payload);
        };
 

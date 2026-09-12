@@ -161,7 +161,9 @@ if (!mppHtml.includes('app.tipEmployeesLoaded') || !mppHtml.includes("app.setupS
 if (!mppHtml.includes("moduleToolbar.classList.toggle('d-none', !isMppPage)") || !mppHtml.includes('id="tip-year"') || !mppHtml.includes('dashboard-back-standard')) failures.push('Tombol Dashboard modul langsung belum dirapikan bersama filter periode');
 if (!chatBackend.includes('mppUpdateTipTransaction: updateMppTipTransaction') || !chatBackend.includes('function updateMppTipTransaction(') || !mppHtml.includes("app.openEditLoan('${entry.id}')")) failures.push('Pinjaman Uang Tip belum mendukung edit dari ikon pensil');
 if (!chatBackend.includes('Math.max(0, Math.min(100, val))') || !chatBackend.includes('const nonLoanBalance = Math.max(0, incomes -') || !mppHtml.includes('app.handleRwPnValueInput')) failures.push('Persentase Reward/Punishment belum dibatasi 0–100% atau masih dapat membuat saldo non-pinjaman minus');
-if (!mppHtml.includes('app.tipAutoRefreshTimer') || !mppHtml.includes('setTimeout(() => app.loadRekapTip(), 350)')) failures.push('Daily Income Tip belum memperbarui perhitungan secara otomatis');
+if (!mppHtml.includes('app.tipAutoRefreshTimer') || !mppHtml.includes('app.refreshTipSilently')) failures.push('Daily Income Tip belum memperbarui perhitungan secara otomatis');
+if (!mppHtml.includes("app.deleteTipTx('LOAN', '${entry.id}')") || !mppHtml.includes('loan-delete-button')) failures.push('Transaksi pinjaman belum memiliki tombol hapus pada matriks');
+if (!mppHtml.includes('app.applyTipOptimisticDelta') || !mppHtml.includes('app.refreshTipSilently') || !mppHtml.includes('app.loadRekapTip({ silent: true })')) failures.push('Simpan pendapatan/pengeluaran Tip masih menunggu pemuatan ulang penuh');
 try {
   const tipContext = vm.createContext({ Intl });
   new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);
