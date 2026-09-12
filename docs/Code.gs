@@ -4517,14 +4517,12 @@ function safeSalesConvertedQty_(qty, factor, row, item) {
   }
 
   const reportUnit = normalizeUnit_(row && row.unit), defaultUnit = normalizeUnit_(item && item.unit);
-  const intrinsicFactor = intrinsicStockUnitConversionFactor_(reportUnit, defaultUnit);
+  const intrinsicFactor = packagedStockUnitConversionFactor_(reportUnit, defaultUnit);
   if (reportUnit && defaultUnit && reportUnit !== defaultUnit && intrinsicFactor) {
-    const tolerance = Math.max(0.0000000001, Math.abs(intrinsicFactor) * 0.000001);
-    if (Math.abs(factor - intrinsicFactor) > tolerance) {
-      throw new Error((row && row.product || item && item.name || 'Product') + ' baris ' + (row && row.sourceRow || '-') +
-        ': konversi ' + reportUnit + ' ke ' + defaultUnit + ' tidak sesuai ukuran kemasan. Faktor wajib ' + intrinsicFactor +
-        ', bukan ' + factor + '. Upload dihentikan.');
-    }
+    // Nama unit sudah membawa ukuran kemasan yang pasti, misalnya PCK@946ML.
+    // Pakai perhitungan presisi dari ukuran tersebut dan abaikan faktor manual
+    // yang dibulatkan agar upload tidak gagal hanya karena selisih desimal kecil.
+    factor = intrinsicFactor;
   }
 
   const converted = qty * factor;
@@ -4867,6 +4865,12 @@ function intrinsicStockUnitConversionFactor_(fromUnit, toUnit) {
   return isFinite(factor) && factor > 0 ? factor : 0;
 }
 
+function packagedStockUnitConversionFactor_(fromUnit, toUnit) {
+  const from = stockUnitMeasureProfile_(fromUnit), to = stockUnitMeasureProfile_(toUnit);
+  if (!from || !to || (!from.packaged && !to.packaged)) return 0;
+  return intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
+}
+
 function savedStockUnitConversionPathFactor_(itemCode, fromUnit, toUnit, saved) {
   itemCode = String(itemCode || '').trim().toUpperCase();
   fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
@@ -4897,6 +4901,11 @@ function savedStockUnitConversionPathFactor_(itemCode, fromUnit, toUnit, saved) 
 function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, saved) {
   fromUnit = normalizeUnit_(fromUnit); toUnit = normalizeUnit_(toUnit);
   if (fromUnit === toUnit) return 1;
+  // Ukuran yang tertulis eksplisit pada unit adalah sumber paling pasti. Ini
+  // sekaligus mengoreksi rule lama yang dibulatkan, misalnya 1/946 disimpan
+  // sebagai 0.001057 untuk konversi ML -> PCK@946ML.
+  const intrinsic = packagedStockUnitConversionFactor_(fromUnit, toUnit);
+  if (intrinsic) return intrinsic;
   const direct = stockConversionKey_(itemCode, fromUnit, toUnit), inverse = stockConversionKey_(itemCode, toUnit, fromUnit);
   let factor = Number(provided && provided[direct]);
   if (!isFinite(factor) || factor <= 0) factor = saved && saved[direct] && Number(saved[direct].factor);
@@ -4910,9 +4919,7 @@ function resolveUnitConversionFactor_(itemCode, fromUnit, toUnit, provided, save
   const savedPath = savedStockUnitConversionPathFactor_(itemCode, fromUnit, toUnit, saved);
   if (savedPath) return savedPath;
 
-  // Nama kemasan dan pasangan standar hanya fallback ketika sheet belum memiliki rule.
-  const intrinsic = intrinsicStockUnitConversionFactor_(fromUnit, toUnit);
-  if (intrinsic) return intrinsic;
+  // Pasangan standar menjadi fallback ketika sheet belum memiliki rule.
   return defaultUnitConversionFactor_(fromUnit, toUnit);
 }
 

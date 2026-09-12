@@ -303,6 +303,14 @@ try {
   const londonQty = transferContext.safeSalesConvertedQty_(5, londonFactor, { product: 'LONDON CAKE', sourceRow: 2, unit: 'PCS' }, { name: 'LONDON CAKE', unit: 'BOX@15PCS' });
   if (Math.abs(londonFactor - (1 / 15)) > 0.000000001 || Math.abs(londonQty - (5 / 15)) > 0.000000001) failures.push('Sales PCS belum memakai rangkaian STOCK_UNIT_CONVERSIONS per item menuju BOX@15PCS');
   if (Math.abs(transferContext.resolveUnitConversionFactor_('LONDON-CAKE', 'BOX@15PCS', 'PCS', {}, londonConversions) - 15) > 0.000000001) failures.push('Arah balik rangkaian STOCK_UNIT_CONVERSIONS belum dihitung otomatis');
+  const roundedMilkConversions = {
+    'FRESH-MILK|ML|PCK@946ML': { itemCode: 'FRESH-MILK', fromUnit: 'ML', toUnit: 'PCK@946ML', factor: 0.001057 }
+  };
+  const milkFactor = transferContext.resolveUnitConversionFactor_('FRESH-MILK', 'ML', 'PCK@946ML', {}, roundedMilkConversions);
+  const milkQty = transferContext.safeSalesConvertedQty_(946, 0.001057, { product: 'FRESH MILK', sourceRow: 37, unit: 'ML' }, { name: 'FRESH MILK', unit: 'PCK@946ML' });
+  if (Math.abs(milkFactor - (1 / 946)) > 0.000000000001 || Math.abs(milkQty - 1) > 0.000000000001) {
+    failures.push('Konversi kemasan eksplisit belum otomatis mengoreksi faktor manual yang dibulatkan');
+  }
 } catch (error) {
   failures.push(`Uji koreksi transfer gagal: ${error.message}`);
 }
