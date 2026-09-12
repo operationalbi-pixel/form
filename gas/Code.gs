@@ -11769,6 +11769,66 @@ function taskFromRow_(r) {
   };
 }
 
+function isCombinedMppScheduleTipTask_(row) {
+  const title = String(row && row[1] || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  return title.indexOf('MPP') >= 0 && title.indexOf('SCHEDULE') >= 0 && /\bTIP\b/.test(title);
+}
+
+function copyTaskVisibility_(sourceTaskId, destinationTaskIds) {
+  const sheet = ensureSubpageVisibilitySheet_();
+  if (sheet.getLastRow() < 2 || !destinationTaskIds.length) return;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues();
+  const existing = {};
+  rows.forEach(function (row) { existing[String(row[0]) + '|' + normalizeEmployeePosition_(row[1])] = true; });
+  const additions = [];
+  rows.filter(function (row) { return String(row[0]) === sourceTaskId; }).forEach(function (row) {
+    destinationTaskIds.forEach(function (taskId) {
+      const key = taskId + '|' + normalizeEmployeePosition_(row[1]);
+      if (existing[key]) return;
+      existing[key] = true;
+      additions.push([taskId, row[1], row[2], new Date(), 'SYSTEM_SPLIT_MPP_SCHEDULE_TIP']);
+    });
+  });
+  if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
+}
+
+function splitCombinedMppScheduleTipTask_(sheet) {
+  if (!sheet || sheet.getLastRow() < 2) return;
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 13).getValues();
+  const existingIds = {};
+  rows.forEach(function (row) { existingIds[String(row[0] || '')] = true; });
+  rows.forEach(function (row, index) {
+    if (!isCombinedMppScheduleTipTask_(row)) return;
+    const sourceId = String(row[0] || '').trim();
+    if (!sourceId) return;
+    const scheduleId = sourceId + '__SCHEDULE';
+    const tipId = sourceId + '__TIP';
+    const additions = [];
+    if (!existingIds[scheduleId]) {
+      const scheduleRow = row.slice();
+      scheduleRow[0] = scheduleId;
+      scheduleRow[1] = 'Schedule';
+      scheduleRow[2] = 'Kelola jadwal kerja outlet.';
+      scheduleRow[11] = 'schedule';
+      additions.push(scheduleRow);
+      existingIds[scheduleId] = true;
+    }
+    if (!existingIds[tipId]) {
+      const tipRow = row.slice();
+      tipRow[0] = tipId;
+      tipRow[1] = 'Tip';
+      tipRow[2] = 'Kelola perhitungan dan pembagian uang tip.';
+      tipRow[11] = 'payments';
+      additions.push(tipRow);
+      existingIds[tipId] = true;
+    }
+    if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 13).setValues(additions);
+    sheet.getRange(index + 2, 2, 1, 2).setValues([['MPP', 'Kelola manpower planning dan data tim outlet.']]);
+    sheet.getRange(index + 2, 12).setValue('group');
+    copyTaskVisibility_(sourceId, [scheduleId, tipId]);
+  });
+}
+
 function ensureTaskSheet_() {
   const headers = ['ID', 'TITLE', 'DESCRIPTION', 'TYPE', 'TARGET', 'FREQUENCY', 'AUDIENCE', 'DUE_LABEL', 'ACTIVE', 'CREATED_AT', 'CREATED_BY', 'ICON', 'PAGE_ID'];
   const sheet = ensureSheet_(CONFIG.TASK_SHEET, headers);
@@ -11788,6 +11848,7 @@ function ensureTaskSheet_() {
       'FORM', 'showcaselog', 'DAILY', 'ALL', 'Hari ini', true, new Date(), 'SYSTEM', 'storefront'
     ]);
   }
+  splitCombinedMppScheduleTipTask_(sheet);
   return sheet;
 }
 

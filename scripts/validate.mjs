@@ -150,6 +150,9 @@ if (!mppHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push
 if (mppHtml.includes('id="login-view"') || mppHtml.includes('id="inp-nik"')) failures.push('Login lama masih terdapat di MPP · Schedule · Uang Tip');
 if (mppHtml.includes('<?!= include(')) failures.push('MPP · Schedule · Uang Tip masih memiliki include khusus GAS');
 if (!mppHtml.includes('@media (max-width: 900px)')) failures.push('MPP · Schedule · Uang Tip belum memiliki layout mobile');
+if (!mppHtml.includes('function requestedMppModule()') || !mppHtml.includes("view === 'schedule'") || !mppHtml.includes("view === 'tip'")) failures.push('Tombol MPP, Schedule, dan Tip belum membuka modul masing-masing');
+if (!chatBackend.includes('splitCombinedMppScheduleTipTask_(sheet)') || !chatBackend.includes("scheduleRow[1] = 'Schedule'") || !chatBackend.includes("tipRow[1] = 'Tip'")) failures.push('Menu gabungan MPP · Schedule · Tip belum dimigrasikan menjadi tiga tombol');
+if (!await text('docs/index.html').then(value => value.includes("mpp-schedule.html?view=") && value.includes('mppScheduleView(task)'))) failures.push('Dashboard belum mengarahkan tiga tombol MPP ke modul yang sesuai');
 if (!chatBackend.includes('function mppAllocateTipPoolByAttendance_(') || !chatBackend.includes('const netPool = totalIncome - totalExpense') || !chatBackend.includes('totalAttendance: attendanceAllocation.totalAttendance')) failures.push('Uang Tip belum membagi pendapatan dikurangi pengeluaran secara proporsional terhadap kehadiran');
 if (!mppHtml.includes('POOL TIP BERSIH (PENDAPATAN - PENGELUARAN)') || !mppHtml.includes('TIP DASAR PROPORSIONAL')) failures.push('Ringkasan Uang Tip belum menjelaskan mekanisme pembagian proporsional');
 if (!mppHtml.includes('Total Kehadiran Outlet') || !mppHtml.includes('Tip Dasar Proporsional') || !mppHtml.includes('app.tipStaffAdjustment')) failures.push('Laporan detail per staff belum mengikuti format pembagian proporsional terbaru');
