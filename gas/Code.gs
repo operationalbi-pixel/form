@@ -4992,7 +4992,7 @@ function stockHistoryScopedLatestCte_(location) {
 function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
   const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
     String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
-  return 'stock-history-v4-' + digest_(identity).slice(0, 36);
+  return 'stock-history-v5-' + digest_(identity).slice(0, 36);
 }
 
 function readStockHistoryPageRows_(outlet, location, item) {
@@ -8737,10 +8737,16 @@ function calculateFifoSnapshots_(history) {
   const movements = history.slice().sort(function (a, b) {
     const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
     if (dateCompare) return dateCompare;
-    // SO is the closing checkpoint for its date, regardless of when a backdated
-    // movement was uploaded. Apply it after every regular movement on that day.
-    const opnameCompare = (a.movementType === 'Stock Opname' ? 1 : 0) - (b.movementType === 'Stock Opname' ? 1 : 0);
-    if (opnameCompare) return opnameCompare;
+    // Physical-count checkpoints close the selected date. A detailed lot override
+    // is applied last so its Arrival/Stock In/Expired metadata cannot be replaced by
+    // a transfer or another backdated movement carrying the same event date.
+    const checkpointPriority = function (movement) {
+      if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') return 2;
+      if (movement.movementType === 'Stock Opname') return 1;
+      return 0;
+    };
+    const checkpointCompare = checkpointPriority(a) - checkpointPriority(b);
+    if (checkpointCompare) return checkpointCompare;
     const createdCompare = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
     if (createdCompare) return createdCompare;
     const directionCompare = (a.direction === 'IN' ? 0 : 1) - (b.direction === 'IN' ? 0 : 1);
