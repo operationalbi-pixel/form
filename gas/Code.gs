@@ -2071,8 +2071,8 @@ function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor) {
     'UPDATE ' + corrections + ' SET old_qty = old_qty * CAST(@factor AS FLOAT64), new_qty = new_qty * CAST(@factor AS FLOAT64) WHERE ' + condition + '; ' +
     'DELETE FROM ' + balances + ' WHERE ' + condition + '; ' +
     'INSERT INTO ' + balances + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
-    'WITH latest AS (SELECT * FROM ' + active + ' WHERE record_type = \'MOVEMENT\' QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
-    'SELECT outlet, location, item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() FROM latest WHERE ' + condition + ' GROUP BY outlet, location, item_code, item_name; ' +
+    stockCheckpointBalanceCtes_('') + ' SELECT l.outlet, l.location, l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() FROM latest l ' +
+    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') + ' WHERE ' + condition.replace(/item_/g, 'l.item_') + ' GROUP BY l.outlet, l.location, l.item_code, l.item_name; ' +
     'COMMIT TRANSACTION; SELECT (SELECT COUNT(*) FROM ' + active + ' WHERE ' + condition + ') AS stock_rows, (SELECT COUNT(*) FROM ' + transfers + ' WHERE ' + condition + ') AS transfer_rows;';
   return runNamedQuery_(sql, { code: itemCode, name: itemName, newUnit: newUnit, factor: factor }, { useQueryCache: false })[0] || {};
 }
@@ -4946,8 +4946,16 @@ function stockHistoryItemCondition_(location) {
 }
 
 function mapStockHistoryQueryRow_(r) {
-  const info = String(r.info || ''), isStockOpname = String(r.movement_type || '') === 'Stock Opname';
+  const info = String(r.info || ''), recordType = String(r.record_type || ''), isStockOpname = String(r.movement_type || '') === 'Stock Opname';
   let opnameBalance = null, opnameDate = '';
+  if (recordType === 'OPNAME_DETAIL') {
+    try {
+      const audit = JSON.parse(info || '{}');
+      const auditQty = Number(audit.actualQty);
+      if (isFinite(auditQty)) opnameBalance = auditQty;
+      opnameDate = String(audit.eventDate || audit.effectiveDate || r.event_date || '').slice(0, 10);
+    } catch (error) { /* legacy audit without JSON */ }
+  }
   if (isStockOpname) {
     let match = /(?:→\s*Balance|Balance)\s+(-?[\d.,]+)/i.exec(info);
     if (!match) match = /Stock awal\s+\d{4}-\d{2}-\d{2}\s+(-?[\d.,]+)/i.exec(info);
@@ -4957,6 +4965,7 @@ function mapStockHistoryQueryRow_(r) {
     opnameDate = match ? match[1] : String(r.event_date || '').slice(0, 10);
   }
   return {
+    recordType: recordType,
     recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
     date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
     movementType: String(r.movement_type || ''), info: String(r.info || ''), productionDate: String(r.production_date || ''), expiryDate: String(r.expiry_date || ''),
@@ -4969,13 +4978,13 @@ function mapStockHistoryQueryRow_(r) {
 }
 
 function stockHistorySelectFields_() {
-  return 'record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
+  return 'record_id, record_type, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_hash, source_row, created_by, created_at';
 }
 
 function stockHistoryScopedLatestCte_(location) {
   return 'WITH latest AS (SELECT ' + stockHistorySelectFields_() + ' FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
     'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
     'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1)';
 }
@@ -4983,13 +4992,56 @@ function stockHistoryScopedLatestCte_(location) {
 function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
   const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
     String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
-  return 'stock-history-v3-' + digest_(identity).slice(0, 36);
+  return 'stock-history-v4-' + digest_(identity).slice(0, 36);
 }
 
 function readStockHistoryPageRows_(outlet, location, item) {
   const sql = stockHistoryScopedLatestCte_(location) + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ORDER BY event_date, created_at';
-  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name })
-    .map(mapStockHistoryQueryRow_);
+  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name }).map(mapStockHistoryQueryRow_);
+  const audits = {};
+  rows.forEach(function (row) {
+    if (row.recordType !== 'OPNAME_DETAIL') return;
+    const key = String(row.sourceHash || '') + '|' + String(row.sourceRow || 0);
+    const previous = audits[key];
+    if (!previous || stockMovementCreatedMillis_(row) >= stockMovementCreatedMillis_(previous)) audits[key] = row;
+  });
+  return rows.filter(function (row) { return row.recordType === 'MOVEMENT'; }).map(function (row) {
+    if (row.movementType !== 'Stock Opname') return row;
+    const audit = audits[String(row.sourceHash || '') + '|' + String(row.sourceRow || 0)];
+    if (audit && audit.opnameBalance !== null && isFinite(Number(audit.opnameBalance))) row.opnameBalance = Number(audit.opnameBalance);
+    if (audit && audit.opnameDate) row.opnameDate = audit.opnameDate;
+    // Legacy H+1 rows carry the selected SO date inside the audit/info. The selected
+    // date is authoritative, so the checkpoint belongs to that day in history.
+    if (row.opnameDate) row.date = row.opnameDate;
+    return row;
+  });
+}
+
+/** Returns the absolute balance immediately before endDateExclusive. A valid Stock
+ * Opname is a closing checkpoint: movements on/before its date cannot move it. */
+function stockCheckpointBalanceUntil_(history, endDateExclusive) {
+  const rows = (history || []).filter(function (row) {
+    const date = String(row.date || '').slice(0, 10);
+    return !endDateExclusive || date < endDateExclusive;
+  });
+  let checkpoint = null;
+  rows.forEach(function (row) {
+    if (row.movementType !== 'Stock Opname' || row.opnameBalance === null || !isFinite(Number(row.opnameBalance))) return;
+    const date = String(row.opnameDate || row.date || '').slice(0, 10);
+    if (!date) return;
+    if (!checkpoint || date > checkpoint.date || (date === checkpoint.date && stockMovementCreatedMillis_(row) >= checkpoint.created)) {
+      checkpoint = { date: date, qty: Number(row.opnameBalance), created: stockMovementCreatedMillis_(row) };
+    }
+  });
+  return rows.reduce(function (total, row) {
+    const date = String(row.date || '').slice(0, 10);
+    if (checkpoint) {
+      if (date <= checkpoint.date || row.movementType === 'Stock Opname') return total;
+    }
+    if (row.direction === 'IN') return total + Number(row.qty || 0);
+    if (row.direction === 'OUT') return total - Number(row.qty || 0);
+    return total;
+  }, checkpoint ? checkpoint.qty : 0);
 }
 
 function getStockHistory(token, payload) {
@@ -5019,29 +5071,25 @@ function getStockHistory(token, payload) {
       const date = String(row.date || '').slice(0, 10);
       return date >= monthStart && date < monthEnd;
     });
-    const movementQtyUntil = function (endDate) {
-      return stockHistoryRows.reduce(function (total, row) {
-        const date = String(row.date || '').slice(0, 10);
-        if (endDate && date >= endDate) return total;
-        if (row.direction === 'IN') return total + Number(row.qty || 0);
-        if (row.direction === 'OUT') return total - Number(row.qty || 0);
-        return total;
-      }, 0);
-    };
-    const currentQty = movementQtyUntil('');
-    const periodClosingQty = movementQtyUntil(bounds.end);
+    const currentQty = stockCheckpointBalanceUntil_(stockHistoryRows, '');
+    const periodClosingQty = stockCheckpointBalanceUntil_(stockHistoryRows, bounds.end);
     const snapshots = calculateFifoSnapshots_(fifoInput);
     const dayNet = {};
     visibleRows.forEach(function (row) {
       if (row.direction !== 'IN' && row.direction !== 'OUT') return;
+      if (row.movementType === 'Stock Opname' && row.opnameBalance !== null) return;
       const date = String(row.date || '').slice(0, 10);
       dayNet[date] = Number(dayNet[date] || 0) + (row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0));
     });
-    const fifoLotsByDate = {}, visibleDates = Object.keys(dayNet).sort().reverse();
+    const fifoLotsByDate = {}, balancesByDate = {}, visibleDates = Object.keys(dayNet).sort().reverse();
     let runningBalance = periodClosingQty;
     visibleDates.forEach(function (date) {
       fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], runningBalance);
       runningBalance -= Number(dayNet[date] || 0);
+    });
+    visibleRows.forEach(function (row) {
+      const date = String(row.date || '').slice(0, 10);
+      if (date && balancesByDate[date] === undefined) balancesByDate[date] = stockCheckpointBalanceUntil_(stockHistoryRows, stockIsoDateOffset_(date, 1));
     });
 
     const employeeNames = readEmployeeNameMap_();
@@ -5055,7 +5103,7 @@ function getStockHistory(token, payload) {
     const response = {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
       month: bounds.month, periodClosingQty: periodClosingQty,
-      history: visibleRows, fifoLotsByDate: fifoLotsByDate,
+      history: visibleRows, fifoLotsByDate: fifoLotsByDate, balancesByDate: balancesByDate,
       hasPrevious: fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < monthStart; }), hasNext: bounds.month < bounds.currentMonth,
       currentLots: currentLots,
       fifoFefoStatus: stockFifoFefoStatus_(fifoInput, item),
@@ -8230,9 +8278,10 @@ function backfillStockBalanceSummaries() {
   ensureStockCardInfrastructure_();
   const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
   const sql = 'TRUNCATE TABLE ' + table + '; INSERT INTO ' + table +
-    ' (outlet, location, item_code, item_name, current_qty, updated_at) ' + latestStockMovementCte_() +
-    ' SELECT outlet, location, item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() ' +
-    'FROM latest GROUP BY outlet, location, item_code, item_name; SELECT DISTINCT outlet, location FROM ' + table;
+    ' (outlet, location, item_code, item_name, current_qty, updated_at) ' + stockCheckpointBalanceCtes_('') +
+    ' SELECT l.outlet, l.location, l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() ' +
+    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
+    ' GROUP BY l.outlet, l.location, l.item_code, l.item_name; SELECT DISTINCT outlet, location FROM ' + table;
   const scopes = runNamedQuery_(sql, {}, { useQueryCache: false });
   const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), cacheKeys = [];
   Object.keys(all).forEach(function (key) {
@@ -8240,6 +8289,7 @@ function backfillStockBalanceSummaries() {
   });
   scopes.forEach(function (scope) {
     properties.setProperty(stockBalanceStateKey_('ready', scope.outlet, scope.location), '1');
+    properties.setProperty(stockBalanceStateKey_('checkpoint-v1', scope.outlet, scope.location), '1');
     cacheKeys.push(stockItemsCacheKey_(scope.outlet, scope.location));
   });
   removeScriptCacheKeys_(cacheKeys);
@@ -8247,8 +8297,9 @@ function backfillStockBalanceSummaries() {
 }
 
 function readStockLedgerBalanceRows_(outlet, location) {
-  const sql = latestStockMovementCte_() + ' SELECT item_code, item_name, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name';
+  const sql = stockCheckpointBalanceCtes_('') + ' SELECT l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty ' +
+    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
+    ' WHERE l.outlet = @outlet AND l.location = @location GROUP BY l.item_code, l.item_name';
   return runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
 }
 
@@ -8257,9 +8308,9 @@ function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
   const sql = 'BEGIN TRANSACTION; ' +
     'DELETE FROM ' + table + ' WHERE outlet = @outlet AND location = @location; ' +
     'INSERT INTO ' + table + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
-    latestStockMovementCte_() + ' SELECT @outlet, @location, item_code, item_name, ' +
-    'SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), CURRENT_TIMESTAMP() ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location GROUP BY item_code, item_name; ' +
+    stockCheckpointBalanceCtes_('') + ' SELECT @outlet, @location, l.item_code, l.item_name, ' +
+    stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
+    ' WHERE l.outlet = @outlet AND l.location = @location GROUP BY l.item_code, l.item_name; ' +
     'COMMIT TRANSACTION;';
   runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
 
@@ -8267,6 +8318,7 @@ function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
   const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
   properties.setProperty(readyKey, '1');
+  properties.setProperty(stockBalanceStateKey_('checkpoint-v1', outlet, location), '1');
   if (String(properties.getProperty(dirtyKey) || '') === String(expectedDirtyToken || '')) {
     properties.deleteProperty(dirtyKey);
   }
@@ -8277,7 +8329,13 @@ function readStockBalanceRows_(outlet, location) {
   const properties = PropertiesService.getScriptProperties();
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
   const ready = properties.getProperty(readyKey) === '1';
+  const checkpointReadyKey = stockBalanceStateKey_('checkpoint-v1', outlet, location);
   try {
+    // Existing compact summaries were calculated as a raw ledger sum. Rebuild each
+    // outlet/location once after this release so historical SO checkpoints take effect.
+    if (properties.getProperty(checkpointReadyKey) !== '1') {
+      rebuildStockBalanceSummary_(outlet, location, String(properties.getProperty(stockBalanceStateKey_('dirty', outlet, location)) || ''));
+    }
     // The item list must never wait for a complete ledger scan. Serve the compact
     // balance summary immediately; a one-minute trigger refreshes dirty scopes.
     const sql = 'SELECT item_code, item_name, current_qty FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances` ' +
@@ -8502,8 +8560,9 @@ function readStockHiddenMap_(outlet, location) {
 }
 
 function readCurrentStockCodeQtyMap_(outlet, location) {
-  const sql = latestStockMovementCte_() + ' SELECT item_code, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location AND item_code IS NOT NULL AND item_code != \'\' GROUP BY item_code';
+  const sql = stockCheckpointBalanceCtes_('') + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
+    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
+    ' WHERE l.outlet = @outlet AND l.location = @location AND l.item_code IS NOT NULL AND l.item_code != \'\' GROUP BY l.item_code';
   const map = {};
   runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
     map[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
@@ -8512,9 +8571,10 @@ function readCurrentStockCodeQtyMap_(outlet, location) {
 }
 
 function readStockCodeQtyMapAtDate_(outlet, location, eventDate) {
-  const sql = latestStockMovementCte_() + ' SELECT item_code, SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) AS current_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location AND event_date <= CAST(@eventDate AS DATE) ' +
-    'AND item_code IS NOT NULL AND item_code != \'\' GROUP BY item_code';
+  const sql = stockCheckpointBalanceCtes_('@eventDate') + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
+    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
+    ' WHERE l.outlet = @outlet AND l.location = @location AND l.event_date <= CAST(@eventDate AS DATE) ' +
+    'AND l.item_code IS NOT NULL AND l.item_code != \'\' GROUP BY l.item_code';
   const map = {};
   runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
     map[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
@@ -8526,9 +8586,9 @@ function getCurrentStock_(outlet, location, itemCode, itemName) {
   const itemCondition = isShowcaseLocation_(location)
     ? 'item_name = @item'
     : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
-  const sql = latestStockMovementCte_() + ' SELECT COUNT(*) AS movement_count, COALESCE(SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END), 0) AS current_qty ' +
-    'FROM latest WHERE outlet = @outlet AND location = @location ' +
-    'AND ' + itemCondition;
+  const sql = stockCheckpointBalanceCtes_('') + ' SELECT COUNT(*) AS movement_count, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty ' +
+    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') + ' WHERE l.outlet = @outlet AND l.location = @location ' +
+    'AND ' + itemCondition.replace(/item_/g, 'l.item_');
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: itemCode, item: itemName }, { useQueryCache: false });
   return { count: rows.length ? Number(rows[0].movement_count || 0) : 0, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
 }
@@ -8677,6 +8737,10 @@ function calculateFifoSnapshots_(history) {
   const movements = history.slice().sort(function (a, b) {
     const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
     if (dateCompare) return dateCompare;
+    // SO is the closing checkpoint for its date, regardless of when a backdated
+    // movement was uploaded. Apply it after every regular movement on that day.
+    const opnameCompare = (a.movementType === 'Stock Opname' ? 1 : 0) - (b.movementType === 'Stock Opname' ? 1 : 0);
+    if (opnameCompare) return opnameCompare;
     const createdCompare = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
     if (createdCompare) return createdCompare;
     const directionCompare = (a.direction === 'IN' ? 0 : 1) - (b.direction === 'IN' ? 0 : 1);
@@ -8729,7 +8793,14 @@ function calculateFifoSnapshots_(history) {
     const qty = Number(movement.qty || 0), movementDate = String(movement.date || '').slice(0, 10);
     movement.fifoUsageLots = [];
     movement.fifoUncovered = 0;
-    if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
+    if (movement.movementType === 'Stock Opname' && movement.opnameBalance !== null && isFinite(Number(movement.opnameBalance))) {
+      // The physical count replaces every previous lot. Its unit-normalized audit
+      // value is authoritative; a generic lot keeps the balance traceable even when
+      // the SO file did not contain production/expiry metadata.
+      lots.length = 0; uncoveredQueue.length = 0;
+      const checkpointQty = Math.max(0, Number(movement.opnameBalance));
+      if (checkpointQty > 0.0000001) lots.push({ qty: checkpointQty, productionDate: '', expiryDate: '', sourceDate: movementDate, showcaseDate: movementDate });
+    } else if (movement.direction === 'LOT' && movement.movementType === 'Lot Balance Override') {
       let override = null;
       try { override = JSON.parse(String(movement.info || '')); } catch (error) { override = null; }
       const supersededFlowOverride = override && activeRecalculation && movement !== activeRecalculation &&
@@ -10487,6 +10558,32 @@ function transactionRepairType_(payload) {
   const type = String(payload && payload.repairType || 'SALES_COGS').trim().toUpperCase();
   if (type !== 'SALES_COGS' && type !== 'ITEM_JOURNAL') throw new Error('Jenis transaksi repair belum didukung.');
   return type;
+}
+
+function stockCheckpointBalanceCtes_(dateParameter) {
+  const checkpointDate = "COALESCE(SAFE_CAST(JSON_VALUE(info, '$.eventDate') AS DATE), SAFE_CAST(JSON_VALUE(info, '$.effectiveDate') AS DATE), event_date)";
+  const dateLimit = dateParameter ? ' AND ' + checkpointDate + ' <= CAST(' + dateParameter + ' AS DATE)' : '';
+  return 'WITH latest_all AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type IN (\'MOVEMENT\',\'OPNAME_DETAIL\') ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
+    'latest AS (SELECT * FROM latest_all WHERE record_type = \'MOVEMENT\'), ' +
+    'opname_checkpoints AS (SELECT outlet, location, COALESCE(NULLIF(item_code, \'\'), CONCAT(\'#NAME#\', item_name)) AS item_key, ' +
+    'SAFE_CAST(JSON_VALUE(info, \'$.actualQty\') AS FLOAT64) AS checkpoint_qty, ' + checkpointDate + ' AS checkpoint_date, created_at ' +
+    'FROM latest_all WHERE record_type = \'OPNAME_DETAIL\' AND movement_type = \'Stock Opname Audit\' ' +
+    'AND SAFE_CAST(JSON_VALUE(info, \'$.actualQty\') AS FLOAT64) IS NOT NULL' + dateLimit + '), ' +
+    'latest_checkpoint AS (SELECT * FROM opname_checkpoints QUALIFY ROW_NUMBER() OVER (PARTITION BY outlet, location, item_key ' +
+    'ORDER BY checkpoint_date DESC, created_at DESC) = 1)';
+}
+
+function stockCheckpointJoinSql_(movementAlias, checkpointAlias) {
+  return checkpointAlias + '.outlet = ' + movementAlias + '.outlet AND ' + checkpointAlias + '.location = ' + movementAlias + '.location AND ' +
+    checkpointAlias + '.item_key = COALESCE(NULLIF(' + movementAlias + '.item_code, \'\'), CONCAT(\'#NAME#\', ' + movementAlias + '.item_name))';
+}
+
+function stockCheckpointBalanceSql_(movementAlias, checkpointAlias) {
+  const signed = 'CASE WHEN ' + movementAlias + '.direction = \'IN\' THEN ' + movementAlias + '.qty WHEN ' + movementAlias + '.direction = \'OUT\' THEN -' + movementAlias + '.qty ELSE 0 END';
+  return 'COALESCE(ANY_VALUE(' + checkpointAlias + '.checkpoint_qty), 0) + SUM(CASE ' +
+    'WHEN ' + checkpointAlias + '.checkpoint_date IS NULL THEN ' + signed + ' ' +
+    'WHEN ' + movementAlias + '.movement_type != \'Stock Opname\' AND ' + movementAlias + '.event_date > ' + checkpointAlias + '.checkpoint_date THEN ' + signed + ' ELSE 0 END)';
 }
 
 function transactionRepairPreviewResult_(plan, repairType) {
