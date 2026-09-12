@@ -259,7 +259,9 @@ if (!backend.includes("event_date: prepared.eventDate") || !backend.includes("ev
 if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
 if (!backend.includes("'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'")) failures.push('Parser Stock Opname belum mengikuti header file Excel yang disediakan');
 if (!backend.includes("header.columns.BRANCH !== 'A'") || !backend.includes("cells['A' + rowNumber]")) failures.push('Stock Opname belum mewajibkan dan membaca BRANCH dari kolom A');
-if (!backend.includes('employee.outlet !== \'BIHQ\' && (reportOutlets.length !== 1') || !frontendStockCard.includes("APP.user&&APP.user.outlet==='BIHQ'")) failures.push('BIHQ belum dapat memproses satu file multi-branch atau pembatasan outlet belum diterapkan');
+if (!backend.includes("if (employee.outlet !== 'BIHQ') throw new Error('Upload Stock Opname hanya dapat dilakukan oleh BIHQ.')") ||
+    !frontendStockCard.includes("byId('stockOpnameButton').classList.toggle('hidden',!admin)") ||
+    !frontendStockCard.includes("if(!APP.user||!APP.user.isAdmin||APP.user.outlet!=='BIHQ')")) failures.push('Upload Stock Opname belum dibatasi khusus BIHQ pada UI dan backend');
 if (!backend.includes("if (actualQty < 0) { negativeQty.push")) failures.push('Stock Opname belum menolak dan merinci item dengan QTY negatif');
 if (!backend.includes('const effectiveDate = eventDate;') ||
     !backend.includes("'Hasil Stock Opname tanggal '") ||
@@ -407,6 +409,13 @@ try {
   const convertedOpname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-unit.xlsx', base64: 'UNIT-DATA', eventDate: '2026-09-01', location: 'Store' });
   const convertedLine = convertedOpname.items.find(item => item.item.code === 'ITEM1');
   if (!convertedLine || convertedLine.actualQty !== 2 || convertedLine.delta !== -8 || convertedLine.item.unit !== 'BOX') failures.push('Stock Opname belum memakai QTY file setelah Unit file menjadi Unit Default Master');
+  backendContext.findEmployee_ = () => ({ nik: 'OUTLET-1', outlet: 'BICP' });
+  let outletOpnameRejected = false;
+  try {
+    backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO-outlet.xlsx', base64: 'OUTLET-DATA', eventDate: '2026-09-01', location: 'Store' });
+  } catch (error) { outletOpnameRejected = /hanya dapat dilakukan oleh BIHQ/.test(error.message); }
+  if (!outletOpnameRejected) failures.push('Backend masih menerima Upload Stock Opname dari akun outlet');
+  backendContext.findEmployee_ = () => ({ nik: 'HQ-1', outlet: 'BIHQ' });
   let inconsistentNewItemRejected = false;
   try {
     backendContext.prepareStockOpnameMasterItems_([
