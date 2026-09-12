@@ -114,7 +114,7 @@
       { id: 'static:chat', title: 'Pesan / Chat', icon: 'chat', type: 'static', url: 'chat.html?v=20260826-chat110' },
       { id: 'static:stock-card', title: 'Stock Card', icon: 'inventory_2', type: 'static', url: 'stock-card.html?v=20260912-sales-background1' },
       { id: 'static:lost-found', title: 'Lost & Found', icon: 'search', type: 'static', url: 'lost-and-found.html' },
-      { id: 'static:mpp', title: 'MPP', icon: 'calendar_month', type: 'static', url: 'mpp-schedule.html?v=20260912-module-label1' },
+      { id: 'static:mpp', title: 'MPP', icon: 'calendar_month', type: 'static', url: 'mpp-schedule.html?v=20260912-tip-staff1' },
       { id: 'static:sales', title: 'Sales Analysis', icon: 'analytics', type: 'static', url: 'sales-analysis.html' },
       { id: 'static:sosialisasi', title: 'Sosialisasi', icon: 'campaign', type: 'static', url: 'sosialisasi.html' },
       { id: 'static:showcase', title: 'Showcase Log', icon: 'storefront', type: 'static', url: 'showcaselog.html' }
