@@ -16272,6 +16272,33 @@ function mppLegacyDeleteTipTransaction_(mode, id) {
   return { status: 'FAILED', message: 'ID not found' };
 }
 
+function mppAllocateTipPoolByAttendance_(staffMap, netPool) {
+  const staff = Object.values(staffMap || {});
+  const totalAttendance = staff.reduce(function (total, item) { return total + Number(item.daysCount || 0); }, 0);
+  const roundedPool = Math.round(Number(netPool || 0));
+  if (!totalAttendance) return { totalAttendance: 0, ratePerAttendance: 0, allocated: 0 };
+
+  const allocations = staff.map(function (item) {
+    const exact = roundedPool * Number(item.daysCount || 0) / totalAttendance;
+    const base = Math.trunc(exact);
+    return { item: item, exact: exact, amount: base, fraction: Math.abs(exact - base) };
+  });
+  let remainder = roundedPool - allocations.reduce(function (total, row) { return total + row.amount; }, 0);
+  allocations.sort(function (a, b) {
+    return b.fraction - a.fraction || String(a.item.nik || '').localeCompare(String(b.item.nik || ''));
+  });
+  for (let i = 0; remainder !== 0 && allocations.length; i = (i + 1) % allocations.length) {
+    allocations[i].amount += remainder > 0 ? 1 : -1;
+    remainder += remainder > 0 ? -1 : 1;
+  }
+  allocations.forEach(function (row) { row.item.tipDaily = row.amount; });
+  return {
+    totalAttendance: totalAttendance,
+    ratePerAttendance: roundedPool / totalAttendance,
+    allocated: allocations.reduce(function (total, row) { return total + row.amount; }, 0)
+  };
+}
+
 /**
  * KALKULASI PEMBAGIAN TIP BARU
  * Updated to handle 'ALL' outlet for BIHQ Dashboard
@@ -16390,7 +16417,7 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
   // --- DAFTAR KODE ABSENSI YANG TIDAK DAPAT TIP (Blacklist) ---
   const OFF_CODES = ['OFF', 'CT', 'XO', 'S', 'I', 'A', 'RS', '', '-', null, 'UNDEFINED'];
 
-  // --- STEP 1: Hitung Daily Tip (Overwrite Logic) ---
+  // --- STEP 1: Hitung seluruh pendapatan harian (nilai terakhir per tanggal) ---
   let totalDailyIncomeAccumulated = 0;
   let dailyIncomeMap = {};
   for(let d=1; d<=daysInMonth; d++) dailyIncomeMap[d] = 0;
@@ -16406,7 +16433,7 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
       totalDailyIncomeAccumulated += dailyIncomeMap[d];
   }
 
-  // Loop setiap hari untuk mencatat record absensi SEMUA staff
+  // --- STEP 2: Hitung bobot kehadiran setiap staff dari Schedule ---
   for(let d=1; d<=daysInMonth; d++) {
      const incomeToday = dailyIncomeMap[d];
 
@@ -16433,18 +16460,11 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
          }
      });
 
-     let share = 0;
-     if(incomeToday > 0 && staffPresent.length > 0) {
-         share = incomeToday / staffPresent.length;
-     }
-
      Object.values(staffMap).forEach(staff => {
          const code = staff.tempCode;
          const isPresent = staffPresent.includes(staff.nik);
-         const received = isPresent ? share : 0;
 
          if(isPresent) {
-             staff.tipDaily += received;
              staff.daysCount++;
          }
 
@@ -16452,36 +16472,30 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
              d: d,
              code: code,
              tipIn: incomeToday,
-             share: received
+             share: 0
          });
      });
   }
 
-  // --- STEP 2: Hitung Other Income (Bagi Rata ke All Staff) ---
+  // --- STEP 3: Konsolidasikan pendapatan dan pengeluaran, lalu bagi proporsional ---
   let totalOtherIncome = 0;
   tipData.income.filter(i => i.type === 'OTHER').forEach(inc => totalOtherIncome += Number(inc.nominal));
-
-  if(totalOtherIncome > 0 && totalStaffCount > 0) {
-     const shareOther = totalOtherIncome / totalStaffCount;
-     Object.values(staffMap).forEach(s => {
-        s.shareOtherIncome += shareOther;
-        s.details.push(`Pendapatan ${mppFormatRupiah_(totalOtherIncome)} dibagi ${totalStaffCount} staff : +${mppFormatRupiah_(shareOther)}`);
-     });
-  }
-
-  // --- STEP 3: Hitung Expense (Bagi Rata ke All Staff) ---
   let totalExpense = 0;
   tipData.expense.forEach(exp => totalExpense += Number(exp.nominal));
+  const totalIncome = totalDailyIncomeAccumulated + totalOtherIncome;
+  const netPool = totalIncome - totalExpense;
+  const attendanceAllocation = mppAllocateTipPoolByAttendance_(staffMap, netPool);
+  Object.values(staffMap).forEach(function (staff) {
+    staff.dailyRecords.forEach(function (record) {
+      const normalizedCode = String(record.code || '').trim().toUpperCase();
+      record.share = OFF_CODES.includes(normalizedCode) ? 0 : attendanceAllocation.ratePerAttendance;
+    });
+    staff.details.push(
+      `Pool bersih ${mppFormatRupiah_(netPool)} × ${staff.daysCount} kehadiran ÷ ${attendanceAllocation.totalAttendance} total kehadiran: ${mppFormatRupiah_(staff.tipDaily)}`
+    );
+  });
 
-  if(totalExpense > 0 && totalStaffCount > 0) {
-     const shareExp = totalExpense / totalStaffCount;
-     Object.values(staffMap).forEach(s => {
-        s.shareExpense += shareExp;
-        s.details.push(`Pengeluaran ${mppFormatRupiah_(totalExpense)} dibagi ${totalStaffCount} staff : -${mppFormatRupiah_(shareExp)}`);
-     });
-  }
-
-  // --- STEP 4: Reward & Punishment ---
+  // --- STEP 4: Reward & Punishment (penyesuaian setelah pembagian dasar) ---
   tipData.rwpn.forEach(rp => {
      const targetNik = rp.nik;
      const targetStaff = staffMap[targetNik];
@@ -16543,8 +16557,8 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
   // --- FINAL CALCULATION ---
   let report = [];
   Object.values(staffMap).forEach(s => {
-     const incomes = s.tipDaily + s.shareOtherIncome + s.personalReward + s.sharePunishAddition;
-     const outcomes = s.shareExpense + s.personalPunish + s.shareRewardDeduction + s.loan;
+     const incomes = s.tipDaily + s.personalReward + s.sharePunishAddition;
+     const outcomes = s.personalPunish + s.shareRewardDeduction + s.loan;
 
      s.finalTip = Math.floor(incomes - outcomes);
      s.totalTip = Math.floor(s.tipDaily);
@@ -16557,16 +16571,22 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
     mode: 'SINGLE_OUTLET',
     meta: {
       outlet, month, year,
-      totalIncome: totalDailyIncomeAccumulated + totalOtherIncome,
+      totalIncome: totalIncome,
       totalExpense: totalExpense,
       totalLoan: totalLoanAll,
-      finalBalance: (totalDailyIncomeAccumulated + totalOtherIncome) - totalExpense
+      finalBalance: netPool,
+      totalAttendance: attendanceAllocation.totalAttendance,
+      ratePerAttendance: attendanceAllocation.ratePerAttendance,
+      allocatedBaseTip: attendanceAllocation.allocated
     },
     daily: dailyIncomeMap,
     rawData: {
         expenses: tipData.expense,
         otherIncomes: tipData.income.filter(i => i.type === 'OTHER'),
-        totalStaff: totalStaffCount
+        totalStaff: totalStaffCount,
+        netPool: netPool,
+        totalAttendance: attendanceAllocation.totalAttendance,
+        ratePerAttendance: attendanceAllocation.ratePerAttendance
     },
     staffReport: report
   };

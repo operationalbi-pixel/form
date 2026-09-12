@@ -150,6 +150,20 @@ if (!mppHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push
 if (mppHtml.includes('id="login-view"') || mppHtml.includes('id="inp-nik"')) failures.push('Login lama masih terdapat di MPP · Schedule · Uang Tip');
 if (mppHtml.includes('<?!= include(')) failures.push('MPP · Schedule · Uang Tip masih memiliki include khusus GAS');
 if (!mppHtml.includes('@media (max-width: 900px)')) failures.push('MPP · Schedule · Uang Tip belum memiliki layout mobile');
+if (!chatBackend.includes('function mppAllocateTipPoolByAttendance_(') || !chatBackend.includes('const netPool = totalIncome - totalExpense') || !chatBackend.includes('totalAttendance: attendanceAllocation.totalAttendance')) failures.push('Uang Tip belum membagi pendapatan dikurangi pengeluaran secara proporsional terhadap kehadiran');
+if (!mppHtml.includes('POOL TIP BERSIH (PENDAPATAN - PENGELUARAN)') || !mppHtml.includes('TIP DASAR PROPORSIONAL')) failures.push('Ringkasan Uang Tip belum menjelaskan mekanisme pembagian proporsional');
+if (!mppHtml.includes('Total Kehadiran Outlet') || !mppHtml.includes('Tip Dasar Proporsional') || !mppHtml.includes('app.tipStaffAdjustment')) failures.push('Laporan detail per staff belum mengikuti format pembagian proporsional terbaru');
+if (!mppHtml.includes("orientation: 'landscape'") || !mppHtml.includes("'Tip Proporsional', 'Penyesuaian', 'Pinjaman', 'Total Diterima'")) failures.push('Laporan summary bulanan belum menampilkan komponen pembagian tip terbaru');
+try {
+  const tipContext = vm.createContext({ Intl });
+  new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);
+  const positive = vm.runInContext("(function(){var staff={a:{nik:'A',daysCount:2,tipDaily:0},b:{nik:'B',daysCount:1,tipDaily:0}};var result=mppAllocateTipPoolByAttendance_(staff,100);return {a:staff.a.tipDaily,b:staff.b.tipDaily,total:result.allocated,attendance:result.totalAttendance};})()", tipContext);
+  const negative = vm.runInContext("(function(){var staff={a:{nik:'A',daysCount:2,tipDaily:0},b:{nik:'B',daysCount:1,tipDaily:0}};var result=mppAllocateTipPoolByAttendance_(staff,-100);return {a:staff.a.tipDaily,b:staff.b.tipDaily,total:result.allocated};})()", tipContext);
+  if (positive.a !== 67 || positive.b !== 33 || positive.total !== 100 || positive.attendance !== 3) failures.push('Pembulatan proporsional Uang Tip tidak menjaga total pool positif');
+  if (negative.a !== -67 || negative.b !== -33 || negative.total !== -100) failures.push('Pembulatan proporsional Uang Tip tidak menjaga total pool negatif');
+} catch (error) {
+  failures.push(`Pengujian pembagian proporsional Uang Tip gagal: ${error.message}`);
+}
 const mppStaticHtml = mppHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
 const mppIds = [...mppStaticHtml.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]);
 const mppDuplicateIds = [...new Set(mppIds.filter((id, index) => mppIds.indexOf(id) !== index))];
