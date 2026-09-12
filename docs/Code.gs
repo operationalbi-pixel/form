@@ -9608,6 +9608,8 @@ function parseSalesCogsReport_(base64, fileName) {
       transactionDate: parseReportDate_(reportCell_(cells, header, 'SALES DATE', rowNumber), 'EVENT', rowNumber, 'Sales Date'),
       outletName: cleanText_(reportCell_(cells, header, 'BRANCH', rowNumber), 180),
       menu: cleanText_(reportCell_(cells, header, 'MENU', rowNumber), 180), product: product,
+      productCategory: cleanText_(reportCell_(cells, header, 'PRODUCT CATEGORY', rowNumber) ||
+        reportCell_(cells, header, 'CATEGORY', rowNumber) || cells['I' + rowNumber], 120),
       unit: normalizeUnit_(reportCell_(cells, header, 'UNIT', rowNumber)), qty: qty });
   });
   if (invalid.length) throw new Error('QTY tidak valid pada: ' + invalid.slice(0, 12).join(', ') + '.');
@@ -9749,6 +9751,27 @@ function prepareSalesCogsImport_(employee, payload, allowPending, options) {
   if (invalidOutlets.length) throw new Error('Outlet belum terdaftar pada STORE CODE: ' + invalidOutlets.filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ') + '.');
   const rows = Object.keys(grouped).map(function (key) { return grouped[key]; }).sort(function (a, b) { return a.transactionDate.localeCompare(b.transactionDate) || a.outlet.localeCompare(b.outlet); });
   const catalogs = salesMappingCatalog_(), mappings = readSalesProductMappings_(), unresolved = {}, resolved = [];
+  const wipRecipeNames = {};
+  (catalogs.wipAll || []).forEach(function (item) {
+    const nameKey = normalizeStoreName_(item.name);
+    if (nameKey) wipRecipeNames[nameKey] = true;
+  });
+  const missingWipRecipeMap = {};
+  rows.forEach(function (row) {
+    if (normalizeHeader_(row.productCategory) !== 'WIP FOOD' || wipRecipeNames[normalizeStoreName_(row.product)]) return;
+    const key = normalizeStoreName_(row.product) + '|' + normalizeStoreName_(row.menu);
+    if (!missingWipRecipeMap[key]) missingWipRecipeMap[key] = { product: row.product, menu: row.menu };
+  });
+  const missingWipRecipes = Object.keys(missingWipRecipeMap).map(function (key) { return missingWipRecipeMap[key]; })
+    .sort(function (a, b) { return a.product.localeCompare(b.product) || a.menu.localeCompare(b.menu); });
+  if (missingWipRecipes.length) {
+    if (!allowPending) {
+      throw new Error('Produk berkategori WIP FOOD belum terdaftar pada Bill of Material (WIP_RECIPES): ' +
+        missingWipRecipes.slice(0, 12).map(function (item) { return item.product + ' · ' + item.menu; }).join(', ') +
+        '. Silakan hubungi tim F&B untuk melengkapi resep sebelum upload dilanjutkan.');
+    }
+    return { requiresWipRecipe: true, fileName: fileName, missingWipRecipes: missingWipRecipes, sourceItemCount: rows.length };
+  }
   rows.forEach(function (row) {
     const match = resolveSalesTarget_(row.product, catalogs, mappings);
     if (!match.target) {
@@ -9833,7 +9856,7 @@ function previewSalesCogsUpload(token, payload) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
     const prepared = prepareSalesCogsImport_(employee, payload || {}, true);
-    if (prepared.requiresMapping || prepared.requiresConversion) return prepared;
+    if (prepared.requiresWipRecipe || prepared.requiresMapping || prepared.requiresConversion) return prepared;
     return { verified: true, fileName: prepared.fileName, outlet: prepared.outlets.join(', '), outlets: prepared.outlets,
       transactionDate: prepared.dates[0], transactionDates: prepared.dates, itemCount: prepared.rows.length,
       showcaseRowsSkipped: prepared.showcaseRows.length, duplicateItemsSkipped: prepared.duplicateRowsSkipped,
