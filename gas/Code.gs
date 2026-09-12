@@ -176,6 +176,7 @@ function apiActions_() {
     mppSaveSchedule: saveMppSchedule,
     mppGetTipData: getMppTipData,
     mppSaveTipTransaction: saveMppTipTransaction,
+    mppUpdateTipTransaction: updateMppTipTransaction,
     mppDeleteTipTransaction: deleteMppTipTransaction,
     mppCalculateTipDistribution: calculateMppTipDistribution,
     bootstrap: getStockCardBootstrap,
@@ -16277,7 +16278,31 @@ function saveMppTipTransaction(token, mode, payload) {
     payload.user = employee.name;
     const normalizedMode = String(mode || '').toUpperCase();
     if (['INCOME', 'EXPENSE', 'LOAN', 'REWARD_PUNISH'].indexOf(normalizedMode) < 0) throw new Error('Jenis transaksi tip tidak valid.');
+    if (normalizedMode === 'REWARD_PUNISH' && String(payload.type || '').toUpperCase() === 'PERCENT') {
+      const percent = Number(payload.value);
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error('Persentase Reward/Punishment harus antara 0 sampai 100%.');
+    }
+    if (normalizedMode === 'LOAN' && (!payload.date || !payload.nik || !payload.name || !Number.isFinite(Number(payload.nominal)) || Number(payload.nominal) <= 0)) {
+      throw new Error('Tanggal, staff, dan nominal pinjaman wajib diisi dengan benar.');
+    }
     return mppWithWriteLock_(function () { return mppLegacySaveTipTransaction_(normalizedMode, payload); });
+  });
+}
+
+function updateMppTipTransaction(token, mode, id, payload) {
+  return safe_(function () {
+    const employee = mppSessionEmployee_(token);
+    const normalizedMode = String(mode || '').toUpperCase();
+    if (normalizedMode !== 'LOAN') throw new Error('Saat ini hanya transaksi pinjaman yang dapat diedit.');
+    if (!id) throw new Error('ID pinjaman tidak ditemukan.');
+    payload = Object.assign({}, payload || {});
+    payload.outlet = mppAllowedOutlet_(employee, payload.outlet, false);
+    payload.user = employee.name;
+    if (!payload.date || !payload.nik || !payload.name || !Number.isFinite(Number(payload.nominal)) || Number(payload.nominal) <= 0) {
+      throw new Error('Tanggal, staff, dan nominal pinjaman wajib diisi dengan benar.');
+    }
+    mppAssertRecordAccess_(employee, MPP_SHEET_TIP_LOAN, id);
+    return mppWithWriteLock_(function () { return mppLegacyUpdateTipTransaction_(normalizedMode, id, payload); });
   });
 }
 
@@ -16565,6 +16590,30 @@ function mppLegacyDeleteTipTransaction_(mode, id) {
   return { status: 'FAILED', message: 'ID not found' };
 }
 
+function mppLegacyUpdateTipTransaction_(mode, id, payload) {
+  if (mode !== 'LOAN') throw new Error('Jenis transaksi belum mendukung edit.');
+  const sheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getSheetByName(MPP_SHEET_TIP_LOAN);
+  if (!sheet) throw new Error('Data pinjaman tidak ditemukan.');
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== String(id)) continue;
+    sheet.getRange(i + 1, 1, 1, 10).setValues([[
+      id,
+      payload.outlet,
+      payload.date,
+      payload.nik,
+      payload.name,
+      payload.nominal,
+      payload.desc,
+      data[i][7] || 'OPEN',
+      payload.user,
+      new Date()
+    ]]);
+    return { status: 'SUCCESS', id: id, updated: true };
+  }
+  throw new Error('Pinjaman yang akan diedit tidak ditemukan.');
+}
+
 function mppAllocateTipPoolByAttendance_(staffMap, netPool) {
   const staff = Object.values(staffMap || {});
   const totalAttendance = staff.reduce(function (total, item) { return total + Number(item.daysCount || 0); }, 0);
@@ -16797,8 +16846,9 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
      if(!targetStaff) return;
 
      let val = Number(rp.value);
-     if(rp.type === 'PERCENT') {
-        val = (val / 100) * targetStaff.tipDaily;
+     if(String(rp.type || '').toUpperCase() === 'PERCENT') {
+        const safePercent = Math.max(0, Math.min(100, val));
+        val = (safePercent / 100) * targetStaff.tipDaily;
      }
 
      if(targetStaff) {
@@ -16851,9 +16901,8 @@ function mppLegacyCalculateTipDistribution_(outlet, month, year) {
   let report = [];
   Object.values(staffMap).forEach(s => {
      const incomes = s.tipDaily + s.personalReward + s.sharePunishAddition;
-     const outcomes = s.personalPunish + s.shareRewardDeduction + s.loan;
-
-     s.finalTip = Math.floor(incomes - outcomes);
+     const nonLoanBalance = Math.max(0, incomes - (s.personalPunish + s.shareRewardDeduction));
+     s.finalTip = Math.floor(nonLoanBalance - s.loan);
      s.totalTip = Math.floor(s.tipDaily);
 
      report.push(s);
