@@ -9623,6 +9623,10 @@ function parseSalesCogsReport_(base64, fileName) {
 function resolveSalesTarget_(productName, catalogs, savedMappings) {
   const key = normalizeStoreName_(productName), saved = savedMappings[key];
   function byCode(list, code) { return (list || []).filter(function (item) { return String(item.code || '').toUpperCase() === String(code || '').toUpperCase(); }); }
+  // Product yang terdaftar pada MENU_SHOWCASE selalu diproses sebagai Showcase.
+  // Prioritas ini juga mencegah mapping lama mengarahkannya kembali ke Product/WIP.
+  const showcase = (catalogs.showcase || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
+  if (showcase.length) return { type: 'SHOWCASE', target: showcase[0] };
   if (saved) {
     // Mapping lama bisa pernah tersimpan sebagai PRODUCT sebelum item tersebut dikenali sebagai WIP.
     // Jika target code sekarang sudah terdaftar sebagai output WIP, WIP harus menang agar upload
@@ -9635,9 +9639,6 @@ function resolveSalesTarget_(productName, catalogs, savedMappings) {
     const found = byCode(source, saved.targetCode);
     if (found.length) return { type: saved.targetType, target: found[0], saved: true };
   }
-  const showcase = (catalogs.showcase || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
-  if (showcase.length) return { type: 'SHOWCASE', target: showcase[0] };
-
   // Deteksi WIP berdasarkan seluruh resep, termasuk WIP yang belum punya STOCK_ITEMS.
   // Jika resepnya ada tetapi item stock tidak ada, jangan ditolak: minta user memilih mapping.
   const wipAll = (catalogs.wipAll || catalogs.wip || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
@@ -9754,6 +9755,11 @@ function prepareSalesCogsImport_(employee, payload, allowPending, options) {
   if (invalidOutlets.length) throw new Error('Outlet belum terdaftar pada STORE CODE: ' + invalidOutlets.filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ') + '.');
   const rows = Object.keys(grouped).map(function (key) { return grouped[key]; }).sort(function (a, b) { return a.transactionDate.localeCompare(b.transactionDate) || a.outlet.localeCompare(b.outlet); });
   const catalogs = salesMappingCatalog_(), mappings = readSalesProductMappings_(), unresolved = {}, resolved = [];
+  const showcaseProductNames = {};
+  (catalogs.showcase || []).forEach(function (item) {
+    const nameKey = normalizeStoreName_(item.name);
+    if (nameKey) showcaseProductNames[nameKey] = true;
+  });
   const wipRecipeNames = {};
   (catalogs.wipAll || []).forEach(function (item) {
     const nameKey = normalizeStoreName_(item.name);
@@ -9761,7 +9767,8 @@ function prepareSalesCogsImport_(employee, payload, allowPending, options) {
   });
   const missingWipRecipeMap = {};
   rows.forEach(function (row) {
-    if (normalizeHeader_(row.productCategory) !== 'WIP FOOD' || wipRecipeNames[normalizeStoreName_(row.product)]) return;
+    const productKey = normalizeStoreName_(row.product);
+    if (normalizeHeader_(row.productCategory) !== 'WIP FOOD' || showcaseProductNames[productKey] || wipRecipeNames[productKey]) return;
     const key = normalizeStoreName_(row.product) + '|' + normalizeStoreName_(row.menu);
     if (!missingWipRecipeMap[key]) missingWipRecipeMap[key] = { product: row.product, menu: row.menu };
   });

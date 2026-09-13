@@ -211,6 +211,7 @@ if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('M
 if (!backend.includes('socializationBootstrap: getSocializationBootstrap') || !backend.includes('function getSocializationBootstrap(token)')) failures.push('Endpoint bootstrap Portal Sosialisasi belum terdaftar');
 if (!backend.includes("const SOCIALIZATION_SPREADSHEET_ID = '1S3aXdOMMcvPePgaQZFnxgMOY7PwFMHv7mApCVBU30Lk'")) failures.push('Portal Sosialisasi tidak lagi memakai database lama yang diminta');
 if (!backend.includes('function submitSocializationQuiz(token, materialId, score)')) failures.push('Penyimpanan quiz Portal Sosialisasi belum tersedia');
+if (!backend.includes('showcaseProductNames[productKey]')) failures.push('Validasi WIP Sales COGS belum mengecualikan Product Showcase terlebih dahulu');
 try {
   const insertCalls = [];
   const insertContext = vm.createContext({
@@ -236,6 +237,13 @@ try {
   const batchSizes = insertCalls.map(call => call.request.rows.length);
   if (batchSizes.join(',') !== '500,500,201') failures.push(`BigQuery insertAll belum membagi 1.201 baris secara aman: ${batchSizes.join(',')}`);
   if (batchResult.insertedRows !== 1201 || batchResult.batchCount !== 3) failures.push('Ringkasan batch BigQuery tidak sesuai jumlah baris yang dikirim');
+  const showcaseResult = insertContext.resolveSalesTarget_('SHOWCASE PRODUCT', {
+    showcase: [{ code: 'SC-1', name: 'SHOWCASE PRODUCT' }],
+    wip: [{ code: 'WIP-1', name: 'SHOWCASE PRODUCT' }],
+    wipAll: [{ code: 'WIP-1', name: 'SHOWCASE PRODUCT' }],
+    products: []
+  }, { 'SHOWCASE PRODUCT': { targetType: 'WIP', targetCode: 'WIP-1' } });
+  if (showcaseResult.type !== 'SHOWCASE' || showcaseResult.target.code !== 'SC-1') failures.push('Product Showcase belum menang atas kategori atau mapping WIP lama');
 } catch (error) {
   failures.push(`Uji batch BigQuery gagal: ${error.message}`);
 }
