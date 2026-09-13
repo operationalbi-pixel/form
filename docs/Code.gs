@@ -9611,8 +9611,6 @@ function parseSalesCogsReport_(base64, fileName) {
       transactionDate: parseReportDate_(reportCell_(cells, header, 'SALES DATE', rowNumber), 'EVENT', rowNumber, 'Sales Date'),
       outletName: cleanText_(reportCell_(cells, header, 'BRANCH', rowNumber), 180),
       menu: cleanText_(reportCell_(cells, header, 'MENU', rowNumber), 180), product: product,
-      productCategory: cleanText_(reportCell_(cells, header, 'PRODUCT CATEGORY', rowNumber) ||
-        reportCell_(cells, header, 'CATEGORY', rowNumber) || cells['I' + rowNumber], 120),
       unit: normalizeUnit_(reportCell_(cells, header, 'UNIT', rowNumber)), qty: qty });
   });
   if (invalid.length) throw new Error('QTY tidak valid pada: ' + invalid.slice(0, 12).join(', ') + '.');
@@ -9627,6 +9625,18 @@ function resolveSalesTarget_(productName, catalogs, savedMappings) {
   // Prioritas ini juga mencegah mapping lama mengarahkannya kembali ke Product/WIP.
   const showcase = (catalogs.showcase || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
   if (showcase.length) return { type: 'SHOWCASE', target: showcase[0] };
+
+  // Untuk non-Showcase, nama Product upload harus menuju STOCK_ITEMS terlebih dahulu.
+  // ITEM_CODE hasil pencocokan inilah yang menentukan apakah item termasuk WIP.
+  const products = (catalogs.products || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
+  if (products.length === 1) {
+    const product = products[0], wipByCode = byCode(catalogs.wip || [], product.code);
+    if (wipByCode.length) {
+      const preferred = wipByCode.filter(function (item) { return normalizeStoreName_(item.name) === key; });
+      return { type: 'WIP', target: preferred[0] || wipByCode[0], matchedByStockItem: true };
+    }
+    return { type: 'PRODUCT', target: product, matchedByStockItem: true };
+  }
   if (saved) {
     // Mapping lama bisa pernah tersimpan sebagai PRODUCT sebelum item tersebut dikenali sebagai WIP.
     // Jika target code sekarang sudah terdaftar sebagai output WIP, WIP harus menang agar upload
@@ -9639,19 +9649,13 @@ function resolveSalesTarget_(productName, catalogs, savedMappings) {
     const found = byCode(source, saved.targetCode);
     if (found.length) return { type: saved.targetType, target: found[0], saved: true };
   }
-  // Deteksi WIP berdasarkan seluruh resep, termasuk WIP yang belum punya STOCK_ITEMS.
-  // Jika resepnya ada tetapi item stock tidak ada, jangan ditolak: minta user memilih mapping.
+  // Resep tanpa STOCK_ITEMS tidak boleh menjadi target otomatis. Nama resep hanya
+  // dipakai untuk menjelaskan alasan ketika user perlu memilih mapping manual.
   const wipAll = (catalogs.wipAll || catalogs.wip || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
   if (wipAll.length === 1) {
-    const usable = byCode(catalogs.wip || [], wipAll[0].code).filter(function (item) { return normalizeStoreName_(item.name) === key; });
-    if (usable.length) return { type: 'WIP', target: usable[0] };
     return { type: '', target: null, missingStock: true, missingCode: wipAll[0].code, missingName: wipAll[0].name };
   }
-
-  const products = (catalogs.products || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
-  if (products.length === 1) return { type: 'PRODUCT', target: products[0] };
-  const usableWip = (catalogs.wip || []).filter(function (item) { return normalizeStoreName_(item.name) === key; });
-  return { type: '', target: null, ambiguous: products.length + usableWip.length + wipAll.length > 1 };
+  return { type: '', target: null, ambiguous: products.length > 1 || wipAll.length > 1 };
 }
 
 function salesMappingRequest_(sourceProduct, options) {
@@ -9700,6 +9704,8 @@ function validateSalesWipRecipeTree_(item, preferredName, context, path, depth) 
   const nextPath = Object.assign({}, path); nextPath[code] = true;
   const variant = selectSalesWipVariant_(context.recipeCatalog, code, preferredName || item.name);
   if (!variant) return;
+  // DIRECT_WIP berhenti pada stock WIP dan tidak membutuhkan validasi material resep.
+  if (variant.salesUsageMode === 'DIRECT_WIP') return;
 
   if (!wipConversionFactor_(code, item.unit, variant.unit, context.provided, context.savedConversions)) {
     wipConversionRequest_(Object.keys(context.conversionMap).map(function (key) { return context.conversionMap[key]; }), context.conversionMap, item, item.unit, variant.unit);
@@ -9755,33 +9761,6 @@ function prepareSalesCogsImport_(employee, payload, allowPending, options) {
   if (invalidOutlets.length) throw new Error('Outlet belum terdaftar pada STORE CODE: ' + invalidOutlets.filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ') + '.');
   const rows = Object.keys(grouped).map(function (key) { return grouped[key]; }).sort(function (a, b) { return a.transactionDate.localeCompare(b.transactionDate) || a.outlet.localeCompare(b.outlet); });
   const catalogs = salesMappingCatalog_(), mappings = readSalesProductMappings_(), unresolved = {}, resolved = [];
-  const showcaseProductNames = {};
-  (catalogs.showcase || []).forEach(function (item) {
-    const nameKey = normalizeStoreName_(item.name);
-    if (nameKey) showcaseProductNames[nameKey] = true;
-  });
-  const wipRecipeNames = {};
-  (catalogs.wipAll || []).forEach(function (item) {
-    const nameKey = normalizeStoreName_(item.name);
-    if (nameKey) wipRecipeNames[nameKey] = true;
-  });
-  const missingWipRecipeMap = {};
-  rows.forEach(function (row) {
-    const productKey = normalizeStoreName_(row.product);
-    if (normalizeHeader_(row.productCategory) !== 'WIP FOOD' || showcaseProductNames[productKey] || wipRecipeNames[productKey]) return;
-    const key = normalizeStoreName_(row.product) + '|' + normalizeStoreName_(row.menu);
-    if (!missingWipRecipeMap[key]) missingWipRecipeMap[key] = { product: row.product, menu: row.menu };
-  });
-  const missingWipRecipes = Object.keys(missingWipRecipeMap).map(function (key) { return missingWipRecipeMap[key]; })
-    .sort(function (a, b) { return a.product.localeCompare(b.product) || a.menu.localeCompare(b.menu); });
-  if (missingWipRecipes.length) {
-    if (!allowPending) {
-      throw new Error('Produk berkategori WIP FOOD belum terdaftar pada Bill of Material (WIP_RECIPES): ' +
-        missingWipRecipes.slice(0, 12).map(function (item) { return item.product + ' · ' + item.menu; }).join(', ') +
-        '. Silakan hubungi tim F&B untuk melengkapi resep sebelum upload dilanjutkan.');
-    }
-    return { requiresWipRecipe: true, fileName: fileName, missingWipRecipes: missingWipRecipes, sourceItemCount: rows.length };
-  }
   rows.forEach(function (row) {
     const match = resolveSalesTarget_(row.product, catalogs, mappings);
     if (!match.target) {
@@ -9866,7 +9845,7 @@ function previewSalesCogsUpload(token, payload) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
     const prepared = prepareSalesCogsImport_(employee, payload || {}, true);
-    if (prepared.requiresWipRecipe || prepared.requiresMapping || prepared.requiresConversion) return prepared;
+    if (prepared.requiresMapping || prepared.requiresConversion) return prepared;
     return { verified: true, fileName: prepared.fileName, outlet: prepared.outlets.join(', '), outlets: prepared.outlets,
       transactionDate: prepared.dates[0], transactionDates: prepared.dates, itemCount: prepared.rows.length,
       showcaseRowsSkipped: prepared.showcaseRows.length, duplicateItemsSkipped: prepared.duplicateRowsSkipped,
@@ -9907,23 +9886,17 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
     const code = String(item.code || '').toUpperCase();
     add(outlet, item, transactionDate);
     if (!code || path[code]) return;
-    const variants = (wipCatalog && wipCatalog.byCode && wipCatalog.byCode[code]) || [];
-    if (!variants.length) return;
+    const variant = selectSalesWipVariant_(wipCatalog, code, preferredName || item.name);
+    if (!variant || variant.salesUsageMode === 'DIRECT_WIP') return;
     const nextPath = Object.assign({}, path); nextPath[code] = true;
-    let selected = variants.filter(function (variant) {
-      return normalizeStoreName_(variant.name) === normalizeStoreName_(preferredName || item.name);
-    });
-    if (!selected.length) selected = variants;
-    selected.forEach(function (variant) {
-      (variant.materials || []).forEach(function (recipe) {
-        const resolvedMaterial = resolveSalesRecipeMaterial_(recipe, masterByCode, salesMappings);
-        const material = resolvedMaterial.item;
-        if (!material) return;
-        add(outlet, material, transactionDate);
-        if (wipCatalog.byCode[String(material.code || '').toUpperCase()]) {
-          walk(outlet, material, material.name, transactionDate, nextPath, depth + 1);
-        }
-      });
+    (variant.materials || []).forEach(function (recipe) {
+      const resolvedMaterial = resolveSalesRecipeMaterial_(recipe, masterByCode, salesMappings);
+      const material = resolvedMaterial.item;
+      if (!material) return;
+      add(outlet, material, transactionDate);
+      if (wipCatalog.byCode[String(material.code || '').toUpperCase()]) {
+        walk(outlet, material, material.name, transactionDate, nextPath, depth + 1);
+      }
     });
   }
   (salesRows || []).forEach(function (sale) {
@@ -10137,6 +10110,17 @@ function selectSalesWipVariant_(wipCatalog, code, preferredName) {
   })[0] || variants[0] || null;
 }
 
+function salesWipUsesDirect_(wipCatalog, code, preferredName) {
+  const variant = selectSalesWipVariant_(wipCatalog, code, preferredName);
+  return Boolean(variant && variant.salesUsageMode === 'DIRECT_WIP');
+}
+
+function salesTargetUsesDirectWip_(sale, wipCatalog) {
+  const code = String(sale && sale.item && sale.item.code || '').toUpperCase();
+  const preferredName = sale && sale.target && sale.target.name ? sale.target.name : sale && sale.item && sale.item.name;
+  return salesWipUsesDirect_(wipCatalog, code, preferredName);
+}
+
 function salesUploadCreatedAt_(clock, now) {
   clock.sequence = Number(clock.sequence || 0) + 1;
   return now.getTime() / 1000 + (clock.sequence / 1000000);
@@ -10163,6 +10147,8 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
 
   const variant = selectSalesWipVariant_(state.wipCatalog, code, preferredName || item.name);
   if (!variant) throw new Error(code + ': resep WIP tidak ditemukan.');
+  // DIRECT_WIP tidak boleh dibuat otomatis dan tidak boleh membuka material resep.
+  if (variant.salesUsageMode === 'DIRECT_WIP') return null;
   const outputToFormula = wipConversionFactor_(code, item.unit, variant.unit, state.provided, state.savedConversions);
   if (!outputToFormula) throw new Error(code + ': konversi unit hasil WIP belum tersedia.');
   const formulaQty = outputQty * outputToFormula;
@@ -10197,8 +10183,9 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     const qty = safeWipMaterialQty_(recipe.qty, formulaQty, factor, recipe.code + ' · ' + recipe.name);
     const materialCode = String(material.code || '').toUpperCase();
     const materialIsWip = Boolean(state.wipCatalog.byCode[materialCode] && state.wipCatalog.byCode[materialCode].length);
+    const materialIsDirectWip = materialIsWip && salesWipUsesDirect_(state.wipCatalog, materialCode, material.name);
 
-    if (materialIsWip) {
+    if (materialIsWip && !materialIsDirectWip) {
       const available = salesBalanceFor_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate);
       // Saldo minus lama ikut menjadi kekurangan produksi. Dengan demikian upload
       // berikutnya memulihkan WIP ke nol tanpa menggagalkan transaksi baru.
@@ -10211,7 +10198,7 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     }
 
     const allocatedLots = salesConsumeInventoryLots_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate, qty);
-    if (materialIsWip) assertSalesWipFullyCovered_(material, allocatedLots, 'bahan ' + item.name);
+    if (materialIsWip && !materialIsDirectWip) assertSalesWipFullyCovered_(material, allocatedLots, 'bahan ' + item.name);
     allocatedLots.forEach(function (lot) {
       const usageId = Utilities.getUuid();
       state.rows.push({ insertId: usageId, json: {
@@ -10252,7 +10239,8 @@ function uploadSalesCogs(token, payload) {
       let soldLots = [];
 
       const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
-      if (targetIsWip) {
+      const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
+      if (targetIsWip && !directWip) {
         const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
         // Jika saldo sebelumnya minus, shortage mencakup minus lama dan kebutuhan
         // penjualan baru. Production IN dan Sold OUT pada tanggal ini mengembalikan
@@ -10274,7 +10262,7 @@ function uploadSalesCogs(token, payload) {
       } else {
         soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
       }
-      if (targetIsWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'Sold ' + sale.menu);
+      if (targetIsWip && !directWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'Sold ' + sale.menu);
 
       const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
       const allocationTolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
@@ -10343,7 +10331,8 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     let soldLots = [];
 
     const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
-    if (targetIsWip) {
+    const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
+    if (targetIsWip && !directWip) {
       const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
       // Repair memakai aturan pemulihan minus yang sama dengan upload biasa.
       const shortage = Math.max(0, sale.qtyDefault - available);
@@ -10361,7 +10350,7 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     } else {
       soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
     }
-    if (targetIsWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'repair Sold ' + sale.menu);
+    if (targetIsWip && !directWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'repair Sold ' + sale.menu);
 
     const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
     const tolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
@@ -10826,18 +10815,22 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload) {
   prepared.rows.forEach(function (sale) {
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
     let soldLots = [];
-    if (salesTargetIsWip_(sale, wipCatalog)) {
-      const available = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, sale.outlet, itemCode, sale.transactionDate));
+    const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
+    const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
+    if (targetIsWip && !directWip) {
+      const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
       const shortage = Math.max(0, sale.qtyDefault - available);
       if (shortage > 0.0000001) {
         const state = { rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
           masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
-          now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0 };
+          now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0, wipRecoveryByCode: {} };
+        if (available < -0.0000001) state.wipRecoveryByCode[itemCode] = Math.abs(available);
         autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
         autoWipCount += Number(state.autoWipCount || 0);
       }
     }
     soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+    if (targetIsWip && !directWip) assertSalesWipFullyCovered_(sale.item, soldLots, 'Sold ' + sale.menu);
     const allocatedQty = soldLots.reduce(function (sum, lot) { return sum + Number(lot.qty || 0); }, 0);
     const tolerance = Math.max(0.0000001, Math.abs(Number(sale.qtyDefault || 0)) * 0.000001);
     if (!isFinite(allocatedQty) || Math.abs(allocatedQty - Number(sale.qtyDefault || 0)) > tolerance) {
@@ -11375,19 +11368,27 @@ function appendMockRecallWipTree_(state, code, name, consumedRows, sourceRow, de
   if (depth > 10) return;
 
   const consumedQty = (consumedRows || []).reduce(function (sum, row) { return sum + Math.max(0, Number(row.qty || 0)); }, 0);
-  const generated = mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe);
+  const directWip = salesWipUsesDirect_(state.wipCatalog, code, name);
+  const generated = directWip ? { qty: 0, dates: [] } : mockRecallGeneratedWipAllocation_(state, sourceRow, code, consumedQty, forceRecipe);
   const generatedQty = Math.min(consumedQty, Math.max(0, Number(generated.qty || 0)));
   const existingQty = Math.max(0, consumedQty - generatedQty);
   // FIFO memakai stok yang sudah tersedia terlebih dahulu. Sisa di belakang adalah WIP yang baru generated oleh upload.
   const split = mockRecallSplitRowsByQty_(consumedRows, existingQty);
   const existingLots = mockRecallWipExistingLots_(state, code, split.first);
+  if (directWip) existingLots.forEach(function (lot) {
+    if (lot.sourceType === 'untracked') lot.sourceType = 'direct';
+  });
 
   state.materials.push({
     rowType: 'wipHeader', code: code, material: name, unit: (consumedRows[0] && consumedRows[0].unit) || '', qty: consumedQty,
-    arrivalDate: '', productionDate: '', expiryDate: '', childOf: '', kind: 'WIP', depth: depth,
-    existingLots: existingLots, generatedDates: generated.dates || [], generatedQty: generatedQty
+    arrivalDate: '', productionDate: '', expiryDate: '', childOf: '', kind: directWip ? 'DIRECT WIP' : 'WIP', depth: depth,
+    salesUsageMode: directWip ? 'DIRECT_WIP' : 'AUTO_RECIPE', existingLots: existingLots,
+    generatedDates: generated.dates || [], generatedQty: generatedQty
   });
 
+  // Mock Recall menampilkan DIRECT_WIP sebagai stock WIP yang dipotong langsung,
+  // tanpa menurunkannya menjadi material resep.
+  if (directWip) return;
   // WIP existing dari produksi manual / transfer berhenti di level WIP. Bahan hanya dibuka untuk bagian yang generated saat upload Sales COGS.
   if (generatedQty <= 0.0000001 && !forceRecipe) return;
 

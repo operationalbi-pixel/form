@@ -211,7 +211,9 @@ if (!backend.includes("const MPP_SHEET_BUDGET = 'MPP_BUDGET'")) failures.push('M
 if (!backend.includes('socializationBootstrap: getSocializationBootstrap') || !backend.includes('function getSocializationBootstrap(token)')) failures.push('Endpoint bootstrap Portal Sosialisasi belum terdaftar');
 if (!backend.includes("const SOCIALIZATION_SPREADSHEET_ID = '1S3aXdOMMcvPePgaQZFnxgMOY7PwFMHv7mApCVBU30Lk'")) failures.push('Portal Sosialisasi tidak lagi memakai database lama yang diminta');
 if (!backend.includes('function submitSocializationQuiz(token, materialId, score)')) failures.push('Penyimpanan quiz Portal Sosialisasi belum tersedia');
-if (!backend.includes('showcaseProductNames[productKey]')) failures.push('Validasi WIP Sales COGS belum mengecualikan Product Showcase terlebih dahulu');
+if (backend.includes('normalizeHeader_(row.productCategory)')) failures.push('Upload Sales COGS masih memakai kategori sebagai penentu WIP');
+if ((backend.match(/targetIsWip && !directWip/g) || []).length < 6) failures.push('DIRECT_WIP belum diterapkan konsisten pada upload, background, dan repair Sales COGS');
+if (!backend.includes("if (directWip) return;") || !backend.includes("salesUsageMode: directWip ? 'DIRECT_WIP' : 'AUTO_RECIPE'")) failures.push('Mock Recall belum menghentikan penelusuran resep untuk DIRECT_WIP');
 try {
   const insertCalls = [];
   const insertContext = vm.createContext({
@@ -244,10 +246,29 @@ try {
     products: []
   }, { 'SHOWCASE PRODUCT': { targetType: 'WIP', targetCode: 'WIP-1' } });
   if (showcaseResult.type !== 'SHOWCASE' || showcaseResult.target.code !== 'SC-1') failures.push('Product Showcase belum menang atas kategori atau mapping WIP lama');
+  const codeWipResult = insertContext.resolveSalesTarget_('STOCK WIP NAME', {
+    showcase: [],
+    products: [{ code: 'WIP-2', name: 'STOCK WIP NAME' }],
+    wip: [{ code: 'WIP-2', name: 'FORMULA NAME', salesUsageMode: 'AUTO_RECIPE' }],
+    wipAll: [{ code: 'WIP-2', name: 'FORMULA NAME', salesUsageMode: 'AUTO_RECIPE' }]
+  }, {});
+  if (codeWipResult.type !== 'WIP' || codeWipResult.target.code !== 'WIP-2') failures.push('WIP belum ditentukan dari ITEM_CODE hasil pencocokan STOCK_ITEMS.ITEM_NAME');
+  const directCatalog = { byCode: { 'WIP-DIRECT': [{ code: 'WIP-DIRECT', name: 'DIRECT ITEM', salesUsageMode: 'DIRECT_WIP', materials: [{ code: 'RAW-1' }] }] } };
+  const directSale = { item: { code: 'WIP-DIRECT', name: 'DIRECT ITEM' }, target: { name: 'DIRECT ITEM' }, targetType: 'WIP' };
+  if (!insertContext.salesTargetUsesDirectWip_(directSale, directCatalog)) failures.push('SALES_USAGE_MODE DIRECT_WIP belum dikenali pada target penjualan');
+  const directRows = [];
+  const autoResult = insertContext.autoProduceSalesWipRecursive_({ wipCatalog: directCatalog, rows: directRows }, directSale.item, directSale.item.name, 2, {}, 0);
+  if (autoResult !== null || directRows.length) failures.push('DIRECT_WIP masih menghasilkan Production atau pemotongan raw material');
+  insertContext.mockRecallGeneratedWipAllocation_ = function () { throw new Error('Mock Recall DIRECT_WIP tidak boleh membuka generated recipe'); };
+  insertContext.mockRecallWipExistingLots_ = function () { return []; };
+  const recallState = { materials: [], wipCatalog: directCatalog };
+  insertContext.appendMockRecallWipTree_(recallState, 'WIP-DIRECT', 'DIRECT ITEM', [{ qty: 2, unit: 'PCS' }], 1, 0, {}, false);
+  if (recallState.materials.length !== 1 || recallState.materials[0].salesUsageMode !== 'DIRECT_WIP') failures.push('Mock Recall DIRECT_WIP masih menampilkan turunan material resep');
 } catch (error) {
   failures.push(`Uji batch BigQuery gagal: ${error.message}`);
 }
 const frontendStockCard = await text('docs/stock-card.html');
+if (!frontendStockCard.includes("item.salesUsageMode==='DIRECT_WIP'?'DIRECT WIP':'WIP'")) failures.push('Mock Recall belum memberi label DIRECT WIP');
 const modernUiCss = await text('docs/ui-modern.css');
 if (!frontendStockCard.includes('id="stockOpnameButton"') || !frontendStockCard.includes('id="stockOpnameDate"') || !frontendStockCard.includes('id="stockOpnameProgressBar"')) failures.push('UI Upload Stock Opname belum memiliki tombol, pilihan tanggal, dan progress upload');
 if (!frontendStockCard.includes('grid-template-columns:repeat(7,minmax(0,1fr))') || !modernUiCss.includes('grid-template-columns: repeat(7, minmax(0, 1fr))')) failures.push('Toolbar Stock Card desktop belum menampung tujuh aksi dalam satu baris');
