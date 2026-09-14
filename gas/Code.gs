@@ -8367,6 +8367,12 @@ function readStockBalanceRows_(outlet, location) {
 
 /** Refreshes compact balances in the background; install it every one minute. */
 function refreshDirtyStockBalances() {
+  // Run upload queues first. Balance rebuilds can be expensive and previously
+  // consumed the whole trigger execution before Sales COGS got a turn.
+  try { processSalesCogsUploadJobs(); }
+  catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
+  try { processMissingExpiryUploadJobs(); }
+  catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
   const properties = PropertiesService.getScriptProperties();
   const all = properties.getProperties();
   Object.keys(all).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 8).forEach(function (key) {
@@ -8389,10 +8395,6 @@ function refreshDirtyStockBalances() {
       console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message);
     }
   });
-  try { processMissingExpiryUploadJobs(); }
-  catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
-  try { processSalesCogsUploadJobs(); }
-  catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
 }
 
 function ensureStockMaintenanceTrigger_() {
@@ -10766,15 +10768,48 @@ function getSalesCogsUploadStatus(token, jobId) {
   return safe_(function () {
     const session = requireSession_(token), job = readSalesCogsJob_(cleanText_(jobId, 100));
     if (!job || job.ownerNik !== session.nik) throw new Error('Job upload Sales COGS tidak ditemukan atau bukan milik akun ini.');
+    const pending = ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0;
+    const staleMs = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
+    const leased = Number(job.workerLeaseUntil || 0) > Date.now();
+    if (pending && !leased && staleMs >= 60000) {
+      try { ensureStockMaintenanceTrigger_(); } catch (maintenanceError) {
+        console.error('Trigger maintenance Sales COGS gagal dipulihkan: ' + maintenanceError.message);
+      }
+      if (scheduleSalesCogsWorker_()) {
+        job.stage = job.status === 'QUEUED'
+          ? 'Antrean terhenti terdeteksi. Worker dijalankan kembali otomatis.'
+          : 'Proses terhenti terdeteksi. Sistem melanjutkan kembali otomatis.';
+        writeSalesCogsJob_(job);
+      }
+    }
     return salesCogsJobView_(job);
   });
 }
 
 function scheduleSalesCogsWorker_() {
+  const scheduleKey = 'sales-cogs-worker-scheduled-at';
+  const gate = LockService.getScriptLock();
+  if (!gate.tryLock(2000)) return false;
   try {
-    const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; });
-    if (!exists) ScriptApp.newTrigger('processSalesCogsUploadJobs').timeBased().after(1000).create();
-  } catch (error) { console.error('Worker Sales COGS menunggu trigger maintenance: ' + error.message); }
+    const properties = PropertiesService.getScriptProperties();
+    const scheduledAt = Number(properties.getProperty(scheduleKey) || 0);
+    const triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs';
+    });
+    // A one-shot trigger that is still registered after two minutes is no
+    // longer trusted. Replace it so polling can recover a lost worker.
+    if (triggers.length && scheduledAt && Date.now() - scheduledAt < 120000) return true;
+    triggers.forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (deleteError) {} });
+    properties.setProperty(scheduleKey, String(Date.now()));
+    ScriptApp.newTrigger('processSalesCogsUploadJobs').timeBased().after(1000).create();
+    return true;
+  } catch (error) {
+    try { PropertiesService.getScriptProperties().deleteProperty(scheduleKey); } catch (cleanupError) {}
+    console.error('Worker Sales COGS menunggu trigger maintenance: ' + error.message);
+    return false;
+  } finally {
+    gate.releaseLock();
+  }
 }
 
 function readSalesCogsJobJson_(driveId) {
@@ -10897,6 +10932,7 @@ function processSalesCogsJobChunk_(job) {
 function processSalesCogsUploadJobs() {
   const scopeLock = acquireStockScopeLock_('sales-cogs-background-worker', 1000);
   try {
+    PropertiesService.getScriptProperties().deleteProperty('sales-cogs-worker-scheduled-at');
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; })
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
     const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), jobs = [];
@@ -10907,12 +10943,19 @@ function processSalesCogsUploadJobs() {
         else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
       } catch (error) { properties.deleteProperty(key); }
     });
-    jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
+    // Give every outlet a turn. A large or timed-out oldest job must not keep
+    // every newer upload at 3% indefinitely.
+    jobs.sort(function (a, b) {
+      return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt));
+    });
     if (!jobs.length) return { processed: false };
-    let job = jobs[0];
-    if (Number(job.workerLeaseUntil || 0) > Date.now()) {
-      return { processed: false, jobId: job.jobId, status: job.status, leased: true };
+    let job = jobs.filter(function (candidate) {
+      return Number(candidate.workerLeaseUntil || 0) <= Date.now();
+    })[0];
+    if (!job) {
+      return { processed: false, status: 'WAITING_FOR_LEASE', leased: true };
     }
+    job.lastWorkedAt = new Date().toISOString();
     job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
     try { job = processSalesCogsJobChunk_(job); job.workerLeaseUntil = 0; writeSalesCogsJob_(job); }
     catch (error) {
