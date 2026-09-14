@@ -324,6 +324,16 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
     !backend.includes("processSalesCogsUploadJobs();")) {
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }
+if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
+    !backend.includes('Antrean terhenti terdeteksi. Worker dijalankan kembali otomatis.') ||
+    !backend.includes('candidate.workerLeaseUntil') || !backend.includes('a.lastWorkedAt || a.createdAt')) {
+  failures.push('Antrean Sales COGS belum dapat memulihkan trigger macet atau melewati job lama yang masih terkunci');
+}
+const maintenanceSalesIndex = backend.indexOf('try { processSalesCogsUploadJobs(); }', backend.indexOf('function refreshDirtyStockBalances()'));
+const maintenanceBalanceIndex = backend.indexOf("Object.keys(all).filter(function (key) { return key.indexOf('stock-balance-dirty-')", backend.indexOf('function refreshDirtyStockBalances()'));
+if (maintenanceSalesIndex < 0 || maintenanceBalanceIndex < 0 || maintenanceSalesIndex > maintenanceBalanceIndex) {
+  failures.push('Maintenance worker masih menjalankan rebuild balance sebelum antrean Sales COGS');
+}
 if (!frontendStockCard.includes("openExpiryAlertModal(\\'TRANSFER\\')") ||
     !frontendStockCard.includes('function openPendingTransferFromAlerts(index)') ||
     frontendStockCard.includes('id="transferNotifications"')) failures.push('Transfer pending belum diringkas bersama notifikasi Expired dan FIFO/FEFO');
