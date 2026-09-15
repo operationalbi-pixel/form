@@ -324,6 +324,23 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
     !backend.includes("processSalesCogsUploadJobs();")) {
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }
+if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
+    !backend.includes('findStockPositionUpload: findStockPositionUpload') ||
+    !backend.includes('stockPositionUploadStatus: getStockPositionUploadStatus') ||
+    !backend.includes('retryStockPositionUpload: retryStockPositionUpload') ||
+    !backend.includes('function processStockPositionJobItem_(job, prepared)') ||
+    !backend.includes('existingStockPositionRecordIds_(job, rows)') ||
+    !backend.includes("stockCheckpointBalanceCtes_('', true)")) {
+  failures.push('Stock Posisi belum diproses bertahap dengan pemulihan per item dan query saldo terbatas outlet');
+}
+if (!frontendStockCard.includes("server('queueStockPosition'") ||
+    !frontendStockCard.includes("server('findStockPositionUpload'") ||
+    !frontendStockCard.includes("server('stockPositionUploadStatus'") ||
+    !frontendStockCard.includes("server('retryStockPositionUpload'") ||
+    !frontendStockCard.includes('rememberStockPositionJob(') ||
+    frontendStockCard.includes("server('uploadStockPosition'")) {
+  failures.push('Upload Stock Posisi masih menunggu penyimpanan sinkron atau belum dapat menyambungkan ulang job');
+}
 if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
     !backend.includes('Antrean terhenti terdeteksi. Worker dijalankan kembali otomatis.') ||
     !backend.includes('candidate.workerLeaseUntil') || !backend.includes('a.lastWorkedAt || a.createdAt')) {

@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "sync": "node scripts/sync-files.mjs",
-    "test": "node scripts/validate.mjs"
+    "test": "node scripts/validate.mjs && node scripts/test-stock-position-job.mjs"
   }
 }

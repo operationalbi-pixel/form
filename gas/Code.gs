@@ -213,6 +213,10 @@ function apiActions_() {
     verifyGoodsReceipt: previewGoodsReceiptUpload,
     verifyGoodsDelivery: previewGoodsDeliveryUpload,
     verifyStockPosition: previewStockPositionUpload,
+    queueStockPosition: queueStockPositionUpload,
+    findStockPositionUpload: findStockPositionUpload,
+    stockPositionUploadStatus: getStockPositionUploadStatus,
+    retryStockPositionUpload: retryStockPositionUpload,
     verifyStockOpname: previewStockOpnameUpload,
     stockOpnameHistory: getStockOpnameUploadHistory,
     stockOpnameHistoryDetail: getStockOpnameUploadHistoryDetail,
@@ -3946,7 +3950,7 @@ function parseStockPositionReport_(base64, fileName) {
   if (!outletMatch || !locationMatch) throw new Error('Metadata Outlet dan Penyimpanan tidak ditemukan. Gunakan file hasil Export Stok Saat Ini.');
   const outlet = cleanText_(outletMatch[1], 30).toUpperCase();
   const location = normalizeLocation_(locationMatch[1]);
-  const rows = [], invalid = [];
+  const rows = [], invalid = [], seenCodes = {};
   reportDataRows_(cells, header, 'KODE ITEM').forEach(function (rowNumber) {
     const code = String(reportCell_(cells, header, 'KODE ITEM', rowNumber) || '').trim().toUpperCase();
     if (!code) return;
@@ -3954,6 +3958,8 @@ function parseStockPositionReport_(base64, fileName) {
     if (actualRaw === '' || actualRaw === null || actualRaw === undefined) {
       return;
     }
+    if (seenCodes[code]) throw new Error('Kode item ' + code + ' muncul lebih dari sekali pada file Stock Posisi. Satukan QTY aktual dalam satu baris.');
+    seenCodes[code] = true;
     const actualQty = parseReportNumber_(actualRaw);
     if (!isFinite(actualQty) || actualQty < 0) {
       invalid.push(code);
@@ -3978,6 +3984,322 @@ function stockPositionAlreadyImported_(outlet, location, sourceHash) {
     'AND movement_type = \'Stock Adjustment\' AND source_hash = @sourceHash';
   const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash });
   return rows.length && Number(rows[0].total || 0) > 0;
+}
+
+function stockPositionJobKey_(jobId) { return 'stock-position-upload-job-' + String(jobId || '').trim(); }
+
+function writeStockPositionJob_(job) {
+  job.updatedAt = new Date().toISOString();
+  PropertiesService.getScriptProperties().setProperty(stockPositionJobKey_(job.jobId), JSON.stringify(job));
+  return job;
+}
+
+function readStockPositionJob_(jobId) {
+  const raw = PropertiesService.getScriptProperties().getProperty(stockPositionJobKey_(jobId));
+  return raw ? JSON.parse(raw) : null;
+}
+
+function findStockPositionUpload(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const sourceHash = String(payload.sourceHash || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error('Identitas file Stock Posisi tidak valid.');
+    const properties = PropertiesService.getScriptProperties();
+    const jobs = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-position-upload-job-') === 0; })
+      .map(function (key) { try { return JSON.parse(properties.getProperty(key)); } catch (error) { return null; } })
+      .filter(function (job) { return job && job.ownerNik === context.employee.nik && job.outlet === context.outlet &&
+        job.location === context.location && job.sourceHash === sourceHash; })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return jobs.length ? stockPositionJobView_(jobs[0]) : null;
+  });
+}
+
+function stockPositionJobView_(job) {
+  return { jobId: job.jobId, fileName: job.fileName, outlet: job.outlet, location: job.location,
+    status: job.status, stage: job.stage, progress: Number(job.progress || 0),
+    processed: Number(job.processed || 0), total: Number(job.total || 0),
+    movementCount: Number(job.movementCount || 0), increaseCount: Number(job.increaseCount || 0),
+    decreaseCount: Number(job.decreaseCount || 0), error: String(job.error || '') };
+}
+
+function stockPositionJobJson_(driveId) {
+  return JSON.parse(DriveApp.getFileById(driveId).getBlob().getDataAsString('UTF-8'));
+}
+
+function cleanupStockPositionJobFiles_(job) {
+  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId, job.pendingDriveId].filter(Boolean).forEach(function (id) {
+    try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
+  });
+  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = '';
+}
+
+function queueStockPositionUpload(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, payload.location);
+    const fileName = cleanText_(payload.fileName, 180);
+    if (!/\.xlsx$/i.test(fileName)) throw new Error('Pilih file .xlsx hasil Export Stok Saat Ini.');
+    let bytes;
+    try { bytes = Utilities.base64Decode(String(payload.base64 || '').replace(/^data:[^,]+,/, '')); }
+    catch (error) { throw new Error('File Excel tidak dapat dibaca. Pilih kembali file hasil Export Stok Saat Ini.'); }
+    if (!bytes.length || bytes.length > 10 * 1024 * 1024 || bytes[0] !== 80 || bytes[1] !== 75) {
+      throw new Error('File Stock Posisi harus berupa .xlsx valid dengan ukuran maksimal 10 MB.');
+    }
+    const sourceHash = digest_(Utilities.base64Encode(bytes));
+    const queueLock = acquireStockScopeLock_('stock-position-queue-' + sourceHash, 10000);
+    try {
+    const properties = PropertiesService.getScriptProperties();
+    const scopedJobs = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-position-upload-job-') === 0; })
+      .map(function (key) { try { return JSON.parse(properties.getProperty(key)); } catch (error) { return null; } })
+      .filter(function (job) { return job && job.outlet === context.outlet && job.location === context.location; });
+    const existing = scopedJobs.filter(function (job) { return job.sourceHash === sourceHash; })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); })[0];
+    if (existing) {
+      if (existing.ownerNik !== context.employee.nik) throw new Error('File ini sudah diproses oleh pengguna lain. Periksa Stock Card atau hubungi BIHQ sebelum mengulang.');
+      if (existing.status === 'FAILED' && !existing.preparedDriveId && Number(existing.processed || 0) === 0 && existing.sourceDriveId) {
+        const request = { outlet: context.outlet, location: context.location, fileName: fileName,
+          expiryDates: payload.expiryDates || {}, allowMissingExpiry: Boolean(payload.allowMissingExpiry) };
+        const requestFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json',
+          'TEMP_STOCK_POSITION_REQUEST_' + existing.jobId + '.json'));
+        try { DriveApp.getFileById(existing.requestDriveId).setTrashed(true); } catch (error) {}
+        existing.requestDriveId = requestFile.getId(); existing.status = 'QUEUED';
+        existing.stage = 'Memverifikasi ulang pilihan Expiry Date dan file.';
+        existing.retryCount = 0; existing.error = ''; existing.workerLeaseUntil = 0;
+        writeStockPositionJob_(existing); scheduleStockPositionWorker_();
+      }
+      return stockPositionJobView_(existing);
+    }
+    if (scopedJobs.some(function (job) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0 ||
+      (job.status === 'FAILED' && (Number(job.processed || 0) > 0 || Boolean(job.pendingDriveId))); })) {
+      throw new Error('Ada upload Stock Posisi lain untuk outlet dan penyimpanan ini yang belum selesai. Selesaikan atau coba ulang job sebelumnya terlebih dahulu.');
+    }
+    if (stockPositionAlreadyImported_(context.outlet, context.location, sourceHash)) {
+      throw new Error('File ini sudah memiliki Stock Adjustment tercatat. Periksa riwayat Stock Card sebelum mengulang upload.');
+    }
+    const jobId = Utilities.getUuid(), now = new Date().toISOString();
+    const sourceFile = DriveApp.createFile(Utilities.newBlob(bytes,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'TEMP_STOCK_POSITION_' + jobId + '.xlsx'));
+    const request = { outlet: context.outlet, location: context.location, fileName: fileName,
+      expiryDates: payload.expiryDates || {}, allowMissingExpiry: Boolean(payload.allowMissingExpiry) };
+    const requestFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json',
+      'TEMP_STOCK_POSITION_REQUEST_' + jobId + '.json'));
+    const job = { jobId: jobId, ownerNik: context.employee.nik, ownerName: context.employee.name,
+      ownerOutlet: context.employee.outlet, outlet: context.outlet, location: context.location,
+      fileName: fileName, sourceHash: sourceHash, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(),
+      preparedDriveId: '', pendingDriveId: '', eventDate: todayIso_(), status: 'QUEUED', stage: 'File diterima. Menyiapkan proses bertahap.',
+      progress: 3, processed: 0, total: 0, movementCount: 0, increaseCount: 0, decreaseCount: 0,
+      retryCount: 0, error: '', createdAt: now, updatedAt: now, workerLeaseUntil: 0 };
+    writeStockPositionJob_(job);
+    try { ensureStockMaintenanceTrigger_(); } catch (error) { console.error('Trigger Stock Posisi belum tersedia: ' + error.message); }
+    scheduleStockPositionWorker_();
+    return stockPositionJobView_(job);
+    } finally { queueLock.releaseLock(); }
+  });
+}
+
+function getStockPositionUploadStatus(token, jobId) {
+  return safe_(function () {
+    const session = requireSession_(token), job = readStockPositionJob_(cleanText_(jobId, 100));
+    if (!job || job.ownerNik !== session.nik) throw new Error('Job Stock Posisi tidak ditemukan atau bukan milik akun ini.');
+    const pending = ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0;
+    const stale = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime() >= 60000;
+    if (pending && stale && Number(job.workerLeaseUntil || 0) <= Date.now()) {
+      try { ensureStockMaintenanceTrigger_(); } catch (error) { console.error('Maintenance Stock Posisi: ' + error.message); }
+      if (scheduleStockPositionWorker_()) {
+        job.scheduleFailureCount = 0;
+        job.stage = 'Proses terhenti terdeteksi. Worker dijalankan kembali otomatis.';
+        writeStockPositionJob_(job);
+      } else {
+        job.scheduleFailureCount = Number(job.scheduleFailureCount || 0) + 1;
+        job.stage = 'Worker belum merespons. Sistem mencoba menyalakannya kembali.';
+        if (job.scheduleFailureCount >= 3 && Date.now() - new Date(job.lastWorkedAt || job.createdAt || 0).getTime() >= 5 * 60000) {
+          job.status = 'FAILED'; job.stage = 'Worker belum dapat dijalankan. Klik Coba Lagi atau hubungi BIHQ.';
+          job.error = 'Trigger background Stock Posisi tidak tersedia setelah beberapa percobaan.';
+        }
+        writeStockPositionJob_(job);
+      }
+    }
+    return stockPositionJobView_(job);
+  });
+}
+
+function retryStockPositionUpload(token, jobId) {
+  return safe_(function () {
+    const session = requireSession_(token), job = readStockPositionJob_(cleanText_(jobId, 100));
+    if (!job || job.ownerNik !== session.nik) throw new Error('Job Stock Posisi tidak ditemukan atau bukan milik akun ini.');
+    if (job.status !== 'FAILED' || (!job.preparedDriveId && !job.sourceDriveId)) {
+      throw new Error('Job ini tidak dapat dicoba ulang. Periksa status dan riwayat Stock Card.');
+    }
+    job.status = 'QUEUED'; job.stage = 'Mencoba ulang dari item terakhir yang belum selesai.';
+    job.retryCount = 0; job.error = ''; job.workerLeaseUntil = 0;
+    writeStockPositionJob_(job); scheduleStockPositionWorker_();
+    return stockPositionJobView_(job);
+  });
+}
+
+function scheduleStockPositionWorker_() {
+  const gate = LockService.getScriptLock();
+  if (!gate.tryLock(2000)) return false;
+  try {
+    const properties = PropertiesService.getScriptProperties(), key = 'stock-position-worker-scheduled-at';
+    const at = Number(properties.getProperty(key) || 0);
+    const triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === 'processStockPositionUploadJobs';
+    });
+    if (triggers.length && at && Date.now() - at < 120000) return true;
+    triggers.forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+    properties.setProperty(key, String(Date.now()));
+    ScriptApp.newTrigger('processStockPositionUploadJobs').timeBased().after(1000).create();
+    return true;
+  } catch (error) {
+    try { PropertiesService.getScriptProperties().deleteProperty('stock-position-worker-scheduled-at'); } catch (ignore) {}
+    console.error('Worker Stock Posisi menunggu maintenance: ' + error.message);
+    return false;
+  } finally { gate.releaseLock(); }
+}
+
+function prepareStockPositionJob_(job) {
+  job.status = 'PREPARING'; job.stage = 'Memeriksa file dan saldo terkini.'; job.progress = 7; writeStockPositionJob_(job);
+  const request = stockPositionJobJson_(job.requestDriveId);
+  request.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+  const context = { outlet: job.outlet, location: job.location,
+    employee: { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet } };
+  const prepared = prepareStockPositionImport_(context, request, false);
+  if (!prepared.items.length) throw new Error('QTY Stock Actual sama dengan saldo terbaru. Tidak ada Stock Adjustment baru.');
+  const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(prepared), 'application/json',
+    'TEMP_STOCK_POSITION_PREPARED_' + job.jobId + '.json'));
+  job.preparedDriveId = file.getId(); job.total = prepared.items.length;
+  job.increaseCount = prepared.increaseCount; job.decreaseCount = prepared.decreaseCount;
+  job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Memproses item bertahap.'; job.progress = 15;
+  try { DriveApp.getFileById(job.sourceDriveId).setTrashed(true); } catch (error) {}
+  job.sourceDriveId = '';
+  return writeStockPositionJob_(job);
+}
+
+function stockPositionPlannedRows_(job, line, lots) {
+  const direction = line.delta > 0 ? 'IN' : 'OUT', rows = [], now = new Date();
+  (lots || []).forEach(function (lot, index) {
+    const id = digest_([job.jobId, line.sourceRow, line.item.code, index].join('|'));
+    rows.push({ insertId: id, json: { record_id: id, logical_id: id, version: 1, record_type: 'MOVEMENT',
+      outlet: job.outlet, location: job.location, item_code: line.item.code, category: line.item.category,
+      item_name: line.item.name, unit: line.item.unit, direction: direction, qty: Number(lot.qty),
+      movement_type: 'Stock Adjustment',
+      info: cleanText_('Upload Stock Posisi · Saldo sistem ' + formatQty_(line.cardQty) +
+        ' → QTY Stock Actual ' + formatQty_(line.actualQty), 500),
+      production_date: lot.productionDate || null, source_arrival_date: lot.sourceDate || null,
+      expiry_date: lot.expiryDate || null, event_date: job.eventDate, created_at: now.getTime() / 1000,
+      created_by: job.ownerNik, source_file: job.fileName, source_hash: job.sourceHash, source_row: line.sourceRow } });
+  });
+  return rows;
+}
+
+function existingStockPositionRecordIds_(job, rows) {
+  const ids = rows.map(function (row) { return row.json.record_id; });
+  if (!ids.length) return {};
+  const sql = 'SELECT record_id FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND location = @location ' +
+    'AND source_hash = @sourceHash AND record_id IN UNNEST(@recordIds)';
+  const found = {};
+  runNamedQuery_(sql, { outlet: job.outlet, location: job.location, sourceHash: job.sourceHash,
+    recordIds: ids }, { useQueryCache: false }).forEach(function (row) { found[String(row.record_id)] = true; });
+  return found;
+}
+
+function processStockPositionJobItem_(job, prepared) {
+  const index = Number(job.processed || 0);
+  const line = prepared.items[index];
+  if (!line) throw new Error('Item Stock Posisi tidak ditemukan pada posisi ' + (index + 1) + '.');
+  const recoveringPending = Boolean(job.pendingDriveId);
+  if (!job.pendingDriveId) {
+    const lots = line.delta > 0 ? [{ qty: line.delta, expiryDate: line.expiryDate }] :
+      allocateTransferLots_(job.outlet, job.location, line.item, Math.abs(line.delta));
+    const plannedQty = (lots || []).reduce(function (total, lot) {
+      const qty = Number(lot.qty);
+      if (!isFinite(qty) || qty <= 0) throw new Error('QTY lot Stock Posisi tidak valid untuk ' + line.item.code + '.');
+      return total + qty;
+    }, 0);
+    if (Math.abs(plannedQty - Math.abs(line.delta)) > 0.0000001) {
+      throw new Error('Alokasi lot Stock Posisi tidak sama dengan selisih QTY untuk ' + line.item.code + '.');
+    }
+    const rows = stockPositionPlannedRows_(job, line, lots);
+    if (!rows.length) throw new Error('Lot Stock Posisi tidak dapat disusun untuk ' + line.item.code + '.');
+    const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(rows), 'application/json',
+      'TEMP_STOCK_POSITION_PENDING_' + job.jobId + '_' + index + '.json'));
+    job.pendingDriveId = file.getId(); job.stage = 'Mencatat item ' + (index + 1) + ' dari ' + job.total + ': ' + line.item.name;
+    writeStockPositionJob_(job);
+  }
+  const rows = stockPositionJobJson_(job.pendingDriveId);
+  const existing = recoveringPending ? existingStockPositionRecordIds_(job, rows) : {};
+  const missing = rows.filter(function (row) { return !existing[row.json.record_id]; });
+  if (missing.length) {
+    const lock = acquireStockWriteLock_();
+    try { insertStockCardRows_(missing); } finally { lock.releaseLock(); }
+  }
+  const pendingId = job.pendingDriveId;
+  job.processed = index + 1; job.movementCount = Number(job.movementCount || 0) + rows.length;
+  job.pendingDriveId = ''; job.retryCount = 0;
+  job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83));
+  writeStockPositionJob_(job);
+  try { DriveApp.getFileById(pendingId).setTrashed(true); } catch (error) {}
+  return job;
+}
+
+function processStockPositionUploadJobs() {
+  const scopeLock = acquireStockScopeLock_('stock-position-background-worker', 1000);
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    properties.deleteProperty('stock-position-worker-scheduled-at');
+    ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processStockPositionUploadJobs'; })
+      .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+    const all = properties.getProperties(), jobs = [];
+    Object.keys(all).filter(function (key) { return key.indexOf('stock-position-upload-job-') === 0; }).forEach(function (key) {
+      try {
+        const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
+        if (['COMPLETE', 'FAILED'].indexOf(job.status) >= 0 && age > 7 * 86400000) {
+          cleanupStockPositionJobFiles_(job); properties.deleteProperty(key);
+        } else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
+      } catch (error) { console.error('Job Stock Posisi rusak: ' + error.message); }
+    });
+    jobs.sort(function (a, b) { return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt)); });
+    let job = jobs.filter(function (candidate) { return Number(candidate.workerLeaseUntil || 0) <= Date.now(); })[0];
+    if (!job) return { processed: false };
+    job.lastWorkedAt = new Date().toISOString(); job.scheduleFailureCount = 0;
+    job.workerLeaseUntil = Date.now() + 7 * 60 * 1000;
+    writeStockPositionJob_(job);
+    try {
+      if (!job.preparedDriveId) job = prepareStockPositionJob_(job);
+      else {
+        job.status = 'PROCESSING';
+        const prepared = stockPositionJobJson_(job.preparedDriveId);
+        const deadline = Date.now() + 45000;
+        for (let count = 0; count < 8 && job.processed < job.total && Date.now() < deadline; count++) {
+          job = processStockPositionJobItem_(job, prepared);
+        }
+        if (job.processed >= job.total) {
+          job.status = 'COMPLETE'; job.stage = 'Seluruh Stock Adjustment berhasil dicatat.'; job.progress = 100;
+          job.workerLeaseUntil = 0; writeStockPositionJob_(job);
+          cleanupStockPositionJobFiles_(job);
+        }
+      }
+      job.workerLeaseUntil = 0; writeStockPositionJob_(job);
+    } catch (error) {
+      job.workerLeaseUntil = 0; job.retryCount = Number(job.retryCount || 0) + 1;
+      if (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error))) {
+        job.status = 'QUEUED'; job.stage = 'Gangguan sementara. Mencoba kembali item yang belum selesai (' + job.retryCount + '/3).';
+        job.error = '';
+      } else {
+        job.status = 'FAILED'; job.stage = 'Proses berhenti pada item ' + (Number(job.processed || 0) + 1) + '. Klik Coba Lagi untuk melanjutkan.';
+        job.error = String(error.message || error);
+      }
+      writeStockPositionJob_(job);
+    }
+    const pending = properties.getProperties();
+    if (Object.keys(pending).some(function (key) { if (key.indexOf('stock-position-upload-job-') !== 0) return false;
+      try { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(JSON.parse(pending[key]).status) >= 0; }
+      catch (error) { return false; }
+    })) scheduleStockPositionWorker_();
+    return { processed: true, jobId: job.jobId, status: job.status };
+  } finally { scopeLock.releaseLock(); }
 }
 
 function prepareSalesUsageImport_(context, payload, allowPendingConversions) {
@@ -8369,6 +8691,8 @@ function readStockBalanceRows_(outlet, location) {
 function refreshDirtyStockBalances() {
   // Run upload queues first. Balance rebuilds can be expensive and previously
   // consumed the whole trigger execution before Sales COGS got a turn.
+  try { processStockPositionUploadJobs(); }
+  catch (positionError) { console.error('Gagal menjalankan antrean Stock Posisi: ' + positionError.message); }
   try { processSalesCogsUploadJobs(); }
   catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
   try { processMissingExpiryUploadJobs(); }
@@ -8580,7 +8904,7 @@ function readStockHiddenMap_(outlet, location) {
 }
 
 function readCurrentStockCodeQtyMap_(outlet, location) {
-  const sql = stockCheckpointBalanceCtes_('') + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
+  const sql = stockCheckpointBalanceCtes_('', true) + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
     'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
     ' WHERE l.outlet = @outlet AND l.location = @location AND l.item_code IS NOT NULL AND l.item_code != \'\' GROUP BY l.item_code';
   const map = {};
@@ -10675,10 +10999,11 @@ function transactionRepairType_(payload) {
   return type;
 }
 
-function stockCheckpointBalanceCtes_(dateParameter) {
+function stockCheckpointBalanceCtes_(dateParameter, scoped) {
   const checkpointDate = "COALESCE(SAFE_CAST(JSON_VALUE(info, '$.eventDate') AS DATE), SAFE_CAST(JSON_VALUE(info, '$.effectiveDate') AS DATE), event_date)";
   const dateLimit = dateParameter ? ' AND ' + checkpointDate + ' <= CAST(' + dateParameter + ' AS DATE)' : '';
   return 'WITH latest_all AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type IN (\'MOVEMENT\',\'OPNAME_DETAIL\') ' +
+    (scoped ? 'AND outlet = @outlet AND location = @location ' : '') +
     'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
     'latest AS (SELECT * FROM latest_all WHERE record_type = \'MOVEMENT\'), ' +
     'opname_checkpoints AS (SELECT outlet, location, COALESCE(NULLIF(item_code, \'\'), CONCAT(\'#NAME#\', item_name)) AS item_key, ' +
