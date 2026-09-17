@@ -359,9 +359,9 @@ if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
   failures.push('Antrean Sales COGS belum dapat memulihkan trigger macet atau melewati job lama yang masih terkunci');
 }
 const maintenanceSalesIndex = backend.indexOf('try { processSalesCogsUploadJobs(); }', backend.indexOf('function refreshDirtyStockBalances()'));
-const maintenanceBalanceIndex = backend.indexOf("Object.keys(all).filter(function (key) { return key.indexOf('stock-balance-dirty-')", backend.indexOf('function refreshDirtyStockBalances()'));
+const maintenanceBalanceIndex = backend.indexOf('try { processStockItemSummaryJobs(); }', backend.indexOf('function refreshDirtyStockBalances()'));
 if (maintenanceSalesIndex < 0 || maintenanceBalanceIndex < 0 || maintenanceSalesIndex > maintenanceBalanceIndex) {
-  failures.push('Maintenance worker masih menjalankan rebuild balance sebelum antrean Sales COGS');
+  failures.push('Maintenance worker masih menjalankan antrean ringkasan sebelum antrean Sales COGS');
 }
 if (!frontendStockCard.includes("openExpiryAlertModal(\\'TRANSFER\\')") ||
     !frontendStockCard.includes('function openPendingTransferFromAlerts(index)') ||

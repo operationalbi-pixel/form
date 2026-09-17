@@ -35,6 +35,16 @@ Cara paling mudah:
 
 Fungsi aktivasi aman dijalankan ulang. Perubahan stok normal menjadwalkan worker singkat hanya untuk item yang berubah; trigger 5 menit berfungsi sebagai pengaman apabila worker tertunda.
 
+Setelah deployment versi optimasi ringkasan V2, jalankan `activateBigQuerySummaryMaintenanceV2` satu kali. Fungsi ini:
+
+- membuat antrean persisten `stock_summary_jobs` di BigQuery;
+- memindahkan penanda antrean lama dari Script Properties;
+- mengaktifkan saldo incremental untuk transaksi normal;
+- mempertahankan rebuild penuh untuk Stock Opname, koreksi, dan perubahan versi transaksi;
+- memasang worker 5 menit dan kompaksi ringkasan mingguan.
+
+Jangan menjalankan `compactStockSummaryTables` ketika backfill item masih aktif. Worker otomatis menunda kompaksi sampai backfill selesai dan menjalankannya paling sering satu kali setiap tujuh hari.
+
 Setelah backend versi ini pertama kali di-deploy, jalankan fungsi `backfillStockTransferDeliveryDates` satu kali dari editor Google Apps Script. Fungsi ini mengisi tanggal Good Delivery untuk transfer lama yang masih belum memiliki field `delivery_date`; data transaksi tidak dihapus.
 
 `startBigQueryCostOptimization` sudah menjalankan backfill monitoring, saldo, dan mengantrekan ringkasan item. Fungsi `backfillStockUploadDailySummary`, `backfillStockBalanceSummaries`, atau `backfillStockItemSummaries` hanya perlu dijalankan terpisah jika proses awal terhenti dan perlu dilanjutkan.
@@ -76,6 +86,9 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Daftar stok menggunakan cache 45 detik dan monitoring seluruh outlet menggunakan cache 60 detik. Cache terkait dibersihkan otomatis setelah perubahan stok.
 - Monitoring BIHQ membaca tabel ringkas `stock_upload_daily_summary`, bukan memindai seluruh history setiap membuka halaman.
 - Stock Card membaca tabel ringkas harian dan lot, lalu mengambil riwayat hanya 12 tanggal per halaman. Tombol **Muat riwayat sebelumnya** mengambil halaman berikutnya tanpa memindai seluruh ledger.
+- Transaksi normal memperbarui `stock_balances` menggunakan delta kecil; pemindaian ledger penuh hanya dipakai untuk Stock Opname, koreksi, atau pemulihan kegagalan.
+- Antrean perubahan item, saldo khusus, dan monitoring upload disimpan pada `stock_summary_jobs`, bukan satu Script Property per item.
+- Versi lama pada tabel ringkasan item dikompaksi otomatis setiap minggu dengan menyimpan versi terbaru per item/tanggal.
 - Query halaman pengguna dibatasi maksimal 256 MB secara default melalui `BQ_UI_MAX_BYTES_BILLED`; query administrasi tetap memakai batas umum `BQ_MAX_BYTES_BILLED`.
 - Pemakaian byte BigQuery dicatat ke Execution Log dengan event `BIGQUERY_USAGE` tanpa mencatat isi data atau SQL.
 - Cache master item, outlet, lokasi, dan unit berjalan otomatis selama 10 menit.
