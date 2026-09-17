@@ -16,23 +16,28 @@
 5. Pilih **New version**, lalu klik **Deploy**.
 6. Jangan membuat URL Web App baru. Pertahankan deployment dan URL yang sudah dipakai website.
 
-## 3. Pasang trigger pemeliharaan saldo — wajib satu kali
+## 3. Aktifkan optimasi biaya BigQuery — wajib satu kali
 
 Cara paling mudah:
 
-1. Di editor Google Apps Script, pilih fungsi `installStockMaintenanceTrigger` pada daftar fungsi.
+1. Di editor Google Apps Script, pilih fungsi `startBigQueryCostOptimization` pada daftar fungsi.
 2. Klik **Run**.
 3. Berikan izin saat Google meminta otorisasi.
-4. Buka menu **Triggers** dan pastikan ada trigger:
+4. Pastikan hasil eksekusi menampilkan `completed: true`.
+   - Fungsi mengaudit lalu mengaktifkan `stock_card_v2` yang dipartisi berdasarkan tanggal transaksi.
+   - Tabel lama tetap dipertahankan sebagai mirror rollback; tidak ada data ledger yang dihapus.
+   - `stock_balances`, `stock_upload_daily_summary`, `stock_item_daily_summary`, dan `stock_item_lot_summary` disiapkan otomatis.
+   - Ringkasan per item dibangun bertahap melalui antrean background agar halaman pengguna tidak menunggu proses penuh.
+5. Buka menu **Triggers** dan pastikan ada trigger:
    - Function: `refreshDirtyStockBalances`
    - Event source: **Time-driven**
    - Interval: **Every 5 minutes**
 
-Fungsi instalasi aman dijalankan ulang. Jika trigger sudah ada, fungsi tidak membuat trigger kedua.
+Fungsi aktivasi aman dijalankan ulang. Perubahan stok normal menjadwalkan worker singkat hanya untuk item yang berubah; trigger 5 menit berfungsi sebagai pengaman apabila worker tertunda.
 
 Setelah backend versi ini pertama kali di-deploy, jalankan fungsi `backfillStockTransferDeliveryDates` satu kali dari editor Google Apps Script. Fungsi ini mengisi tanggal Good Delivery untuk transfer lama yang masih belum memiliki field `delivery_date`; data transaksi tidak dihapus.
 
-Jalankan juga fungsi `backfillStockUploadDailySummary` satu kali. Fungsi ini mengisi tabel monitoring ringkas dari transaksi aktual yang sudah ada. Setelah itu, trigger yang sama akan memperbarui hanya tanggal/outlet yang berubah. Tanpa backfill ini, monitoring lama akan tampak belum lengkap sampai setiap tanggal diperbarui lagi.
+`startBigQueryCostOptimization` sudah menjalankan backfill monitoring, saldo, dan mengantrekan ringkasan item. Fungsi `backfillStockUploadDailySummary`, `backfillStockBalanceSummaries`, atau `backfillStockItemSummaries` hanya perlu dijalankan terpisah jika proses awal terhenti dan perlu dilanjutkan.
 
 Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke background. Tanpa trigger, data tetap akurat karena sistem membaca ledger aktual, tetapi pembacaan dapat lebih lambat.
 
@@ -70,6 +75,9 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Bootstrap halaman, navigasi, progress, dan completion digabungkan sehingga pembukaan awal tidak meminta data yang sama berulang kali.
 - Daftar stok menggunakan cache 45 detik dan monitoring seluruh outlet menggunakan cache 60 detik. Cache terkait dibersihkan otomatis setelah perubahan stok.
 - Monitoring BIHQ membaca tabel ringkas `stock_upload_daily_summary`, bukan memindai seluruh history setiap membuka halaman.
+- Stock Card membaca tabel ringkas harian dan lot, lalu mengambil riwayat hanya 12 tanggal per halaman. Tombol **Muat riwayat sebelumnya** mengambil halaman berikutnya tanpa memindai seluruh ledger.
+- Query halaman pengguna dibatasi maksimal 256 MB secara default melalui `BQ_UI_MAX_BYTES_BILLED`; query administrasi tetap memakai batas umum `BQ_MAX_BYTES_BILLED`.
+- Pemakaian byte BigQuery dicatat ke Execution Log dengan event `BIGQUERY_USAGE` tanpa mencatat isi data atau SQL.
 - Cache master item, outlet, lokasi, dan unit berjalan otomatis selama 10 menit.
 - Raw material WIP yang belum ada akan ditambahkan otomatis ke `STOCK_ITEMS` saat dibutuhkan.
 - Monitoring membaca transaksi aktual dari BigQuery, bukan hanya marker import.
@@ -80,9 +88,9 @@ Trigger ini memindahkan pembangunan ringkasan saldo dari proses pengguna ke back
 - Deployment backend pertama dapat meminta izin Google Drive saat membuat template Excel. File Google Sheets sementara otomatis dipindahkan ke Trash setelah file XLSX selesai dibuat.
 - Field BigQuery `stock_transfers.delivery_date` ditambahkan otomatis ketika backend versi baru pertama kali dijalankan.
 
-## 7. Migrasi aman partisi `stock_card` ke `event_date`
+## 7. Migrasi aman partisi `stock_card` ke `event_date` (opsional: prosedur manual)
 
-Lakukan setelah deployment dan backfill monitoring selesai, sebaiknya pada jam aktivitas rendah. Seluruh fungsi dijalankan satu per satu dari editor Google Apps Script. Tabel lama tidak pernah dihapus otomatis.
+Bagian ini hanya diperlukan jika fungsi terpadu `startBigQueryCostOptimization` tidak dapat diselesaikan dan migrasi perlu dilanjutkan tahap demi tahap. Lakukan pada jam aktivitas rendah. Tabel lama tidak pernah dihapus otomatis.
 
 Jika reset dan reupload data masih direncanakan, selesaikan reset/reupload terlebih dahulu sebelum memulai migrasi v2. Jangan menjalankan `RESET-UPLOAD-DATA.sql` ketika dual-write sedang aktif karena penghapusan langsung di BigQuery tidak otomatis dicerminkan ke tabel pasangannya.
 
