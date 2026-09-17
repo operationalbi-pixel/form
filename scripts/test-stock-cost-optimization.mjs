@@ -37,6 +37,7 @@ const backfillEnd = source.indexOf('/** Refreshes compact balances', backfillSta
 const backfillSource = source.slice(backfillStart, backfillEnd);
 assert.match(backfillSource, /stock_item_summary_backfill_queue/, 'Backfill must use the compact BigQuery queue');
 assert.match(backfillSource, /STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1/, 'Backfill must advance with one cursor');
+assert.match(backfillSource, /GROUP BY 1, 2, 3, 4\) AS grouped/, 'Cursor must be calculated after grouping the stock identities');
 assert.doesNotMatch(backfillSource, /setProperties\(updates/, 'Backfill must not create one Script Property per stock item');
 
 console.log('OK: pagination, checkpoints, audit dates, summary fallback, and quota-safe backfill are stable.');
