@@ -32,6 +32,15 @@ assert.deepEqual(
 );
 assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext(`parseStockSummaryJson_('broken', [])`, context))), []);
 
+vm.runInContext(`digest_ = function(value) { return String(value).replace(/[^A-Za-z0-9]/g, '').padEnd(48, 'x'); }`, context);
+assert.equal(vm.runInContext(`Object.keys(stockBalanceUnsafeScopeMap_([
+  {json:{record_type:'MOVEMENT',outlet:'BICB',location:'Store',movement_type:'Goods Receipt',version:1}}
+])).length`, context), 0, 'Normal movements must stay on the incremental path');
+assert.equal(vm.runInContext(`Object.keys(stockBalanceUnsafeScopeMap_([
+  {json:{record_type:'MOVEMENT',outlet:'BICB',location:'Store',movement_type:'Stock Opname',version:1}},
+  {json:{record_type:'MOVEMENT',outlet:'BICB',location:'Store',movement_type:'Sold',version:2}}
+])).length`, context), 1, 'Stock Opname and corrected versions must share one full-rebuild scope');
+
 const backfillStart = source.indexOf('function backfillStockItemSummaries()');
 const backfillEnd = source.indexOf('/** Refreshes compact balances', backfillStart);
 const backfillSource = source.slice(backfillStart, backfillEnd);
@@ -40,4 +49,16 @@ assert.match(backfillSource, /STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1/, 'Backfill 
 assert.match(backfillSource, /GROUP BY 1, 2, 3, 4\) AS grouped/, 'Cursor must be calculated after grouping the stock identities');
 assert.doesNotMatch(backfillSource, /setProperties\(updates/, 'Backfill must not create one Script Property per stock item');
 
-console.log('OK: pagination, checkpoints, audit dates, summary fallback, and quota-safe backfill are stable.');
+assert.match(source, /ensureBigQueryTable_\('stock_summary_jobs'/, 'Persistent summary queue must live in BigQuery');
+assert.match(source, /function applyStockBalanceDeltas_/, 'Normal stock writes must support incremental balances');
+assert.match(source, /MERGE ['"]? \+ table/, 'Incremental balances must use an atomic BigQuery MERGE');
+assert.match(source, /row\.record_type === 'OPNAME_DETAIL'.*movement_type.*Stock Opname.*version/s,
+  'Stock Opname and corrected versions must remain on the full rebuild path');
+assert.match(source, /function compactStockSummaryTables\(\)/, 'Summary version compaction must be available');
+assert.match(source, /ROW_NUMBER\(\) OVER \(PARTITION BY event_date, outlet, location/, 'Daily compaction must keep only the newest item/day version');
+assert.match(source, /stock_summary_jobs_compact_tmp/, 'Processed BigQuery queue versions must also be compacted');
+assert.match(source, /date >= rebuildFrom/, 'Changed item rebuilds must only append affected dates');
+assert.match(source, /function activateBigQuerySummaryMaintenanceV2\(\)/, 'Deployment must expose one safe V2 activation entry point');
+assert.doesNotMatch(source, /function markStockItemSummariesDirty_/, 'Item jobs must no longer be stored as Script Properties');
+
+console.log('OK: pagination, checkpoints, incremental balances, BigQuery queues, compaction, and quota-safe backfill are stable.');

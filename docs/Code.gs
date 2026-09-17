@@ -5421,8 +5421,24 @@ function stockItemSummaryStateKey_(outlet, location, itemCode, itemName) {
   return 'stock-item-summary-dirty-' + digest_(identity).slice(0, 28);
 }
 
+function stockItemSummaryScopeKey_(outlet, location, itemCode, itemName) {
+  const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location).toLowerCase(),
+    String(itemCode || '').toUpperCase(), String(itemName || '').toUpperCase()].join('|');
+  return digest_(identity).slice(0, 40);
+}
+
+function stockSummaryJobTable_() {
+  return '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_summary_jobs`';
+}
+
 function stockItemSummaryIsDirty_(outlet, location, item) {
-  return Boolean(PropertiesService.getScriptProperties().getProperty(stockItemSummaryStateKey_(outlet, location, item.code, item.name)));
+  const scopeKey = stockItemSummaryScopeKey_(outlet, location, item.code, item.name);
+  const sql = 'WITH state AS (SELECT MAX(IF(action = \'ENQUEUE\', created_at, NULL)) AS enqueued_at, ' +
+    'MAX(IF(action = \'ACK\', ack_through, NULL)) AS acked_at FROM ' + stockSummaryJobTable_() +
+    ' WHERE job_type = \'ITEM\' AND scope_key = @scopeKey) ' +
+    'SELECT IF(enqueued_at IS NOT NULL AND (acked_at IS NULL OR enqueued_at > acked_at), 1, 0) AS pending FROM state';
+  const rows = runUiReadQuery_(sql, { scopeKey: scopeKey });
+  return Number(rows[0] && rows[0].pending || 0) > 0;
 }
 
 function parseStockSummaryJson_(value, fallback) {
@@ -5432,23 +5448,30 @@ function parseStockSummaryJson_(value, fallback) {
 /** Compact read model used by Stock Card. It contains daily closing balances and
  * lot snapshots; the source ledger remains authoritative and fully auditable. */
 function readStockItemSummary_(outlet, location, item, bounds, includeCurrentLots) {
-  if (stockItemSummaryIsDirty_(outlet, location, item)) return null;
+  if (PropertiesService.getScriptProperties().getProperty('STOCK_SUMMARY_FORCE_LEDGER_V1') === '1') return null;
   const daily = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary`';
   const lots = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary`';
   const itemFilter = isShowcaseLocation_(location)
     ? 'item_name = @item'
     : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
-  const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: bounds.end };
+  const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: bounds.end,
+    scopeKey: stockItemSummaryScopeKey_(outlet, location, item.code, item.name) };
+  const lotRows = runUiReadQuery_(
+    'WITH job_state AS (SELECT MAX(IF(action = \'ENQUEUE\', created_at, NULL)) AS enqueued_at, ' +
+    'MAX(IF(action = \'ACK\', ack_through, NULL)) AS acked_at FROM ' + stockSummaryJobTable_() +
+    ' WHERE job_type = \'ITEM\' AND scope_key = @scopeKey), latest_lot AS (' +
+    'SELECT current_qty, lots_json, fifo_status_json, as_of_date FROM ' + lots +
+    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' ORDER BY updated_at DESC LIMIT 1) ' +
+    'SELECT current_qty, lots_json, fifo_status_json, CAST(as_of_date AS STRING) AS as_of_date, ' +
+    'IF(enqueued_at IS NOT NULL AND (acked_at IS NULL OR enqueued_at > acked_at), 1, 0) AS pending ' +
+    'FROM latest_lot CROSS JOIN job_state', params);
+  if (!lotRows.length || Number(lotRows[0].pending || 0) > 0) return null;
   const dailyRows = runUiReadQuery_(
     'WITH scoped AS (SELECT event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM ' + daily +
     ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' AND event_date < CAST(@end AS DATE) ' +
     'QUALIFY ROW_NUMBER() OVER (PARTITION BY event_date ORDER BY updated_at DESC) = 1) ' +
     'SELECT CAST(event_date AS STRING) AS event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM scoped ' +
     'WHERE event_date >= CAST(@start AS DATE) OR event_date = (SELECT MAX(event_date) FROM scoped WHERE event_date < CAST(@start AS DATE)) ORDER BY event_date', params);
-  const lotRows = runUiReadQuery_(
-    'SELECT current_qty, lots_json, fifo_status_json, CAST(as_of_date AS STRING) AS as_of_date FROM ' + lots +
-    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' ORDER BY updated_at DESC LIMIT 1', params);
-  if (!lotRows.length) return null;
   const lotRow = lotRows[0], fifoLotsByDate = {}, balancesByDate = {};
   let periodClosingQty = 0, hasPrevious = false;
   dailyRows.forEach(function (row) {
@@ -6221,7 +6244,7 @@ function ensureStockCardReadInfrastructure_() {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v19') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v20') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -6279,6 +6302,14 @@ function ensureStockCardInfrastructure_() {
     bqField_('lots_json', 'STRING'), bqField_('fifo_status_json', 'STRING'), bqField_('as_of_date', 'DATE'),
     bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
   ], '', ['outlet', 'location', 'item_code']);
+  ensureBigQueryTable_('stock_summary_jobs', [
+    bqField_('job_date', 'DATE', 'REQUIRED'), bqField_('job_type', 'STRING', 'REQUIRED'),
+    bqField_('action', 'STRING', 'REQUIRED'), bqField_('scope_key', 'STRING', 'REQUIRED'),
+    bqField_('outlet', 'STRING'), bqField_('location', 'STRING'), bqField_('item_code', 'STRING'),
+    bqField_('item_name', 'STRING'), bqField_('earliest_date', 'DATE'), bqField_('event_date', 'DATE'),
+    bqField_('upload_type', 'STRING'), bqField_('movement_type', 'STRING'),
+    bqField_('created_at', 'TIMESTAMP', 'REQUIRED'), bqField_('ack_through', 'TIMESTAMP')
+  ], 'job_date', ['job_type', 'scope_key', 'outlet', 'location']);
   ensureBigQueryTable_('stock_transfers', [
     bqField_('event_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING', 'REQUIRED'), bqField_('status', 'STRING', 'REQUIRED'),
     bqField_('from_outlet', 'STRING'), bqField_('from_location', 'STRING'), bqField_('to_outlet', 'STRING'), bqField_('to_location', 'STRING'),
@@ -6302,7 +6333,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('corrected_by', 'STRING'), bqField_('corrected_by_name', 'STRING'), bqField_('corrected_at', 'TIMESTAMP', 'REQUIRED'),
     bqField_('source_file', 'STRING'), bqField_('source_row', 'INTEGER')
   ], 'corrected_at', ['outlet', 'item_code', 'movement_type']);
-  infrastructureCache.put('stock-card-infrastructure-v19', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v20', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -8608,16 +8639,8 @@ function stockBalanceStateKey_(kind, outlet, location) {
   return 'stock-balance-' + kind + '-' + digest_(scope).slice(0, 24);
 }
 
-function markStockBalanceDirty_(rows) {
-  const properties = PropertiesService.getScriptProperties();
-  const updates = {};
-  const timestamp = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
-  (rows || []).forEach(function (entry) {
-    const row = entry && entry.json ? entry.json : entry;
-    if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location) return;
-    updates[stockBalanceStateKey_('dirty', row.outlet, row.location)] = JSON.stringify({ token: timestamp, outlet: row.outlet, location: row.location });
-  });
-  if (Object.keys(updates).length) properties.setProperties(updates, false);
+function stockBalanceSummaryScopeKey_(outlet, location) {
+  return digest_([String(outlet || '').toUpperCase(), normalizeLocation_(location).toLowerCase()].join('|')).slice(0, 40);
 }
 
 function stockUploadTypeForMovement_(movementType) {
@@ -8625,44 +8648,146 @@ function stockUploadTypeForMovement_(movementType) {
   return type === 'Goods Receipt' ? 'goodsReceipt' : (type === 'Terjual' || type === 'Sold') ? 'salesUsage' : type === 'Item Journal' ? 'itemJournal' : type === 'Transfer Out Antar Outlet' ? 'goodsDelivery' : '';
 }
 
-function stockUploadSummaryDirtyKey_(outlet, eventDate, uploadType) {
-  return 'stock-upload-summary-dirty-' + digest_([String(outlet || '').toUpperCase(), eventDate, uploadType].join('|')).slice(0, 24);
+function stockUploadSummaryScopeKey_(outlet, eventDate, uploadType) {
+  return digest_([String(outlet || '').toUpperCase(), eventDate, uploadType].join('|')).slice(0, 40);
 }
 
-function markStockUploadSummaryDirty_(rows) {
-  const properties = PropertiesService.getScriptProperties(), updates = {}, token = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
+function stockSummaryQueueRow_(jobType, scopeKey, state, action, ackThrough) {
+  const now = new Date().toISOString();
+  state = state || {};
+  return {
+    insertId: digest_([jobType, scopeKey, action || 'ENQUEUE', ackThrough || '', now, Utilities.getUuid()].join('|')),
+    json: {
+      job_date: now.slice(0, 10), job_type: jobType, action: action || 'ENQUEUE', scope_key: scopeKey,
+      outlet: state.outlet || null, location: state.location || null, item_code: state.itemCode || null,
+      item_name: state.itemName || null, earliest_date: state.earliestDate || null,
+      event_date: state.eventDate || null, upload_type: state.uploadType || null,
+      movement_type: state.movementType || null, created_at: now, ack_through: ackThrough || null
+    }
+  };
+}
+
+function insertStockSummaryQueueRows_(rows) {
+  if (!rows || !rows.length) return;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { insertAll_('stock_summary_jobs', rows); return; }
+    catch (error) { lastError = error; if (attempt < 2) Utilities.sleep(250 * (attempt + 1)); }
+  }
+  throw lastError;
+}
+
+function stockBalanceUnsafeScopeMap_(rows) {
+  const unsafe = {};
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry;
-    const uploadType = row && stockUploadTypeForMovement_(row.movement_type), eventDate = String(row && row.event_date || '').slice(0, 10);
-    if (!uploadType || !row.outlet || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return;
-    if (row.record_type === 'MOVEMENT' && !row.source_file) return;
-    // Sold/Terjual dari Showcase Log adalah input manual dan tidak boleh menandai Usage Penjualan sebagai uploaded.
-    if (uploadType === 'salesUsage' && String(row.source_file || '').trim().toUpperCase() === 'SHOWCASE_LOG') return;
-    const key = stockUploadSummaryDirtyKey_(row.outlet, eventDate, uploadType);
-    updates[key] = JSON.stringify({ token: token, outlet: String(row.outlet).toUpperCase(), eventDate: eventDate, uploadType: uploadType, movementType: row.movement_type });
+    if (!row || !row.outlet || !row.location) return;
+    const affectsBalance = row.record_type === 'OPNAME_DETAIL' || row.record_type === 'MOVEMENT';
+    if (!affectsBalance) return;
+    const scopeKey = stockBalanceSummaryScopeKey_(row.outlet, row.location);
+    if (row.record_type === 'OPNAME_DETAIL' || String(row.movement_type || '') === 'Stock Opname' || Number(row.version || 1) > 1) {
+      unsafe[scopeKey] = { outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location) };
+    }
   });
-  if (Object.keys(updates).length) properties.setProperties(updates, false);
+  return unsafe;
 }
 
-function markStockItemSummariesDirty_(rows) {
-  const properties = PropertiesService.getScriptProperties(), updates = {};
-  const token = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
+function enqueueStockSummaryChanges_(rows) {
+  const itemStates = {}, uploadStates = {}, queueRows = [], unsafeScopes = stockBalanceUnsafeScopeMap_(rows);
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry;
-    if (!row || (row.record_type !== 'MOVEMENT' && row.record_type !== 'OPNAME_DETAIL') || !row.outlet || !row.location) return;
+    if (!row || !row.outlet || !row.location) return;
+    if (row.record_type === 'MOVEMENT' || row.record_type === 'OPNAME_DETAIL') {
+      const itemCode = String(row.item_code || '').trim().toUpperCase(), itemName = String(row.item_name || '').trim();
+      if (itemCode || itemName) {
+        const scopeKey = stockItemSummaryScopeKey_(row.outlet, row.location, itemCode, itemName);
+        const eventDate = String(row.event_date || '').slice(0, 10), previous = itemStates[scopeKey];
+        itemStates[scopeKey] = {
+          outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location), itemCode: itemCode, itemName: itemName,
+          earliestDate: previous && previous.earliestDate && previous.earliestDate < eventDate ? previous.earliestDate : eventDate
+        };
+      }
+    }
+    const uploadType = stockUploadTypeForMovement_(row.movement_type), eventDate = String(row.event_date || '').slice(0, 10);
+    if (uploadType && /^\d{4}-\d{2}-\d{2}$/.test(eventDate) && !(row.record_type === 'MOVEMENT' && !row.source_file) &&
+        !(uploadType === 'salesUsage' && String(row.source_file || '').trim().toUpperCase() === 'SHOWCASE_LOG')) {
+      const uploadScope = stockUploadSummaryScopeKey_(row.outlet, eventDate, uploadType);
+      uploadStates[uploadScope] = { outlet: String(row.outlet).toUpperCase(), eventDate: eventDate, uploadType: uploadType, movementType: row.movement_type };
+    }
+  });
+  Object.keys(itemStates).forEach(function (scopeKey) { queueRows.push(stockSummaryQueueRow_('ITEM', scopeKey, itemStates[scopeKey])); });
+  Object.keys(uploadStates).forEach(function (scopeKey) { queueRows.push(stockSummaryQueueRow_('UPLOAD', scopeKey, uploadStates[scopeKey])); });
+  insertStockSummaryQueueRows_(queueRows);
+  return { itemCount: Object.keys(itemStates).length, uploadCount: Object.keys(uploadStates).length, unsafeScopes: unsafeScopes };
+}
+
+function enqueueStockBalanceRebuildScopes_(scopes) {
+  const rows = [];
+  Object.keys(scopes || {}).forEach(function (scopeKey) {
+    rows.push(stockSummaryQueueRow_('BALANCE_REBUILD', scopeKey, scopes[scopeKey]));
+  });
+  insertStockSummaryQueueRows_(rows);
+}
+
+function scheduleStockBalanceRebuildScopesSafely_(scopes) {
+  if (!Object.keys(scopes || {}).length) return;
+  try { enqueueStockBalanceRebuildScopes_(scopes); }
+  catch (error) {
+    const properties = PropertiesService.getScriptProperties();
+    properties.setProperty('STOCK_SUMMARY_FORCE_LEDGER_V1', '1');
+    properties.setProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1', new Date().toISOString());
+    console.error('Antrean rebuild saldo tertunda; ledger dipakai sebagai fallback: ' + error.message);
+  }
+}
+
+function applyStockBalanceDeltas_(rows, unsafeScopes) {
+  unsafeScopes = unsafeScopes || {};
+  const deltas = {}, scopes = {}, properties = PropertiesService.getScriptProperties();
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location || (row.direction !== 'IN' && row.direction !== 'OUT')) return;
+    const scopeKey = stockBalanceSummaryScopeKey_(row.outlet, row.location);
+    scopes[scopeKey] = { outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location) };
+    if (unsafeScopes && unsafeScopes[scopeKey]) return;
+    // A legacy dirty marker means the compact balance may already be stale; rebuild it once instead of adding a delta.
+    if (properties.getProperty(stockBalanceStateKey_('dirty', row.outlet, row.location))) {
+      unsafeScopes[scopeKey] = scopes[scopeKey]; return;
+    }
     const itemCode = String(row.item_code || '').trim().toUpperCase(), itemName = String(row.item_name || '').trim();
-    if (!itemCode && !itemName) return;
-    const key = stockItemSummaryStateKey_(row.outlet, row.location, itemCode, itemName);
-    let previous = null;
-    try { previous = JSON.parse(String(properties.getProperty(key) || '')); } catch (error) { previous = null; }
-    const eventDate = String(row.event_date || '').slice(0, 10);
-    updates[key] = JSON.stringify({
-      token: token, outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location),
-      itemCode: itemCode, itemName: itemName,
-      earliestDate: previous && previous.earliestDate && previous.earliestDate < eventDate ? previous.earliestDate : eventDate
-    });
+    const itemKey = [scopeKey, itemCode, itemName.toUpperCase()].join('|');
+    if (!deltas[itemKey]) deltas[itemKey] = { outlet: scopes[scopeKey].outlet, location: scopes[scopeKey].location, itemCode: itemCode, itemName: itemName, delta: 0 };
+    deltas[itemKey].delta += (row.direction === 'IN' ? 1 : -1) * Number(row.qty || 0);
   });
-  if (Object.keys(updates).length) properties.setProperties(updates, false);
+  const payload = Object.keys(deltas).map(function (key) { return deltas[key]; }).filter(function (row) { return Math.abs(row.delta) > 0.0000001; });
+  if (!payload.length) {
+    scheduleStockBalanceRebuildScopesSafely_(unsafeScopes);
+    return { updatedItems: 0, rebuildScopes: Object.keys(unsafeScopes || {}).length };
+  }
+  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
+  const sql = 'MERGE ' + table + ' AS target USING (' +
+    'SELECT JSON_VALUE(value, \'$.outlet\') AS outlet, JSON_VALUE(value, \'$.location\') AS location, ' +
+    'NULLIF(JSON_VALUE(value, \'$.itemCode\'), \'\') AS item_code, JSON_VALUE(value, \'$.itemName\') AS item_name, ' +
+    'SUM(SAFE_CAST(JSON_VALUE(value, \'$.delta\') AS FLOAT64)) AS qty_delta FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS value ' +
+    'GROUP BY outlet, location, item_code, item_name) AS source ON target.outlet = source.outlet AND target.location = source.location ' +
+    'AND ((target.item_code = source.item_code) OR ((target.item_code IS NULL OR target.item_code = \'\') AND source.item_code IS NULL AND target.item_name = source.item_name)) ' +
+    'WHEN MATCHED THEN UPDATE SET current_qty = target.current_qty + source.qty_delta, updated_at = CURRENT_TIMESTAMP() ' +
+    'WHEN NOT MATCHED THEN INSERT (outlet, location, item_code, item_name, current_qty, updated_at) ' +
+    'VALUES (source.outlet, source.location, source.item_code, source.item_name, source.qty_delta, CURRENT_TIMESTAMP())';
+  try {
+    runNamedQuery_(sql, { payload: JSON.stringify(payload) }, { useQueryCache: false });
+    Object.keys(scopes).forEach(function (scopeKey) {
+      if (unsafeScopes && unsafeScopes[scopeKey]) return;
+      const scope = scopes[scopeKey];
+      properties.setProperty(stockBalanceStateKey_('ready', scope.outlet, scope.location), '1');
+      properties.setProperty(stockBalanceStateKey_('checkpoint-v1', scope.outlet, scope.location), '1');
+      removeScriptCacheKeys_([stockItemsCacheKey_(scope.outlet, scope.location)]);
+    });
+  } catch (error) {
+    Object.keys(scopes).forEach(function (scopeKey) { unsafeScopes[scopeKey] = scopes[scopeKey]; });
+    console.error('Update saldo incremental gagal; scope dijadwalkan untuk rebuild: ' + error.message);
+  }
+  scheduleStockBalanceRebuildScopesSafely_(unsafeScopes);
+  return { updatedItems: payload.length, rebuildScopes: Object.keys(unsafeScopes || {}).length };
 }
 
 function ensureStockItemSummaryWorker_() {
@@ -8673,15 +8798,22 @@ function ensureStockItemSummaryWorker_() {
 }
 
 function insertStockCardRows_(rows) {
-  markStockBalanceDirty_(rows);
-  markStockUploadSummaryDirty_(rows);
-  markStockItemSummariesDirty_(rows);
   insertAll_(stockCardTableId_(), rows);
   mirrorStockCardRows_(rows);
-  // Refresh the marker after a successful insert so a concurrent rebuild cannot clear it too early.
-  markStockBalanceDirty_(rows);
-  markStockUploadSummaryDirty_(rows);
-  markStockItemSummariesDirty_(rows);
+  let queued;
+  try {
+    queued = enqueueStockSummaryChanges_(rows);
+  } catch (queueError) {
+    // The ledger write is already authoritative. Fall back to direct ledger reads
+    // and schedule a complete summary recovery instead of reporting a false
+    // transaction failure to the user.
+    const properties = PropertiesService.getScriptProperties();
+    properties.setProperty('STOCK_SUMMARY_FORCE_LEDGER_V1', '1');
+    properties.setProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1', new Date().toISOString());
+    queued = { unsafeScopes: stockBalanceUnsafeScopeMap_(rows) };
+    console.error('Antrean ringkasan belum tersimpan; ledger tetap aman dan recovery dijadwalkan: ' + queueError.message);
+  }
+  applyStockBalanceDeltas_(rows, queued.unsafeScopes || {});
   invalidateStockItemCachesForRows_(rows);
   invalidateFastStockHistoryRows_(rows);
   ensureStockItemSummaryWorker_();
@@ -8708,7 +8840,7 @@ function mirrorStockCardRows_(rows) {
   }
 }
 
-function rebuildStockUploadDailySummary_(state, expectedRaw) {
+function rebuildStockUploadDailySummary_(state) {
   const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
   const movementFilter = state.uploadType === 'salesUsage'
     ? "movement_type IN ('Terjual', 'Sold')"
@@ -8730,8 +8862,6 @@ function rebuildStockUploadDailySummary_(state, expectedRaw) {
   runNamedQuery_(sql, {
     outlet: state.outlet, eventDate: state.eventDate, uploadType: state.uploadType
   }, { useQueryCache: false });
-  const properties = PropertiesService.getScriptProperties(), key = stockUploadSummaryDirtyKey_(state.outlet, state.eventDate, state.uploadType);
-  if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
   removeScriptCacheKeys_(['stock-upload-monitor-v2-' + state.eventDate.slice(0, 7)]);
 }
 
@@ -8785,7 +8915,7 @@ function readStockLedgerBalanceRows_(outlet, location) {
   return runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
 }
 
-function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
+function rebuildStockBalanceSummary_(outlet, location) {
   const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
   const sql = 'BEGIN TRANSACTION; ' +
     'DELETE FROM ' + table + ' WHERE outlet = @outlet AND location = @location; ' +
@@ -8798,17 +8928,15 @@ function rebuildStockBalanceSummary_(outlet, location, expectedDirtyToken) {
 
   const properties = PropertiesService.getScriptProperties();
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
-  const dirtyKey = stockBalanceStateKey_('dirty', outlet, location);
   properties.setProperty(readyKey, '1');
   properties.setProperty(stockBalanceStateKey_('checkpoint-v1', outlet, location), '1');
-  if (String(properties.getProperty(dirtyKey) || '') === String(expectedDirtyToken || '')) {
-    properties.deleteProperty(dirtyKey);
-  }
+  properties.deleteProperty(stockBalanceStateKey_('dirty', outlet, location));
   removeScriptCacheKeys_([stockItemsCacheKey_(outlet, location)]);
 }
 
 function readStockBalanceRows_(outlet, location) {
   const properties = PropertiesService.getScriptProperties();
+  if (properties.getProperty('STOCK_SUMMARY_FORCE_LEDGER_V1') === '1') return readStockLedgerBalanceRows_(outlet, location);
   const readyKey = stockBalanceStateKey_('ready', outlet, location);
   const ready = properties.getProperty(readyKey) === '1';
   const checkpointReadyKey = stockBalanceStateKey_('checkpoint-v1', outlet, location);
@@ -8816,7 +8944,7 @@ function readStockBalanceRows_(outlet, location) {
     // Existing compact summaries were calculated as a raw ledger sum. Rebuild each
     // outlet/location once after this release so historical SO checkpoints take effect.
     if (properties.getProperty(checkpointReadyKey) !== '1') {
-      rebuildStockBalanceSummary_(outlet, location, String(properties.getProperty(stockBalanceStateKey_('dirty', outlet, location)) || ''));
+      rebuildStockBalanceSummary_(outlet, location);
     }
     // The item list must never wait for a complete ledger scan. Serve the compact
     // balance summary immediately; a one-minute trigger refreshes dirty scopes.
@@ -8831,7 +8959,7 @@ function readStockBalanceRows_(outlet, location) {
   }
 }
 
-function rebuildStockItemSummary_(state, expectedRaw) {
+function rebuildStockItemSummary_(state) {
   const item = { code: String(state.itemCode || '').toUpperCase(), name: String(state.itemName || '') };
   let history = readStockHistoryPageRows_(state.outlet, state.location, item);
   const balanceHistory = history;
@@ -8854,7 +8982,8 @@ function rebuildStockItemSummary_(state, expectedRaw) {
     daily[date].movementCount++;
   });
   const dates = Object.keys(dateMap).sort(), now = new Date().toISOString();
-  const dailyRows = dates.map(function (date) {
+  const rebuildFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(state.earliestDate || '')) ? String(state.earliestDate).slice(0, 10) : (dates[0] || '');
+  const dailyRows = dates.filter(function (date) { return !rebuildFrom || date >= rebuildFrom; }).map(function (date) {
     const value = daily[date] || { totalIn: 0, totalOut: 0, movementCount: 0 };
     const closingQty = stockCheckpointBalanceUntil_(balanceHistory, stockIsoDateOffset_(date, 1));
     return {
@@ -8880,9 +9009,26 @@ function rebuildStockItemSummary_(state, expectedRaw) {
       as_of_date: dates.length ? dates[dates.length - 1] : null, updated_at: now
     }
   }]);
-  const properties = PropertiesService.getScriptProperties();
-  const key = stockItemSummaryStateKey_(state.outlet, state.location, state.itemCode, state.itemName);
-  if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
+}
+
+function stockPendingSummaryJobs_(jobType, limit) {
+  limit = Math.max(1, Math.min(20, Number(limit || 8)));
+  const sql = 'WITH acknowledgements AS (' +
+    'SELECT scope_key, MAX(ack_through) AS ack_through FROM ' + stockSummaryJobTable_() +
+    ' WHERE job_type = @jobType AND action = \'ACK\' GROUP BY scope_key), pending AS (' +
+    'SELECT enqueue.*, MIN(enqueue.earliest_date) OVER (PARTITION BY enqueue.scope_key) AS pending_earliest_date, ' +
+    'MAX(enqueue.created_at) OVER (PARTITION BY enqueue.scope_key) AS pending_through FROM ' + stockSummaryJobTable_() + ' AS enqueue ' +
+    'LEFT JOIN acknowledgements ack USING (scope_key) WHERE enqueue.job_type = @jobType AND enqueue.action = \'ENQUEUE\' ' +
+    'AND (ack.ack_through IS NULL OR enqueue.created_at > ack.ack_through)) ' +
+    'SELECT scope_key, outlet, location, item_code, item_name, CAST(pending_earliest_date AS STRING) AS earliest_date, ' +
+    'CAST(event_date AS STRING) AS event_date, upload_type, movement_type, CAST(pending_through AS STRING) AS pending_through ' +
+    'FROM pending QUALIFY ROW_NUMBER() OVER (PARTITION BY scope_key ORDER BY created_at DESC) = 1 ' +
+    'ORDER BY pending_through LIMIT ' + limit;
+  return runNamedQuery_(sql, { jobType: jobType }, { useQueryCache: false });
+}
+
+function acknowledgeStockSummaryJob_(jobType, state) {
+  insertStockSummaryQueueRows_([stockSummaryQueueRow_(jobType, state.scopeKey, {}, 'ACK', state.pendingThrough)]);
 }
 
 function processStockItemSummaryJobs() {
@@ -8891,16 +9037,35 @@ function processStockItemSummaryJobs() {
   }).forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
   ensureStockCardInfrastructure_();
   const started = Date.now(), properties = PropertiesService.getScriptProperties();
-  const all = properties.getProperties(), keys = Object.keys(all).filter(function (key) {
-    return key.indexOf('stock-item-summary-dirty-') === 0;
-  });
-  let processed = 0;
-  keys.slice(0, 8).some(function (key) {
+  if (properties.getProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1')) {
+    try {
+      backfillStockBalanceSummaries();
+      backfillStockUploadDailySummary();
+      backfillStockItemSummaries();
+      properties.deleteProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1');
+      properties.deleteProperty('STOCK_SUMMARY_FORCE_LEDGER_V1');
+      ensureStockItemSummaryWorker_();
+      return { processed: 0, remaining: 1, recoveryQueued: true };
+    } catch (recoveryError) {
+      console.error('Recovery penuh ringkasan masih menunggu BigQuery: ' + recoveryError.message);
+      ensureStockItemSummaryWorker_();
+      return { processed: 0, remaining: 1, recoveryPending: true };
+    }
+  }
+  let processed = 0, itemBatch = stockPendingSummaryJobs_('ITEM', 8);
+  itemBatch.some(function (row) {
     if (Date.now() - started > 45000) return true;
     try {
-      const raw = String(properties.getProperty(key) || all[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
-      if (!state || !state.outlet || !state.location || (!state.itemCode && !state.itemName)) return false;
-      rebuildStockItemSummary_(state, raw); processed++;
+      const state = {
+        scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''),
+        outlet: String(row.outlet || '').toUpperCase(), location: normalizeLocation_(row.location),
+        itemCode: String(row.item_code || '').toUpperCase(), itemName: String(row.item_name || ''),
+        earliestDate: String(row.earliest_date || '').slice(0, 10)
+      };
+      if (!state.outlet || !state.location || (!state.itemCode && !state.itemName)) return false;
+      rebuildStockItemSummary_(state);
+      acknowledgeStockSummaryJob_('ITEM', state);
+      processed++;
     } catch (error) { console.error('Gagal memperbarui ringkasan item: ' + error.message); }
     return false;
   });
@@ -8927,7 +9092,7 @@ function processStockItemSummaryJobs() {
         earliestDate: String(row.earliest_date || '').slice(0, 10)
       };
       try {
-        rebuildStockItemSummary_(state, '');
+        rebuildStockItemSummary_(state);
         properties.setProperty(backfillCursorKey, String(row.cursor_key || ''));
         processed++;
       } catch (error) {
@@ -8943,20 +9108,39 @@ function processStockItemSummaryJobs() {
       properties.setProperty('STOCK_ITEM_SUMMARY_BACKFILL_COMPLETED_AT_V1', new Date().toISOString());
     }
   }
-  // Keep the compact list balance in sync in the same event-driven execution.
-  const balanceProperties = properties.getProperties();
-  Object.keys(balanceProperties).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 4).forEach(function (key) {
-    if (Date.now() - started > 50000) return;
+  const balanceBatch = Date.now() - started <= 45000 ? stockPendingSummaryJobs_('BALANCE_REBUILD', 2) : [];
+  balanceBatch.some(function (row) {
+    if (Date.now() - started > 50000) return true;
     try {
-      const raw = String(properties.getProperty(key) || balanceProperties[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
-      if (state && state.outlet && state.location) rebuildStockBalanceSummary_(state.outlet, state.location, raw);
+      const state = { scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''), outlet: String(row.outlet || ''), location: normalizeLocation_(row.location) };
+      if (state.outlet && state.location) {
+        rebuildStockBalanceSummary_(state.outlet, state.location);
+        acknowledgeStockSummaryJob_('BALANCE_REBUILD', state);
+      }
     } catch (error) { console.error('Gagal memperbarui saldo event-driven: ' + error.message); }
+    return false;
   });
-  const remainingDirty = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-item-summary-dirty-') === 0; }).length;
+  const uploadBatch = Date.now() - started <= 50000 ? stockPendingSummaryJobs_('UPLOAD', 4) : [];
+  uploadBatch.some(function (row) {
+    if (Date.now() - started > 52000) return true;
+    try {
+      const state = {
+        scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''),
+        outlet: String(row.outlet || ''), eventDate: String(row.event_date || '').slice(0, 10),
+        uploadType: String(row.upload_type || ''), movementType: String(row.movement_type || '')
+      };
+      if (state.outlet && state.eventDate && state.uploadType) {
+        rebuildStockUploadDailySummary_(state);
+        acknowledgeStockSummaryJob_('UPLOAD', state);
+      }
+    } catch (error) { console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message); }
+    return false;
+  });
   const backfillActive = properties.getProperty(backfillActiveKey) === '1';
-  const remaining = remainingDirty + (backfillActive ? 1 : 0);
+  const remaining = (itemBatch.length >= 8 ? 1 : 0) + (balanceBatch.length >= 2 ? 1 : 0) + (uploadBatch.length >= 4 ? 1 : 0) + (backfillActive ? 1 : 0);
   if (remaining) ensureStockItemSummaryWorker_();
-  return { processed: processed, remaining: remaining, backfillActive: backfillActive };
+  return { processed: processed, remaining: remaining, backfillActive: backfillActive,
+    itemJobs: itemBatch.length, balanceJobs: balanceBatch.length, uploadJobs: uploadBatch.length };
 }
 
 function backfillStockItemSummaries() {
@@ -8989,6 +9173,72 @@ function backfillStockItemSummaries() {
   return { queued: queued, workerScheduled: queued > 0, storageMode: 'bigquery_queue_with_single_cursor' };
 }
 
+function migrateLegacyStockSummaryJobs_() {
+  const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), rows = [], migratedKeys = [];
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf('stock-item-summary-dirty-') !== 0 && key.indexOf('stock-balance-dirty-') !== 0 && key.indexOf('stock-upload-summary-dirty-') !== 0) return;
+    let state = null;
+    try { state = JSON.parse(String(all[key] || '')); } catch (error) { state = null; }
+    if (!state || !state.outlet) { migratedKeys.push(key); return; }
+    if (key.indexOf('stock-item-summary-dirty-') === 0) {
+      const scopeKey = stockItemSummaryScopeKey_(state.outlet, state.location, state.itemCode, state.itemName);
+      rows.push(stockSummaryQueueRow_('ITEM', scopeKey, state));
+    } else if (key.indexOf('stock-balance-dirty-') === 0) {
+      const scopeKey = stockBalanceSummaryScopeKey_(state.outlet, state.location);
+      rows.push(stockSummaryQueueRow_('BALANCE_REBUILD', scopeKey, state));
+    } else {
+      const scopeKey = stockUploadSummaryScopeKey_(state.outlet, state.eventDate, state.uploadType);
+      rows.push(stockSummaryQueueRow_('UPLOAD', scopeKey, state));
+    }
+    migratedKeys.push(key);
+  });
+  if (rows.length) insertStockSummaryQueueRows_(rows);
+  migratedKeys.forEach(function (key) { properties.deleteProperty(key); });
+  return { migratedJobs: rows.length, removedLegacyKeys: migratedKeys.length };
+}
+
+function compactStockSummaryTables() {
+  ensureStockCardInfrastructure_();
+  if (PropertiesService.getScriptProperties().getProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1') === '1') {
+    return { compacted: false, reason: 'Backfill item masih berjalan; kompaksi ditunda.' };
+  }
+  const daily = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary`';
+  const dailyTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary_compact_tmp`';
+  const lots = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary`';
+  const lotsTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary_compact_tmp`';
+  const jobs = stockSummaryJobTable_();
+  const jobsTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_summary_jobs_compact_tmp`';
+  const sql = 'CREATE OR REPLACE TABLE ' + dailyTemp + ' PARTITION BY event_date CLUSTER BY outlet, location, item_code AS ' +
+    'SELECT * EXCEPT(summary_rank) FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY event_date, outlet, location, COALESCE(item_code, \'\'), item_name ORDER BY updated_at DESC) AS summary_rank FROM ' + daily + ') WHERE summary_rank = 1; ' +
+    'CREATE OR REPLACE TABLE ' + daily + ' PARTITION BY event_date CLUSTER BY outlet, location, item_code AS SELECT * FROM ' + dailyTemp + '; ' +
+    'DROP TABLE ' + dailyTemp + '; ' +
+    'CREATE OR REPLACE TABLE ' + lotsTemp + ' CLUSTER BY outlet, location, item_code AS ' +
+    'SELECT * EXCEPT(summary_rank) FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY outlet, location, COALESCE(item_code, \'\'), item_name ORDER BY updated_at DESC) AS summary_rank FROM ' + lots + ') WHERE summary_rank = 1; ' +
+    'CREATE OR REPLACE TABLE ' + lots + ' CLUSTER BY outlet, location, item_code AS SELECT * FROM ' + lotsTemp + '; ' +
+    'DROP TABLE ' + lotsTemp + '; ' +
+    'CREATE OR REPLACE TABLE ' + jobsTemp + ' PARTITION BY job_date CLUSTER BY job_type, scope_key, outlet, location AS ' +
+    'SELECT * EXCEPT(latest_ack, action_rank) FROM (' +
+    'SELECT *, MAX(IF(action = \'ACK\', ack_through, NULL)) OVER (PARTITION BY job_type, scope_key) AS latest_ack, ' +
+    'ROW_NUMBER() OVER (PARTITION BY job_type, scope_key, action ORDER BY created_at DESC) AS action_rank FROM ' + jobs + ') ' +
+    'WHERE (action = \'ENQUEUE\' AND (latest_ack IS NULL OR created_at > latest_ack)) OR (action = \'ACK\' AND action_rank = 1); ' +
+    'CREATE OR REPLACE TABLE ' + jobs + ' PARTITION BY job_date CLUSTER BY job_type, scope_key, outlet, location AS SELECT * FROM ' + jobsTemp + '; ' +
+    'DROP TABLE ' + jobsTemp;
+  runNamedQuery_(sql, {}, { useQueryCache: false });
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('STOCK_SUMMARY_COMPACTION_LAST_AT_V1', new Date().toISOString());
+  return { compacted: true, tables: ['stock_item_daily_summary', 'stock_item_lot_summary', 'stock_summary_jobs'] };
+}
+
+function maybeCompactStockSummaryTables_() {
+  const properties = PropertiesService.getScriptProperties(), now = Date.now();
+  const last = Date.parse(String(properties.getProperty('STOCK_SUMMARY_COMPACTION_LAST_AT_V1') || '')) || 0;
+  const lastAttempt = Date.parse(String(properties.getProperty('STOCK_SUMMARY_COMPACTION_ATTEMPT_AT_V1') || '')) || 0;
+  if (now - last < 7 * 86400000 || now - lastAttempt < 86400000) return { skipped: true };
+  if (properties.getProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1') === '1') return { skipped: true, reason: 'backfill_active' };
+  properties.setProperty('STOCK_SUMMARY_COMPACTION_ATTEMPT_AT_V1', new Date(now).toISOString());
+  return compactStockSummaryTables();
+}
+
 /** Refreshes compact balances in the background; the periodic run is a watchdog. */
 function refreshDirtyStockBalances() {
   // Run upload queues first. Balance rebuilds can be expensive and previously
@@ -8999,30 +9249,10 @@ function refreshDirtyStockBalances() {
   catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
   try { processMissingExpiryUploadJobs(); }
   catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
-  const properties = PropertiesService.getScriptProperties();
-  const all = properties.getProperties();
-  Object.keys(all).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 8).forEach(function (key) {
-    try {
-      const raw = String(all[key] || '');
-      const state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
-      if (!state || !state.outlet || !state.location) return;
-      rebuildStockBalanceSummary_(state.outlet, state.location, raw);
-    } catch (error) {
-      console.error('Gagal memperbarui ringkasan saldo: ' + error.message);
-    }
-  });
-  const refreshed = PropertiesService.getScriptProperties().getProperties();
-  Object.keys(refreshed).filter(function (key) { return key.indexOf('stock-upload-summary-dirty-') === 0; }).slice(0, 12).forEach(function (key) {
-    try {
-      const raw = String(refreshed[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
-      if (!state || !state.outlet || !state.eventDate || !state.uploadType || !state.movementType) return;
-      rebuildStockUploadDailySummary_(state, raw);
-    } catch (error) {
-      console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message);
-    }
-  });
   try { processStockItemSummaryJobs(); }
   catch (summaryError) { console.error('Gagal menjalankan antrean ringkasan item: ' + summaryError.message); }
+  try { maybeCompactStockSummaryTables_(); }
+  catch (compactError) { console.error('Kompaksi ringkasan ditunda: ' + compactError.message); }
 }
 
 function ensureStockMaintenanceTrigger_() {
@@ -9034,11 +9264,19 @@ function ensureStockMaintenanceTrigger_() {
 
 /** Run once manually after deployment to install the background balance refresh. */
 function installStockMaintenanceTrigger() {
+  ensureStockCardInfrastructure_();
+  const migrated = migrateLegacyStockSummaryJobs_();
   ScriptApp.getProjectTriggers().filter(function (trigger) {
     return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
   }).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
   ensureStockMaintenanceTrigger_();
-  return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 5 };
+  ensureStockItemSummaryWorker_();
+  return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 5, queue: 'BigQuery', migrated: migrated };
+}
+
+function activateBigQuerySummaryMaintenanceV2() {
+  const trigger = installStockMaintenanceTrigger();
+  return { completed: true, incrementalBalances: true, queue: 'stock_summary_jobs', weeklyCompaction: true, trigger: trigger };
 }
 
 /** Run once after deploying delivery_date to preserve the original date on older pending transfers. */
