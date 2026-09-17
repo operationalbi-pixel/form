@@ -8904,6 +8904,45 @@ function processStockItemSummaryJobs() {
     } catch (error) { console.error('Gagal memperbarui ringkasan item: ' + error.message); }
     return false;
   });
+  // The initial backfill uses one compact BigQuery queue plus a single cursor.
+  // Do not materialize one Script Property per item: Apps Script limits total
+  // property storage and large stock masters can exceed that quota immediately.
+  const backfillActiveKey = 'STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1';
+  const backfillCursorKey = 'STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1';
+  if (processed < 8 && Date.now() - started <= 45000 && properties.getProperty(backfillActiveKey) === '1') {
+    const cursor = String(properties.getProperty(backfillCursorKey) || '');
+    const queue = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_summary_backfill_queue`';
+    const batchSize = 8 - processed;
+    const backfillRows = runNamedQuery_(
+      'SELECT outlet, location, item_code, item_name, CAST(earliest_date AS STRING) AS earliest_date, cursor_key ' +
+      'FROM ' + queue + ' WHERE cursor_key > @cursor ORDER BY cursor_key LIMIT ' + batchSize,
+      { cursor: cursor }, { useQueryCache: false }
+    );
+    let completedBatch = true;
+    backfillRows.some(function (row) {
+      if (Date.now() - started > 45000) { completedBatch = false; return true; }
+      const state = {
+        token: 'backfill', outlet: String(row.outlet || '').toUpperCase(), location: normalizeLocation_(row.location),
+        itemCode: String(row.item_code || '').toUpperCase(), itemName: String(row.item_name || ''),
+        earliestDate: String(row.earliest_date || '').slice(0, 10)
+      };
+      try {
+        rebuildStockItemSummary_(state, '');
+        properties.setProperty(backfillCursorKey, String(row.cursor_key || ''));
+        processed++;
+      } catch (error) {
+        completedBatch = false;
+        console.error('Gagal backfill ringkasan item: ' + error.message);
+        return true;
+      }
+      return false;
+    });
+    if (completedBatch && backfillRows.length < batchSize) {
+      properties.deleteProperty(backfillActiveKey);
+      properties.deleteProperty(backfillCursorKey);
+      properties.setProperty('STOCK_ITEM_SUMMARY_BACKFILL_COMPLETED_AT_V1', new Date().toISOString());
+    }
+  }
   // Keep the compact list balance in sync in the same event-driven execution.
   const balanceProperties = properties.getProperties();
   Object.keys(balanceProperties).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 4).forEach(function (key) {
@@ -8913,25 +8952,41 @@ function processStockItemSummaryJobs() {
       if (state && state.outlet && state.location) rebuildStockBalanceSummary_(state.outlet, state.location, raw);
     } catch (error) { console.error('Gagal memperbarui saldo event-driven: ' + error.message); }
   });
-  const remaining = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-item-summary-dirty-') === 0; }).length;
+  const remainingDirty = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-item-summary-dirty-') === 0; }).length;
+  const backfillActive = properties.getProperty(backfillActiveKey) === '1';
+  const remaining = remainingDirty + (backfillActive ? 1 : 0);
   if (remaining) ensureStockItemSummaryWorker_();
-  return { processed: processed, remaining: remaining };
+  return { processed: processed, remaining: remaining, backfillActive: backfillActive };
 }
 
 function backfillStockItemSummaries() {
   ensureStockCardInfrastructure_();
-  const sql = 'SELECT outlet, location, item_code, item_name, MIN(event_date) AS earliest_date FROM ' + stockCardTable_() +
-    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY outlet, location, item_code, item_name';
-  const rows = runNamedQuery_(sql, {}, { useQueryCache: false }), properties = PropertiesService.getScriptProperties(), updates = {};
-  rows.forEach(function (row) {
-    const state = { token: String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8), outlet: String(row.outlet || '').toUpperCase(),
-      location: normalizeLocation_(row.location), itemCode: String(row.item_code || '').toUpperCase(), itemName: String(row.item_name || ''),
-      earliestDate: String(row.earliest_date || '').slice(0, 10) };
-    updates[stockItemSummaryStateKey_(state.outlet, state.location, state.itemCode, state.itemName)] = JSON.stringify(state);
+  const properties = PropertiesService.getScriptProperties();
+  // Release markers left by an interrupted legacy backfill. The queue created
+  // below is a complete ledger snapshot; new writes after this cleanup create
+  // fresh dirty markers and therefore remain protected from races.
+  const existingProperties = properties.getProperties();
+  Object.keys(existingProperties).forEach(function (key) {
+    if (key.indexOf('stock-item-summary-dirty-') === 0) properties.deleteProperty(key);
   });
-  if (Object.keys(updates).length) properties.setProperties(updates, false);
+  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');
+  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1');
+  const queue = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_summary_backfill_queue`';
+  const identity = 'TO_JSON_STRING(STRUCT(UPPER(COALESCE(outlet, \'\')) AS outlet, COALESCE(location, \'\') AS location, ' +
+    'UPPER(COALESCE(item_code, \'\')) AS item_code, COALESCE(item_name, \'\') AS item_name))';
+  const sql = 'CREATE OR REPLACE TABLE ' + queue + ' CLUSTER BY outlet, location, item_code AS ' +
+    'SELECT UPPER(COALESCE(outlet, \'\')) AS outlet, COALESCE(location, \'\') AS location, ' +
+    'UPPER(COALESCE(item_code, \'\')) AS item_code, COALESCE(item_name, \'\') AS item_name, ' +
+    'MIN(event_date) AS earliest_date, ' + identity + ' AS cursor_key FROM ' + stockCardTable_() +
+    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY outlet, location, item_code, item_name; ' +
+    'SELECT COUNT(*) AS queued FROM ' + queue;
+  const rows = runNamedQuery_(sql, {}, { useQueryCache: false });
+  const queued = Number(rows[0] && rows[0].queued || 0);
+  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_COMPLETED_AT_V1');
+  if (queued > 0) properties.setProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1', '1');
+  else properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');
   ensureStockItemSummaryWorker_();
-  return { queued: Object.keys(updates).length, workerScheduled: true };
+  return { queued: queued, workerScheduled: queued > 0, storageMode: 'bigquery_queue_with_single_cursor' };
 }
 
 /** Refreshes compact balances in the background; the periodic run is a watchdog. */
