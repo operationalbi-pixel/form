@@ -34,8 +34,8 @@ const chatHtml = await text('docs/chat.html');
 const chatEnhancements = await text('docs/chat-enhancements.js');
 const chatBackend = await text('docs/Code.gs');
 const stockCardHtml = await text('docs/stock-card.html');
-if (!chatBackend.includes('stockHistoryScopedLatestCte_') || !chatBackend.includes("fastSource: 'BIGQUERY_SCOPED_SINGLE_QUERY'")) {
-  failures.push('Stock History belum menggunakan satu query yang dibatasi outlet/lokasi/item');
+if (!chatBackend.includes('readStockHistoryMonthPage_') || !chatBackend.includes("fastSource = 'BIGQUERY_DAILY_SUMMARY_PAGE'")) {
+  failures.push('Stock History belum menggunakan ringkasan harian dan pembacaan per halaman');
 }
 if (/stockFifoFefoStatus_\(readStockHistoryForFifoRecalculation_/.test(chatBackend)) {
   failures.push('Stock History masih menjalankan full-history FIFO query terpisah saat drawer dibuka');
@@ -43,8 +43,20 @@ if (/stockFifoFefoStatus_\(readStockHistoryForFifoRecalculation_/.test(chatBacke
 if (!chatBackend.includes('request.maximumBytesBilled') || !chatBackend.includes("getProperty('BQ_MAX_BYTES_BILLED')")) {
   failures.push('Pengaman maksimum biaya per query BigQuery belum aktif');
 }
+if (!chatBackend.includes('function runUiReadQuery_(') || !chatBackend.includes("getProperty('BQ_UI_MAX_BYTES_BILLED')") || !chatBackend.includes('268435456')) {
+  failures.push('Query UI belum memiliki batas biaya 256 MB yang terpisah');
+}
+if (!chatBackend.includes("ensureBigQueryTable_('stock_item_daily_summary'") || !chatBackend.includes("ensureBigQueryTable_('stock_item_lot_summary'") || !chatBackend.includes('function processStockItemSummaryJobs()')) {
+  failures.push('Tabel ringkasan harian/lot atau worker perubahan item belum tersedia');
+}
+if (!chatBackend.includes("everyMinutes(5)") || !chatBackend.includes('function startBigQueryCostOptimization()')) {
+  failures.push('Watchdog hemat biaya atau aktivasi optimasi terpadu belum tersedia');
+}
 if (!stockCardHtml.includes('readStockHistoryBrowserCache') || !stockCardHtml.includes('writeStockHistoryBrowserCache') || !stockCardHtml.includes('if(cached)applyStockHistoryData')) {
   failures.push('Stock History belum memakai cache instan dengan refresh server di background');
+}
+if (!stockCardHtml.includes('id="historyLoadMore"') || !stockCardHtml.includes('function loadMoreHistory()') || !stockCardHtml.includes('pageDays:12')) {
+  failures.push('Stock History belum menyediakan pagination per 12 tanggal');
 }
 let chatInlineIndex = 0;
 for (const match of chatHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {

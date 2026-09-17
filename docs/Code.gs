@@ -5323,32 +5323,69 @@ function stockHistoryScopedLatestCte_(location) {
     'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1)';
 }
 
-function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots) {
+function stockHistoryCacheKey_(outlet, location, item, month, includeCurrentLots, cursor) {
   const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location), String(item && item.code || '').toUpperCase(),
-    String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary'].join('|');
-  return 'stock-history-v7-' + digest_(identity).slice(0, 36);
+    String(item && item.name || '').toUpperCase(), String(month || ''), includeCurrentLots ? 'lots' : 'summary', String(cursor || '')].join('|');
+  return 'stock-history-v8-' + digest_(identity).slice(0, 36);
 }
 
-function readStockHistoryPageRows_(outlet, location, item) {
-  const sql = stockHistoryScopedLatestCte_(location) + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ORDER BY event_date, created_at';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name }).map(mapStockHistoryQueryRow_);
+function normalizeStockHistoryPageDays_(value) {
+  const parsed = Math.floor(Number(value || 12));
+  return Math.max(5, Math.min(31, isFinite(parsed) ? parsed : 12));
+}
+
+function applyStockHistoryAuditRows_(rows) {
   const audits = {};
-  rows.forEach(function (row) {
+  (rows || []).forEach(function (row) {
     if (row.recordType !== 'OPNAME_DETAIL') return;
     const key = String(row.sourceHash || '') + '|' + String(row.sourceRow || 0);
     const previous = audits[key];
     if (!previous || stockMovementCreatedMillis_(row) >= stockMovementCreatedMillis_(previous)) audits[key] = row;
   });
-  return rows.filter(function (row) { return row.recordType === 'MOVEMENT'; }).map(function (row) {
+  return (rows || []).filter(function (row) { return row.recordType === 'MOVEMENT'; }).map(function (row) {
     if (row.movementType !== 'Stock Opname') return row;
     const audit = audits[String(row.sourceHash || '') + '|' + String(row.sourceRow || 0)];
     if (audit && audit.opnameBalance !== null && isFinite(Number(audit.opnameBalance))) row.opnameBalance = Number(audit.opnameBalance);
     if (audit && audit.opnameDate) row.opnameDate = audit.opnameDate;
-    // Legacy H+1 rows carry the selected SO date inside the audit/info. The selected
-    // date is authoritative, so the checkpoint belongs to that day in history.
     if (row.opnameDate) row.date = row.opnameDate;
     return row;
   });
+}
+
+function readStockHistoryPageRows_(outlet, location, item) {
+  const sql = stockHistoryScopedLatestCte_(location) + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ORDER BY event_date, created_at';
+  return applyStockHistoryAuditRows_(runNamedQuery_(sql, {
+    outlet: outlet, location: location, code: item.code, item: item.name
+  }).map(mapStockHistoryQueryRow_));
+}
+
+/** Reads only complete transaction days for the requested month. The cursor is a
+ * date, so one day is never split across pages and the daily balance stays exact. */
+function readStockHistoryMonthPage_(outlet, location, item, bounds, cursor, pageDays) {
+  const limit = normalizeStockHistoryPageDays_(pageDays);
+  const cursorDate = /^\d{4}-\d{2}-\d{2}$/.test(String(cursor || '')) ? String(cursor) : '';
+  const scoped = 'WITH latest AS (SELECT ' + stockHistorySelectFields_() + ' FROM ' + stockCardTable_() + ' ' +
+    'WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
+    'AND event_date >= CAST(@start AS DATE) AND event_date < CAST(@end AS DATE) ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
+    'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
+    'page_dates AS (SELECT DISTINCT event_date FROM latest WHERE (@cursor = \'\' OR event_date < SAFE_CAST(@cursor AS DATE)) ' +
+    'ORDER BY event_date DESC LIMIT ' + String(limit + 1) + '), ' +
+    'selected_dates AS (SELECT event_date FROM page_dates ORDER BY event_date DESC LIMIT ' + String(limit) + ') ';
+  const sql = scoped + 'SELECT ' + stockHistorySelectFields_() + ', (SELECT COUNT(*) FROM page_dates) AS page_date_count FROM latest WHERE event_date IN (SELECT event_date FROM selected_dates) ' +
+    'ORDER BY event_date, created_at';
+  // Include one raw H+1 day for legacy Stock Opname rows whose selected/effective
+  // date belongs to the requested month. The mapped date is filtered again below.
+  const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: stockIsoDateOffset_(bounds.end, 1), cursor: cursorDate };
+  const queryRows = runUiReadQuery_(sql, params), hasMore = Number(queryRows[0] && queryRows[0].page_date_count || 0) > limit;
+  const rows = applyStockHistoryAuditRows_(queryRows.map(mapStockHistoryQueryRow_)).filter(function (row) {
+    const date = String(row.date || '').slice(0, 10);
+    return date >= bounds.start && date < bounds.end && (!cursorDate || date < cursorDate);
+  });
+  const dates = {};
+  rows.forEach(function (row) { const date = String(row.date || '').slice(0, 10); if (date) dates[date] = true; });
+  const orderedDates = Object.keys(dates).sort().reverse();
+  return { rows: rows, nextCursor: hasMore && orderedDates.length ? orderedDates[orderedDates.length - 1] : '', hasMore: hasMore };
 }
 
 /** Returns the absolute balance immediately before endDateExclusive. A valid Stock
@@ -5378,6 +5415,57 @@ function stockCheckpointBalanceUntil_(history, endDateExclusive) {
   }, checkpoint ? checkpoint.qty : 0);
 }
 
+function stockItemSummaryStateKey_(outlet, location, itemCode, itemName) {
+  const identity = [String(outlet || '').toUpperCase(), normalizeLocation_(location).toLowerCase(),
+    String(itemCode || '').toUpperCase(), String(itemName || '').toUpperCase()].join('|');
+  return 'stock-item-summary-dirty-' + digest_(identity).slice(0, 28);
+}
+
+function stockItemSummaryIsDirty_(outlet, location, item) {
+  return Boolean(PropertiesService.getScriptProperties().getProperty(stockItemSummaryStateKey_(outlet, location, item.code, item.name)));
+}
+
+function parseStockSummaryJson_(value, fallback) {
+  try { return JSON.parse(String(value || '')); } catch (error) { return fallback; }
+}
+
+/** Compact read model used by Stock Card. It contains daily closing balances and
+ * lot snapshots; the source ledger remains authoritative and fully auditable. */
+function readStockItemSummary_(outlet, location, item, bounds, includeCurrentLots) {
+  if (stockItemSummaryIsDirty_(outlet, location, item)) return null;
+  const daily = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary`';
+  const lots = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary`';
+  const itemFilter = isShowcaseLocation_(location)
+    ? 'item_name = @item'
+    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
+  const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: bounds.end };
+  const dailyRows = runUiReadQuery_(
+    'WITH scoped AS (SELECT event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM ' + daily +
+    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' AND event_date < CAST(@end AS DATE) ' +
+    'QUALIFY ROW_NUMBER() OVER (PARTITION BY event_date ORDER BY updated_at DESC) = 1) ' +
+    'SELECT CAST(event_date AS STRING) AS event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM scoped ' +
+    'WHERE event_date >= CAST(@start AS DATE) OR event_date = (SELECT MAX(event_date) FROM scoped WHERE event_date < CAST(@start AS DATE)) ORDER BY event_date', params);
+  const lotRows = runUiReadQuery_(
+    'SELECT current_qty, lots_json, fifo_status_json, CAST(as_of_date AS STRING) AS as_of_date FROM ' + lots +
+    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' ORDER BY updated_at DESC LIMIT 1', params);
+  if (!lotRows.length) return null;
+  const lotRow = lotRows[0], fifoLotsByDate = {}, balancesByDate = {};
+  let periodClosingQty = 0, hasPrevious = false;
+  dailyRows.forEach(function (row) {
+    const date = String(row.event_date || '').slice(0, 10), closing = Number(row.closing_qty || 0);
+    if (date < bounds.start) { hasPrevious = true; periodClosingQty = closing; return; }
+    fifoLotsByDate[date] = parseStockSummaryJson_(row.fifo_lots_json, []);
+    balancesByDate[date] = closing;
+    periodClosingQty = closing;
+  });
+  return {
+    currentQty: Number(lotRow.current_qty || 0), periodClosingQty: periodClosingQty,
+    fifoLotsByDate: fifoLotsByDate, balancesByDate: balancesByDate, hasPrevious: hasPrevious,
+    currentLots: includeCurrentLots ? parseStockSummaryJson_(lotRow.lots_json, []) : null,
+    fifoFefoStatus: parseStockSummaryJson_(lotRow.fifo_status_json, { mode: 'FIFO', needsRecalculation: false, recommendedStartDate: '' })
+  };
+}
+
 function getStockHistory(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -5390,62 +5478,73 @@ function getStockHistory(token, payload) {
     const location = normalizeLocation_(payload.location);
     const item = findStockItemForLocation_(location, payload.itemCode || payload.itemName);
     const bounds = stockHistoryMonthBounds_(payload.month);
-    const cacheKey = stockHistoryCacheKey_(outlet, location, item, bounds.month, Boolean(payload.includeCurrentLots));
+    const cursor = /^\d{4}-\d{2}-\d{2}$/.test(String(payload.cursor || '')) ? String(payload.cursor) : '';
+    const cacheKey = stockHistoryCacheKey_(outlet, location, item, bounds.month, Boolean(payload.includeCurrentLots), cursor);
     const cached = readScriptJsonCache_(cacheKey);
     if (cached) return cached;
 
-    // A single item-scoped query replaces separate month, opening balance,
-    // after-period, Fast API, and FIFO status reads.
-    const stockHistoryRows = readStockHistoryPageRows_(outlet, location, item);
-    let fifoInput = stockHistoryRows;
-    if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
-
-    const monthStart = bounds.start, monthEnd = bounds.end;
-    const visibleRows = fifoInput.filter(function (row) {
-      const date = String(row.date || '').slice(0, 10);
-      return date >= monthStart && date < monthEnd;
-    });
-    const currentQty = stockCheckpointBalanceUntil_(stockHistoryRows, '');
-    const periodClosingQty = stockCheckpointBalanceUntil_(stockHistoryRows, bounds.end);
-    const snapshots = calculateFifoSnapshots_(fifoInput);
-    const dayNet = {};
-    visibleRows.forEach(function (row) {
-      const date = String(row.date || '').slice(0, 10);
-      if (!date) return;
-      // A LOT-only Edit Balance must still create a history day. Otherwise the
-      // table stops at the previous IN/OUT date and displays the pre-edit lots.
-      if (dayNet[date] === undefined) dayNet[date] = 0;
-      if (row.direction !== 'IN' && row.direction !== 'OUT') return;
-      if (row.movementType === 'Stock Opname' && row.opnameBalance !== null) return;
-      dayNet[date] = Number(dayNet[date] || 0) + (row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0));
-    });
-    const fifoLotsByDate = {}, balancesByDate = {}, visibleDates = Object.keys(dayNet).sort().reverse();
-    let runningBalance = periodClosingQty;
-    visibleDates.forEach(function (date) {
-      fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], runningBalance);
-      runningBalance -= Number(dayNet[date] || 0);
-    });
-    visibleRows.forEach(function (row) {
-      const date = String(row.date || '').slice(0, 10);
-      if (date && balancesByDate[date] === undefined) balancesByDate[date] = stockCheckpointBalanceUntil_(stockHistoryRows, stockIsoDateOffset_(date, 1));
-    });
+    const summary = readStockItemSummary_(outlet, location, item, bounds, Boolean(payload.includeCurrentLots));
+    let visibleRows, currentQty, periodClosingQty, fifoLotsByDate, balancesByDate, currentLots, fifoFefoStatus, hasPrevious;
+    let nextCursor = '', hasMore = false, fastSource = 'BIGQUERY_DAILY_SUMMARY_PAGE';
+    if (summary) {
+      const page = readStockHistoryMonthPage_(outlet, location, item, bounds, cursor, payload.pageDays);
+      visibleRows = page.rows; nextCursor = page.nextCursor; hasMore = page.hasMore;
+      currentQty = summary.currentQty; periodClosingQty = summary.periodClosingQty;
+      fifoLotsByDate = summary.fifoLotsByDate; balancesByDate = summary.balancesByDate;
+      currentLots = summary.currentLots; fifoFefoStatus = summary.fifoFefoStatus; hasPrevious = summary.hasPrevious;
+    } else {
+      // Safe fallback while a newly deployed summary is being built. No feature is
+      // removed: FIFO/FEFO and audit history are still calculated from the ledger.
+      const stockHistoryRows = readStockHistoryPageRows_(outlet, location, item);
+      let fifoInput = stockHistoryRows;
+      if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
+      visibleRows = fifoInput.filter(function (row) {
+        const date = String(row.date || '').slice(0, 10);
+        return date >= bounds.start && date < bounds.end;
+      });
+      currentQty = stockCheckpointBalanceUntil_(stockHistoryRows, '');
+      periodClosingQty = stockCheckpointBalanceUntil_(stockHistoryRows, bounds.end);
+      const snapshots = calculateFifoSnapshots_(fifoInput);
+      fifoLotsByDate = {}; balancesByDate = {};
+      currentLots = null; fifoFefoStatus = stockFifoFefoStatus_(fifoInput, item);
+      hasPrevious = fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < bounds.start; });
+      if (payload.includeCurrentLots) {
+        const currentDates = Object.keys(snapshots).sort();
+        currentLots = reconcileFifoLots_(currentDates.length ? snapshots[currentDates[currentDates.length - 1]] : [], currentQty);
+      }
+      fastSource = 'BIGQUERY_LEDGER_FALLBACK';
+      const dayNet = {};
+      visibleRows.forEach(function (row) {
+        const date = String(row.date || '').slice(0, 10);
+        if (!date) return;
+        if (dayNet[date] === undefined) dayNet[date] = 0;
+        if (row.direction !== 'IN' && row.direction !== 'OUT') return;
+        if (row.movementType === 'Stock Opname' && row.opnameBalance !== null) return;
+        dayNet[date] += row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0);
+      });
+      let runningBalance = periodClosingQty;
+      Object.keys(dayNet).sort().reverse().forEach(function (date) {
+        fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], runningBalance);
+        runningBalance -= Number(dayNet[date] || 0);
+      });
+      visibleRows.forEach(function (row) {
+        const date = String(row.date || '').slice(0, 10);
+        if (date && balancesByDate[date] === undefined) balancesByDate[date] = stockCheckpointBalanceUntil_(stockHistoryRows, stockIsoDateOffset_(date, 1));
+      });
+    }
 
     const employeeNames = readEmployeeNameMap_();
     visibleRows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
-    let currentLots = null;
-    if (payload.includeCurrentLots) {
-      const currentSnapshots = snapshots, currentDates = Object.keys(currentSnapshots).sort();
-      currentLots = reconcileFifoLots_(currentDates.length ? currentSnapshots[currentDates[currentDates.length - 1]] : [], currentQty);
-    }
 
     const response = {
       item: item, outlet: outlet, location: location, currentQty: currentQty,
       month: bounds.month, periodClosingQty: periodClosingQty,
       history: visibleRows, fifoLotsByDate: fifoLotsByDate, balancesByDate: balancesByDate,
-      hasPrevious: fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < monthStart; }), hasNext: bounds.month < bounds.currentMonth,
+      hasPrevious: hasPrevious, hasNext: bounds.month < bounds.currentMonth,
+      nextCursor: nextCursor, hasMore: hasMore,
       currentLots: currentLots,
-      fifoFefoStatus: stockFifoFefoStatus_(fifoInput, item),
-      fastSource: 'BIGQUERY_SCOPED_SINGLE_QUERY'
+      fifoFefoStatus: fifoFefoStatus,
+      fastSource: fastSource
     };
     writeScriptJsonCache_(cacheKey, response, 300);
     return response;
@@ -6122,7 +6221,7 @@ function ensureStockCardReadInfrastructure_() {
 
 function ensureStockCardInfrastructure_() {
   const infrastructureCache = CacheService.getScriptCache();
-  if (infrastructureCache.get('stock-card-infrastructure-v18') === 'ready') return;
+  if (infrastructureCache.get('stock-card-infrastructure-v19') === 'ready') return;
   ensureStockMasterSheet_();
   ensureShowcaseSheet_();
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
@@ -6166,6 +6265,20 @@ function ensureStockCardInfrastructure_() {
     bqField_('marker_count', 'INTEGER', 'REQUIRED'), bqField_('last_upload', 'TIMESTAMP'),
     bqField_('last_user', 'STRING'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
   ], 'event_date', ['outlet', 'upload_type']);
+  ensureBigQueryTable_('stock_item_daily_summary', [
+    bqField_('event_date', 'DATE', 'REQUIRED'), bqField_('outlet', 'STRING', 'REQUIRED'),
+    bqField_('location', 'STRING', 'REQUIRED'), bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
+    bqField_('total_in', 'FLOAT', 'REQUIRED'), bqField_('total_out', 'FLOAT', 'REQUIRED'),
+    bqField_('net_qty', 'FLOAT', 'REQUIRED'), bqField_('closing_qty', 'FLOAT', 'REQUIRED'),
+    bqField_('movement_count', 'INTEGER', 'REQUIRED'), bqField_('fifo_lots_json', 'STRING'),
+    bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
+  ], 'event_date', ['outlet', 'location', 'item_code']);
+  ensureBigQueryTable_('stock_item_lot_summary', [
+    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
+    bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'), bqField_('current_qty', 'FLOAT', 'REQUIRED'),
+    bqField_('lots_json', 'STRING'), bqField_('fifo_status_json', 'STRING'), bqField_('as_of_date', 'DATE'),
+    bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
+  ], '', ['outlet', 'location', 'item_code']);
   ensureBigQueryTable_('stock_transfers', [
     bqField_('event_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING', 'REQUIRED'), bqField_('status', 'STRING', 'REQUIRED'),
     bqField_('from_outlet', 'STRING'), bqField_('from_location', 'STRING'), bqField_('to_outlet', 'STRING'), bqField_('to_location', 'STRING'),
@@ -6189,7 +6302,7 @@ function ensureStockCardInfrastructure_() {
     bqField_('corrected_by', 'STRING'), bqField_('corrected_by_name', 'STRING'), bqField_('corrected_at', 'TIMESTAMP', 'REQUIRED'),
     bqField_('source_file', 'STRING'), bqField_('source_row', 'INTEGER')
   ], 'corrected_at', ['outlet', 'item_code', 'movement_type']);
-  infrastructureCache.put('stock-card-infrastructure-v18', 'ready', 21600);
+  infrastructureCache.put('stock-card-infrastructure-v19', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -8531,16 +8644,47 @@ function markStockUploadSummaryDirty_(rows) {
   if (Object.keys(updates).length) properties.setProperties(updates, false);
 }
 
+function markStockItemSummariesDirty_(rows) {
+  const properties = PropertiesService.getScriptProperties(), updates = {};
+  const token = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8);
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry;
+    if (!row || (row.record_type !== 'MOVEMENT' && row.record_type !== 'OPNAME_DETAIL') || !row.outlet || !row.location) return;
+    const itemCode = String(row.item_code || '').trim().toUpperCase(), itemName = String(row.item_name || '').trim();
+    if (!itemCode && !itemName) return;
+    const key = stockItemSummaryStateKey_(row.outlet, row.location, itemCode, itemName);
+    let previous = null;
+    try { previous = JSON.parse(String(properties.getProperty(key) || '')); } catch (error) { previous = null; }
+    const eventDate = String(row.event_date || '').slice(0, 10);
+    updates[key] = JSON.stringify({
+      token: token, outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location),
+      itemCode: itemCode, itemName: itemName,
+      earliestDate: previous && previous.earliestDate && previous.earliestDate < eventDate ? previous.earliestDate : eventDate
+    });
+  });
+  if (Object.keys(updates).length) properties.setProperties(updates, false);
+}
+
+function ensureStockItemSummaryWorker_() {
+  const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
+    return trigger.getHandlerFunction() === 'processStockItemSummaryJobs';
+  });
+  if (!exists) ScriptApp.newTrigger('processStockItemSummaryJobs').timeBased().after(1000).create();
+}
+
 function insertStockCardRows_(rows) {
   markStockBalanceDirty_(rows);
   markStockUploadSummaryDirty_(rows);
+  markStockItemSummariesDirty_(rows);
   insertAll_(stockCardTableId_(), rows);
   mirrorStockCardRows_(rows);
   // Refresh the marker after a successful insert so a concurrent rebuild cannot clear it too early.
   markStockBalanceDirty_(rows);
   markStockUploadSummaryDirty_(rows);
+  markStockItemSummariesDirty_(rows);
   invalidateStockItemCachesForRows_(rows);
   invalidateFastStockHistoryRows_(rows);
+  ensureStockItemSummaryWorker_();
 }
 
 function stockCardMirrorTableId_() {
@@ -8687,7 +8831,110 @@ function readStockBalanceRows_(outlet, location) {
   }
 }
 
-/** Refreshes compact balances in the background; install it every one minute. */
+function rebuildStockItemSummary_(state, expectedRaw) {
+  const item = { code: String(state.itemCode || '').toUpperCase(), name: String(state.itemName || '') };
+  let history = readStockHistoryPageRows_(state.outlet, state.location, item);
+  const balanceHistory = history;
+  if (isShowcaseLocation_(state.location)) {
+    try {
+      const masterItem = findStockItemForLocation_(state.location, item.code || item.name);
+      item.code = masterItem.code; item.name = masterItem.name; item.unit = masterItem.unit;
+      history = enrichShowcaseHistoryLots_(history, state.outlet, masterItem);
+    } catch (error) { console.warn('Ringkasan lot Showcase memakai data ledger asli: ' + error.message); }
+  }
+  const currentQty = stockCheckpointBalanceUntil_(balanceHistory, '');
+  const snapshots = calculateFifoSnapshots_(history), dateMap = {}, daily = {};
+  history.forEach(function (row) {
+    const date = String(row.date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    dateMap[date] = true;
+    if (!daily[date]) daily[date] = { totalIn: 0, totalOut: 0, movementCount: 0 };
+    if (row.direction === 'IN') daily[date].totalIn += Number(row.qty || 0);
+    if (row.direction === 'OUT') daily[date].totalOut += Number(row.qty || 0);
+    daily[date].movementCount++;
+  });
+  const dates = Object.keys(dateMap).sort(), now = new Date().toISOString();
+  const dailyRows = dates.map(function (date) {
+    const value = daily[date] || { totalIn: 0, totalOut: 0, movementCount: 0 };
+    const closingQty = stockCheckpointBalanceUntil_(balanceHistory, stockIsoDateOffset_(date, 1));
+    return {
+      insertId: digest_([state.outlet, state.location, item.code, item.name, date, now].join('|')),
+      json: {
+        event_date: date, outlet: state.outlet, location: state.location, item_code: item.code || null, item_name: item.name,
+        total_in: value.totalIn, total_out: value.totalOut, net_qty: value.totalIn - value.totalOut,
+        closing_qty: closingQty, movement_count: value.movementCount,
+        fifo_lots_json: JSON.stringify(reconcileFifoLots_(snapshots[date] || [], closingQty)), updated_at: now
+      }
+    };
+  });
+  const currentDates = Object.keys(snapshots).sort(), currentLots = reconcileFifoLots_(
+    currentDates.length ? snapshots[currentDates[currentDates.length - 1]] : [], currentQty);
+  // Append a new summary version instead of deleting streaming-buffer rows. Reads
+  // select the newest updated_at per day, making retries safe and immediately visible.
+  if (dailyRows.length) insertAll_('stock_item_daily_summary', dailyRows);
+  insertAll_('stock_item_lot_summary', [{
+    insertId: digest_([state.outlet, state.location, item.code, item.name, now].join('|')),
+    json: {
+      outlet: state.outlet, location: state.location, item_code: item.code || null, item_name: item.name,
+      current_qty: currentQty, lots_json: JSON.stringify(currentLots), fifo_status_json: JSON.stringify(stockFifoFefoStatus_(history, item)),
+      as_of_date: dates.length ? dates[dates.length - 1] : null, updated_at: now
+    }
+  }]);
+  const properties = PropertiesService.getScriptProperties();
+  const key = stockItemSummaryStateKey_(state.outlet, state.location, state.itemCode, state.itemName);
+  if (String(properties.getProperty(key) || '') === String(expectedRaw || '')) properties.deleteProperty(key);
+}
+
+function processStockItemSummaryJobs() {
+  ScriptApp.getProjectTriggers().filter(function (trigger) {
+    return trigger.getHandlerFunction() === 'processStockItemSummaryJobs';
+  }).forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+  ensureStockCardInfrastructure_();
+  const started = Date.now(), properties = PropertiesService.getScriptProperties();
+  const all = properties.getProperties(), keys = Object.keys(all).filter(function (key) {
+    return key.indexOf('stock-item-summary-dirty-') === 0;
+  });
+  let processed = 0;
+  keys.slice(0, 8).some(function (key) {
+    if (Date.now() - started > 45000) return true;
+    try {
+      const raw = String(properties.getProperty(key) || all[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
+      if (!state || !state.outlet || !state.location || (!state.itemCode && !state.itemName)) return false;
+      rebuildStockItemSummary_(state, raw); processed++;
+    } catch (error) { console.error('Gagal memperbarui ringkasan item: ' + error.message); }
+    return false;
+  });
+  // Keep the compact list balance in sync in the same event-driven execution.
+  const balanceProperties = properties.getProperties();
+  Object.keys(balanceProperties).filter(function (key) { return key.indexOf('stock-balance-dirty-') === 0; }).slice(0, 4).forEach(function (key) {
+    if (Date.now() - started > 50000) return;
+    try {
+      const raw = String(properties.getProperty(key) || balanceProperties[key] || ''), state = raw.charAt(0) === '{' ? JSON.parse(raw) : null;
+      if (state && state.outlet && state.location) rebuildStockBalanceSummary_(state.outlet, state.location, raw);
+    } catch (error) { console.error('Gagal memperbarui saldo event-driven: ' + error.message); }
+  });
+  const remaining = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('stock-item-summary-dirty-') === 0; }).length;
+  if (remaining) ensureStockItemSummaryWorker_();
+  return { processed: processed, remaining: remaining };
+}
+
+function backfillStockItemSummaries() {
+  ensureStockCardInfrastructure_();
+  const sql = 'SELECT outlet, location, item_code, item_name, MIN(event_date) AS earliest_date FROM ' + stockCardTable_() +
+    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY outlet, location, item_code, item_name';
+  const rows = runNamedQuery_(sql, {}, { useQueryCache: false }), properties = PropertiesService.getScriptProperties(), updates = {};
+  rows.forEach(function (row) {
+    const state = { token: String(Date.now()) + '-' + Utilities.getUuid().slice(0, 8), outlet: String(row.outlet || '').toUpperCase(),
+      location: normalizeLocation_(row.location), itemCode: String(row.item_code || '').toUpperCase(), itemName: String(row.item_name || ''),
+      earliestDate: String(row.earliest_date || '').slice(0, 10) };
+    updates[stockItemSummaryStateKey_(state.outlet, state.location, state.itemCode, state.itemName)] = JSON.stringify(state);
+  });
+  if (Object.keys(updates).length) properties.setProperties(updates, false);
+  ensureStockItemSummaryWorker_();
+  return { queued: Object.keys(updates).length, workerScheduled: true };
+}
+
+/** Refreshes compact balances in the background; the periodic run is a watchdog. */
 function refreshDirtyStockBalances() {
   // Run upload queues first. Balance rebuilds can be expensive and previously
   // consumed the whole trigger execution before Sales COGS got a turn.
@@ -8719,13 +8966,15 @@ function refreshDirtyStockBalances() {
       console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message);
     }
   });
+  try { processStockItemSummaryJobs(); }
+  catch (summaryError) { console.error('Gagal menjalankan antrean ringkasan item: ' + summaryError.message); }
 }
 
 function ensureStockMaintenanceTrigger_() {
   const exists = ScriptApp.getProjectTriggers().some(function (trigger) {
     return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
   });
-  if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(1).create();
+  if (!exists) ScriptApp.newTrigger('refreshDirtyStockBalances').timeBased().everyMinutes(5).create();
 }
 
 /** Run once manually after deployment to install the background balance refresh. */
@@ -8734,7 +8983,7 @@ function installStockMaintenanceTrigger() {
     return trigger.getHandlerFunction() === 'refreshDirtyStockBalances';
   }).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
   ensureStockMaintenanceTrigger_();
-  return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 1 };
+  return { installed: true, handler: 'refreshDirtyStockBalances', intervalMinutes: 5 };
 }
 
 /** Run once after deploying delivery_date to preserve the original date on older pending transfers. */
@@ -8845,7 +9094,7 @@ function prepareStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_PREPARED_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v19');
   return syncStockCardV2Migration();
 }
 
@@ -8860,7 +9109,7 @@ function activateStockCardV2AfterAudit() {
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIGRATION_ACTIVATED_AT', new Date().toISOString());
   properties.deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v19');
   return { activated: true, activeTable: 'stock_card_v2', rollbackMirror: 'stock_card', audit: audit };
 }
 
@@ -8870,7 +9119,7 @@ function rollbackStockCardV2Migration() {
   properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
   properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
   properties.setProperty('STOCK_CARD_MIGRATION_ROLLED_BACK_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v18');
+  CacheService.getScriptCache().remove('stock-card-infrastructure-v19');
   return { rolledBack: true, activeTable: 'stock_card', mirrorTable: 'stock_card_v2' };
 }
 
@@ -8882,6 +9131,25 @@ function finishStockCardV2Migration() {
   PropertiesService.getScriptProperties().deleteProperty('STOCK_CARD_MIRROR_TABLE_ID');
   PropertiesService.getScriptProperties().setProperty('STOCK_CARD_MIGRATION_FINISHED_AT', new Date().toISOString());
   return { finished: true, activeTable: 'stock_card_v2', oldTablePreserved: true };
+}
+
+/** One safe deployment entry point. The old ledger remains as a rollback mirror;
+ * compact summaries are rebuilt in retry-safe background batches. */
+function startBigQueryCostOptimization() {
+  ensureStockCardInfrastructure_();
+  let migration;
+  if (stockCardTableId_() === 'stock_card_v2') {
+    migration = auditStockCardV2Migration();
+  } else {
+    const prepared = prepareStockCardV2Migration();
+    if (!prepared.safeToActivate) throw new Error('Audit stock_card_v2 belum cocok. Tabel lama tetap aktif dan tidak ada data yang dihapus.');
+    migration = activateStockCardV2AfterAudit();
+  }
+  const balances = backfillStockBalanceSummaries();
+  const uploads = backfillStockUploadDailySummary();
+  const itemSummaries = backfillStockItemSummaries();
+  const trigger = installStockMaintenanceTrigger();
+  return { completed: true, migration: migration, balances: balances, uploads: uploads, itemSummaries: itemSummaries, trigger: trigger };
 }
 
 function ensureStockVisibilitySheet_() {
@@ -12639,6 +12907,24 @@ function insertAll_(tableId, rows) {
   return { insertedRows: insertedRows, batchCount: batchCount };
 }
 
+function runUiReadQuery_(query, params, options) {
+  options = Object.assign({}, options || {});
+  if (options.maximumBytesBilled === undefined) {
+    options.maximumBytesBilled = Number(PropertiesService.getScriptProperties().getProperty('BQ_UI_MAX_BYTES_BILLED') || 268435456);
+  }
+  if (options.useQueryCache === undefined) options.useQueryCache = true;
+  return runNamedQuery_(query, params, options);
+}
+
+function logBigQueryUsage_(query, result) {
+  const processed = Number(result && result.totalBytesProcessed || 0), billed = Number(result && result.totalBytesBilled || 0);
+  if (processed < 8388608 && !billed) return;
+  console.info(JSON.stringify({
+    event: 'BIGQUERY_USAGE', queryId: digest_(String(query || '')).slice(0, 12),
+    processedBytes: processed, billedBytes: billed, cacheHit: Boolean(result && result.cacheHit)
+  }));
+}
+
 function runNamedQuery_(query, params, options) {
   const queryParameters = Object.keys(params || {}).map(function (name) {
     const value = params[name];
@@ -12678,11 +12964,25 @@ function runNamedQuery_(query, params, options) {
   }
   if (!result.jobComplete) throw new Error('Query BigQuery melewati batas waktu. Silakan coba kembali.');
   const fields = result.schema && result.schema.fields ? result.schema.fields.map(function (f) { return f.name; }) : [];
-  return (result.rows || []).map(function (row) {
-    const object = {};
-    row.f.forEach(function (cell, i) { object[fields[i]] = cell.v; });
-    return object;
-  });
+  const mapped = [];
+  function appendRows(rows) {
+    (rows || []).forEach(function (row) {
+      const object = {};
+      row.f.forEach(function (cell, i) { object[fields[i]] = cell.v; });
+      mapped.push(object);
+    });
+  }
+  appendRows(result.rows);
+  let pageToken = result.pageToken || '';
+  while (pageToken) {
+    const page = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, result.jobReference.jobId, {
+      location: CONFIG.BQ_LOCATION, maxResults: 10000, pageToken: pageToken
+    });
+    appendRows(page.rows);
+    pageToken = page.pageToken || '';
+  }
+  logBigQueryUsage_(query, result);
+  return mapped;
 }
 
 function readCompletionMap_(outlet) {
