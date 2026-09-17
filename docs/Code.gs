@@ -8972,13 +8972,13 @@ function backfillStockItemSummaries() {
   properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');
   properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1');
   const queue = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_summary_backfill_queue`';
-  const identity = 'TO_JSON_STRING(STRUCT(UPPER(COALESCE(outlet, \'\')) AS outlet, COALESCE(location, \'\') AS location, ' +
-    'UPPER(COALESCE(item_code, \'\')) AS item_code, COALESCE(item_name, \'\') AS item_name))';
   const sql = 'CREATE OR REPLACE TABLE ' + queue + ' CLUSTER BY outlet, location, item_code AS ' +
+    'SELECT grouped.*, TO_JSON_STRING(STRUCT(grouped.outlet AS outlet, grouped.location AS location, ' +
+    'grouped.item_code AS item_code, grouped.item_name AS item_name)) AS cursor_key FROM (' +
     'SELECT UPPER(COALESCE(outlet, \'\')) AS outlet, COALESCE(location, \'\') AS location, ' +
     'UPPER(COALESCE(item_code, \'\')) AS item_code, COALESCE(item_name, \'\') AS item_name, ' +
-    'MIN(event_date) AS earliest_date, ' + identity + ' AS cursor_key FROM ' + stockCardTable_() +
-    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY outlet, location, item_code, item_name; ' +
+    'MIN(event_date) AS earliest_date FROM ' + stockCardTable_() +
+    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY 1, 2, 3, 4) AS grouped; ' +
     'SELECT COUNT(*) AS queued FROM ' + queue;
   const rows = runNamedQuery_(sql, {}, { useQueryCache: false });
   const queued = Number(rows[0] && rows[0].queued || 0);
