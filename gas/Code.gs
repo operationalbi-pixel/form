@@ -9021,7 +9021,8 @@ function stockPendingSummaryJobs_(jobType, limit) {
     'LEFT JOIN acknowledgements ack USING (scope_key) WHERE enqueue.job_type = @jobType AND enqueue.action = \'ENQUEUE\' ' +
     'AND (ack.ack_through IS NULL OR enqueue.created_at > ack.ack_through)) ' +
     'SELECT scope_key, outlet, location, item_code, item_name, CAST(pending_earliest_date AS STRING) AS earliest_date, ' +
-    'CAST(event_date AS STRING) AS event_date, upload_type, movement_type, CAST(pending_through AS STRING) AS pending_through ' +
+    'CAST(event_date AS STRING) AS event_date, upload_type, movement_type, ' +
+    'FORMAT_TIMESTAMP(\'%Y-%m-%d %H:%M:%E6S\', pending_through, \'UTC\') AS pending_through ' +
     'FROM pending QUALIFY ROW_NUMBER() OVER (PARTITION BY scope_key ORDER BY created_at DESC) = 1 ' +
     'ORDER BY pending_through LIMIT ' + limit;
   return runNamedQuery_(sql, { jobType: jobType }, { useQueryCache: false });
