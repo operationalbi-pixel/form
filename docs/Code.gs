@@ -9032,7 +9032,55 @@ function acknowledgeStockSummaryJob_(jobType, state) {
   insertStockSummaryQueueRows_([stockSummaryQueueRow_(jobType, state.scopeKey, {}, 'ACK', state.pendingThrough)]);
 }
 
+function stockSummaryWorkerLease_(token, release) {
+  const gate = LockService.getScriptLock();
+  if (!gate.tryLock(5000)) return false;
+  try {
+    const properties = PropertiesService.getScriptProperties();
+    const key = 'STOCK_SUMMARY_WORKER_LEASE_V1';
+    let current = null;
+    try { current = JSON.parse(String(properties.getProperty(key) || '')); } catch (error) { current = null; }
+    if (release) {
+      if (current && current.token === token) properties.deleteProperty(key);
+      return true;
+    }
+    if (current && current.token !== token && Number(current.expiresAt || 0) > Date.now()) return false;
+    properties.setProperty(key, JSON.stringify({ token: token, expiresAt: Date.now() + 120000 }));
+    return true;
+  } finally {
+    gate.releaseLock();
+  }
+}
+
+function stockSummaryCompletedJobKey_(jobType, state) {
+  return 'stock-summary-completed-' + digest_([jobType, state.scopeKey].join('|')).slice(0, 32);
+}
+
+function rebuildAndAcknowledgeStockSummaryJob_(jobType, state, rebuild) {
+  const properties = PropertiesService.getScriptProperties();
+  const key = stockSummaryCompletedJobKey_(jobType, state);
+  const cache = CacheService.getScriptCache();
+  const completed = String(properties.getProperty(key) || '') === state.pendingThrough ||
+    String(cache.get(key) || '') === state.pendingThrough;
+  if (!completed) {
+    rebuild();
+    // The expensive rebuild succeeded. If ACK fails, retry only ACK next time.
+    properties.setProperty(key, state.pendingThrough);
+  }
+  acknowledgeStockSummaryJob_(jobType, state);
+  // An ACK can briefly be absent from the next BigQuery read after streaming.
+  cache.put(key, state.pendingThrough, 300);
+  properties.deleteProperty(key);
+}
+
 function processStockItemSummaryJobs() {
+  const token = Utilities.getUuid();
+  if (!stockSummaryWorkerLease_(token, false)) return { processed: 0, busy: true };
+  try { return processStockItemSummaryJobsLocked_(token); }
+  finally { stockSummaryWorkerLease_(token, true); }
+}
+
+function processStockItemSummaryJobsLocked_(token) {
   ScriptApp.getProjectTriggers().filter(function (trigger) {
     return trigger.getHandlerFunction() === 'processStockItemSummaryJobs';
   }).forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
@@ -9049,13 +9097,14 @@ function processStockItemSummaryJobs() {
       return { processed: 0, remaining: 1, recoveryQueued: true };
     } catch (recoveryError) {
       console.error('Recovery penuh ringkasan masih menunggu BigQuery: ' + recoveryError.message);
-      ensureStockItemSummaryWorker_();
+      // A persistent BigQuery failure must wait for the five-minute watchdog.
       return { processed: 0, remaining: 1, recoveryPending: true };
     }
   }
-  let processed = 0, itemBatch = stockPendingSummaryJobs_('ITEM', 8);
+  let processed = 0, hadFailure = false, itemBatch = stockPendingSummaryJobs_('ITEM', 8);
   itemBatch.some(function (row) {
     if (Date.now() - started > 45000) return true;
+    if (!stockSummaryWorkerLease_(token, false)) { hadFailure = true; return true; }
     try {
       const state = {
         scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''),
@@ -9064,10 +9113,9 @@ function processStockItemSummaryJobs() {
         earliestDate: String(row.earliest_date || '').slice(0, 10)
       };
       if (!state.outlet || !state.location || (!state.itemCode && !state.itemName)) return false;
-      rebuildStockItemSummary_(state);
-      acknowledgeStockSummaryJob_('ITEM', state);
+      rebuildAndAcknowledgeStockSummaryJob_('ITEM', state, function () { rebuildStockItemSummary_(state); });
       processed++;
-    } catch (error) { console.error('Gagal memperbarui ringkasan item: ' + error.message); }
+    } catch (error) { hadFailure = true; console.error('Gagal memperbarui ringkasan item: ' + error.message); return true; }
     return false;
   });
   // The initial backfill uses one compact BigQuery queue plus a single cursor.
@@ -9087,6 +9135,7 @@ function processStockItemSummaryJobs() {
     let completedBatch = true;
     backfillRows.some(function (row) {
       if (Date.now() - started > 45000) { completedBatch = false; return true; }
+      if (!stockSummaryWorkerLease_(token, false)) { completedBatch = false; hadFailure = true; return true; }
       const state = {
         token: 'backfill', outlet: String(row.outlet || '').toUpperCase(), location: normalizeLocation_(row.location),
         itemCode: String(row.item_code || '').toUpperCase(), itemName: String(row.item_name || ''),
@@ -9098,6 +9147,7 @@ function processStockItemSummaryJobs() {
         processed++;
       } catch (error) {
         completedBatch = false;
+        hadFailure = true;
         console.error('Gagal backfill ringkasan item: ' + error.message);
         return true;
       }
@@ -9112,18 +9162,21 @@ function processStockItemSummaryJobs() {
   const balanceBatch = Date.now() - started <= 45000 ? stockPendingSummaryJobs_('BALANCE_REBUILD', 2) : [];
   balanceBatch.some(function (row) {
     if (Date.now() - started > 50000) return true;
+    if (!stockSummaryWorkerLease_(token, false)) { hadFailure = true; return true; }
     try {
       const state = { scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''), outlet: String(row.outlet || ''), location: normalizeLocation_(row.location) };
       if (state.outlet && state.location) {
-        rebuildStockBalanceSummary_(state.outlet, state.location);
-        acknowledgeStockSummaryJob_('BALANCE_REBUILD', state);
+        rebuildAndAcknowledgeStockSummaryJob_('BALANCE_REBUILD', state, function () {
+          rebuildStockBalanceSummary_(state.outlet, state.location);
+        });
       }
-    } catch (error) { console.error('Gagal memperbarui saldo event-driven: ' + error.message); }
+    } catch (error) { hadFailure = true; console.error('Gagal memperbarui saldo event-driven: ' + error.message); return true; }
     return false;
   });
   const uploadBatch = Date.now() - started <= 50000 ? stockPendingSummaryJobs_('UPLOAD', 4) : [];
   uploadBatch.some(function (row) {
     if (Date.now() - started > 52000) return true;
+    if (!stockSummaryWorkerLease_(token, false)) { hadFailure = true; return true; }
     try {
       const state = {
         scopeKey: String(row.scope_key || ''), pendingThrough: String(row.pending_through || ''),
@@ -9131,17 +9184,17 @@ function processStockItemSummaryJobs() {
         uploadType: String(row.upload_type || ''), movementType: String(row.movement_type || '')
       };
       if (state.outlet && state.eventDate && state.uploadType) {
-        rebuildStockUploadDailySummary_(state);
-        acknowledgeStockSummaryJob_('UPLOAD', state);
+        rebuildAndAcknowledgeStockSummaryJob_('UPLOAD', state, function () { rebuildStockUploadDailySummary_(state); });
       }
-    } catch (error) { console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message); }
+    } catch (error) { hadFailure = true; console.error('Gagal memperbarui ringkasan monitoring upload: ' + error.message); return true; }
     return false;
   });
   const backfillActive = properties.getProperty(backfillActiveKey) === '1';
   const remaining = (itemBatch.length >= 8 ? 1 : 0) + (balanceBatch.length >= 2 ? 1 : 0) + (uploadBatch.length >= 4 ? 1 : 0) + (backfillActive ? 1 : 0);
-  if (remaining) ensureStockItemSummaryWorker_();
+  // A failed job waits for the five-minute watchdog instead of spinning every second.
+  if (remaining && !hadFailure) ensureStockItemSummaryWorker_();
   return { processed: processed, remaining: remaining, backfillActive: backfillActive,
-    itemJobs: itemBatch.length, balanceJobs: balanceBatch.length, uploadJobs: uploadBatch.length };
+    itemJobs: itemBatch.length, balanceJobs: balanceBatch.length, uploadJobs: uploadBatch.length, hadFailure: hadFailure };
 }
 
 function backfillStockItemSummaries() {
