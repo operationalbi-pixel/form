@@ -68,4 +68,64 @@ assert.match(source, /date >= rebuildFrom/, 'Changed item rebuilds must only app
 assert.match(source, /function activateBigQuerySummaryMaintenanceV2\(\)/, 'Deployment must expose one safe V2 activation entry point');
 assert.doesNotMatch(source, /function markStockItemSummariesDirty_/, 'Item jobs must no longer be stored as Script Properties');
 
-console.log('OK: pagination, checkpoints, incremental balances, BigQuery queues, compaction, and quota-safe backfill are stable.');
+const propertyValues = new Map();
+context.PropertiesService = { getScriptProperties: () => ({
+  getProperty: key => propertyValues.get(key) || null,
+  setProperty: (key, value) => propertyValues.set(key, String(value)),
+  deleteProperty: key => propertyValues.delete(key)
+}) };
+const cacheValues = new Map();
+context.CacheService = { getScriptCache: () => ({
+  get: key => cacheValues.get(key) || null,
+  put: (key, value) => cacheValues.set(key, String(value))
+}) };
+let gateBusy = false;
+context.LockService = { getScriptLock: () => ({
+  tryLock: () => { if (gateBusy) return false; gateBusy = true; return true; },
+  releaseLock: () => { gateBusy = false; }
+}) };
+assert.equal(vm.runInContext("stockSummaryWorkerLease_('first', false)", context), true);
+assert.equal(vm.runInContext("stockSummaryWorkerLease_('second', false)", context), false,
+  'Concurrent workers must not claim the same queue');
+assert.equal(vm.runInContext("stockSummaryWorkerLease_('first', true)", context), true);
+assert.equal(vm.runInContext("stockSummaryWorkerLease_('second', false)", context), true);
+vm.runInContext("stockSummaryWorkerLease_('second', true)", context);
+
+let rebuilds = 0;
+let acknowledgements = 0;
+let failAck = true;
+context.testRebuild = () => { rebuilds++; };
+context.acknowledgeStockSummaryJob_ = () => {
+  acknowledgements++;
+  if (failAck) throw new Error('transient ACK failure');
+};
+assert.throws(() => vm.runInContext("rebuildAndAcknowledgeStockSummaryJob_('ITEM', {scopeKey:'item-1',pendingThrough:'2026-09-17 17:19:53.675000'}, testRebuild)", context), /transient ACK failure/);
+assert.equal(rebuilds, 1);
+failAck = false;
+vm.runInContext("rebuildAndAcknowledgeStockSummaryJob_('ITEM', {scopeKey:'item-1',pendingThrough:'2026-09-17 17:19:53.675000'}, testRebuild)", context);
+assert.equal(rebuilds, 1, 'Retrying ACK must not reread the stock ledger');
+assert.equal(acknowledgements, 2);
+vm.runInContext("rebuildAndAcknowledgeStockSummaryJob_('ITEM', {scopeKey:'item-1',pendingThrough:'2026-09-17 17:19:53.675000'}, testRebuild)", context);
+assert.equal(rebuilds, 1, 'A streamed ACK still pending visibility must not rebuild the same item');
+vm.runInContext("rebuildAndAcknowledgeStockSummaryJob_('ITEM', {scopeKey:'item-1',pendingThrough:'2026-09-18 17:19:53.675000'}, testRebuild)", context);
+assert.equal(rebuilds, 2, 'A newer stock change still requires a rebuild');
+
+context.Utilities = { getUuid: () => 'worker-test' };
+context.ScriptApp = { getProjectTriggers: () => [] };
+context.ensureStockCardInfrastructure_ = () => {};
+let scheduledRetries = 0;
+context.ensureStockItemSummaryWorker_ = () => { scheduledRetries++; };
+context.stockPendingSummaryJobs_ = jobType => jobType === 'ITEM' ? Array.from({ length: 8 }, (_, index) => ({
+  scope_key: `scope-${index}`, pending_through: '2026-09-19 00:00:00.000000',
+  outlet: 'BICB', location: 'Store', item_code: `ITEM${index}`, item_name: `Item ${index}`
+})) : [];
+context.rebuildStockItemSummary_ = () => { throw new Error('transient BigQuery failure'); };
+assert.equal(vm.runInContext("stockSummaryWorkerLease_('another-worker', false)", context), true);
+assert.equal(vm.runInContext('processStockItemSummaryJobs().busy', context), true,
+  'A second worker must leave the queue untouched');
+vm.runInContext("stockSummaryWorkerLease_('another-worker', true)", context);
+const failedRun = vm.runInContext('processStockItemSummaryJobs()', context);
+assert.equal(failedRun.hadFailure, true);
+assert.equal(scheduledRetries, 0, 'Failed jobs must wait for the five-minute watchdog');
+
+console.log('OK: stock summaries, worker lease, ACK retry, and failure backoff are stable.');
