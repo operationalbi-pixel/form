@@ -50,6 +50,13 @@ assert.match(backfillSource, /GROUP BY 1, 2, 3, 4\) AS grouped/, 'Cursor must be
 assert.doesNotMatch(backfillSource, /setProperties\(updates/, 'Backfill must not create one Script Property per stock item');
 
 assert.match(source, /ensureBigQueryTable_\('stock_summary_jobs'/, 'Persistent summary queue must live in BigQuery');
+const pendingJobStart = source.indexOf('function stockPendingSummaryJobs_(');
+const pendingJobEnd = source.indexOf('function acknowledgeStockSummaryJob_(', pendingJobStart);
+const pendingJobSource = source.slice(pendingJobStart, pendingJobEnd);
+assert.match(pendingJobSource, /FORMAT_TIMESTAMP\(\\'%Y-%m-%d %H:%M:%E6S\\', pending_through, \\'UTC\\'\)/,
+  'ACK timestamps must be UTC without the +00 suffix rejected by BigQuery insertAll, preserving microseconds');
+assert.doesNotMatch(pendingJobSource, /CAST\(pending_through AS STRING\)/,
+  'Do not pass BigQuery CAST timestamps with +00 into the ACK insert');
 assert.match(source, /function applyStockBalanceDeltas_/, 'Normal stock writes must support incremental balances');
 assert.match(source, /MERGE ['"]? \+ table/, 'Incremental balances must use an atomic BigQuery MERGE');
 assert.match(source, /row\.record_type === 'OPNAME_DETAIL'.*movement_type.*Stock Opname.*version/s,
