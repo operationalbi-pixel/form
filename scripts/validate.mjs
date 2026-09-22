@@ -420,22 +420,35 @@ try {
 try {
   const backgroundContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#sales-background-job-test' }).runInContext(backgroundContext);
-  const preparedJob = { fileName: 'sales.xlsx', rows: Array.from({ length: 30 }, (_, index) => ({ sourceRow: index + 2 })), showcaseRows: [] };
-  let lastBatchSize = 0, completed = 0;
+  const preparedJob = { fileName: 'sales.xlsx', rows: Array.from({ length: 501 }, (_, index) => ({ sourceRow: index + 2 })),
+    showcaseRows: Array.from({ length: 263 }, (_, index) => ({ sourceRow: index + 503 })) };
+  const batchSizes = [];
+  let completed = 0;
   backgroundContext.readSalesCogsJobJson_ = id => id === 'PREPARED' ? preparedJob : { conversions: {}, wipChoices: {} };
-  backgroundContext.writePreparedSalesCogsChunk_ = chunk => { lastBatchSize = chunk.rows.length + chunk.showcaseRows.length; return { movementRows: lastBatchSize, autoWipProductionCount: 0 }; };
+  backgroundContext.writePreparedSalesCogsChunk_ = chunk => {
+    const size = chunk.rows.length + chunk.showcaseRows.length;
+    batchSizes.push(size);
+    return { movementRows: size, autoWipProductionCount: 0 };
+  };
   backgroundContext.writeSalesCogsJob_ = job => job;
   backgroundContext.markStockTaskCompleteFromUploads_ = () => { completed++; };
   backgroundContext.cleanupSalesCogsJobFiles_ = () => {};
-  const job = { jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 30,
-    itemCount: 30, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
+  const job = { jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 764, batchSize: 500,
+    itemCount: 501, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
     ownerNik: 'HQ-1', ownerName: 'HQ', ownerOutlet: 'BIHQ' };
   backgroundContext.processSalesCogsJobChunk_(job);
-  if (lastBatchSize !== 25 || job.processed !== 25 || job.status !== 'PROCESSING') failures.push('Batch pertama Sales COGS background belum dibatasi 25 baris');
+  if (batchSizes[0] !== 500 || job.processed !== 500 || job.status !== 'PROCESSING') failures.push('Batch pertama Sales COGS background belum memproses 500 baris');
   backgroundContext.processSalesCogsJobChunk_(job);
-  if (lastBatchSize !== 5 || job.processed !== 30 || job.status !== 'COMPLETE' || job.progress !== 100 || completed !== 1) {
+  if (batchSizes[1] !== 1 || job.processed !== 501 || job.status !== 'PROCESSING') failures.push('Batas antara Sales dan Showcase belum dijaga');
+  backgroundContext.processSalesCogsJobChunk_(job);
+  if (batchSizes[2] !== 263 || job.processed !== 764 || job.status !== 'COMPLETE' || job.progress !== 100 || completed !== 1) {
     failures.push('Job Sales COGS background belum menyelesaikan cursor dan status secara bertahap');
   }
+  backgroundContext.reduceSalesCogsBatchSize_(job);
+  if (job.batchSize !== 250) failures.push('Batch Sales COGS belum mengecil setelah eksekusi melewati waktu');
+  const fallbackJob = { ...job, processed: 0, status: 'PROCESSING', batchSize: 250 };
+  backgroundContext.processSalesCogsJobChunk_(fallbackJob);
+  if (batchSizes[3] !== 250 || fallbackJob.processed !== 250) failures.push('Ukuran batch pemulihan Sales COGS belum diterapkan');
 } catch (error) {
   failures.push(`Uji job background Sales COGS gagal: ${error.message}`);
 }
