@@ -11640,7 +11640,7 @@ function queueSalesCogsUpload(token, payload) {
     const job = {
       jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
       sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
-      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3,
+      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3, batchSize: 500,
       processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
       outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
     };
@@ -11793,10 +11793,11 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload) {
 function processSalesCogsJobChunk_(job) {
   if (!job.preparedDriveId) return prepareSalesCogsJob_(job);
   const prepared = readSalesCogsJobJson_(job.preparedDriveId), request = readSalesCogsJobJson_(job.requestDriveId);
-  const salesTotal = prepared.rows.length, start = Number(job.processed || 0), batchSize = 25;
+  const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
+  const batchSize = Math.max(25, Math.min(500, Math.floor(Number(job.batchSize || 500))));
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
-  else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + 100);
+  else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + batchSize);
   const count = rows.length + showcaseRows.length;
   if (!count && start < job.total) throw new Error('Batch Sales COGS tidak dapat dibentuk pada posisi ' + start + '.');
   job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
@@ -11814,6 +11815,11 @@ function processSalesCogsJobChunk_(job) {
     cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
   }
   return job;
+}
+
+function reduceSalesCogsBatchSize_(job) {
+  const current = Math.max(25, Math.min(500, Math.floor(Number(job.batchSize || 500))));
+  job.batchSize = Math.max(25, Math.floor(current / 2));
 }
 
 function processSalesCogsUploadJobs() {
@@ -11842,6 +11848,11 @@ function processSalesCogsUploadJobs() {
     if (!job) {
       return { processed: false, status: 'WAITING_FOR_LEASE', leased: true };
     }
+    // A previous execution may have exceeded its runtime without entering the catch block.
+    // Retry with a smaller batch so a large upload can make progress again.
+    if (Number(job.workerLeaseUntil || 0) > 0 && Number(job.workerLeaseUntil) <= Date.now() && job.status === 'PROCESSING') {
+      reduceSalesCogsBatchSize_(job);
+    }
     job.lastWorkedAt = new Date().toISOString();
     job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
     try { job = processSalesCogsJobChunk_(job); job.workerLeaseUntil = 0; writeSalesCogsJob_(job); }
@@ -11849,6 +11860,7 @@ function processSalesCogsUploadJobs() {
       job.workerLeaseUntil = 0;
       job.retryCount = Number(job.retryCount || 0) + 1;
       if (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error))) {
+        if (/timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
         job.status = 'QUEUED'; job.stage = 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
