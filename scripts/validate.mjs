@@ -58,6 +58,9 @@ if (!stockCardHtml.includes('readStockHistoryBrowserCache') || !stockCardHtml.in
 if (!stockCardHtml.includes('id="historyLoadMore"') || !stockCardHtml.includes('function loadMoreHistory()') || !stockCardHtml.includes('pageDays:12')) {
   failures.push('Stock History belum menyediakan pagination per 12 tanggal');
 }
+if (!stockCardHtml.includes('itemPageSize:10') || !stockCardHtml.includes('function changeItemPage(delta)') || !stockCardHtml.includes('id="itemPagination"')) {
+  failures.push('Daftar Stock Card belum menyediakan pagination 10 item per halaman');
+}
 let chatInlineIndex = 0;
 for (const match of chatHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   chatInlineIndex += 1;
