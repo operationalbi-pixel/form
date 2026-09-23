@@ -1,0 +1,61 @@
+{
+  "account_id": "fe457ffab133de1899e2660b0c60760e",
+  "environment": "cloudflare-primary",
+  "data_migrated": false,
+  "migration_status": "partial-copy-in-progress",
+  "databases": {
+    "staging_core": {
+      "name": "bakerzin-inventory-core",
+      "id": "0181b62c-0ef8-458f-819f-ca565dd4b92c"
+    },
+    "master": {
+      "name": "bakerzin-inventory-master",
+      "id": "3226ac54-35a5-4676-80d1-41907ee5a1d5",
+      "primary_location_hint": "apac",
+      "schema_status": "schema-ready",
+      "business_rows_migrated": 10042,
+      "migration_note": "Master/reference rows copied; counts reflect unique primary keys"
+    },
+    "operations": {
+      "name": "bakerzin-inventory-operations",
+      "id": "07f2a723-12f4-41e4-a139-9f58205fbd8b",
+      "primary_location_hint": "apac",
+      "schema_status": "schema-ready",
+      "business_rows_migrated": 29848,
+      "migration_note": "stock_balances copied from 29,849 source rows; one duplicate primary key collapsed"
+    },
+    "history_2026": {
+      "name": "bakerzin-inventory-history-2026",
+      "id": "fc1254fb-392e-4d57-af20-f9322136b5cb",
+      "primary_location_hint": "apac",
+      "schema_status": "schema-ready",
+      "business_rows_migrated": 0,
+      "ledger_copy_status": "running-with-checkpoints-cloudflare-already-primary",
+      "migration_note": "stock_card_v2 copy started 2026-09-23; source rows are not modified; final count pending"
+    }
+  },
+  "queues": {
+    "jobs": {
+      "name": "bakerzin-inventory-jobs",
+      "id": "dba0ebddf47d400bb337a221eecddfb0"
+    },
+    "dead_letter": {
+      "name": "bakerzin-inventory-dlq",
+      "id": "a7f0e1ae3e2d4b23857e3861be336112"
+    }
+  },
+  "r2": {
+    "name": "bakerzin-inventory-files",
+    "id": "ed1834071de5469bb78391543f048060",
+    "location": "APAC",
+    "storage_class": "Standard",
+    "public_access": false,
+    "status": "ready-empty"
+  },
+  "worker": {
+    "name": "bakerzin-inventory-api",
+    "environment": "cloudflare-primary",
+    "bindings_status": "deployed-and-verified",
+    "queue_consumer_enabled": false
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "bakerzin-inventory-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "ENVIRONMENT": "cloudflare-primary"
+  },
+  "d1_databases": [
+    {
+      "binding": "MASTER_DB",
+      "database_name": "bakerzin-inventory-master",
+      "database_id": "3226ac54-35a5-4676-80d1-41907ee5a1d5"
+    },
+    {
+      "binding": "OPERATIONS_DB",
+      "database_name": "bakerzin-inventory-operations",
+      "database_id": "07f2a723-12f4-41e4-a139-9f58205fbd8b"
+    },
+    {
+      "binding": "HISTORY_DB_2026",
+      "database_name": "bakerzin-inventory-history-2026",
+      "database_id": "fc1254fb-392e-4d57-af20-f9322136b5cb"
+    },
+    {
+      "binding": "HISTORY_DB_2026_06",
+      "database_name": "bakerzin-inventory-history-2026-06",
+      "database_id": "6a869edb-713f-4c73-862d-c1498f40a172"
+    },
+    {
+      "binding": "HISTORY_DB_2026_07",
+      "database_name": "bakerzin-inventory-history-2026-07",
+      "database_id": "48773774-ec72-4833-bff2-6b440fb7d25b"
+    },
+    {
+      "binding": "HISTORY_DB_2026_08",
+      "database_name": "bakerzin-inventory-history-2026-08",
+      "database_id": "3d003bf6-c860-4b06-811f-98cc786fcde9"
+    },
+    {
+      "binding": "HISTORY_DB_2026_09",
+      "database_name": "bakerzin-inventory-history-2026-09",
+      "database_id": "0e6fb961-a225-4a9d-bb7c-f6f469edfe06"
+    },
+    {
+      "binding": "HISTORY_DB_2026_10",
+      "database_name": "bakerzin-inventory-history-2026-10",
+      "database_id": "eb33b948-7de8-4498-b85b-0915b01e4460"
+    },
+    {
+      "binding": "HISTORY_DB_2026_11",
+      "database_name": "bakerzin-inventory-history-2026-11",
+      "database_id": "24b95d54-7161-4e79-b125-5681443f9a04"
+    },
+    {
+      "binding": "HISTORY_DB_2026_12",
+      "database_name": "bakerzin-inventory-history-2026-12",
+      "database_id": "e5715c09-a805-4fa9-82ab-2858fc136154"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "bakerzin-inventory-files"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS_QUEUE",
+        "queue": "bakerzin-inventory-jobs"
+      }
+    ]
+  }
+}
