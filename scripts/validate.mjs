@@ -34,8 +34,8 @@ const chatHtml = await text('docs/chat.html');
 const chatEnhancements = await text('docs/chat-enhancements.js');
 const chatBackend = await text('docs/Code.gs');
 const stockCardHtml = await text('docs/stock-card.html');
-if (!chatBackend.includes('readStockHistoryMonthPage_') || !chatBackend.includes("fastSource = 'BIGQUERY_DAILY_SUMMARY_PAGE'")) {
-  failures.push('Stock History belum menggunakan ringkasan harian dan pembacaan per halaman');
+if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
+  failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
 }
 if (/stockFifoFefoStatus_\(readStockHistoryForFifoRecalculation_/.test(chatBackend)) {
   failures.push('Stock History masih menjalankan full-history FIFO query terpisah saat drawer dibuka');

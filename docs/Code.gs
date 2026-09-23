@@ -1051,7 +1051,7 @@ function getStockCardBootstrap(token, requestedOutlet) {
       selectedLocation: outlet ? (locations[0] || 'Store') : '',
       items: outlet ? readStockItemsWithQtyCached_(outlet, locations[0] || 'Store') : [],
       expiryAlerts: { missingExpiry: [], nearExpiry: [] },
-      taskTable: CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + stockCardTableId_(),
+      taskTable: 'CLOUDFLARE_D1.stock_movements',
       appUrl: ScriptApp.getService().getUrl(),
       taskId: stockTask ? stockTask.id : '',
       taskCompleted: false,
@@ -5506,55 +5506,40 @@ function getStockHistory(token, payload) {
     const cached = readScriptJsonCache_(cacheKey);
     if (cached) return cached;
 
-    const summary = readStockItemSummary_(outlet, location, item, bounds, Boolean(payload.includeCurrentLots));
-    let visibleRows, currentQty, periodClosingQty, fifoLotsByDate, balancesByDate, currentLots, fifoFefoStatus, hasPrevious;
-    let nextCursor = '', hasMore = false, fastSource = 'BIGQUERY_DAILY_SUMMARY_PAGE';
-    if (summary) {
-      const page = readStockHistoryMonthPage_(outlet, location, item, bounds, cursor, payload.pageDays);
-      visibleRows = page.rows; nextCursor = page.nextCursor; hasMore = page.hasMore;
-      currentQty = summary.currentQty; periodClosingQty = summary.periodClosingQty;
-      fifoLotsByDate = summary.fifoLotsByDate; balancesByDate = summary.balancesByDate;
-      currentLots = summary.currentLots; fifoFefoStatus = summary.fifoFefoStatus; hasPrevious = summary.hasPrevious;
-    } else {
-      // Safe fallback while a newly deployed summary is being built. No feature is
-      // removed: FIFO/FEFO and audit history are still calculated from the ledger.
-      const stockHistoryRows = readStockHistoryPageRows_(outlet, location, item);
-      let fifoInput = stockHistoryRows;
-      if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
-      visibleRows = fifoInput.filter(function (row) {
-        const date = String(row.date || '').slice(0, 10);
-        return date >= bounds.start && date < bounds.end;
-      });
-      currentQty = stockCheckpointBalanceUntil_(stockHistoryRows, '');
-      periodClosingQty = stockCheckpointBalanceUntil_(stockHistoryRows, bounds.end);
-      const snapshots = calculateFifoSnapshots_(fifoInput);
-      fifoLotsByDate = {}; balancesByDate = {};
-      currentLots = null; fifoFefoStatus = stockFifoFefoStatus_(fifoInput, item);
-      hasPrevious = fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < bounds.start; });
-      if (payload.includeCurrentLots) {
-        const currentDates = Object.keys(snapshots).sort();
-        currentLots = reconcileFifoLots_(currentDates.length ? snapshots[currentDates[currentDates.length - 1]] : [], currentQty);
-      }
-      fastSource = 'BIGQUERY_LEDGER_FALLBACK';
-      const dayNet = {};
-      visibleRows.forEach(function (row) {
-        const date = String(row.date || '').slice(0, 10);
-        if (!date) return;
-        if (dayNet[date] === undefined) dayNet[date] = 0;
-        if (row.direction !== 'IN' && row.direction !== 'OUT') return;
-        if (row.movementType === 'Stock Opname' && row.opnameBalance !== null) return;
-        dayNet[date] += row.direction === 'IN' ? Number(row.qty || 0) : -Number(row.qty || 0);
-      });
-      let runningBalance = periodClosingQty;
-      Object.keys(dayNet).sort().reverse().forEach(function (date) {
-        fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], runningBalance);
-        runningBalance -= Number(dayNet[date] || 0);
-      });
-      visibleRows.forEach(function (row) {
-        const date = String(row.date || '').slice(0, 10);
-        if (date && balancesByDate[date] === undefined) balancesByDate[date] = stockCheckpointBalanceUntil_(stockHistoryRows, stockIsoDateOffset_(date, 1));
-      });
+    // Cloudflare is the only inventory source. Read one item only, then perform
+    // the existing FIFO/FEFO calculations in Apps Script without querying any
+    // BigQuery summary or ledger table.
+    let stockHistoryRows = readLatestStockHistory_(outlet, location, item);
+    let fifoInput = stockHistoryRows;
+    if (isShowcaseLocation_(location)) fifoInput = enrichShowcaseHistoryLots_(fifoInput, outlet, item);
+    const allVisibleRows = fifoInput.filter(function (row) {
+      const date = String(row.date || '').slice(0, 10);
+      return date >= bounds.start && date < bounds.end && (!cursor || date < cursor);
+    });
+    const pageDays = normalizeStockHistoryPageDays_(payload.pageDays), dates = {};
+    allVisibleRows.forEach(function (row) { dates[String(row.date || '').slice(0, 10)] = true; });
+    const selectedDates = Object.keys(dates).filter(Boolean).sort().reverse().slice(0, pageDays);
+    const selectedMap = {};
+    selectedDates.forEach(function (date) { selectedMap[date] = true; });
+    const visibleRows = allVisibleRows.filter(function (row) { return Boolean(selectedMap[String(row.date || '').slice(0, 10)]); });
+    const hasMore = Object.keys(dates).length > selectedDates.length;
+    const nextCursor = hasMore && selectedDates.length ? selectedDates[selectedDates.length - 1] : '';
+    const currentQty = getCurrentStock_(outlet, location, item.code, item.name).qty;
+    const periodClosingQty = stockCheckpointBalanceUntil_(stockHistoryRows, bounds.end);
+    const snapshots = calculateFifoSnapshots_(fifoInput), fifoLotsByDate = {}, balancesByDate = {};
+    const hasPrevious = fifoInput.some(function (row) { return String(row.date || '').slice(0, 10) < bounds.start; });
+    const fifoFefoStatus = stockFifoFefoStatus_(fifoInput, item);
+    let currentLots = null;
+    if (payload.includeCurrentLots) {
+      const currentDates = Object.keys(snapshots).sort();
+      currentLots = reconcileFifoLots_(currentDates.length ? snapshots[currentDates[currentDates.length - 1]] : [], currentQty);
     }
+    visibleRows.forEach(function (row) {
+      const date = String(row.date || '').slice(0, 10);
+      if (!date || balancesByDate[date] !== undefined) return;
+      balancesByDate[date] = stockCheckpointBalanceUntil_(stockHistoryRows, stockIsoDateOffset_(date, 1));
+      fifoLotsByDate[date] = reconcileFifoLots_(snapshots[date] || [], balancesByDate[date]);
+    });
 
     const employeeNames = readEmployeeNameMap_();
     visibleRows.forEach(function (row) { row.createdByUser = employeeNames[row.createdBy] || row.createdBy || 'User tidak diketahui'; });
@@ -5567,7 +5552,7 @@ function getStockHistory(token, payload) {
       nextCursor: nextCursor, hasMore: hasMore,
       currentLots: currentLots,
       fifoFefoStatus: fifoFefoStatus,
-      fastSource: fastSource
+      fastSource: 'CLOUDFLARE_D1'
     };
     writeScriptJsonCache_(cacheKey, response, 300);
     return response;
@@ -6228,18 +6213,141 @@ function exportStockCardItem(token, payload) {
   });
 }
 
-function ensureStockCardReadInfrastructure_() {
-  const version = 'stock-card-read-ready-v17';
+// ---------- Cloudflare inventory gateway ----------
+
+function cloudflareInventoryConfig_() {
   const properties = PropertiesService.getScriptProperties();
-  if (properties.getProperty(version) === '1') return;
-  try {
-    BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, stockCardTableId_());
-    BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_balances');
-    properties.setProperty(version, '1');
-  } catch (error) {
-    ensureStockCardInfrastructure_();
-    properties.setProperty(version, '1');
+  const url = String(properties.getProperty('CLOUDFLARE_INVENTORY_URL') ||
+    'https://bakerzin-inventory-api.operational-bi.workers.dev').trim().replace(/\/+$/, '');
+  const apiKey = String(properties.getProperty('CLOUDFLARE_INVENTORY_API_KEY') || '').trim();
+  const backend = String(properties.getProperty('INVENTORY_BACKEND') || 'CLOUDFLARE').trim().toUpperCase();
+  if (backend !== 'CLOUDFLARE') throw new Error('Inventory harus menggunakan Cloudflare. Backend lain dinonaktifkan.');
+  if (!apiKey) throw new Error('Cloudflare inventory belum dikonfigurasi. Hubungi administrator.');
+  return { url: url, apiKey: apiKey };
+}
+
+function cloudflareInventoryRequest_(method, path, payload) {
+  const config = cloudflareInventoryConfig_();
+  const maxAttempts = 3;
+  let lastMessage = '';
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const options = {
+        method: String(method || 'GET').toLowerCase(),
+        headers: { 'x-api-key': config.apiKey },
+        muteHttpExceptions: true
+      };
+      if (payload !== undefined && payload !== null) {
+        options.contentType = 'application/json';
+        options.payload = JSON.stringify(payload);
+      }
+      const response = UrlFetchApp.fetch(config.url + path, options);
+      const status = response.getResponseCode();
+      let body = {};
+      try { body = JSON.parse(response.getContentText() || '{}'); }
+      catch (parseError) { body = {}; }
+      if (status >= 200 && status < 300 && body.ok === true) return body;
+
+      const requestId = String(body.requestId || '');
+      lastMessage = String(body && body.error && body.error.message || ('HTTP ' + status));
+      const retryable = status === 408 || status === 429 || status >= 500;
+      if (!retryable || attempt === maxAttempts - 1) {
+        throw new Error(lastMessage + (requestId ? ' (Ref: ' + requestId + ')' : ''));
+      }
+    } catch (error) {
+      lastMessage = String(error && error.message || error || 'Tidak dapat terhubung ke Cloudflare.');
+      if (attempt === maxAttempts - 1) {
+        throw new Error('Cloudflare inventory gagal setelah dicoba ulang: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
+      }
+    }
+    Utilities.sleep(300 * Math.pow(2, attempt) + Math.floor(Math.random() * 180));
   }
+  throw new Error('Cloudflare inventory gagal: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
+}
+
+function cloudflareQueryString_(params) {
+  return Object.keys(params || {}).filter(function (key) {
+    return params[key] !== null && params[key] !== undefined && String(params[key]) !== '';
+  }).map(function (key) {
+    return encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
+  }).join('&');
+}
+
+function cloudflareReadAllPages_(path, params, pageLimit, maxPages) {
+  const rows = [], seen = {};
+  let cursor = '', pages = 0;
+  const pageCap = Math.max(1, Math.min(100, Number(maxPages || 100)));
+  do {
+    const query = Object.assign({}, params || {}, { limit: pageLimit || 200 });
+    if (cursor) query.cursor = cursor;
+    const body = cloudflareInventoryRequest_('GET', path + '?' + cloudflareQueryString_(query));
+    (body.data || []).forEach(function (row) { rows.push(row); });
+    cursor = String(body.nextCursor || '');
+    if (cursor && seen[cursor]) throw new Error('Cursor Cloudflare berulang. Proses dihentikan untuk mencegah loop.');
+    if (cursor) seen[cursor] = true;
+    pages++;
+  } while (cursor && pages < pageCap);
+  if (cursor) throw new Error('Data Cloudflare melebihi batas halaman aman. Persempit periode.');
+  return rows;
+}
+
+function cloudflareMovementToApp_(row) {
+  const recordType = String(row.record_type || 'MOVEMENT').toUpperCase();
+  let opnameBalance = null, opnameDate = '';
+  if (recordType === 'OPNAME_DETAIL') {
+    try {
+      const detail = JSON.parse(String(row.info || '{}'));
+      opnameBalance = detail.stockOpnameBalance === undefined ? null : Number(detail.stockOpnameBalance);
+      opnameDate = String(detail.stockOpnameDate || row.event_date || '');
+    } catch (error) {}
+  }
+  return {
+    recordType: recordType,
+    recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
+    date: String(row.event_date || ''), direction: String(row.movement_type || '') === 'Lot Balance Override' ? 'LOT' : String(row.direction || ''),
+    qty: Number(row.quantity || 0), movementType: String(row.movement_type || ''), info: String(row.info || ''),
+    productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''),
+    sourceArrivalDate: String(row.arrival_date || ''), supplier: String(row.supplier || ''),
+    sourceFile: String(row.source_file || ''), sourceHash: String(row.source_hash || ''), sourceRow: Number(row.source_row || 0),
+    transferId: String(row.transfer_id || ''), systemGenerated: Boolean(row.transfer_id),
+    createdBy: String(row.created_by || ''), createdAt: String(row.created_at || ''),
+    itemCode: String(row.item_code || ''), itemName: String(row.item_name || ''),
+    category: String(row.category || ''), unit: String(row.unit || ''),
+    opnameBalance: opnameBalance !== null && isFinite(opnameBalance) ? opnameBalance : null,
+    opnameDate: opnameDate
+  };
+}
+
+function cloudflareReadMovements_(params) {
+  const latest = {};
+  cloudflareReadAllPages_('/v1/movements', params || {}, 1000, 20).map(cloudflareMovementToApp_).forEach(function (row) {
+    const key = String(row.logicalId || row.recordId || '');
+    if (!latest[key] || Number(row.version || 1) > Number(latest[key].version || 1) ||
+        (Number(row.version || 1) === Number(latest[key].version || 1) && String(row.createdAt || '') > String(latest[key].createdAt || ''))) {
+      latest[key] = row;
+    }
+  });
+  return Object.keys(latest).map(function (key) { return latest[key]; }).sort(function (a, b) {
+    return String(a.date || '').localeCompare(String(b.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
+}
+
+function cloudflareWriteStockRows_(rows) {
+  if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
+  let accepted = 0, duplicates = 0;
+  for (let index = 0; index < rows.length; index += 40) {
+    const result = cloudflareInventoryRequest_('POST', '/v1/stock-movements', { rows: rows.slice(index, index + 40) });
+    accepted += Number(result.accepted || 0);
+    duplicates += Number(result.duplicates || 0);
+  }
+  return { received: rows.length, accepted: accepted, duplicates: duplicates };
+}
+
+function ensureStockCardReadInfrastructure_() {
+  // The actual read below is the readiness check. Avoid a separate /health
+  // request because that endpoint inspects every history partition and can
+  // briefly fail while the migration is writing another month.
+  cloudflareInventoryConfig_();
 }
 
 function ensureStockCardInfrastructure_() {
@@ -6250,6 +6358,12 @@ function ensureStockCardInfrastructure_() {
   ensureSheet_(CONFIG.STOCK_LOCATION_SHEET, ['OUTLET', 'LOCATION', 'ACTIVE', 'CREATED_BY', 'CREATED_AT']);
   ensureStockVisibilitySheet_();
   ensureStockConversionSheet_();
+  cloudflareInventoryConfig_();
+  infrastructureCache.put('stock-card-infrastructure-v20', 'ready', 21600);
+  return;
+  // Legacy BigQuery provisioning is intentionally unreachable. It remains in
+  // this source temporarily for rollback/audit reference while inventory is
+  // fully served by Cloudflare.
   try {
     BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
   } catch (error) {
@@ -8798,25 +8912,9 @@ function ensureStockItemSummaryWorker_() {
 }
 
 function insertStockCardRows_(rows) {
-  insertAll_(stockCardTableId_(), rows);
-  mirrorStockCardRows_(rows);
-  let queued;
-  try {
-    queued = enqueueStockSummaryChanges_(rows);
-  } catch (queueError) {
-    // The ledger write is already authoritative. Fall back to direct ledger reads
-    // and schedule a complete summary recovery instead of reporting a false
-    // transaction failure to the user.
-    const properties = PropertiesService.getScriptProperties();
-    properties.setProperty('STOCK_SUMMARY_FORCE_LEDGER_V1', '1');
-    properties.setProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1', new Date().toISOString());
-    queued = { unsafeScopes: stockBalanceUnsafeScopeMap_(rows) };
-    console.error('Antrean ringkasan belum tersimpan; ledger tetap aman dan recovery dijadwalkan: ' + queueError.message);
-  }
-  applyStockBalanceDeltas_(rows, queued.unsafeScopes || {});
+  cloudflareWriteStockRows_(rows);
   invalidateStockItemCachesForRows_(rows);
   invalidateFastStockHistoryRows_(rows);
-  ensureStockItemSummaryWorker_();
 }
 
 function stockCardMirrorTableId_() {
@@ -8935,28 +9033,16 @@ function rebuildStockBalanceSummary_(outlet, location) {
 }
 
 function readStockBalanceRows_(outlet, location) {
-  const properties = PropertiesService.getScriptProperties();
-  if (properties.getProperty('STOCK_SUMMARY_FORCE_LEDGER_V1') === '1') return readStockLedgerBalanceRows_(outlet, location);
-  const readyKey = stockBalanceStateKey_('ready', outlet, location);
-  const ready = properties.getProperty(readyKey) === '1';
-  const checkpointReadyKey = stockBalanceStateKey_('checkpoint-v1', outlet, location);
-  try {
-    // Existing compact summaries were calculated as a raw ledger sum. Rebuild each
-    // outlet/location once after this release so historical SO checkpoints take effect.
-    if (properties.getProperty(checkpointReadyKey) !== '1') {
-      rebuildStockBalanceSummary_(outlet, location);
-    }
-    // The item list must never wait for a complete ledger scan. Serve the compact
-    // balance summary immediately; a one-minute trigger refreshes dirty scopes.
-    const sql = 'SELECT item_code, item_name, current_qty FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances` ' +
-      'WHERE outlet = @outlet AND location = @location';
-    const summaryRows = runNamedQuery_(sql, { outlet: outlet, location: location });
-    if (ready || summaryRows.length) return summaryRows;
-    return readStockLedgerBalanceRows_(outlet, location);
-  } catch (error) {
-    console.error('Ringkasan stok gagal digunakan; membaca stock_card sebagai cadangan. ' + error.message);
-    return readStockLedgerBalanceRows_(outlet, location);
-  }
+  return cloudflareReadAllPages_('/v1/balances', {
+    outlet: outlet,
+    location: location
+  }, 5000, 10).map(function (row) {
+    return {
+      item_code: String(row.item_code || ''),
+      item_name: String(row.item_name || ''),
+      current_qty: Number(row.current_qty || 0)
+    };
+  });
 }
 
 function rebuildStockItemSummary_(state) {
@@ -9542,14 +9628,11 @@ function readStockCodeQtyMapAtDate_(outlet, location, eventDate) {
 }
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
-  const itemCondition = isShowcaseLocation_(location)
-    ? 'item_name = @item'
-    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
-  const sql = stockCheckpointBalanceCtes_('') + ' SELECT COUNT(*) AS movement_count, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty ' +
-    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') + ' WHERE l.outlet = @outlet AND l.location = @location ' +
-    'AND ' + itemCondition.replace(/item_/g, 'l.item_');
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: itemCode, item: itemName }, { useQueryCache: false });
-  return { count: rows.length ? Number(rows[0].movement_count || 0) : 0, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
+  const params = { outlet: outlet, location: location, limit: 2 };
+  if (isShowcaseLocation_(location)) params.item_name = itemName;
+  else params.item_code = itemCode;
+  const rows = cloudflareReadAllPages_('/v1/balances', params, 2, 2);
+  return { count: rows.length, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
 }
 
 function enrichShowcaseHistoryLots_(history, outlet, showcaseItem) {
@@ -9610,29 +9693,11 @@ function latestStockMovementCte_() {
 }
 
 function readLatestStockHistory_(outlet, location, item, onlyLogicalId) {
-  const itemCondition = isShowcaseLocation_(location)
-    ? 'item_name = @item'
-    : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
-  let sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-    'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at FROM latest ' +
-    'WHERE outlet = @outlet AND location = @location AND ' + itemCondition + ' ';
-  const params = { outlet: outlet, location: location, code: item.code, item: item.name };
-  if (onlyLogicalId) {
-    sql += 'AND COALESCE(NULLIF(logical_id, \'\'), record_id) = @logicalId ';
-    params.logicalId = onlyLogicalId;
-  }
-  sql += 'ORDER BY event_date DESC, created_at DESC LIMIT 500';
-  return runNamedQuery_(sql, params).map(function (r) {
-    return {
-      recordId: String(r.record_id || ''), logicalId: String(r.logical_id || r.record_id || ''), version: Number(r.version || 1),
-      date: String(r.event_date || ''), direction: String(r.direction || ''), qty: Number(r.qty || 0),
-      movementType: String(r.movement_type || ''), info: String(r.info || ''), productionDate: String(r.production_date || ''), expiryDate: String(r.expiry_date || ''),
-      sourceArrivalDate: String(r.source_arrival_date || ''), supplier: String(r.supplier || ''),
-      sourceFile: String(r.source_file || ''), sourceRow: Number(r.source_row || 0),
-      transferId: String(r.transfer_id || ''), systemGenerated: Boolean(r.transfer_id),
-      createdBy: String(r.created_by || ''), createdAt: String(r.created_at || '')
-    };
-  });
+  const params = { outlet: outlet, location: location, limit: 5000 };
+  if (onlyLogicalId) params.logical_id = onlyLogicalId;
+  else if (isShowcaseLocation_(location)) params.item_name = item.name;
+  else params.item_code = item.code;
+  return applyStockHistoryAuditRows_(cloudflareReadMovements_(params)).slice(-500);
 }
 
 function resolveStockContext_(token, requestedOutlet, requestedLocation) {

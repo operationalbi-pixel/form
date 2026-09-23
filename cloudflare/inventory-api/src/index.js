@@ -829,7 +829,7 @@ async function schemaMeta(env, requestId) {
 }
 
 async function listStockItems(url, env, requestId) {
-  const limit = positiveInt(url.searchParams.get("limit"), 100);
+  const limit = positiveInt(url.searchParams.get("limit"), 100, 5000);
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
   const includeInactive = url.searchParams.get("include_inactive") === "1";
   const result = await env.MASTER_DB.prepare(
@@ -851,16 +851,26 @@ async function listStockItems(url, env, requestId) {
 async function listBalances(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
+  const itemCode = cleanText(url.searchParams.get("item_code"), 80).toUpperCase();
+  const itemName = cleanText(url.searchParams.get("item_name"), 180);
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
-  const limit = positiveInt(url.searchParams.get("limit"), 100);
+  // A busy outlet can hold more than 4,000 item balances. Let Apps Script
+  // fetch one complete outlet/location in a single Worker request instead of
+  // opening 8-20 sequential requests that are vulnerable to transient D1
+  // errors while migration writes are still running.
+  const limit = positiveInt(url.searchParams.get("limit"), 100, 5000);
   if (!outlet || !location) return apiError(400, "INVALID_SCOPE", "Outlet dan lokasi wajib diisi.", requestId);
+  const conditions = ["outlet_code = ?", "location_code = ?", "item_code > ?"];
+  const bindings = [outlet, location, cursor];
+  if (itemCode) { conditions.push("item_code = ?"); bindings.push(itemCode); }
+  if (itemName) { conditions.push("item_name = ? COLLATE NOCASE"); bindings.push(itemName); }
   const result = await env.OPERATIONS_DB.prepare(
     `SELECT item_code, item_name, current_qty, unit, updated_at
        FROM stock_balances
-      WHERE outlet_code = ? AND location_code = ? AND item_code > ?
+      WHERE ${conditions.join(" AND ")}
       ORDER BY item_code
       LIMIT ?`
-  ).bind(outlet, location, cursor, limit + 1).all();
+  ).bind(...bindings, limit + 1).all();
   const rows = result.results.slice(0, limit);
   return responseJson({
     ok: true,
