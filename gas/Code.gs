@@ -9036,7 +9036,11 @@ function readStockBalanceRows_(outlet, location) {
   return cloudflareReadAllPages_('/v1/balances', {
     outlet: outlet,
     location: location
-  }, 5000, 10).map(function (row) {
+  // Worker gabungan yang aktif dapat membatasi hasil menjadi 200 baris walau
+  // client meminta 5.000. Outlet terbesar saat ini membutuhkan 21 halaman.
+  // Baca sampai 100 halaman agar tetap kompatibel dengan Worker lama maupun
+  // Worker baru tanpa memotong saldo item.
+  }, 5000, 100).map(function (row) {
     return {
       item_code: String(row.item_code || ''),
       item_name: String(row.item_name || ''),
@@ -9628,11 +9632,16 @@ function readStockCodeQtyMapAtDate_(outlet, location, eventDate) {
 }
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
-  const params = { outlet: outlet, location: location, limit: 2 };
-  if (isShowcaseLocation_(location)) params.item_name = itemName;
-  else params.item_code = itemCode;
-  const rows = cloudflareReadAllPages_('/v1/balances', params, 2, 2);
-  return { count: rows.length, qty: rows.length ? Number(rows[0].current_qty || 0) : 0 };
+  // Gunakan daftar saldo lengkap yang sudah di-cache. Sebagian versi Worker
+  // lama mengabaikan filter item_code/item_name pada endpoint balances; jika
+  // dipanggil langsung hasilnya dapat mengambil dua item pertama yang salah.
+  const wantedCode = String(itemCode || '').trim().toUpperCase();
+  const wantedName = String(itemName || '').trim().toLowerCase();
+  const item = readStockItemsWithQtyCached_(outlet, location).filter(function (row) {
+    if (isShowcaseLocation_(location)) return String(row.name || '').trim().toLowerCase() === wantedName;
+    return String(row.code || '').trim().toUpperCase() === wantedCode;
+  })[0];
+  return { count: item ? 1 : 0, qty: item ? Number(item.qty || 0) : 0 };
 }
 
 function enrichShowcaseHistoryLots_(history, outlet, showcaseItem) {

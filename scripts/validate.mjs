@@ -61,6 +61,9 @@ if (!stockCardHtml.includes('id="historyLoadMore"') || !stockCardHtml.includes('
 if (!stockCardHtml.includes('itemPageSize:10') || !stockCardHtml.includes('function changeItemPage(delta)') || !stockCardHtml.includes('id="itemPagination"')) {
   failures.push('Daftar Stock Card belum menyediakan pagination 10 item per halaman');
 }
+if (!chatBackend.includes("}, 5000, 100).map(function (row)") || !chatBackend.includes('const item = readStockItemsWithQtyCached_(outlet, location).filter')) {
+  failures.push('Pembacaan saldo Cloudflare belum kompatibel dengan pagination Worker 200 baris');
+}
 let chatInlineIndex = 0;
 for (const match of chatHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   chatInlineIndex += 1;
