@@ -13070,18 +13070,22 @@ function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
   });
   if (!stockTasks.length || !outlet) return map;
   try {
-    const query = 'SELECT CAST(event_date AS STRING) AS period_key ' +
-      'FROM ' + stockCardTable_() + ' ' +
-      'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet ' +
-      'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\') ' +
-      'AND source_file IS NOT NULL AND source_file != \'\' GROUP BY event_date ' +
-      'HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
-      'AND MAX(IF(movement_type IN (\'Terjual\', \'Sold\'), 1, 0)) = 1';
-    runNamedQuery_(query, { outlet: outlet }).forEach(function (row) {
-      const periodKey = String(row.period_key || '').slice(0, 10);
-      if (!periodKey) return;
+    const periodKeys = {};
+    stockTasks.forEach(function (task) { if (task.periodKey) periodKeys[task.periodKey] = true; });
+    Object.keys(periodKeys).forEach(function (periodKey) {
+      const cacheKey = 'stock-upload-completion-' + String(outlet).toUpperCase() + '-' + periodKey;
+      let state = readScriptJsonCache_(cacheKey);
+      if (!state) {
+        state = {
+          goodsReceipt: cloudflareHasUploadedMovement_(outlet, periodKey, 'Goods Receipt'),
+          sales: cloudflareHasUploadedMovement_(outlet, periodKey, 'Terjual') ||
+            cloudflareHasUploadedMovement_(outlet, periodKey, 'Sold')
+        };
+        writeScriptJsonCache_(cacheKey, state, 300);
+      }
+      if (!state.goodsReceipt || !state.sales) return;
       stockTasks.forEach(function (task) {
-        if (taskExistedForPeriod_(task, task.frequency, periodKey)) {
+        if (task.periodKey === periodKey && taskExistedForPeriod_(task, task.frequency, periodKey)) {
           map[task.id + '|' + periodKey] = map[task.id + '|' + periodKey] || 'AUTO_UPLOADS';
         }
       });
@@ -13400,6 +13404,44 @@ function chatRoomMemberNiks_(roomId) {
   const map = {};
   chatSheetRows_('CHAT_MEMBERS').forEach(function (row) { if (String(row[0]) === roomId) map[normalizeNik_(row[1])] = true; });
   return map;
+}
+
+/**
+ * Dashboard hanya membutuhkan jawaban ada/tidak untuk upload hari aktif.
+ * Membatasi query ke tanggal dan jenis transaksi terkait mencegah login
+ * membaca seluruh riwayat inventory Cloudflare.
+ */
+function cloudflareHasUploadedMovement_(outlet, periodKey, movementType) {
+  const properties = PropertiesService.getScriptProperties();
+  const baseUrl = String(properties.getProperty('CLOUDFLARE_INVENTORY_URL') ||
+    'https://bakerzin-inventory-api.operational-bi.workers.dev').trim().replace(/\/+$/, '');
+  const apiKey = String(properties.getProperty('CLOUDFLARE_INVENTORY_API_KEY') || '').trim();
+  if (!apiKey) throw new Error('Cloudflare inventory belum dikonfigurasi.');
+  let cursor = '';
+  for (let page = 0; page < 5; page++) {
+    const params = {
+      outlet: String(outlet || '').trim().toUpperCase(), record_type: 'MOVEMENT',
+      movement_type: movementType, from: periodKey, to: periodKey, limit: 200
+    };
+    if (cursor) params.cursor = cursor;
+    const query = Object.keys(params).map(function (key) {
+      return encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
+    }).join('&');
+    const response = UrlFetchApp.fetch(baseUrl + '/v1/movements?' + query, {
+      method: 'get', headers: { 'x-api-key': apiKey }, muteHttpExceptions: true
+    });
+    const status = response.getResponseCode();
+    let body = {};
+    try { body = JSON.parse(response.getContentText() || '{}'); }
+    catch (error) { throw new Error('Cloudflare mengirim respons yang tidak valid.'); }
+    if (status < 200 || status >= 300 || body.ok !== true) {
+      throw new Error('Cloudflare inventory gagal saat memeriksa status upload.');
+    }
+    if ((body.data || []).some(function (row) { return Boolean(String(row.source_file || '').trim()); })) return true;
+    cursor = String(body.nextCursor || '');
+    if (!cursor) return false;
+  }
+  return false;
 }
 
 function requireChatRoom_(employee, roomId) {
