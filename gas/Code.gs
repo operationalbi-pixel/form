@@ -171,6 +171,7 @@ function apiActions_() {
     mppUpdateEmployee: updateMppEmployee,
     mppUploadPhoto: uploadMppEmployeePhoto,
     mppGetData: getMppData,
+    mppGetRotationOutlets: getMppRotationOutlets,
     mppSaveBudget: saveMppBudget,
     mppGetSchedule: getMppSchedule,
     mppSaveSchedule: saveMppSchedule,
@@ -17593,6 +17594,42 @@ function mppAllowedOutlet_(employee, requestedOutlet, allowAll) {
   return requested && requested !== 'ALL' ? requested : (allowAll ? 'ALL' : 'BIHQ');
 }
 
+function mppRotationOutlets_() {
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  const values = sheet
+    .getRange(2, 3, sheet.getLastRow() - 1, 1)
+    .getDisplayValues();
+
+  const seen = {};
+
+  values.forEach(function (row) {
+    const outlet = String(row[0] || '').trim().toUpperCase();
+    if (!outlet) return;
+    if (outlet === 'BIHQ') return;
+    seen[outlet] = true;
+  });
+
+  return Object.keys(seen).sort();
+}
+
+function mppValidRotationOutlet_(requestedOutlet) {
+  const requested = String(requestedOutlet || '').trim().toUpperCase();
+
+  if (!requested) {
+    throw new Error('Outlet tujuan rotasi wajib dipilih.');
+  }
+
+  const outlets = mppRotationOutlets_();
+
+  if (outlets.indexOf(requested) < 0) {
+    throw new Error('Outlet tujuan rotasi tidak valid.');
+  }
+
+  return requested;
+}
+
 function mppEmployeeRow_(rowIndex) {
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
   const row = Number(rowIndex || 0);
@@ -17663,8 +17700,20 @@ function updateMppEmployee(token, actionType, payload) {
     payload = Object.assign({}, payload || {});
     mppAssertRowAccess_(employee, payload.rowIndex);
     const action = String(actionType || '').toUpperCase();
-    if (action === 'MUTATION') payload.newOutlet = mppAllowedOutlet_(employee, payload.newOutlet, false);
-    if (['MUTATION', 'EDIT', 'RESIGN'].indexOf(action) < 0) throw new Error('Jenis perubahan karyawan tidak valid.');
+
+    if (action === 'MUTATION') {
+      payload.newOutlet = mppValidRotationOutlet_(payload.newOutlet);
+
+      const target = mppEmployeeRow_(payload.rowIndex);
+
+      if (payload.newOutlet === target.outlet) {
+        throw new Error('Outlet tujuan harus berbeda dari outlet asal.');
+      }
+    }
+
+    if (['MUTATION', 'EDIT', 'RESIGN'].indexOf(action) < 0) {
+      throw new Error('Jenis perubahan karyawan tidak valid.');
+    }
     return mppWithWriteLock_(function () { return mppLegacyUpdateEmployee_(action, payload); });
   });
 }
@@ -17684,6 +17733,14 @@ function getMppData(token) {
     const data = mppLegacyGetData_(mppUserView_(employee));
     if (employee.outlet !== 'BIHQ') data.outlets = [employee.outlet];
     return data;
+  });
+}
+
+function getMppRotationOutlets(token) {
+  return safe_(function () {
+    mppSessionEmployee_(token);
+    ensureMppSheets_();
+    return mppRotationOutlets_();
   });
 }
 
