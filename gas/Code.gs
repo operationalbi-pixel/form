@@ -1292,7 +1292,8 @@ function saveShowcaseLog(token, payload) {
         const markerId = Utilities.getUuid();
         rows.push({ insertId: markerId, json: {
           record_id: markerId, logical_id: markerId, version: 1, record_type: 'LOG',
-          outlet: outlet, location: 'Showcase', direction: null, qty: 0, movement_type: activity[1], info: '',
+          outlet: outlet, location: 'Showcase', item_code: '__LOG__', category: 'System', item_name: activity[1], unit: 'NONE',
+          direction: null, qty: 0, movement_type: activity[1], info: '',
           expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000 + rows.length / 1000000,
           created_by: employee.nik, source_file: 'SHOWCASE_LOG', source_row: 0
         }});
