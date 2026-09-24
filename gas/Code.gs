@@ -11084,12 +11084,36 @@ function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qt
   return allocated;
 }
 
-/** Generated WIP selalu dibuat dan langsung dipakai oleh upload, sehingga lot hanya perlu
- * hadir pada snapshot tanggal transaksi. IN dan OUT akan menutup ke net 0. */
-function salesAddGeneratedWipLot_(fifoState, outlet, code, transactionDate, qty) {
-  const lots = salesFifoLotsFor_(fifoState, outlet, code, transactionDate);
-  lots.push({ qty: Number(qty || 0), productionDate: transactionDate, expiryDate: '', sourceDate: transactionDate });
-  salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, qty);
+/** Generated WIP selalu dibuat dan langsung dipakai oleh upload. Balance qty dapat lebih
+ * besar daripada lot qty ketika Production IN sekaligus memulihkan saldo lama yang minus
+ * atau snapshot lot yang tidak lengkap. Hanya bagian yang benar-benar akan dipakai yang
+ * dimasukkan ke FIFO agar saldo dan lot tidak menggandakan stock. */
+function salesAddGeneratedWipLot_(fifoState, outlet, code, transactionDate, lotQty, balanceQty) {
+  lotQty = Math.max(0, Number(lotQty || 0));
+  balanceQty = balanceQty === undefined ? lotQty : Math.max(0, Number(balanceQty || 0));
+  if (lotQty > 0.0000001) {
+    const lots = salesFifoLotsFor_(fifoState, outlet, code, transactionDate);
+    lots.push({ qty: lotQty, productionDate: transactionDate, expiryDate: '', sourceDate: transactionDate });
+  }
+  salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, balanceQty);
+}
+
+/** Menghitung Production IN dari dua sumber kebenaran sekaligus: saldo akuntansi dan
+ * lot FIFO. Ini mencegah upload berhenti ketika migrasi/stock opname sudah mengubah saldo
+ * tetapi riwayat lot sebelum tanggal transaksi belum lengkap. */
+function salesWipProductionPlan_(fifoState, outlet, code, transactionDate, requiredQty) {
+  requiredQty = Math.max(0, Number(requiredQty || 0));
+  const balance = salesBalanceFor_(fifoState, outlet, code, transactionDate);
+  const lotQty = salesAvailableLotQty_(salesFifoLotsFor_(fifoState, outlet, code, transactionDate));
+  const balanceShortage = Math.max(0, requiredQty - balance);
+  const lotShortage = Math.max(0, requiredQty - lotQty);
+  return {
+    balance: balance,
+    lotQty: lotQty,
+    lotShortage: lotShortage,
+    productionQty: Math.max(balanceShortage, lotShortage),
+    recoveryQty: Math.max(0, Math.max(balanceShortage, lotShortage) - lotShortage)
+  };
 }
 
 /** Mengambil lot secara FIFO/FEFO dari state memory dan langsung mengurangi sisa lot. */
@@ -11150,8 +11174,9 @@ function salesWipCreatedAt_(state) {
  * Jika bahan resep juga merupakan WIP, stok WIP tersebut dipakai terlebih dahulu.
  * Kekurangannya dibuat otomatis sampai mencapai bahan paling dasar.
  */
-function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, path, depth) {
+function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, path, depth, inventoryOutputQty) {
   outputQty = Math.max(0, Number(outputQty || 0));
+  inventoryOutputQty = inventoryOutputQty === undefined ? outputQty : Math.max(0, Number(inventoryOutputQty || 0));
   if (outputQty <= 0.0000001) return null;
   depth = Number(depth || 0);
   if (depth > 10) throw new Error('Struktur WIP terlalu dalam untuk ' + item.code + ' · ' + item.name + '.');
@@ -11170,10 +11195,10 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
   state.wipSequence = Number(state.wipSequence || 0) + 1;
   const productionId = state.traceId + '|WIP|' + code + '|' + String(state.wipSequence) + '|' + String(depth);
   const outputRecord = Utilities.getUuid();
-  const recoveryQty = Number(state.wipRecoveryByCode && state.wipRecoveryByCode[code] || 0);
+  const recoveryQty = Math.max(Number(state.wipRecoveryByCode && state.wipRecoveryByCode[code] || 0), outputQty - inventoryOutputQty, 0);
   if (recoveryQty > 0.0000001) delete state.wipRecoveryByCode[code];
   const recoveryInfo = recoveryQty > 0.0000001
-    ? ' · Pemulihan saldo minus ' + formatQty_(recoveryQty) + ' ' + String(item.unit || '')
+    ? ' · Pemulihan saldo / sinkronisasi lot ' + formatQty_(recoveryQty) + ' ' + String(item.unit || '')
     : '';
 
   state.rows.push({ insertId: outputRecord, json: {
@@ -11186,7 +11211,7 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     source_file: 'SALES_COGS|' + state.fileName, source_hash: state.sale.rowHash, source_row: state.sale.sourceRow,
     transfer_id: productionId
   }});
-  salesAddGeneratedWipLot_(state.fifoState, state.sale.outlet, code, state.sale.transactionDate, outputQty);
+  salesAddGeneratedWipLot_(state.fifoState, state.sale.outlet, code, state.sale.transactionDate, inventoryOutputQty, outputQty);
   state.autoWipCount = Number(state.autoWipCount || 0) + 1;
 
   variant.materials.forEach(function (recipe) {
@@ -11201,14 +11226,11 @@ function autoProduceSalesWipRecursive_(state, item, preferredName, outputQty, pa
     const materialIsDirectWip = materialIsWip && salesWipUsesDirect_(state.wipCatalog, materialCode, material.name);
 
     if (materialIsWip && !materialIsDirectWip) {
-      const available = salesBalanceFor_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate);
-      // Saldo minus lama ikut menjadi kekurangan produksi. Dengan demikian upload
-      // berikutnya memulihkan WIP ke nol tanpa menggagalkan transaksi baru.
-      const shortage = Math.max(0, qty - available);
-      if (shortage > 0.0000001) {
+      const productionPlan = salesWipProductionPlan_(state.fifoState, state.sale.outlet, materialCode, state.sale.transactionDate, qty);
+      if (productionPlan.productionQty > 0.0000001) {
         state.wipRecoveryByCode = state.wipRecoveryByCode || {};
-        if (available < -0.0000001) state.wipRecoveryByCode[materialCode] = Math.abs(available);
-        autoProduceSalesWipRecursive_(state, material, material.name, shortage, nextPath, depth + 1);
+        if (productionPlan.recoveryQty > 0.0000001) state.wipRecoveryByCode[materialCode] = productionPlan.recoveryQty;
+        autoProduceSalesWipRecursive_(state, material, material.name, productionPlan.productionQty, nextPath, depth + 1, productionPlan.lotShortage);
       }
     }
 
@@ -11256,19 +11278,15 @@ function uploadSalesCogs(token, payload) {
       const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
       const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
       if (targetIsWip && !directWip) {
-        const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
-        // Jika saldo sebelumnya minus, shortage mencakup minus lama dan kebutuhan
-        // penjualan baru. Production IN dan Sold OUT pada tanggal ini mengembalikan
-        // saldo WIP ke nol tanpa menolak upload.
-        const shortage = Math.max(0, sale.qtyDefault - available);
-        if (shortage > 0.0000001) {
+        const productionPlan = salesWipProductionPlan_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+        if (productionPlan.productionQty > 0.0000001) {
           const state = {
             rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
             masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
             now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0, wipRecoveryByCode: {}
           };
-          if (available < -0.0000001) state.wipRecoveryByCode[itemCode] = Math.abs(available);
-          autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
+          if (productionPlan.recoveryQty > 0.0000001) state.wipRecoveryByCode[itemCode] = productionPlan.recoveryQty;
+          autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, productionPlan.productionQty, {}, 0, productionPlan.lotShortage);
           autoWipCount += Number(state.autoWipCount || 0);
         }
         // Setelah kekurangan WIP dibuat, seluruh qty langsung dipotong kembali.
@@ -11348,17 +11366,15 @@ function buildSalesRepairExpectedRows_(prepared, employee, payload, excludedSour
     const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
     const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
     if (targetIsWip && !directWip) {
-      const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
-      // Repair memakai aturan pemulihan minus yang sama dengan upload biasa.
-      const shortage = Math.max(0, sale.qtyDefault - available);
-      if (shortage > 0.0000001) {
+      const productionPlan = salesWipProductionPlan_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+      if (productionPlan.productionQty > 0.0000001) {
         const state = {
           rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
           masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
           now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0, wipRecoveryByCode: {}
         };
-        if (available < -0.0000001) state.wipRecoveryByCode[itemCode] = Math.abs(available);
-        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
+        if (productionPlan.recoveryQty > 0.0000001) state.wipRecoveryByCode[itemCode] = productionPlan.recoveryQty;
+        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, productionPlan.productionQty, {}, 0, productionPlan.lotShortage);
         autoWipCount += Number(state.autoWipCount || 0);
       }
       soldLots = salesConsumeInventoryLots_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
@@ -11867,14 +11883,13 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload) {
     const targetIsWip = salesTargetIsWip_(sale, wipCatalog);
     const directWip = targetIsWip && salesTargetUsesDirectWip_(sale, wipCatalog);
     if (targetIsWip && !directWip) {
-      const available = salesBalanceFor_(fifoState, sale.outlet, itemCode, sale.transactionDate);
-      const shortage = Math.max(0, sale.qtyDefault - available);
-      if (shortage > 0.0000001) {
+      const productionPlan = salesWipProductionPlan_(fifoState, sale.outlet, itemCode, sale.transactionDate, sale.qtyDefault);
+      if (productionPlan.productionQty > 0.0000001) {
         const state = { rows: rows, fifoState: fifoState, wipCatalog: wipCatalog, savedConversions: savedConversions, provided: provided,
           masterByCode: masterByCode, salesMappings: salesMappings, traceId: traceId, sale: sale, employee: employee, fileName: prepared.fileName,
           now: now, writeClock: writeClock, autoWipCount: 0, wipSequence: 0, wipRecoveryByCode: {} };
-        if (available < -0.0000001) state.wipRecoveryByCode[itemCode] = Math.abs(available);
-        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, shortage, {}, 0);
+        if (productionPlan.recoveryQty > 0.0000001) state.wipRecoveryByCode[itemCode] = productionPlan.recoveryQty;
+        autoProduceSalesWipRecursive_(state, sale.item, sale.target && sale.target.name ? sale.target.name : sale.item.name, productionPlan.productionQty, {}, 0, productionPlan.lotShortage);
         autoWipCount += Number(state.autoWipCount || 0);
       }
     }
