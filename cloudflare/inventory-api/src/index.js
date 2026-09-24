@@ -358,6 +358,9 @@ async function migrateStockBalances(request, env, requestId) {
 __name(migrateStockBalances, "migrateStockBalances");
 function normalizeMovement(row) {
   const source = row?.json && typeof row.json === "object" ? row.json : row || {};
+  const recordType = cleanText(source.record_type ?? source.recordType, 40).toUpperCase() || "MOVEMENT";
+  const suppliedItemCode = cleanText(source.item_code ?? source.itemCode, 80).toUpperCase();
+  const systemItemCode = recordType === "IMPORT" ? "__IMPORT__" : recordType === "LOG" ? "__LOG__" : "";
   const eventDate = isoDate(source.event_date ?? source.eventDate);
   const quantity = Number(source.qty ?? source.quantity);
   const sourceRowValue = source.source_row ?? source.sourceRow;
@@ -371,13 +374,13 @@ function normalizeMovement(row) {
     record_id: requiredText(source.record_id ?? source.recordId ?? row?.insertId, "record_id", 160),
     logical_id: cleanText(source.logical_id ?? source.logicalId, 160) || null,
     version: Math.max(1, Number.parseInt(String(source.version || 1), 10) || 1),
-    record_type: cleanText(source.record_type ?? source.recordType, 40).toUpperCase() || "MOVEMENT",
+    record_type: recordType,
     outlet_code: requiredText(source.outlet ?? source.outlet_code ?? source.outletCode, "outlet_code", 40).toUpperCase(),
     location_code: requiredText(source.location ?? source.location_code ?? source.locationCode, "location_code", 80),
-    item_code: requiredText(source.item_code ?? source.itemCode ?? (cleanText(source.record_type ?? source.recordType, 40).toUpperCase() === "IMPORT" ? "__IMPORT__" : ""), "item_code", 80).toUpperCase(),
+    item_code: requiredText(suppliedItemCode || systemItemCode, "item_code", 80).toUpperCase(),
     category: cleanText(source.category, 100) || null,
     item_name: cleanText(source.item_name ?? source.itemName, 180) || null,
-    unit: cleanText(source.unit, 40) || (cleanText(source.record_type ?? source.recordType, 40).toUpperCase() === "IMPORT" ? "NONE" : "PCS"),
+    unit: cleanText(source.unit, 40) || (["IMPORT", "LOG"].includes(recordType) ? "NONE" : "PCS"),
     direction: direction === "LOT" ? "NONE" : direction,
     quantity,
     movement_type: cleanText(source.movement_type ?? source.movementType, 100) || "UNKNOWN",
@@ -1518,6 +1521,7 @@ var index_default = {
   }
 };
 export {
-  index_default as default
+  index_default as default,
+  normalizeMovement
 };
 //# sourceMappingURL=index.js.map
