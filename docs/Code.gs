@@ -19,6 +19,7 @@ const CONFIG = Object.freeze({
   PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS',
   MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS',
   CHAT_SPREADSHEET_ID: '1-2UtuE33BtRu4xxAdKUvP69VlmYGhK9_Z-fMjEXE8ao',
+  SALES_ANALYSIS_SPREADSHEET_ID: '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -15280,9 +15281,9 @@ const SALES_ANALYSIS = (function () {
  * ============================================================
  */
 
-// ID database bersifat privat dan wajib disimpan di Apps Script → Project
-// Settings → Script Properties dengan nama SALES_ANALYSIS_SPREADSHEET_ID.
-const SHEET_ID  = '';
+// Nilai repository menjadi default permanen. Script Property dengan nama
+// SALES_ANALYSIS_SPREADSHEET_ID tetap dapat dipakai sebagai override bila diperlukan.
+const SHEET_ID  = CONFIG.SALES_ANALYSIS_SPREADSHEET_ID;
 const TZ        = 'Asia/Jakarta';
 const APP_TITLE = 'Bakerzin · Sales Analysis Calendar';
 
