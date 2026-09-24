@@ -3865,6 +3865,7 @@
       apiUpdateEmployee: 'mppUpdateEmployee',
       apiUploadPhoto: 'mppUploadPhoto',
       apiGetMPPData: 'mppGetData',
+      apiGetRotationOutlets: 'mppGetRotationOutlets',
       apiSaveBudget: 'mppSaveBudget',
       apiGetSchedule: 'mppGetSchedule',
       apiSaveSchedule: 'mppSaveSchedule',
@@ -4262,20 +4263,62 @@
 
       prepMutasi: (idx) => {
          app.selected = app.getEmp(idx);
-         if(!app.selected) return ui.toast("Data Error", "error");
+
+         if(!app.selected) {
+            return ui.toast('Data Error', 'error');
+         }
 
          document.getElementById('mut-idx').value = idx;
          document.getElementById('mut-name').innerText = app.selected.name;
 
          const sel = document.getElementById('mut-dest');
-         sel.innerHTML = '';
 
-         const sources = app.allOutlets.length > 0 ? app.allOutlets : [app.user.outlet];
-         sources.forEach(o => {
-            if(o !== app.selected.outlet) sel.innerHTML += `<option value="${o}">${o}</option>`;
-         });
+         sel.innerHTML = '<option value="">Memuat outlet...</option>';
+         sel.disabled = true;
 
          ui.modal.open('mod-mut');
+
+         google.script.run
+           .withSuccessHandler(outlets => {
+              const currentOutlet =
+                 String(app.selected.outlet || '')
+                   .trim()
+                   .toUpperCase();
+
+              const destinations =
+                 (Array.isArray(outlets) ? outlets : [])
+                   .map(o => String(o || '').trim().toUpperCase())
+                   .filter(o => o && o !== currentOutlet);
+
+              sel.innerHTML =
+                 '<option value="">Pilih Outlet Tujuan</option>';
+
+              destinations.forEach(o => {
+                 sel.innerHTML += `<option value="${o}">${o}</option>`;
+              });
+
+              sel.disabled = destinations.length === 0;
+
+              if(destinations.length === 0) {
+                 ui.toast(
+                    'Tidak ada outlet tujuan rotasi yang tersedia',
+                    'error'
+                 );
+              }
+           })
+           .withFailureHandler(error => {
+              sel.innerHTML =
+                 '<option value="">Gagal memuat outlet</option>';
+              sel.disabled = true;
+
+              ui.toast(
+                 error && error.message
+                    ? error.message
+                    : 'Gagal memuat daftar outlet rotasi',
+                 'error'
+              );
+           })
+           .apiGetRotationOutlets();
       },
       submitMutasi: () => {
          const newOutlet = document.getElementById('mut-dest').value;
