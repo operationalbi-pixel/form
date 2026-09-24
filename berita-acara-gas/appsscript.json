@@ -1,14 +1,6 @@
 {
   "timeZone": "Asia/Jakarta",
-  "dependencies": {
-    "enabledAdvancedServices": [
-      {
-        "userSymbol": "BigQuery",
-        "version": "v2",
-        "serviceId": "bigquery"
-      }
-    ]
-  },
+  "dependencies": {},
   "webapp": {
     "executeAs": "USER_DEPLOYING",
     "access": "ANYONE_ANONYMOUS"
@@ -18,7 +10,6 @@
   "oauthScopes": [
     "https://www.googleapis.com/auth/script.projects.readonly",
     "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/script.external_request"
   ]
 }
