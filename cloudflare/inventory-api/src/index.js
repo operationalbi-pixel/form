@@ -1,9 +1,12 @@
-const MAX_PAGE_SIZE = 200;
-const MAX_MASTER_SYNC_BYTES = 5 * 1024 * 1024;
-const MASTER_SYNC_BATCH_SIZE = 75;
-const MAX_MIGRATION_BATCH_ROWS = 1000;
-const MAX_STOCK_MOVEMENT_BATCH_ROWS = 500;
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
+// src/index.js
+var MAX_PAGE_SIZE = 200;
+var MAX_MASTER_SYNC_BYTES = 5 * 1024 * 1024;
+var MASTER_SYNC_BATCH_SIZE = 75;
+var MAX_MIGRATION_BATCH_ROWS = 1e3;
+var MAX_STOCK_MOVEMENT_BATCH_ROWS = 500;
 function responseJson(payload, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -12,37 +15,37 @@ function responseJson(payload, status = 200, extraHeaders = {}) {
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
-      ...extraHeaders,
-    },
+      ...extraHeaders
+    }
   });
 }
-
+__name(responseJson, "responseJson");
 function apiError(status, code, message, requestId) {
   return responseJson({ ok: false, error: { code, message }, requestId }, status);
 }
-
+__name(apiError, "apiError");
 function cleanText(value, maxLength = 200) {
   return String(value ?? "").trim().slice(0, maxLength);
 }
-
+__name(cleanText, "cleanText");
 function positiveInt(value, fallback, maximum = MAX_PAGE_SIZE) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.min(parsed, maximum);
 }
-
+__name(positiveInt, "positiveInt");
 function isoDate(value) {
   const text = cleanText(value, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
 }
-
+__name(isoDate, "isoDate");
 function isoTimestamp(value, eventDate = "") {
-  if (typeof value === "number" && Number.isFinite(value)) return new Date(value * 1000).toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value * 1e3).toISOString();
   const text = cleanText(value, 40);
   if (text && !Number.isNaN(Date.parse(text))) return new Date(text).toISOString();
-  return eventDate ? `${eventDate}T00:00:00.000Z` : new Date().toISOString();
+  return eventDate ? `${eventDate}T00:00:00.000Z` : (/* @__PURE__ */ new Date()).toISOString();
 }
-
+__name(isoTimestamp, "isoTimestamp");
 function signedMovement(row) {
   if (cleanText(row.record_type || row.recordType, 40).toUpperCase() !== "MOVEMENT") return 0;
   const quantity = Number(row.quantity ?? row.qty ?? 0);
@@ -51,11 +54,11 @@ function signedMovement(row) {
   if (direction === "OUT") return -quantity;
   return 0;
 }
-
+__name(signedMovement, "signedMovement");
 function movementRank(row) {
   return [Number(row.version || 1), String(row.created_at || ""), String(row.record_id || "")];
 }
-
+__name(movementRank, "movementRank");
 function newerMovement(left, right) {
   if (!right) return true;
   const a = movementRank(left), b = movementRank(right);
@@ -63,21 +66,21 @@ function newerMovement(left, right) {
   if (a[1] !== b[1]) return a[1] > b[1];
   return a[2] > b[2];
 }
-
+__name(newerMovement, "newerMovement");
 function activeMovements(rows) {
-  const latest = new Map();
+  const latest = /* @__PURE__ */ new Map();
   for (const row of rows || []) {
     const key = cleanText(row.logical_id, 160) || cleanText(row.record_id, 160);
     if (key && newerMovement(row, latest.get(key))) latest.set(key, row);
   }
   return [...latest.values()];
 }
-
+__name(activeMovements, "activeMovements");
 async function sha256(value) {
   const bytes = new TextEncoder().encode(value);
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 }
-
+__name(sha256, "sha256");
 async function secureEqual(left, right) {
   const [leftHash, rightHash] = await Promise.all([sha256(left), sha256(right)]);
   let mismatch = leftHash.length ^ rightHash.length;
@@ -86,16 +89,16 @@ async function secureEqual(left, right) {
   }
   return mismatch === 0;
 }
-
+__name(secureEqual, "secureEqual");
 async function authorize(request, env) {
   if (!env.API_KEY) return { ok: false, status: 503, code: "API_NOT_ACTIVATED", message: "API data belum diaktifkan." };
   const supplied = cleanText(request.headers.get("x-api-key"), 512);
-  if (!supplied || !(await secureEqual(supplied, env.API_KEY))) {
+  if (!supplied || !await secureEqual(supplied, env.API_KEY)) {
     return { ok: false, status: 401, code: "UNAUTHORIZED", message: "Kredensial API tidak valid." };
   }
   return { ok: true };
 }
-
+__name(authorize, "authorize");
 async function readJsonWithLimit(request, maximumBytes) {
   if (!request.body) throw new Error("EMPTY_BODY");
   const reader = request.body.getReader();
@@ -123,61 +126,57 @@ async function readJsonWithLimit(request, maximumBytes) {
     throw new Error("INVALID_JSON");
   }
 }
-
+__name(readJsonWithLimit, "readJsonWithLimit");
 function limitedArray(value, name, maximum) {
   if (!Array.isArray(value)) throw new Error(`INVALID_${name.toUpperCase()}`);
   if (value.length > maximum) throw new Error(`TOO_MANY_${name.toUpperCase()}`);
   return value;
 }
-
+__name(limitedArray, "limitedArray");
 function requiredText(value, name, maximum = 180) {
   const result = cleanText(value, maximum);
   if (!result) throw new Error(`INVALID_${name.toUpperCase()}`);
   return result;
 }
-
-async function runStatementBatches(database, statements) {
+__name(requiredText, "requiredText");
+async function runStatementBatches(database, statements2) {
   let written = 0;
-  for (let index = 0; index < statements.length; index += MASTER_SYNC_BATCH_SIZE) {
-    const batch = statements.slice(index, index + MASTER_SYNC_BATCH_SIZE);
+  for (let index = 0; index < statements2.length; index += MASTER_SYNC_BATCH_SIZE) {
+    const batch = statements2.slice(index, index + MASTER_SYNC_BATCH_SIZE);
     const results = await database.batch(batch);
     written += results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
   }
   return written;
 }
-
+__name(runStatementBatches, "runStatementBatches");
 function masterSyncStatements(database, data) {
-  const statements = [];
+  const statements2 = [];
   const counts = {};
-  const addAll = (name, rows, maximum, createStatement) => {
+  const addAll = /* @__PURE__ */ __name((name, rows, maximum, createStatement) => {
     const input = limitedArray(rows, name, maximum);
     counts[name] = input.length;
-    for (const row of input) statements.push(createStatement(row || {}));
-  };
-
+    for (const row of input) statements2.push(createStatement(row || {}));
+  }, "addAll");
   addAll("outlets", data.outlets, 500, (row) => database.prepare(
     `INSERT INTO outlets(outlet_code, outlet_name, active, updated_at)
      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(outlet_code) DO UPDATE SET
        outlet_name = excluded.outlet_name, active = excluded.active, updated_at = CURRENT_TIMESTAMP`
   ).bind(requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), requiredText(row.outletName, "outlet_name"), row.active === false ? 0 : 1));
-
-  addAll("locations", data.locations, 3000, (row) => database.prepare(
+  addAll("locations", data.locations, 3e3, (row) => database.prepare(
     `INSERT INTO stock_locations(outlet_code, location_code, location_name, active, created_by)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(outlet_code, location_code) DO UPDATE SET
        location_name = excluded.location_name, active = excluded.active, created_by = excluded.created_by`
   ).bind(requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), requiredText(row.locationCode, "location_code", 80), requiredText(row.locationName, "location_name", 120), row.active === false ? 0 : 1, cleanText(row.updatedBy || "MASTER_SYNC", 100)));
-
-  addAll("items", data.items, 20000, (row) => database.prepare(
+  addAll("items", data.items, 2e4, (row) => database.prepare(
     `INSERT INTO stock_items(item_code, category, item_name, default_unit, active, updated_at)
      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(item_code) DO UPDATE SET
        category = excluded.category, item_name = excluded.item_name,
        default_unit = excluded.default_unit, active = excluded.active, updated_at = CURRENT_TIMESTAMP`
   ).bind(requiredText(row.itemCode, "item_code", 80).toUpperCase(), cleanText(row.category || "Uncategorized", 100), requiredText(row.itemName, "item_name"), requiredText(row.defaultUnit, "default_unit", 40), row.active === false ? 0 : 1));
-
-  addAll("conversions", data.conversions, 30000, (row) => {
+  addAll("conversions", data.conversions, 3e4, (row) => {
     const factor = Number(row.factor);
     if (!Number.isFinite(factor) || factor <= 0) throw new Error("INVALID_CONVERSION_FACTOR");
     return database.prepare(
@@ -188,8 +187,7 @@ function masterSyncStatements(database, data) {
          updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
     ).bind(requiredText(row.itemCode, "item_code", 80).toUpperCase(), requiredText(row.fromUnit, "from_unit", 40), requiredText(row.toUnit, "to_unit", 40), factor, row.active === false ? 0 : 1, cleanText(row.updatedBy || "MASTER_SYNC", 100));
   });
-
-  addAll("formulas", data.formulas, 10000, (row) => {
+  addAll("formulas", data.formulas, 1e4, (row) => {
     const mode = cleanText(row.salesUsageMode || "AUTO_PRODUCE", 30).toUpperCase();
     if (mode !== "AUTO_PRODUCE" && mode !== "DIRECT_WIP") throw new Error("INVALID_SALES_USAGE_MODE");
     return database.prepare(
@@ -201,8 +199,7 @@ function masterSyncStatements(database, data) {
          updated_at = CURRENT_TIMESTAMP`
     ).bind(requiredText(row.formulaCode, "formula_code", 80).toUpperCase(), requiredText(row.formulaName, "formula_name"), requiredText(row.finishedUnit, "finished_unit", 40), mode, row.active === false ? 0 : 1);
   });
-
-  addAll("materials", data.materials, 50000, (row) => {
+  addAll("materials", data.materials, 5e4, (row) => {
     const quantity = Number(row.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("INVALID_MATERIAL_QUANTITY");
     return database.prepare(
@@ -213,8 +210,7 @@ function masterSyncStatements(database, data) {
          material_unit = excluded.material_unit, sequence_no = excluded.sequence_no`
     ).bind(requiredText(row.formulaCode, "formula_code", 80).toUpperCase(), requiredText(row.materialCode, "material_code", 80).toUpperCase(), cleanText(row.materialName, 180), quantity, requiredText(row.materialUnit, "material_unit", 40), Math.max(0, Number.parseInt(String(row.sequenceNo || 0), 10) || 0));
   });
-
-  addAll("showcaseItems", data.showcaseItems, 10000, (row) => {
+  addAll("showcaseItems", data.showcaseItems, 1e4, (row) => {
     const quantity = Number(row.productQuantity);
     if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("INVALID_SHOWCASE_QUANTITY");
     return database.prepare(
@@ -230,10 +226,9 @@ function masterSyncStatements(database, data) {
          product_qty = excluded.product_qty, active = excluded.active, updated_at = CURRENT_TIMESTAMP`
     ).bind(requiredText(row.menuCode, "menu_code", 80).toUpperCase(), requiredText(row.menuName, "menu_name"), cleanText(row.menuCategory, 100), cleanText(row.menuCategoryDetail, 100), requiredText(row.productCode, "product_code", 80).toUpperCase(), cleanText(row.productName, 180), cleanText(row.productCategory, 100), cleanText(row.productSubCategory, 100), requiredText(row.productUnit, "product_unit", 40), quantity, row.active === false ? 0 : 1);
   });
-
-  return { statements, counts };
+  return { statements: statements2, counts };
 }
-
+__name(masterSyncStatements, "masterSyncStatements");
 async function syncMasterData(request, env, requestId) {
   const masterDatabase = env.MASTER_DB;
   const operationsDatabase = env.OPERATIONS_DB;
@@ -256,15 +251,18 @@ async function syncMasterData(request, env, requestId) {
   const generatedAt = cleanText(payload.generatedAt, 40);
   const data = payload.data && typeof payload.data === "object" ? payload.data : null;
   if (!data) return apiError(400, "INVALID_DATA", "Data master wajib tersedia.", requestId);
-
   try {
-    const { statements, counts } = masterSyncStatements(masterDatabase, data);
+    const { statements: statements2, counts } = masterSyncStatements(masterDatabase, data);
     const existing = await operationsDatabase.prepare(
       "SELECT status, result_json FROM upload_jobs WHERE upload_type = 'MASTER_SYNC' AND source_hash = ? LIMIT 1"
     ).bind(sourceHash).first();
     if (existing?.status === "COMPLETED") {
       let previous = {};
-      try { previous = JSON.parse(existing.result_json || "{}"); } catch { previous = {}; }
+      try {
+        previous = JSON.parse(existing.result_json || "{}");
+      } catch {
+        previous = {};
+      }
       return responseJson({ ok: true, duplicate: true, syncId, counts: previous.counts || counts, requestId });
     }
     await operationsDatabase.prepare(
@@ -274,9 +272,8 @@ async function syncMasterData(request, env, requestId) {
        ON CONFLICT(upload_type, source_hash) DO UPDATE SET
          status = 'PROCESSING', total_rows = excluded.total_rows, result_json = excluded.result_json,
          error_message = NULL, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`
-    ).bind(syncId, sourceHash, statements.length, JSON.stringify({ generatedAt, counts })).run();
-
-    const written = await runStatementBatches(masterDatabase, statements);
+    ).bind(syncId, sourceHash, statements2.length, JSON.stringify({ generatedAt, counts })).run();
+    const written = await runStatementBatches(masterDatabase, statements2);
     await operationsDatabase.prepare(
       `UPDATE upload_jobs SET status = 'COMPLETED', processed_rows = total_rows,
           checkpoint_row = total_rows, result_json = ?, completed_at = CURRENT_TIMESTAMP,
@@ -294,7 +291,7 @@ async function syncMasterData(request, env, requestId) {
     return apiError(400, "MASTER_SYNC_FAILED", message, requestId);
   }
 }
-
+__name(syncMasterData, "syncMasterData");
 async function masterSyncStatus(env, requestId) {
   const [jobs, counts] = await Promise.all([
     env.OPERATIONS_DB.prepare(
@@ -312,11 +309,11 @@ async function masterSyncStatus(env, requestId) {
         (SELECT COUNT(*) FROM wip_formulas) AS formulas,
         (SELECT COUNT(*) FROM wip_recipe_materials) AS materials,
         (SELECT COUNT(*) FROM showcase_items) AS showcase_items`
-    ).first(),
+    ).first()
   ]);
   return responseJson({ ok: true, jobs: jobs.results, counts: counts || {}, requestId });
 }
-
+__name(masterSyncStatus, "masterSyncStatus");
 async function migrateStockBalances(request, env, requestId) {
   let payload;
   try {
@@ -330,8 +327,7 @@ async function migrateStockBalances(request, env, requestId) {
     return apiError(400, "INVALID_BATCH", "Batch saldo harus berisi 1 sampai 1000 baris.", requestId);
   }
   try {
-    const groupedStatements = new Map();
-    rows.forEach((row) => {
+    const statements = rows.map((row) => {
       const quantity = Number(row.currentQty);
       if (!Number.isFinite(quantity)) throw new Error("INVALID_CURRENT_QTY");
       return env.OPERATIONS_DB.prepare(
@@ -344,8 +340,10 @@ async function migrateStockBalances(request, env, requestId) {
         requiredText(row.outletCode, "outlet_code", 40).toUpperCase(),
         requiredText(row.locationCode, "location_code", 80),
         requiredText(row.itemCode, "item_code", 80).toUpperCase(),
-        cleanText(row.itemName, 180), quantity, cleanText(row.unit, 40) || null,
-        cleanText(row.updatedAt, 40) || new Date().toISOString()
+        cleanText(row.itemName, 180),
+        quantity,
+        cleanText(row.unit, 40) || null,
+        cleanText(row.updatedAt, 40) || (/* @__PURE__ */ new Date()).toISOString()
       );
     });
     const written = await runStatementBatches(env.OPERATIONS_DB, statements);
@@ -356,14 +354,13 @@ async function migrateStockBalances(request, env, requestId) {
     return apiError(400, "BALANCE_MIGRATION_FAILED", message, requestId);
   }
 }
-
+__name(migrateStockBalances, "migrateStockBalances");
 function normalizeMovement(row) {
-  const source = row?.json && typeof row.json === "object" ? row.json : (row || {});
+  const source = row?.json && typeof row.json === "object" ? row.json : row || {};
   const eventDate = isoDate(source.event_date ?? source.eventDate);
   const quantity = Number(source.qty ?? source.quantity);
   const sourceRowValue = source.source_row ?? source.sourceRow;
-  const sourceRow = sourceRowValue === null || sourceRowValue === undefined || sourceRowValue === ""
-    ? null : Number.parseInt(String(sourceRowValue), 10);
+  const sourceRow = sourceRowValue === null || sourceRowValue === void 0 || sourceRowValue === "" ? null : Number.parseInt(String(sourceRowValue), 10);
   if (!eventDate) throw new Error("INVALID_EVENT_DATE");
   if (!Number.isFinite(quantity) || quantity < 0) throw new Error("INVALID_QUANTITY");
   if (sourceRow !== null && !Number.isFinite(sourceRow)) throw new Error("INVALID_SOURCE_ROW");
@@ -383,7 +380,7 @@ function normalizeMovement(row) {
     direction: direction === "LOT" ? "NONE" : direction,
     quantity,
     movement_type: cleanText(source.movement_type ?? source.movementType, 100) || "UNKNOWN",
-    info: cleanText(source.info, 1000) || null,
+    info: cleanText(source.info, 1e3) || null,
     event_date: eventDate,
     arrival_date: isoDate(source.source_arrival_date ?? source.arrival_date ?? source.arrivalDate) || null,
     production_date: isoDate(source.production_date ?? source.productionDate) || null,
@@ -397,10 +394,10 @@ function normalizeMovement(row) {
     source_hash: cleanText(source.source_hash ?? source.sourceHash, 160) || null,
     source_row: sourceRow,
     created_by: cleanText(source.created_by ?? source.createdBy, 180) || "APPS_SCRIPT",
-    created_at: isoTimestamp(source.created_at ?? source.createdAt, eventDate),
+    created_at: isoTimestamp(source.created_at ?? source.createdAt, eventDate)
   };
 }
-
+__name(normalizeMovement, "normalizeMovement");
 function movementInsertStatement(database, row) {
   return database.prepare(
     `INSERT INTO stock_movements(
@@ -412,25 +409,44 @@ function movementInsertStatement(database, row) {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(record_id) DO NOTHING`
   ).bind(
-    row.record_id, row.logical_id, row.version, row.record_type, row.outlet_code,
-    row.location_code, row.item_code, row.category, row.item_name, row.unit,
-    row.direction, row.quantity, row.movement_type, row.info, row.event_date,
-    row.arrival_date, row.production_date, row.expiry_date, row.supplier, row.lot_id,
-    row.sale_line_id, row.transfer_id, row.source_file, row.source_object_key,
-    row.source_hash, row.source_row, row.created_by, row.created_at
+    row.record_id,
+    row.logical_id,
+    row.version,
+    row.record_type,
+    row.outlet_code,
+    row.location_code,
+    row.item_code,
+    row.category,
+    row.item_name,
+    row.unit,
+    row.direction,
+    row.quantity,
+    row.movement_type,
+    row.info,
+    row.event_date,
+    row.arrival_date,
+    row.production_date,
+    row.expiry_date,
+    row.supplier,
+    row.lot_id,
+    row.sale_line_id,
+    row.transfer_id,
+    row.source_file,
+    row.source_object_key,
+    row.source_hash,
+    row.source_row,
+    row.created_by,
+    row.created_at
   );
 }
-
-const HISTORY_MONTH_BINDINGS = [
-  ["2026-06", "HISTORY_DB_2026_06"],
-  ["2026-07", "HISTORY_DB_2026_07"],
+__name(movementInsertStatement, "movementInsertStatement");
+var HISTORY_MONTH_BINDINGS = [
   ["2026-08", "HISTORY_DB_2026_08"],
   ["2026-09", "HISTORY_DB_2026_09"],
   ["2026-10", "HISTORY_DB_2026_10"],
   ["2026-11", "HISTORY_DB_2026_11"],
-  ["2026-12", "HISTORY_DB_2026_12"],
+  ["2026-12", "HISTORY_DB_2026_12"]
 ];
-
 function historyDatabaseEntries(env) {
   const entries = [{ key: "legacy-2026", database: env.HISTORY_DB_2026, legacy: true }];
   for (const [key, binding] of HISTORY_MONTH_BINDINGS) {
@@ -438,21 +454,21 @@ function historyDatabaseEntries(env) {
   }
   return entries;
 }
-
+__name(historyDatabaseEntries, "historyDatabaseEntries");
 function historyDatabaseForDate(env, eventDate) {
   const month = String(eventDate || "").slice(0, 7);
   const binding = HISTORY_MONTH_BINDINGS.find(([key]) => key === month)?.[1];
   if (!binding || !env[binding]) throw new Error(`HISTORY_MONTH_NOT_CONFIGURED:${month || "UNKNOWN"}`);
   return { key: month, database: env[binding] };
 }
-
+__name(historyDatabaseForDate, "historyDatabaseForDate");
 function historyDatabasesForRange(env, from, to) {
   const start = String(from || "0000-01-01").slice(0, 7);
   const end = String(to || "9999-12-31").slice(0, 7);
   const overlapsLegacy = String(from || "0000-01-01") <= "2026-08-23" && String(to || "9999-12-31") >= "2026-06-20";
-  return historyDatabaseEntries(env).filter((entry) => (entry.legacy ? overlapsLegacy : entry.key >= start && entry.key <= end));
+  return historyDatabaseEntries(env).filter((entry) => entry.legacy ? overlapsLegacy : entry.key >= start && entry.key <= end);
 }
-
+__name(historyDatabasesForRange, "historyDatabasesForRange");
 async function queryHistoryDatabases(entries, statementFactory) {
   const rows = [];
   for (const entry of entries) {
@@ -461,13 +477,13 @@ async function queryHistoryDatabases(entries, statementFactory) {
   }
   return rows;
 }
-
+__name(queryHistoryDatabases, "queryHistoryDatabases");
 async function existingMovementState(env, rows) {
   const logicalIds = [...new Set(rows.map((row) => row.logical_id || row.record_id))];
   const recordIds = [...new Set(rows.map((row) => row.record_id))];
   const eventDates = rows.map((row) => row.event_date).filter(Boolean).sort();
   const historyEntries = historyDatabasesForRange(env, eventDates[0], eventDates.at(-1));
-  const existing = [], duplicateIds = new Set();
+  const existing = [], duplicateIds = /* @__PURE__ */ new Set();
   for (let index = 0; index < logicalIds.length; index += 50) {
     const ids = logicalIds.slice(index, index + 50);
     const placeholders = ids.map(() => "?").join(",");
@@ -481,18 +497,19 @@ async function existingMovementState(env, rows) {
     }
   }
   for (const row of existing) if (recordIds.includes(String(row.record_id))) duplicateIds.add(String(row.record_id));
-  const active = new Map();
+  const active = /* @__PURE__ */ new Map();
   for (const row of existing) {
     const key = cleanText(row.logical_id, 160) || cleanText(row.record_id, 160);
     if (key && newerMovement(row, active.get(key))) active.set(key, row);
   }
   return { active, duplicateIds };
 }
-
+__name(existingMovementState, "existingMovementState");
 async function writeStockMovements(request, env, requestId) {
   let payload;
-  try { payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES); }
-  catch (error) {
+  try {
+    payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES);
+  } catch (error) {
     const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
     return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Payload transaksi stok tidak valid.", requestId);
   }
@@ -503,7 +520,7 @@ async function writeStockMovements(request, env, requestId) {
   try {
     const rows = input.map(normalizeMovement);
     const state = await existingMovementState(env, rows);
-    const accepted = [], balanceDeltas = new Map();
+    const accepted = [], balanceDeltas = /* @__PURE__ */ new Map();
     rows.sort((a, b) => a.version - b.version || a.created_at.localeCompare(b.created_at));
     for (const row of rows) {
       if (state.duplicateIds.has(row.record_id)) continue;
@@ -512,7 +529,7 @@ async function writeStockMovements(request, env, requestId) {
       const previous = state.active.get(logicalId);
       if (newerMovement(row, previous)) {
         const delta = signedMovement(row) - (previous ? signedMovement(previous) : 0);
-        const key = `${row.outlet_code}\u001f${row.location_code}\u001f${row.item_code}`;
+        const key = `${row.outlet_code}${row.location_code}${row.item_code}`;
         const current = balanceDeltas.get(key) || { row, delta: 0 };
         current.row = row;
         current.delta += delta;
@@ -520,10 +537,10 @@ async function writeStockMovements(request, env, requestId) {
         state.active.set(logicalId, row);
       }
     }
-    const statements = accepted.map((row) => movementInsertStatement(env.OPERATIONS_DB, row));
+    const statements2 = accepted.map((row) => movementInsertStatement(env.OPERATIONS_DB, row));
     for (const { row, delta } of balanceDeltas.values()) {
-      if (Math.abs(delta) < 0.000000001) continue;
-      statements.push(env.OPERATIONS_DB.prepare(
+      if (Math.abs(delta) < 1e-9) continue;
+      statements2.push(env.OPERATIONS_DB.prepare(
         `INSERT INTO stock_balances(outlet_code, location_code, item_code, item_name, current_qty, unit, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(outlet_code, location_code, item_code) DO UPDATE SET
@@ -532,7 +549,7 @@ async function writeStockMovements(request, env, requestId) {
            unit = excluded.unit, updated_at = excluded.updated_at`
       ).bind(row.outlet_code, row.location_code, row.item_code, row.item_name, delta, row.unit, row.created_at));
     }
-    const batchResults = statements.length ? await env.OPERATIONS_DB.batch(statements) : [];
+    const batchResults = statements2.length ? await env.OPERATIONS_DB.batch(statements2) : [];
     const written = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
     console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: accepted.length, written, requestId }));
     return responseJson({ ok: true, received: rows.length, accepted: accepted.length, duplicates: rows.length - accepted.length, written, requestId });
@@ -542,10 +559,10 @@ async function writeStockMovements(request, env, requestId) {
     return apiError(400, "STOCK_MOVEMENT_WRITE_FAILED", message, requestId);
   }
 }
-
+__name(writeStockMovements, "writeStockMovements");
 function normalizeTransferEvent(row) {
-  const source = row?.json && typeof row.json === "object" ? row.json : (row || {});
-  const numberOrNull = (value) => value === null || value === undefined || value === "" ? null : Number(value);
+  const source = row?.json && typeof row.json === "object" ? row.json : row || {};
+  const numberOrNull = /* @__PURE__ */ __name((value) => value === null || value === void 0 || value === "" ? null : Number(value), "numberOrNull");
   return {
     event_id: requiredText(source.event_id ?? source.eventId ?? row?.insertId, "event_id", 160),
     transfer_id: requiredText(source.transfer_id ?? source.transferId, "transfer_id", 160),
@@ -558,8 +575,9 @@ function normalizeTransferEvent(row) {
     category: cleanText(source.category, 100) || null,
     item_name: cleanText(source.item_name ?? source.itemName, 180) || null,
     unit: cleanText(source.unit, 40) || null,
-    qty: numberOrNull(source.qty), received_qty: numberOrNull(source.received_qty ?? source.receivedQty),
-    note: cleanText(source.note, 1000) || null,
+    qty: numberOrNull(source.qty),
+    received_qty: numberOrNull(source.received_qty ?? source.receivedQty),
+    note: cleanText(source.note, 1e3) || null,
     expiry_date: isoDate(source.expiry_date ?? source.expiryDate) || null,
     delivery_date: isoDate(source.delivery_date ?? source.deliveryDate) || null,
     created_by: cleanText(source.created_by ?? source.createdBy, 180) || null,
@@ -574,39 +592,45 @@ function normalizeTransferEvent(row) {
     rejected_by: cleanText(source.rejected_by ?? source.rejectedBy, 180) || null,
     rejected_by_name: cleanText(source.rejected_by_name ?? source.rejectedByName, 180) || null,
     rejected_at: source.rejected_at ?? source.rejectedAt ? isoTimestamp(source.rejected_at ?? source.rejectedAt) : null,
-    rejection_reason: cleanText(source.rejection_reason ?? source.rejectionReason, 1000) || null,
+    rejection_reason: cleanText(source.rejection_reason ?? source.rejectionReason, 1e3) || null,
     receipt_no: cleanText(source.receipt_no ?? source.receiptNo, 160) || null,
-    photo_file_ids: cleanText(source.photo_file_ids ?? source.photoFileIds, 2000) || null,
+    photo_file_ids: cleanText(source.photo_file_ids ?? source.photoFileIds, 2e3) || null,
     photo_count: Math.max(0, Number.parseInt(String(source.photo_count ?? source.photoCount ?? 0), 10) || 0),
-    photo_data_json: cleanText(source.photo_data_json ?? source.photoDataJson, 1000000) || null,
+    photo_data_json: cleanText(source.photo_data_json ?? source.photoDataJson, 1e6) || null
   };
 }
-
+__name(normalizeTransferEvent, "normalizeTransferEvent");
 async function writeTransferEvents(request, env, requestId) {
   let payload;
-  try { payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES); }
-  catch (error) { return apiError(400, "INVALID_PAYLOAD", "Payload transfer tidak valid.", requestId); }
+  try {
+    payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES);
+  } catch (error) {
+    return apiError(400, "INVALID_PAYLOAD", "Payload transfer tidak valid.", requestId);
+  }
   const input = Array.isArray(payload?.rows) ? payload.rows : null;
   if (!input || input.length === 0 || input.length > 500) return apiError(400, "INVALID_BATCH", "Batch transfer harus berisi 1 sampai 500 baris.", requestId);
   try {
-    const columns = ["event_id","transfer_id","status","from_outlet","from_location","to_outlet","to_location","item_code","category","item_name","unit","qty","received_qty","note","expiry_date","delivery_date","created_by","created_by_name","created_at","accepted_by","accepted_by_name","accepted_at","received_at","storage_entered_at","product_temperature","rejected_by","rejected_by_name","rejected_at","rejection_reason","receipt_no","photo_file_ids","photo_count","photo_data_json"];
-    const statements = input.map((raw) => {
+    const columns = ["event_id", "transfer_id", "status", "from_outlet", "from_location", "to_outlet", "to_location", "item_code", "category", "item_name", "unit", "qty", "received_qty", "note", "expiry_date", "delivery_date", "created_by", "created_by_name", "created_at", "accepted_by", "accepted_by_name", "accepted_at", "received_at", "storage_entered_at", "product_temperature", "rejected_by", "rejected_by_name", "rejected_at", "rejection_reason", "receipt_no", "photo_file_ids", "photo_count", "photo_data_json"];
+    const statements2 = input.map((raw) => {
       const row = normalizeTransferEvent(raw);
       return env.OPERATIONS_DB.prepare(
         `INSERT INTO stock_transfer_events(${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")}) ON CONFLICT(event_id) DO NOTHING`
       ).bind(...columns.map((column) => row[column]));
     });
-    const written = await runStatementBatches(env.OPERATIONS_DB, statements);
+    const written = await runStatementBatches(env.OPERATIONS_DB, statements2);
     return responseJson({ ok: true, received: input.length, written, requestId });
   } catch (error) {
     return apiError(400, "TRANSFER_WRITE_FAILED", error instanceof Error ? error.message : String(error), requestId);
   }
 }
-
+__name(writeTransferEvents, "writeTransferEvents");
 async function convertItemUnit(request, env, requestId) {
   let payload;
-  try { payload = await readJsonWithLimit(request, 100000); }
-  catch (error) { return apiError(400, "INVALID_PAYLOAD", "Payload konversi unit tidak valid.", requestId); }
+  try {
+    payload = await readJsonWithLimit(request, 1e5);
+  } catch (error) {
+    return apiError(400, "INVALID_PAYLOAD", "Payload konversi unit tidak valid.", requestId);
+  }
   try {
     const itemCode = requiredText(payload.itemCode, "item_code", 80).toUpperCase();
     const oldUnit = requiredText(payload.oldUnit, "old_unit", 40).toUpperCase();
@@ -617,7 +641,7 @@ async function convertItemUnit(request, env, requestId) {
     for (const entry of historyDatabaseEntries(env)) {
       historyResults.push(...await entry.database.batch([
         entry.database.prepare("UPDATE stock_movements_history SET quantity = quantity * ?, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, newUnit, itemCode, oldUnit),
-        entry.database.prepare("UPDATE stock_lot_allocations_history SET quantity = quantity * ?, unit = ? WHERE UPPER(unit) = ? AND movement_id IN (SELECT record_id FROM stock_movements_history WHERE item_code = ?)").bind(factor, newUnit, oldUnit, itemCode),
+        entry.database.prepare("UPDATE stock_lot_allocations_history SET quantity = quantity * ?, unit = ? WHERE UPPER(unit) = ? AND movement_id IN (SELECT record_id FROM stock_movements_history WHERE item_code = ?)").bind(factor, newUnit, oldUnit, itemCode)
       ]));
     }
     const operationResults = await env.OPERATIONS_DB.batch([
@@ -625,26 +649,24 @@ async function convertItemUnit(request, env, requestId) {
       env.OPERATIONS_DB.prepare("UPDATE stock_balances SET current_qty = current_qty * ?, unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(COALESCE(unit, '')) = ?").bind(factor, newUnit, itemCode, oldUnit),
       env.OPERATIONS_DB.prepare("UPDATE stock_lots SET original_qty = original_qty * ?, current_qty = current_qty * ?, unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, newUnit, itemCode, oldUnit),
       env.OPERATIONS_DB.prepare("UPDATE stock_transfer_lines SET requested_qty = requested_qty * ?, received_qty = CASE WHEN received_qty IS NULL THEN NULL ELSE received_qty * ? END, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, newUnit, itemCode, oldUnit),
-      env.OPERATIONS_DB.prepare("UPDATE stock_transfer_events SET qty = CASE WHEN qty IS NULL THEN NULL ELSE qty * ? END, received_qty = CASE WHEN received_qty IS NULL THEN NULL ELSE received_qty * ? END, unit = ? WHERE item_code = ? AND UPPER(COALESCE(unit, '')) = ?").bind(factor, factor, newUnit, itemCode, oldUnit),
+      env.OPERATIONS_DB.prepare("UPDATE stock_transfer_events SET qty = CASE WHEN qty IS NULL THEN NULL ELSE qty * ? END, received_qty = CASE WHEN received_qty IS NULL THEN NULL ELSE received_qty * ? END, unit = ? WHERE item_code = ? AND UPPER(COALESCE(unit, '')) = ?").bind(factor, factor, newUnit, itemCode, oldUnit)
     ]);
     const masterResult = await env.MASTER_DB.prepare("UPDATE stock_items SET default_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(default_unit) = ?").bind(newUnit, itemCode, oldUnit).run();
-    const changes = (results) => results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
+    const changes = /* @__PURE__ */ __name((results) => results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0), "changes");
     return responseJson({ ok: true, itemCode, oldUnit, newUnit, historyRows: changes(historyResults), operationRows: changes(operationResults), masterRows: Number(masterResult.meta?.changes || 0), requestId });
   } catch (error) {
     return apiError(400, "UNIT_CONVERSION_FAILED", error instanceof Error ? error.message : String(error), requestId);
   }
 }
-
+__name(convertItemUnit, "convertItemUnit");
 async function listTransferEvents(url, env, requestId) {
   const transferId = cleanText(url.searchParams.get("transfer_id"), 160);
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   if (!transferId && !outlet) return apiError(400, "INVALID_FILTER", "transfer_id atau outlet wajib diisi.", requestId);
-  const result = transferId
-    ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all()
-    : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
+  const result = transferId ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all() : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
   return responseJson({ ok: true, data: result.results, requestId });
 }
-
+__name(listTransferEvents, "listTransferEvents");
 async function migrateStockMovements(request, env, requestId) {
   let payload;
   try {
@@ -657,20 +679,16 @@ async function migrateStockMovements(request, env, requestId) {
   if (!rows || rows.length === 0 || rows.length > MAX_STOCK_MOVEMENT_BATCH_ROWS) {
     return apiError(400, "INVALID_BATCH", "Batch riwayat stok harus berisi 1 sampai 500 baris.", requestId);
   }
-
   try {
-    const groupedStatements = new Map();
+    const groupedStatements = /* @__PURE__ */ new Map();
     rows.forEach((row) => {
       const quantity = Number(row.quantity);
       const version = Math.max(1, Number.parseInt(String(row.version || 1), 10) || 1);
-      const sourceRow = row.sourceRow === null || row.sourceRow === undefined || row.sourceRow === ""
-        ? null
-        : Number.parseInt(String(row.sourceRow), 10);
+      const sourceRow = row.sourceRow === null || row.sourceRow === void 0 || row.sourceRow === "" ? null : Number.parseInt(String(row.sourceRow), 10);
       if (!Number.isFinite(quantity)) throw new Error("INVALID_QUANTITY");
       if (sourceRow !== null && !Number.isFinite(sourceRow)) throw new Error("INVALID_SOURCE_ROW");
       const eventDate = isoDate(row.eventDate);
       if (!eventDate || !eventDate.startsWith("2026-")) throw new Error("INVALID_HISTORY_YEAR");
-
       const target = historyDatabaseForDate(env, eventDate);
       const statement = target.database.prepare(
         `INSERT INTO stock_movements_history(
@@ -708,7 +726,7 @@ async function migrateStockMovements(request, env, requestId) {
         cleanText(row.direction, 10).toUpperCase() || "NONE",
         quantity,
         cleanText(row.movementType, 100) || "UNKNOWN",
-        cleanText(row.info, 1000) || null,
+        cleanText(row.info, 1e3) || null,
         eventDate,
         isoDate(row.arrivalDate) || null,
         isoDate(row.productionDate) || null,
@@ -742,7 +760,7 @@ async function migrateStockMovements(request, env, requestId) {
       partitions,
       batchId: cleanText(payload.batchId, 120),
       checkpoint: payload.checkpoint || null,
-      requestId,
+      requestId
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -750,7 +768,7 @@ async function migrateStockMovements(request, env, requestId) {
     return apiError(400, "STOCK_MOVEMENT_MIGRATION_FAILED", message, requestId);
   }
 }
-
+__name(migrateStockMovements, "migrateStockMovements");
 async function stockMovementMigrationStatus(env, requestId) {
   const sql = `SELECT COUNT(*) AS row_count, COUNT(DISTINCT record_id) AS record_count,
                       MIN(event_date) AS min_date, MAX(event_date) AS max_date,
@@ -758,7 +776,7 @@ async function stockMovementMigrationStatus(env, requestId) {
                  FROM stock_movements_history`;
   const partitions = [];
   for (const entry of historyDatabaseEntries(env)) {
-    partitions.push({ key: entry.key, ...(await entry.database.prepare(sql).first() || {}) });
+    partitions.push({ key: entry.key, ...await entry.database.prepare(sql).first() || {} });
   }
   const rowCount = partitions.reduce((sum, row) => sum + Number(row.row_count || 0), 0);
   const recordCount = partitions.reduce((sum, row) => sum + Number(row.record_count || 0), 0);
@@ -769,30 +787,30 @@ async function stockMovementMigrationStatus(env, requestId) {
       row_count: rowCount,
       record_count: recordCount,
       min_date: present.map((row) => row.min_date).filter(Boolean).sort()[0] || null,
-      max_date: present.map((row) => row.max_date).filter(Boolean).sort().at(-1) || null,
+      max_date: present.map((row) => row.max_date).filter(Boolean).sort().at(-1) || null
     },
     partitions,
-    requestId,
+    requestId
   });
 }
-
+__name(stockMovementMigrationStatus, "stockMovementMigrationStatus");
 async function databaseHealth(database, role) {
   const [migration, objects] = await database.batch([
     database.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1"),
-    database.prepare("SELECT COUNT(*) AS object_count FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"),
+    database.prepare("SELECT COUNT(*) AS object_count FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'")
   ]);
   return {
     role,
     ready: true,
     schemaVersion: migration.results[0]?.version || null,
-    schemaObjects: Number(objects.results[0]?.object_count || 0),
+    schemaObjects: Number(objects.results[0]?.object_count || 0)
   };
 }
-
+__name(databaseHealth, "databaseHealth");
 async function health(env, requestId) {
   const databases = [
     await databaseHealth(env.MASTER_DB, "master"),
-    await databaseHealth(env.OPERATIONS_DB, "operations"),
+    await databaseHealth(env.OPERATIONS_DB, "operations")
   ];
   for (const entry of historyDatabaseEntries(env)) {
     databases.push(await databaseHealth(entry.database, `history-${entry.key}`));
@@ -805,10 +823,10 @@ async function health(env, requestId) {
     databases,
     storage: { r2: Boolean(env.FILES), public: false },
     backgroundQueue: Boolean(env.JOBS_QUEUE),
-    requestId,
+    requestId
   });
 }
-
+__name(health, "health");
 async function schemaMeta(env, requestId) {
   const query = "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name <> '_cf_KV' ORDER BY type, name";
   const master = await env.MASTER_DB.prepare(query).all();
@@ -822,14 +840,14 @@ async function schemaMeta(env, requestId) {
     databases: {
       master: master.results,
       operations: operations.results,
-      histories,
+      histories
     },
-    requestId,
+    requestId
   });
 }
-
+__name(schemaMeta, "schemaMeta");
 async function listStockItems(url, env, requestId) {
-  const limit = positiveInt(url.searchParams.get("limit"), 100, 5000);
+  const limit = positiveInt(url.searchParams.get("limit"), 100);
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
   const includeInactive = url.searchParams.get("include_inactive") === "1";
   const result = await env.MASTER_DB.prepare(
@@ -844,42 +862,32 @@ async function listStockItems(url, env, requestId) {
     ok: true,
     data: rows,
     nextCursor: result.results.length > limit ? rows.at(-1)?.item_code || null : null,
-    requestId,
+    requestId
   });
 }
-
+__name(listStockItems, "listStockItems");
 async function listBalances(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
-  const itemCode = cleanText(url.searchParams.get("item_code"), 80).toUpperCase();
-  const itemName = cleanText(url.searchParams.get("item_name"), 180);
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
-  // A busy outlet can hold more than 4,000 item balances. Let Apps Script
-  // fetch one complete outlet/location in a single Worker request instead of
-  // opening 8-20 sequential requests that are vulnerable to transient D1
-  // errors while migration writes are still running.
-  const limit = positiveInt(url.searchParams.get("limit"), 100, 5000);
+  const limit = positiveInt(url.searchParams.get("limit"), 100);
   if (!outlet || !location) return apiError(400, "INVALID_SCOPE", "Outlet dan lokasi wajib diisi.", requestId);
-  const conditions = ["outlet_code = ?", "location_code = ?", "item_code > ?"];
-  const bindings = [outlet, location, cursor];
-  if (itemCode) { conditions.push("item_code = ?"); bindings.push(itemCode); }
-  if (itemName) { conditions.push("item_name = ? COLLATE NOCASE"); bindings.push(itemName); }
   const result = await env.OPERATIONS_DB.prepare(
     `SELECT item_code, item_name, current_qty, unit, updated_at
        FROM stock_balances
-      WHERE ${conditions.join(" AND ")}
+      WHERE outlet_code = ? AND location_code = ? AND item_code > ?
       ORDER BY item_code
       LIMIT ?`
-  ).bind(...bindings, limit + 1).all();
+  ).bind(outlet, location, cursor, limit + 1).all();
   const rows = result.results.slice(0, limit);
   return responseJson({
     ok: true,
     data: rows,
     nextCursor: result.results.length > limit ? rows.at(-1)?.item_code || null : null,
-    requestId,
+    requestId
   });
 }
-
+__name(listBalances, "listBalances");
 async function listStockCard(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
@@ -899,23 +907,22 @@ async function listStockCard(url, env, requestId) {
                 WHERE outlet_code = ? AND location_code = ? AND item_code = ?
                   AND event_date BETWEEN ? AND ? AND created_at < ?
                 ORDER BY created_at DESC, record_id DESC LIMIT ?`;
-  const bindings = [outlet, location, itemCode, from, to, beforeCreatedAt, Math.min(1000, limit * 4 + 20)];
+  const bindings = [outlet, location, itemCode, from, to, beforeCreatedAt, Math.min(1e3, limit * 4 + 20)];
   const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
   const history = await queryHistoryDatabases(
     historyDatabasesForRange(env, from, to),
     (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
   );
-  const merged = activeMovements([...operations.results, ...history])
-    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)));
+  const merged = activeMovements([...operations.results, ...history]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)));
   const rows = merged.slice(0, limit);
   return responseJson({
     ok: true,
     data: rows,
     nextCursor: merged.length > limit ? rows.at(-1)?.created_at || null : null,
-    requestId,
+    requestId
   });
 }
-
+__name(listStockCard, "listStockCard");
 async function listMovements(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
@@ -929,9 +936,14 @@ async function listMovements(url, env, requestId) {
   const from = isoDate(url.searchParams.get("from")) || "0000-01-01";
   const to = isoDate(url.searchParams.get("to")) || "9999-12-31";
   const cursor = cleanText(url.searchParams.get("cursor"), 500);
-  const limit = positiveInt(url.searchParams.get("limit"), 500, 5000);
+  const limit = positiveInt(url.searchParams.get("limit"), 500, 5e3);
   const conditions = ["event_date BETWEEN ? AND ?"], bindings = [from, to];
-  const add = (condition, value) => { if (value) { conditions.push(condition); bindings.push(value); } };
+  const add = /* @__PURE__ */ __name((condition, value) => {
+    if (value) {
+      conditions.push(condition);
+      bindings.push(value);
+    }
+  }, "add");
   add("outlet_code = ?", outlet);
   add("location_code = ?", location);
   add("item_code = ?", itemCode);
@@ -950,24 +962,22 @@ async function listMovements(url, env, requestId) {
   if (!outlet) return apiError(400, "INVALID_FILTER", "Outlet wajib diisi.", requestId);
   const sql = `SELECT * FROM __TABLE__ WHERE ${conditions.join(" AND ")}
                ORDER BY event_date DESC, created_at DESC, record_id DESC LIMIT ?`;
-  bindings.push(Math.min(10000, limit * 4 + 100));
+  bindings.push(Math.min(1e4, limit * 4 + 100));
   const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
   const history = await queryHistoryDatabases(
     historyDatabasesForRange(env, from, to),
     (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
   );
-  const rows = activeMovements([...operations.results, ...history])
-    .sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)))
-    .slice(0, limit);
+  const rows = activeMovements([...operations.results, ...history]).sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id))).slice(0, limit);
   const last = rows.at(-1);
   return responseJson({
     ok: true,
     data: rows,
     nextCursor: rows.length === limit && last ? `${last.event_date}|${last.created_at}|${last.record_id}` : null,
-    requestId,
+    requestId
   });
 }
-
+__name(listMovements, "listMovements");
 async function mockRecall(url, env, requestId) {
   const saleLineId = cleanText(url.searchParams.get("sale_line_id"), 100);
   const billNumber = cleanText(url.searchParams.get("bill_number"), 100);
@@ -975,18 +985,16 @@ async function mockRecall(url, env, requestId) {
   if (!saleLineId && !(billNumber && outlet)) {
     return apiError(400, "INVALID_TRACE_KEY", "Isi sale_line_id atau kombinasi outlet dan bill_number.", requestId);
   }
-  const lines = saleLineId
-    ? await env.OPERATIONS_DB.prepare(
-        `SELECT l.*, d.outlet_code, d.sale_date, d.bill_number
+  const lines = saleLineId ? await env.OPERATIONS_DB.prepare(
+    `SELECT l.*, d.outlet_code, d.sale_date, d.bill_number
            FROM sales_lines l JOIN sales_documents d ON d.document_id = l.document_id
           WHERE l.sale_line_id = ? LIMIT 50`
-      ).bind(saleLineId).all()
-    : await env.OPERATIONS_DB.prepare(
-        `SELECT l.*, d.outlet_code, d.sale_date, d.bill_number
+  ).bind(saleLineId).all() : await env.OPERATIONS_DB.prepare(
+    `SELECT l.*, d.outlet_code, d.sale_date, d.bill_number
            FROM sales_lines l JOIN sales_documents d ON d.document_id = l.document_id
           WHERE d.outlet_code = ? AND d.bill_number = ?
           ORDER BY l.source_row LIMIT 200`
-      ).bind(outlet, billNumber).all();
+  ).bind(outlet, billNumber).all();
   const roots = lines.results.map((row) => row.sale_line_id);
   if (roots.length === 0) return responseJson({ ok: true, sales: [], trace: [], requestId });
   const placeholders = roots.map(() => "?").join(",");
@@ -1000,7 +1008,7 @@ async function mockRecall(url, env, requestId) {
   ).bind(...roots).all();
   return responseJson({ ok: true, sales: lines.results, trace: trace.results, requestId });
 }
-
+__name(mockRecall, "mockRecall");
 async function listTransfers(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const status = cleanText(url.searchParams.get("status"), 30).toUpperCase();
@@ -1023,24 +1031,314 @@ async function listTransfers(url, env, requestId) {
     ok: true,
     data: rows,
     nextCursor: result.results.length > limit ? rows.at(-1)?.created_at || null : null,
-    requestId,
+    requestId
   });
 }
+__name(listTransfers, "listTransfers");
+
+/* ========================================================================
+ * BERITA ACARA / BA - CLOUDFLARE D1 + R2
+ *
+ * Metadata -> OPERATIONS_DB.ba_submissions
+ * data_json -> R2 binding FILES
+ * ======================================================================== */
+var MAX_BA_MIGRATION_BYTES = 10 * 1024 * 1024;
+var MAX_BA_MIGRATION_ROWS = 50;
+var MAX_BA_OFFLOAD_ROWS = 25;
+
+function baNullableText(value, maxLength = 2e3) {
+  if (value === null || value === void 0 || value === "") return null;
+  return String(value).slice(0, maxLength);
+}
+__name(baNullableText, "baNullableText");
+
+function baRequiredText(value, fieldName, maxLength = 180) {
+  const result = String(value ?? "").trim().slice(0, maxLength);
+  if (!result) throw new Error(`INVALID_${String(fieldName).toUpperCase()}`);
+  return result;
+}
+__name(baRequiredText, "baRequiredText");
+
+function baTimestampNumber(value) {
+  const result = Number(value);
+  if (!Number.isFinite(result) || result <= 0) throw new Error("INVALID_TIMESTAMP");
+  return result;
+}
+__name(baTimestampNumber, "baTimestampNumber");
+
+function baObjectKey(rowId) {
+  const safe = String(rowId || "").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 180);
+  if (!safe) throw new Error("INVALID_ROW_ID");
+  return `berita-acara/submissions/${safe}.json`;
+}
+__name(baObjectKey, "baObjectKey");
+
+async function baStorePayloadInR2(env, rowId, dataJson) {
+  if (!env.FILES) throw new Error("R2_FILES_BINDING_NOT_AVAILABLE");
+  if (dataJson === null || dataJson === void 0 || dataJson === "") return null;
+  const objectKey = baObjectKey(rowId);
+  await env.FILES.put(objectKey, String(dataJson), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+    customMetadata: { type: "berita-acara-data-json", rowId: String(rowId).slice(0, 180) }
+  });
+  return objectKey;
+}
+__name(baStorePayloadInR2, "baStorePayloadInR2");
+
+async function baReadPayloadFromR2(env, objectKey) {
+  if (!objectKey || !env.FILES) return null;
+  const object = await env.FILES.get(objectKey);
+  return object ? await object.text() : null;
+}
+__name(baReadPayloadFromR2, "baReadPayloadFromR2");
+
+function baInsertStatement(database, row, objectKey) {
+  const rowId = baRequiredText(row.row_id ?? row.rowId, "row_id", 200);
+  const submissionId = baRequiredText(row.submission_id ?? row.submissionId, "submission_id", 160);
+  const timestamp = baTimestampNumber(row.timestamp);
+
+  return database.prepare(
+    `INSERT INTO ba_submissions (
+       row_id, submission_id, timestamp, outlet, name, nik, ba_type,
+       data_json, data_object_key, info,
+       am_approved_date, am_approved_by, am_rejected_date, am_rejected_by, am_reject_reason,
+       fnb_approved_date, fnb_approved_by, fnb_rejected_date, fnb_rejected_by, fnb_reject_reason,
+       migrated_from
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(row_id) DO UPDATE SET
+       submission_id = excluded.submission_id,
+       timestamp = excluded.timestamp,
+       outlet = excluded.outlet,
+       name = excluded.name,
+       nik = excluded.nik,
+       ba_type = excluded.ba_type,
+       data_json = NULL,
+       data_object_key = excluded.data_object_key,
+       info = excluded.info,
+       am_approved_date = excluded.am_approved_date,
+       am_approved_by = excluded.am_approved_by,
+       am_rejected_date = excluded.am_rejected_date,
+       am_rejected_by = excluded.am_rejected_by,
+       am_reject_reason = excluded.am_reject_reason,
+       fnb_approved_date = excluded.fnb_approved_date,
+       fnb_approved_by = excluded.fnb_approved_by,
+       fnb_rejected_date = excluded.fnb_rejected_date,
+       fnb_rejected_by = excluded.fnb_rejected_by,
+       fnb_reject_reason = excluded.fnb_reject_reason,
+       migrated_from = excluded.migrated_from`
+  ).bind(
+    rowId, submissionId, timestamp,
+    baNullableText(row.outlet, 80),
+    baNullableText(row.name, 180),
+    baNullableText(row.nik, 80),
+    baNullableText(row.ba_type ?? row.baType, 180),
+    baNullableText(objectKey, 500),
+    baNullableText(row.info, 2e3),
+    baNullableText(row.am_approved_date, 80),
+    baNullableText(row.am_approved_by, 180),
+    baNullableText(row.am_rejected_date, 80),
+    baNullableText(row.am_rejected_by, 180),
+    baNullableText(row.am_reject_reason, 4e3),
+    baNullableText(row.fnb_approved_date, 80),
+    baNullableText(row.fnb_approved_by, 180),
+    baNullableText(row.fnb_rejected_date, 80),
+    baNullableText(row.fnb_rejected_by, 180),
+    baNullableText(row.fnb_reject_reason, 4e3),
+    baNullableText(row.migrated_from, 40) || "BIGQUERY"
+  );
+}
+__name(baInsertStatement, "baInsertStatement");
+
+async function migrateBeritaAcaraSubmissions(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_BA_MIGRATION_BYTES);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
+    return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Payload migrasi Berita Acara tidak valid.", requestId);
+  }
+
+  const rows = Array.isArray(payload?.rows) ? payload.rows : null;
+  if (!rows || rows.length < 1 || rows.length > MAX_BA_MIGRATION_ROWS) {
+    return apiError(400, "INVALID_BA_BATCH", "Batch Berita Acara harus berisi 1 sampai 50 baris.", requestId);
+  }
+
+  try {
+    const statements2 = [];
+    for (const raw of rows) {
+      const row = raw || {};
+      const rowId = baRequiredText(row.row_id ?? row.rowId, "row_id", 200);
+      const objectKey = await baStorePayloadInR2(env, rowId, row.data_json);
+      statements2.push(baInsertStatement(env.OPERATIONS_DB, row, objectKey));
+    }
+    const written = await runStatementBatches(env.OPERATIONS_DB, statements2);
+    return responseJson({
+      ok: true,
+      received: rows.length,
+      written,
+      storage: "D1_METADATA_R2_PAYLOAD",
+      batchId: cleanText(payload.batchId, 120),
+      checkpoint: payload.checkpoint || null,
+      requestId
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ event: "ba_migration_failed", message, requestId }));
+    return apiError(400, "BA_MIGRATION_FAILED", message, requestId);
+  }
+}
+__name(migrateBeritaAcaraSubmissions, "migrateBeritaAcaraSubmissions");
+
+async function offloadExistingBeritaAcaraPayloads(request, env, requestId) {
+  let payload = {};
+  try {
+    payload = await readJsonWithLimit(request, 1e5);
+  } catch (error) {
+    if ((error instanceof Error ? error.message : "") !== "EMPTY_BODY") {
+      return apiError(400, "INVALID_PAYLOAD", "Payload offload BA tidak valid.", requestId);
+    }
+  }
+
+  const requested = Number.parseInt(String(payload?.limit || MAX_BA_OFFLOAD_ROWS), 10);
+  const limit = Math.min(MAX_BA_OFFLOAD_ROWS, Math.max(1, Number.isFinite(requested) ? requested : MAX_BA_OFFLOAD_ROWS));
+
+  try {
+    const result = await env.OPERATIONS_DB.prepare(
+      `SELECT row_id, data_json
+         FROM ba_submissions
+        WHERE data_object_key IS NULL
+          AND data_json IS NOT NULL
+          AND data_json <> ''
+        ORDER BY row_id
+        LIMIT ?`
+    ).bind(limit).all();
+
+    const rows = result.results || [];
+    let offloaded = 0;
+
+    for (const row of rows) {
+      const objectKey = await baStorePayloadInR2(env, row.row_id, row.data_json);
+      await env.OPERATIONS_DB.prepare(
+        `UPDATE ba_submissions
+            SET data_object_key = ?, data_json = NULL
+          WHERE row_id = ?`
+      ).bind(objectKey, row.row_id).run();
+      offloaded += 1;
+    }
+
+    return responseJson({
+      ok: true,
+      selected: rows.length,
+      offloaded,
+      done: rows.length < limit,
+      requestId
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ event: "ba_offload_existing_failed", message, requestId }));
+    return apiError(400, "BA_OFFLOAD_FAILED", message, requestId);
+  }
+}
+__name(offloadExistingBeritaAcaraPayloads, "offloadExistingBeritaAcaraPayloads");
+
+async function beritaAcaraMigrationStatus(env, requestId) {
+  const stats = await env.OPERATIONS_DB.prepare(
+    `SELECT
+       COUNT(*) AS row_count,
+       COUNT(DISTINCT submission_id) AS submission_count,
+       MIN(timestamp) AS min_timestamp,
+       MAX(timestamp) AS max_timestamp
+     FROM ba_submissions`
+  ).first();
+
+  return responseJson({
+    ok: true,
+    stats: {
+      row_count: Number(stats?.row_count || 0),
+      submission_count: Number(stats?.submission_count || 0),
+      min_timestamp: stats?.min_timestamp ?? null,
+      max_timestamp: stats?.max_timestamp ?? null
+    },
+    requestId
+  });
+}
+__name(beritaAcaraMigrationStatus, "beritaAcaraMigrationStatus");
+
+async function listBeritaAcaraSubmissions(url, env, requestId) {
+  const outlet = cleanText(url.searchParams.get("outlet"), 80);
+  const limit = positiveInt(url.searchParams.get("limit"), 300, 3e3);
+  const beforeRaw = url.searchParams.get("before");
+  const before = beforeRaw ? Number(beforeRaw) : Number.MAX_SAFE_INTEGER;
+  if (!Number.isFinite(before)) return apiError(400, "INVALID_CURSOR", "Cursor BA tidak valid.", requestId);
+
+  let sql = `
+    SELECT row_id, submission_id, timestamp, outlet, name, nik, ba_type, info,
+           data_object_key,
+           am_approved_date, am_approved_by, am_rejected_date, am_rejected_by, am_reject_reason,
+           fnb_approved_date, fnb_approved_by, fnb_rejected_date, fnb_rejected_by, fnb_reject_reason,
+           migrated_from, created_at
+      FROM v_ba_latest_submissions
+     WHERE timestamp < ?`;
+  const bindings = [before];
+  if (outlet) {
+    sql += " AND outlet = ?";
+    bindings.push(outlet);
+  }
+  sql += " ORDER BY timestamp DESC, row_id DESC LIMIT ?";
+  bindings.push(limit + 1);
+
+  const result = await env.OPERATIONS_DB.prepare(sql).bind(...bindings).all();
+  const data = (result.results || []).slice(0, limit);
+  const last = data.at(-1);
+  return responseJson({
+    ok: true,
+    data,
+    nextCursor: (result.results || []).length > limit && last ? Number(last.timestamp) : null,
+    requestId
+  });
+}
+__name(listBeritaAcaraSubmissions, "listBeritaAcaraSubmissions");
+
+async function getBeritaAcaraSubmission(url, env, requestId) {
+  const submissionId = cleanText(url.searchParams.get("submission_id"), 160);
+  if (!submissionId) return apiError(400, "INVALID_SUBMISSION_ID", "submission_id wajib diisi.", requestId);
+
+  const row = await env.OPERATIONS_DB.prepare(
+    `SELECT * FROM ba_submissions
+      WHERE submission_id = ?
+      ORDER BY timestamp DESC, row_id DESC
+      LIMIT 1`
+  ).bind(submissionId).first();
+
+  if (!row) return responseJson({ ok: true, data: null, requestId });
+
+  let dataJson = row.data_json || null;
+  if (!dataJson && row.data_object_key) dataJson = await baReadPayloadFromR2(env, row.data_object_key);
+
+  return responseJson({ ok: true, data: { ...row, data_json: dataJson }, requestId });
+}
+__name(getBeritaAcaraSubmission, "getBeritaAcaraSubmission");
+
+/* ===================== END BERITA ACARA ADD-ON ===================== */
 
 async function route(request, env) {
   const requestId = request.headers.get("cf-ray") || crypto.randomUUID();
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") return health(env, requestId);
-
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
-
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/stock-movements") return writeStockMovements(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/transfer-events") return writeTransferEvents(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/items/convert-unit") return convertItemUnit(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/migrate/stock-balances") return migrateStockBalances(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/migrate/stock-movements") return migrateStockMovements(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/migrate/submissions") return migrateBeritaAcaraSubmissions(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/submission") return migrateBeritaAcaraSubmissions(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/offload-existing") return offloadExistingBeritaAcaraPayloads(request, env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/ba/migrate/status") return beritaAcaraMigrationStatus(env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/ba/submissions") return listBeritaAcaraSubmissions(url, env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/ba/submission") return getBeritaAcaraSubmission(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
   if (url.pathname === "/v1/sync/status") return masterSyncStatus(env, requestId);
@@ -1054,8 +1352,8 @@ async function route(request, env) {
   if (url.pathname === "/v1/transfer-events") return listTransferEvents(url, env, requestId);
   return apiError(404, "NOT_FOUND", "Endpoint tidak ditemukan.", requestId);
 }
-
-export default {
+__name(route, "route");
+var index_default = {
   async fetch(request, env) {
     try {
       return await route(request, env);
@@ -1064,5 +1362,9 @@ export default {
       console.error(JSON.stringify({ event: "request_failed", requestId, message: error instanceof Error ? error.message : String(error) }));
       return apiError(500, "INTERNAL_ERROR", "Terjadi kesalahan pada layanan inventory.", requestId);
     }
-  },
+  }
 };
+export {
+  index_default as default
+};
+//# sourceMappingURL=index.js.map
