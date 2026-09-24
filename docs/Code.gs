@@ -16536,6 +16536,11 @@ const SALES_SHEET_TABS = {
   targets: ['outlet_code','year','month','target'],
   weekly_analysis: ['outlet_code','period_key','year','month','week','period_start','period_end','total_sales','analisa_mingguan','status','submitted_by','submitted_at','updated_at']
 };
+var SALES_SHEET_READ_CACHE = {};
+
+function salesSheetResetReadCache_() {
+  SALES_SHEET_READ_CACHE = {};
+}
 
 function salesSpreadsheetId_() {
   return String(PropertiesService.getScriptProperties().getProperty('SALES_ANALYSIS_SPREADSHEET_ID') || SHEET_ID || '').trim();
@@ -16565,12 +16570,13 @@ function salesSheetEnsure_(name) {
 }
 
 function salesSheetTable_(name) {
+  if (Object.prototype.hasOwnProperty.call(SALES_SHEET_READ_CACHE, name)) return SALES_SHEET_READ_CACHE[name];
   var sheet = salesSheetEnsure_(name);
   var lastRow = sheet.getLastRow();
   var lastColumn = sheet.getLastColumn();
   var values = lastRow ? sheet.getRange(1, 1, lastRow, lastColumn).getValues() : [];
   var headers = (values.shift() || []).map(function(value){ return String(value || '').trim().toLowerCase(); });
-  return {
+  var table = {
     sheet: sheet,
     headers: headers,
     values: values,
@@ -16580,6 +16586,8 @@ function salesSheetTable_(name) {
       return record;
     })
   };
+  SALES_SHEET_READ_CACHE[name] = table;
+  return table;
 }
 
 function salesSheetDateKey_(value) {
@@ -16618,6 +16626,7 @@ function salesSheetUpsertUnlocked_(name, keyFn, record) {
   var rowValues = salesSheetObjectRow_(table.headers, record);
   if (match) table.sheet.getRange(match.__rowNumber, 1, 1, table.headers.length).setValues([rowValues]);
   else table.sheet.getRange(table.sheet.getLastRow() + 1, 1, 1, table.headers.length).setValues([rowValues]);
+  delete SALES_SHEET_READ_CACHE[name];
 }
 
 function salesSheetRewriteUnlocked_(name, records) {
@@ -16628,6 +16637,7 @@ function salesSheetRewriteUnlocked_(name, records) {
     table.sheet.getRange(2, 1, records.length, table.headers.length)
       .setValues(records.map(function(record){ return salesSheetObjectRow_(table.headers, record); }));
   }
+  delete SALES_SHEET_READ_CACHE[name];
 }
 
 function salesSheetWithLock_(callback) {
@@ -16637,7 +16647,7 @@ function salesSheetWithLock_(callback) {
 }
 
 function bqIsAvailable_() {
-  try { return !!salesSheetEnsure_('daily_sales'); } catch (error) { Logger.log('Sales Analysis Sheet unavailable: ' + error.message); return false; }
+  try { return !!salesSheetTable_('daily_sales').sheet; } catch (error) { Logger.log('Sales Analysis Sheet unavailable: ' + error.message); return false; }
 }
 
 function bqFetchDailyRows_(outletList, startDate, endDate) {
@@ -17387,6 +17397,8 @@ function issueBiSpaceSession_(outletCode, outletName, role) {
 }
 
 return Object.freeze({
+  beginRequest: salesSheetResetReadCache_,
+  testDatabase: testSalesAnalysisDatabase,
   syncOutlets: syncOutlets_,
   issueSession: issueBiSpaceSession_,
   getBootstrap: getBootstrap,
@@ -17404,6 +17416,12 @@ return Object.freeze({
   deleteGlobalDailyAnalysisItem: deleteGlobalDailyAnalysisItem
 });
 }());
+
+// Fungsi global agar muncul di dropdown Run pada editor Apps Script.
+function testSalesAnalysisDatabase() {
+  SALES_ANALYSIS.beginRequest();
+  return SALES_ANALYSIS.testDatabase();
+}
 
 function salesAnalysisCanonicalOutletCode_(code) {
   code = String(code || '').trim().toUpperCase();
@@ -17438,6 +17456,7 @@ function salesAnalysisOutletDirectory_() {
 }
 
 function salesAnalysisContext_(token) {
+  SALES_ANALYSIS.beginRequest();
   var mainSession = requireSession_(token);
   var employee = findEmployee_(mainSession.nik);
   assertEmployeeActive_(employee);
