@@ -231,6 +231,7 @@ if (!/prefers-reduced-motion/.test(css)) failures.push('Dukungan reduced motion 
 if (!/:focus-visible/.test(css)) failures.push('Focus keyboard belum tersedia');
 
 const backend = await text('docs/Code.gs');
+if (!backend.includes("SALES_ANALYSIS_SPREADSHEET_ID: '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8'") || !backend.includes('const SHEET_ID  = CONFIG.SALES_ANALYSIS_SPREADSHEET_ID;')) failures.push('Spreadsheet ID Sales Analysis hilang atau tidak lagi menjadi fallback permanen');
 if (!backend.includes('mobileNotifications: getMobileNotifications')) failures.push('Endpoint mobileNotifications belum terdaftar');
 if (!backend.includes('function getMobileNotifications(token)')) failures.push('Feed notifikasi Android belum tersedia');
 if (!backend.includes('mobilePayload')) failures.push('Gateway JSON Android belum tersedia');
