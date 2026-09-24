@@ -3,7 +3,7 @@
 <head>
 <base target="_top">
 <meta charset="utf-8" />
-<title>Bakerzin · Sales Analysis · BigQuery Only</title>
+<title>Bakerzin · Sales Analysis</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <script src="config.js"></script>
 <script src="api-client.js?v=20260826-chat110"></script>
@@ -480,43 +480,7 @@
   <link rel="stylesheet" href="ui-navigation.css?v=20260912-boga-back1">
 </head>
 <body>
-<div id="analysisBoot"><div class="analysis-boot-card"><div class="analysis-boot-spin"></div><h2>Membuka Analisa Sales</h2><p>Memakai sesi BI-Space dan memuat data BigQuery outlet Anda...</p></div></div>
-
-<!-- ===== LOGIN ===== -->
-<div id="loginView" class="login-shell" style="display:none">
-  <div class="login-art">
-    <div class="brand">
-      <div class="mark">B</div>
-      <div>
-        <h1>Bakerzin</h1>
-        <div class="sub">Sales Analysis · Multi-Outlet</div>
-      </div>
-    </div>
-    <div class="headline">
-      <div class="kicker">⊟ Daily Operating Journal</div>
-      <h2>Catat. Analisa. <em>Tumbuh.</em></h2>
-      <p>Input sales harian, analisa mingguan setiap Minggu, ringkas bulanan di akhir periode. Satu jurnal terpusat untuk All outlet — terhubung ke Head Office secara real-time.</p>
-    </div>
-    <div class="footer-art">
-      <div>v1.0 · Internal Use Only</div>
-    </div>
-  </div>
-  <div class="login-form">
-    <div class="step">⊟ Step 01 · Authenticate</div>
-    <h3>Sign in to your outlet.</h3>
-    <p class="hint">Masukkan kode outlet</p>
-    <div class="form-row">
-      <label>Kode Outlet <span class="opt">— wajib</span></label>
-      <input id="loginOutlet" type="text" autocomplete="off" placeholder="BIXX" maxlength="6" autofocus />
-    </div>
-    <button class="submit" id="loginBtn">Masuk <span class="mono">→</span></button>
-    <div class="err" id="loginErr"></div>
-    <div class="meta" style="display:flex;gap:0">
-      <span>Crafted By Day & Nite Promise</span>
-      <span id="loginTime"></span>
-    </div>
-  </div>
-</div>
+<div id="analysisBoot"><div class="analysis-boot-card"><div class="analysis-boot-spin"></div><h2>Membuka Analisa Sales</h2><p>Memakai sesi BI-Space dan memuat database Google Sheets outlet Anda...</p></div></div>
 
 <!-- ===== APP ===== -->
 <div id="appView" class="app" style="display:none">
@@ -821,39 +785,6 @@ function showLoader(on){ document.getElementById('loader').classList.toggle('sho
 function toast(msg, err){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.toggle('err',!!err); t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2000); }
 function call(fn, ...args){ return new Promise((res,rej)=>google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](...args)); }
 
-/* LOGIN */
-function showLogin(){
-  document.body.classList.add('login-mode');
-  document.getElementById('loginView').style.display='grid';
-  document.getElementById('appView').style.display='none';
-  document.getElementById('loginTime').textContent = new Date().toLocaleString('id-ID', { timeZone:'Asia/Jakarta', dateStyle:'medium', timeStyle:'short' });
-  setTimeout(()=>{ const i=document.getElementById('loginOutlet'); if(i) i.focus(); }, 50);
-}
-document.getElementById('loginBtn').addEventListener('click', doLogin);
-document.getElementById('loginOutlet').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
-
-async function doLogin(){
-  const outlet = document.getElementById('loginOutlet').value.trim().toUpperCase();
-  const err = document.getElementById('loginErr');
-  const btn = document.getElementById('loginBtn');
-  err.classList.remove('show');
-  if(!outlet){ err.textContent='Kode outlet wajib diisi.'; err.classList.add('show'); return; }
-  btn.disabled=true; btn.textContent='Verifying…';
-  try {
-    const res = await call('login', outlet, '');
-    if(!res.ok){ err.textContent=res.error; err.classList.add('show'); btn.disabled=false; btn.innerHTML='Masuk <span class="mono">→</span>'; return; }
-    session.token = res.token;
-    session.outlet_code = res.outlet_code;
-    session.outlet_name = res.outlet_name;
-    session.role = res.role;
-    try { sessionStorage.setItem('bz_session', JSON.stringify(session)); } catch(e){}
-    enterApp();
-  } catch(e){
-    err.textContent = 'Gagal: ' + (e.message||e);
-    err.classList.add('show');
-    btn.disabled=false; btn.innerHTML='Masuk <span class="mono">→</span>';
-  }
-}
 document.getElementById('btnLogout').addEventListener('click', ()=>{
   location.href='index.html';
 });
@@ -965,8 +896,6 @@ document.getElementById('btnCopyDailyReport').addEventListener('click', async ev
 
 /* ENTER APP */
 function enterApp(){
-  document.body.classList.remove('login-mode');
-  document.getElementById('loginView').style.display='none';
   document.getElementById('appView').style.display='grid';
   document.getElementById('outletNameTop').textContent = session.outlet_name;
   document.getElementById('outletCodeTop').textContent = session.outlet_code;
@@ -1014,7 +943,7 @@ async function loadMonth(year, month, silent){
     ss.classList.remove('sync');
     const src = dash.dataSource ? (' · ' + dash.dataSource) : '';
     ss.textContent = dash.fromCache ? ('Sinkron · cache' + src) : ('Sinkron' + src);
-    ss.title = 'BigQuery-only mode: data dashboard dan penyimpanan tidak memakai Spreadsheet.';
+    ss.title = 'Dashboard dan penyimpanan Sales Analysis menggunakan database Google Sheets.';
   } catch(e){
     toast('Gagal memuat: '+(e.message||e), true);
     if(String(e.message||'').indexOf('SESSION')!==-1){ sessionStorage.removeItem('bz_session'); location.reload(); }

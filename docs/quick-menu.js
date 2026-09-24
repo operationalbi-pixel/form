@@ -115,7 +115,7 @@
       { id: 'static:stock-card', title: 'Stock Card', icon: 'inventory_2', type: 'static', url: 'stock-card.html?v=20260915-stock-position-bg1' },
       { id: 'static:lost-found', title: 'Lost & Found', icon: 'search', type: 'static', url: 'lost-and-found.html' },
       { id: 'static:mpp', title: 'MPP', icon: 'calendar_month', type: 'static', url: 'mpp-schedule.html?v=20260913-fast-tip1' },
-      { id: 'static:sales', title: 'Sales Analysis', icon: 'analytics', type: 'static', url: 'sales-analysis.html' },
+      { id: 'static:sales', title: 'Sales Analysis', icon: 'analytics', type: 'static', url: 'sales-analysis.html?v=20260924-sheets-sso1' },
       { id: 'static:sosialisasi', title: 'Sosialisasi', icon: 'campaign', type: 'static', url: 'sosialisasi.html' },
       { id: 'static:showcase', title: 'Showcase Log', icon: 'storefront', type: 'static', url: 'showcaselog.html' }
     ];
