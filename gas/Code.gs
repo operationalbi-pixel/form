@@ -6332,11 +6332,17 @@ function cloudflareReadMovements_(params) {
   });
 }
 
+function cloudflarePreloadSalesFifoRows_(params) {
+  const body = cloudflareInventoryRequest_('POST', '/v1/movements/preload', params || {});
+  return (body.data || []).map(cloudflareMovementToApp_);
+}
+
 function cloudflareWriteStockRows_(rows) {
   if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
   let accepted = 0, duplicates = 0;
-  for (let index = 0; index < rows.length; index += 40) {
-    const result = cloudflareInventoryRequest_('POST', '/v1/stock-movements', { rows: rows.slice(index, index + 40) });
+  const batchSize = 400;
+  for (let index = 0; index < rows.length; index += batchSize) {
+    const result = cloudflareInventoryRequest_('POST', '/v1/stock-movements', { rows: rows.slice(index, index + batchSize) });
     accepted += Number(result.accepted || 0);
     duplicates += Number(result.duplicates || 0);
   }
@@ -10953,28 +10959,14 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
       });
       if (!codes.length) continue;
 
-      const exclusionSql = excludedSourceHashes.length
-        ? 'AND (source_hash IS NULL OR source_hash NOT IN UNNEST(@excludedSourceHashes)) '
-        : '';
-      const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' ' +
-        'WHERE record_type IN (\'MOVEMENT\',\'OPNAME_DETAIL\') AND outlet = @outlet AND location = @location AND event_date <= CAST(@maxDate AS DATE) ' +
-        exclusionSql +
-        'AND (item_code IN UNNEST(@codes) OR ((item_code IS NULL OR item_code = \'\') AND item_name IN UNNEST(@names)))), ' +
-        'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
-        'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1), ' +
-        'ranked AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(item_code, \'\'), item_name) ORDER BY event_date DESC, created_at DESC) AS item_rank FROM latest) ' +
-        'SELECT record_id, record_type, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
-        'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, ' +
-        'transfer_id, supplier, source_file, source_row, created_by, created_at FROM ranked WHERE item_rank <= 500 ' +
-        'ORDER BY item_code, item_name, event_date, created_at';
-
-      const queryParams = { outlet: outlet, location: 'Store', maxDate: maxDate, codes: codes, names: names };
-      if (excludedSourceHashes.length) queryParams.excludedSourceHashes = excludedSourceHashes;
-      runNamedQuery_(sql, queryParams, { useQueryCache: false }).forEach(function (row) {
-        let code = String(row.item_code || '').trim().toUpperCase();
-        if (!histories[code]) code = nameToCode[normalizeStoreName_(row.item_name)] || '';
+      cloudflarePreloadSalesFifoRows_({
+        outlet: outlet, location: 'Store', to: maxDate, itemCodes: codes, itemNames: names,
+        excludedSourceHashes: excludedSourceHashes, perItemLimit: 500
+      }).forEach(function (row) {
+        let code = String(row.itemCode || '').trim().toUpperCase();
+        if (!histories[code]) code = nameToCode[normalizeStoreName_(row.itemName)] || '';
         if (!code || !histories[code]) return;
-        histories[code].push(mapStockHistoryQueryRow_(row));
+        histories[code].push(row);
       });
 
       chunk.forEach(function (entry) {
@@ -11870,12 +11862,27 @@ function prepareSalesCogsJob_(job) {
   return writeSalesCogsJob_(job);
 }
 
-function writePreparedSalesCogsChunk_(prepared, employee, payload) {
-  const rows = [], now = new Date();
-  const wipCatalog = readWipRecipeCatalog_(), savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, salesMappings = readSalesProductMappings_();
-  const masterByCode = {}, writeClock = { sequence: 0 };
-  let autoWipCount = 0;
+function salesCogsReferenceData_(runtime) {
+  runtime = runtime || {};
+  if (runtime.referenceData) return runtime.referenceData;
+  const masterByCode = {};
   readStockMaster_(true).forEach(function (item) { masterByCode[String(item.code || '').toUpperCase()] = item; });
+  runtime.referenceData = {
+    wipCatalog: readWipRecipeCatalog_(),
+    savedConversions: readStockUnitConversions_(),
+    salesMappings: readSalesProductMappings_(),
+    masterByCode: masterByCode
+  };
+  return runtime.referenceData;
+}
+
+function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
+  const rows = [], now = new Date();
+  const referenceData = salesCogsReferenceData_(runtime);
+  const wipCatalog = referenceData.wipCatalog, savedConversions = referenceData.savedConversions;
+  const provided = payload.conversions || {}, salesMappings = referenceData.salesMappings;
+  const masterByCode = referenceData.masterByCode, writeClock = { sequence: 0 };
+  let autoWipCount = 0;
   const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings);
   prepared.rows.forEach(function (sale) {
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
@@ -11932,9 +11939,11 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload) {
   return { movementRows: rows.length, autoWipProductionCount: autoWipCount };
 }
 
-function processSalesCogsJobChunk_(job) {
+function processSalesCogsJobChunk_(job, runtime) {
   if (!job.preparedDriveId) return prepareSalesCogsJob_(job);
-  const prepared = readSalesCogsJobJson_(job.preparedDriveId), request = readSalesCogsJobJson_(job.requestDriveId);
+  runtime = runtime || {};
+  const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
+  const request = runtime.request || (runtime.request = readSalesCogsJobJson_(job.requestDriveId));
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
   const batchSize = Math.max(25, Math.min(500, Math.floor(Number(job.batchSize || 500))));
   let rows = [], showcaseRows = [];
@@ -11945,7 +11954,7 @@ function processSalesCogsJobChunk_(job) {
   job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
   job.progress = Math.min(96, 15 + Math.round(start / Math.max(1, job.total) * 81)); writeSalesCogsJob_(job);
   const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
-  const result = writePreparedSalesCogsChunk_({ fileName: prepared.fileName, rows: rows, showcaseRows: showcaseRows }, employee, request);
+  const result = writePreparedSalesCogsChunk_({ fileName: prepared.fileName, rows: rows, showcaseRows: showcaseRows }, employee, request, runtime);
   job.processed = start + count; job.movementRows = Number(job.movementRows || 0) + Number(result.movementRows || 0);
   job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(result.autoWipProductionCount || 0);
   job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83)); writeSalesCogsJob_(job);
@@ -11997,7 +12006,15 @@ function processSalesCogsUploadJobs() {
     }
     job.lastWorkedAt = new Date().toISOString();
     job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
-    try { job = processSalesCogsJobChunk_(job); job.workerLeaseUntil = 0; writeSalesCogsJob_(job); }
+    try {
+      const runtime = {}, deadline = Date.now() + 210000, maxSteps = 4;
+      let steps = 0;
+      do {
+        job = processSalesCogsJobChunk_(job, runtime);
+        steps++;
+      } while (job.status !== 'COMPLETE' && steps < maxSteps && Date.now() < deadline);
+      job.workerLeaseUntil = 0; writeSalesCogsJob_(job);
+    }
     catch (error) {
       job.workerLeaseUntil = 0;
       job.retryCount = Number(job.retryCount || 0) + 1;
