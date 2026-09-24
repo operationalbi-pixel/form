@@ -33,6 +33,7 @@ if (!apiClient.includes('messageTargets = [global]') || !apiClient.includes('mes
 const chatHtml = await text('docs/chat.html');
 const chatEnhancements = await text('docs/chat-enhancements.js');
 const chatBackend = await text('docs/Code.gs');
+const inventoryWorker = await text('cloudflare/inventory-api/src/index.js');
 const stockCardHtml = await text('docs/stock-card.html');
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
@@ -352,6 +353,17 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
     !backend.includes('function processSalesCogsUploadJobs()') || !backend.includes('function processSalesCogsJobChunk_(') ||
     !backend.includes("processSalesCogsUploadJobs();")) {
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
+}
+if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preload'") ||
+    !backend.includes('const batchSize = 400;') ||
+    !backend.includes('const runtime = {}, deadline = Date.now() + 210000, maxSteps = 4;') ||
+    backend.slice(backend.indexOf('function preloadSalesFifoLots_('), backend.indexOf('function salesHistoryBalanceAtDate_(')).includes('runNamedQuery_(')) {
+  failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis besar, dan multi-batch worker');
+}
+if (!inventoryWorker.includes('async function preloadMovements(') ||
+    !inventoryWorker.includes('url.pathname === "/v1/movements/preload"') ||
+    !inventoryWorker.includes('env.OPERATIONS_DB.batch(statements2)')) {
+  failures.push('Worker Cloudflare belum mendukung preload FIFO dan batch transaksi stok besar');
 }
 if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('findStockPositionUpload: findStockPositionUpload') ||

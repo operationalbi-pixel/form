@@ -7,6 +7,7 @@ var MAX_MASTER_SYNC_BYTES = 5 * 1024 * 1024;
 var MASTER_SYNC_BATCH_SIZE = 75;
 var MAX_MIGRATION_BATCH_ROWS = 1e3;
 var MAX_STOCK_MOVEMENT_BATCH_ROWS = 500;
+var MAX_STOCK_WRITE_BATCH_ROWS = 400;
 function responseJson(payload, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -514,8 +515,8 @@ async function writeStockMovements(request, env, requestId) {
     return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Payload transaksi stok tidak valid.", requestId);
   }
   const input = Array.isArray(payload?.rows) ? payload.rows : null;
-  if (!input || input.length === 0 || input.length > 40) {
-    return apiError(400, "INVALID_BATCH", "Batch transaksi stok harus berisi 1 sampai 40 baris.", requestId);
+  if (!input || input.length === 0 || input.length > MAX_STOCK_WRITE_BATCH_ROWS) {
+    return apiError(400, "INVALID_BATCH", `Batch transaksi stok harus berisi 1 sampai ${MAX_STOCK_WRITE_BATCH_ROWS} baris.`, requestId);
   }
   try {
     const rows = input.map(normalizeMovement);
@@ -549,6 +550,9 @@ async function writeStockMovements(request, env, requestId) {
            unit = excluded.unit, updated_at = excluded.updated_at`
       ).bind(row.outlet_code, row.location_code, row.item_code, row.item_name, delta, row.unit, row.created_at));
     }
+    // Keep movement rows and their balance deltas atomic. With the GAS caller
+    // capped at 400 rows this remains below the paid Workers per-request D1
+    // query allowance even when every row creates a distinct balance update.
     const batchResults = statements2.length ? await env.OPERATIONS_DB.batch(statements2) : [];
     const written = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
     console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: accepted.length, written, requestId }));
@@ -978,6 +982,79 @@ async function listMovements(url, env, requestId) {
   });
 }
 __name(listMovements, "listMovements");
+async function preloadMovements(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, 5e5);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
+    return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Payload preload FIFO tidak valid.", requestId);
+  }
+  try {
+    const outlet = requiredText(payload?.outlet, "outlet", 40).toUpperCase();
+    const location = cleanText(payload?.location, 80) || "Store";
+    const to = isoDate(payload?.to);
+    if (!to) throw new Error("INVALID_TO");
+    const itemCodes = [...new Set(limitedArray(payload?.itemCodes || [], "item_codes", 30).map((value) => cleanText(value, 80).toUpperCase()).filter(Boolean))];
+    const itemNames = [...new Set(limitedArray(payload?.itemNames || [], "item_names", 30).map((value) => cleanText(value, 180)).filter(Boolean))];
+    const excludedSourceHashes = new Set(limitedArray(payload?.excludedSourceHashes || [], "excluded_source_hashes", 500).map((value) => cleanText(value, 160)).filter(Boolean));
+    const perItemLimit = positiveInt(payload?.perItemLimit, 500, 750);
+    if (!itemCodes.length && !itemNames.length) throw new Error("INVALID_ITEMS");
+
+    const itemConditions = [], bindings = [outlet, location, to];
+    if (itemCodes.length) {
+      itemConditions.push(`item_code IN (${itemCodes.map(() => "?").join(",")})`);
+      bindings.push(...itemCodes);
+    }
+    if (itemNames.length) {
+      itemConditions.push(`((item_code IS NULL OR item_code = '') AND item_name COLLATE NOCASE IN (${itemNames.map(() => "?").join(",")}))`);
+      bindings.push(...itemNames);
+    }
+    bindings.push(perItemLimit + 100);
+    const sql = `WITH versioned AS (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(NULLIF(logical_id, ''), record_id)
+        ORDER BY COALESCE(version, 1) DESC, created_at DESC, record_id DESC
+      ) AS logical_rank
+      FROM __TABLE__
+      WHERE record_type IN ('MOVEMENT', 'OPNAME_DETAIL')
+        AND outlet_code = ? AND location_code = ? AND event_date <= ?
+        AND (${itemConditions.join(" OR ")})
+    ), latest AS (
+      SELECT * FROM versioned WHERE logical_rank = 1
+    ), ranked AS (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(NULLIF(item_code, ''), UPPER(item_name))
+        ORDER BY event_date DESC, created_at DESC, record_id DESC
+      ) AS item_rank
+      FROM latest
+    )
+    SELECT * FROM ranked WHERE item_rank <= ?`;
+    const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
+    const history = await queryHistoryDatabases(
+      historyDatabasesForRange(env, "0000-01-01", to),
+      (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
+    );
+    const grouped = /* @__PURE__ */ new Map();
+    activeMovements([...operations.results, ...history]).forEach((row) => {
+      if (excludedSourceHashes.has(cleanText(row.source_hash, 160))) return;
+      const key = cleanText(row.item_code, 80).toUpperCase() || cleanText(row.item_name, 180).toUpperCase();
+      if (!key) return;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(row);
+    });
+    const rows = [];
+    for (const itemRows of grouped.values()) {
+      itemRows.sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)));
+      rows.push(...itemRows.slice(0, perItemLimit));
+    }
+    rows.sort((a, b) => String(a.item_code || "").localeCompare(String(b.item_code || "")) || String(a.item_name || "").localeCompare(String(b.item_name || "")) || String(a.event_date).localeCompare(String(b.event_date)) || String(a.created_at).localeCompare(String(b.created_at)));
+    return responseJson({ ok: true, data: rows, requestId });
+  } catch (error) {
+    return apiError(400, "FIFO_PRELOAD_FAILED", error instanceof Error ? error.message : String(error), requestId);
+  }
+}
+__name(preloadMovements, "preloadMovements");
 async function mockRecall(url, env, requestId) {
   const saleLineId = cleanText(url.searchParams.get("sale_line_id"), 100);
   const billNumber = cleanText(url.searchParams.get("bill_number"), 100);
@@ -1329,6 +1406,7 @@ async function route(request, env) {
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/stock-movements") return writeStockMovements(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/movements/preload") return preloadMovements(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/transfer-events") return writeTransferEvents(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/items/convert-unit") return convertItemUnit(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/migrate/stock-balances") return migrateStockBalances(request, env, requestId);
