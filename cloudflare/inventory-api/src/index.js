@@ -982,6 +982,80 @@ async function listMovements(url, env, requestId) {
   });
 }
 __name(listMovements, "listMovements");
+
+async function listUploadProgress(url, env, requestId) {
+  const month = cleanText(url.searchParams.get("month"), 7);
+  const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return apiError(400, "INVALID_MONTH", "Bulan wajib memakai format YYYY-MM.", requestId);
+  }
+  const [year, monthNumber] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const from = `${month}-01`;
+  const to = `${month}-${String(lastDay).padStart(2, "0")}`;
+  const outletCondition = outlet ? " AND outlet_code = ?" : "";
+  const bindings = outlet ? [from, to, outlet] : [from, to];
+  const sql = `WITH versioned AS (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY COALESCE(NULLIF(logical_id, ''), record_id)
+        ORDER BY version DESC, created_at DESC, record_id DESC
+      ) AS row_rank
+      FROM __TABLE__
+      WHERE event_date BETWEEN ? AND ?${outletCondition}
+        AND movement_type IN ('Goods Receipt', 'Terjual', 'Sold', 'Item Journal', 'Transfer Out Antar Outlet')
+    )
+    SELECT event_date, outlet_code,
+      CASE
+        WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt'
+        WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage'
+        WHEN movement_type = 'Item Journal' THEN 'itemJournal'
+        ELSE 'goodsDelivery'
+      END AS upload_type,
+      COUNT(DISTINCT COALESCE(source_file, '') || '|' || COALESCE(source_hash, '') || '|' || CAST(COALESCE(source_row, 0) AS TEXT)) AS actual_rows,
+      MAX(created_at) AS last_upload,
+      MAX(created_by) AS last_user
+    FROM versioned
+    WHERE row_rank = 1 AND record_type = 'MOVEMENT'
+      AND item_code IS NOT NULL AND item_code != ''
+      AND source_file IS NOT NULL AND source_file != ''
+      AND NOT (movement_type IN ('Terjual', 'Sold') AND UPPER(source_file) = 'SHOWCASE_LOG')
+    GROUP BY event_date, outlet_code, upload_type`;
+  const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
+  const history = await queryHistoryDatabases(
+    historyDatabasesForRange(env, from, to),
+    (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
+  );
+  const merged = new Map();
+  for (const row of [...operations.results, ...history]) {
+    const key = `${row.event_date}|${row.outlet_code}|${row.upload_type}`;
+    const current = merged.get(key) || {
+      event_date: row.event_date,
+      outlet_code: row.outlet_code,
+      upload_type: row.upload_type,
+      actual_rows: 0,
+      last_upload: "",
+      last_user: ""
+    };
+    current.actual_rows += Number(row.actual_rows || 0);
+    if (String(row.last_upload || "") > current.last_upload) {
+      current.last_upload = String(row.last_upload || "");
+      current.last_user = cleanText(row.last_user, 180);
+    }
+    merged.set(key, current);
+  }
+  return responseJson({
+    ok: true,
+    month,
+    data: [...merged.values()].sort((a, b) =>
+      String(a.event_date).localeCompare(String(b.event_date)) ||
+      String(a.outlet_code).localeCompare(String(b.outlet_code)) ||
+      String(a.upload_type).localeCompare(String(b.upload_type))
+    ),
+    requestId
+  });
+}
+__name(listUploadProgress, "listUploadProgress");
+
 async function preloadMovements(request, env, requestId) {
   let payload;
   try {
@@ -1425,6 +1499,7 @@ async function route(request, env) {
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
   if (url.pathname === "/v1/stock-card") return listStockCard(url, env, requestId);
   if (url.pathname === "/v1/movements") return listMovements(url, env, requestId);
+  if (url.pathname === "/v1/upload-progress") return listUploadProgress(url, env, requestId);
   if (url.pathname === "/v1/mock-recall") return mockRecall(url, env, requestId);
   if (url.pathname === "/v1/transfers") return listTransfers(url, env, requestId);
   if (url.pathname === "/v1/transfer-events") return listTransferEvents(url, env, requestId);

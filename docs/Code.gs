@@ -1612,37 +1612,19 @@ function readStockUploadProgress_(outlet) {
   const year = Number(parts[0]), month = Number(parts[1]);
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const monthKey = parts[0] + '-' + parts[1];
-  const startDate = monthKey + '-01';
-  const endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
-  // Count unique source rows instead of physical movement rows. A single report row
-  // can be split into several FIFO lots, but the progress tooltip should still say
-  // "1 baris di-upload", not the number of lot fragments written to Stock Card.
-  const sourceRowKey = 'CONCAT(COALESCE(source_file, \'\'), \'|\', COALESCE(source_hash, \'\'), \'|\', CAST(COALESCE(source_row, 0) AS STRING))';
-  const sql = 'SELECT CAST(event_date AS STRING) AS event_date, ' +
-    'COUNT(DISTINCT IF(movement_type = \'Goods Receipt\', ' + sourceRowKey + ', NULL)) AS goods_receipt_rows, ' +
-    'COUNT(DISTINCT IF(movement_type IN (\'Terjual\', \'Sold\'), ' + sourceRowKey + ', NULL)) AS sales_usage_rows, ' +
-    'COUNT(DISTINCT IF(movement_type = \'Item Journal\', ' + sourceRowKey + ', NULL)) AS item_journal_rows, ' +
-    'COUNT(DISTINCT IF(movement_type = \'Transfer Out Antar Outlet\', ' + sourceRowKey + ', NULL)) AS goods_delivery_rows ' +
-    'FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet ' +
-    'AND item_code IS NOT NULL AND item_code != \'\' AND qty IS NOT NULL ' +
-    'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
-    'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Item Journal\', \'Transfer Out Antar Outlet\') ' +
-    // SHOWCASE_LOG adalah input manual Showcase, bukan Upload Usage Penjualan.
-    'AND source_file IS NOT NULL AND source_file != \'\' ' +
-    'AND UPPER(COALESCE(source_file, \'\')) != \'SHOWCASE_LOG\' GROUP BY event_date';
   const statusByDate = {};
-  runNamedQuery_(sql, { outlet: outlet, startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
-    const goodsReceiptRows = Number(row.goods_receipt_rows || 0);
-    const salesUsageRows = Number(row.sales_usage_rows || 0);
-    const itemJournalRows = Number(row.item_journal_rows || 0);
-    const goodsDeliveryRows = Number(row.goods_delivery_rows || 0);
-    statusByDate[String(row.event_date || '').slice(0, 10)] = {
-      goodsReceipt: goodsReceiptRows > 0, goodsReceiptRows: goodsReceiptRows,
-      salesUsage: salesUsageRows > 0, salesUsageRows: salesUsageRows,
-      itemJournal: itemJournalRows > 0, itemJournalRows: itemJournalRows,
-      goodsDelivery: goodsDeliveryRows > 0, goodsDeliveryRows: goodsDeliveryRows
+  cloudflareReadUploadProgress_(monthKey, outlet).forEach(function (row) {
+    const date = String(row.event_date || '').slice(0, 10), type = String(row.upload_type || '');
+    if (!date || ['goodsReceipt', 'salesUsage', 'itemJournal', 'goodsDelivery'].indexOf(type) < 0) return;
+    if (!statusByDate[date]) statusByDate[date] = {
+      goodsReceipt: false, goodsReceiptRows: 0,
+      salesUsage: false, salesUsageRows: 0,
+      itemJournal: false, itemJournalRows: 0,
+      goodsDelivery: false, goodsDeliveryRows: 0
     };
+    const countKey = type + 'Rows', count = Number(row.actual_rows || 0);
+    statusByDate[date][type] = count > 0;
+    statusByDate[date][countKey] = count;
   });
   const days = [];
   for (let day = 1; day <= lastDay; day++) {
@@ -1691,25 +1673,19 @@ function ensureStockUploadSummaryShowcaseIsolation_() {
 function getStockUploadMonitoring(token, monthKey) {
   return safe_(function () {
     const employee = requireAdmin_(token);
-    ensureStockUploadSummaryShowcaseIsolation_();
     monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
     const cacheKey = 'stock-upload-monitor-v2-' + monthKey, cached = readScriptJsonCache_(cacheKey);
     if (cached) return cached;
     const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
-    const startDate = monthKey + '-01', endDate = monthKey + '-' + String(lastDay).padStart(2, '0');
     const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
-    const sql = 'SELECT outlet, CAST(event_date AS STRING) AS event_date, upload_type, actual_item_count AS actual_rows, marker_count AS marker_rows, ' +
-      'CAST(last_upload AS STRING) AS last_upload, last_user FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary` ' +
-      'WHERE event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE)';
     const map = {}, problemCount = { markerWithoutData: 0 };
-    runNamedQuery_(sql, { startDate: startDate, endDate: endDate }, { useQueryCache: false }).forEach(function (row) {
-      const key = String(row.outlet || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10);
+    cloudflareReadUploadProgress_(monthKey).forEach(function (row) {
+      const key = String(row.outlet_code || '').toUpperCase() + '|' + String(row.event_date || '').slice(0, 10);
       if (!map[key]) map[key] = {};
       const type = String(row.upload_type || '');
       if (['goodsReceipt', 'salesUsage', 'itemJournal', 'goodsDelivery'].indexOf(type) < 0) return;
-      const actualRows = Number(row.actual_rows || 0), markerRows = Number(row.marker_rows || 0);
-      if (!actualRows && markerRows) problemCount.markerWithoutData++;
-      map[key][type] = { done: actualRows > 0, actualRows: actualRows, markerWithoutData: !actualRows && markerRows > 0,
+      const actualRows = Number(row.actual_rows || 0);
+      map[key][type] = { done: actualRows > 0, actualRows: actualRows, markerWithoutData: false,
         lastUpload: String(row.last_upload || ''), lastUser: String(row.last_user || '') };
     });
     const rows = [];
@@ -6271,6 +6247,13 @@ function cloudflareQueryString_(params) {
   }).map(function (key) {
     return encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
   }).join('&');
+}
+
+function cloudflareReadUploadProgress_(monthKey, outlet) {
+  const query = { month: monthKey };
+  if (outlet) query.outlet = String(outlet).trim().toUpperCase();
+  const body = cloudflareInventoryRequest_('GET', '/v1/upload-progress?' + cloudflareQueryString_(query));
+  return Array.isArray(body.data) ? body.data : [];
 }
 
 function cloudflareReadAllPages_(path, params, pageLimit, maxPages) {

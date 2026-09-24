@@ -371,6 +371,21 @@ if (!inventoryWorker.includes('async function preloadMovements(') ||
     !inventoryWorker.includes('env.OPERATIONS_DB.batch(statements2)')) {
   failures.push('Worker Cloudflare belum mendukung preload FIFO dan batch transaksi stok besar');
 }
+const uploadProgressBackend = backend.slice(
+  backend.indexOf('function readStockUploadProgress_('),
+  backend.indexOf('function ensureStockUploadSummaryShowcaseIsolation_(')
+);
+const uploadMonitoringBackend = backend.slice(
+  backend.indexOf('function getStockUploadMonitoring('),
+  backend.indexOf('function parseBihqBatchGroups_(')
+);
+if (!inventoryWorker.includes('async function listUploadProgress(') ||
+    !inventoryWorker.includes('url.pathname === "/v1/upload-progress"') ||
+    !backend.includes("cloudflareInventoryRequest_('GET', '/v1/upload-progress?'") ||
+    uploadProgressBackend.includes('runNamedQuery_(') ||
+    uploadMonitoringBackend.includes('runNamedQuery_(')) {
+  failures.push('Progress Daily Upload belum membaca transaksi aktual langsung dari Cloudflare');
+}
 if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('findStockPositionUpload: findStockPositionUpload') ||
     !backend.includes('stockPositionUploadStatus: getStockPositionUploadStatus') ||
