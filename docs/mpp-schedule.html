@@ -3940,6 +3940,7 @@
       selected: null,
       currentTab: 'Service',
       allOutlets: [],
+      rotationOutlets: [],
       viewMode: 'TREE',
       // savedSchedules dihapus dari sini (dipindahkan ke schedule.html)
 
@@ -3947,6 +3948,7 @@
         app.setupPhotoInput();
         mppApiCall('mppBootstrap', []).then(function (data) {
           app.user = data.user;
+          app.rotationOutlets = Array.isArray(data.rotationOutlets) ? data.rotationOutlets : [];
           app.enterApp();
           document.getElementById('session-loading').classList.add('d-none');
         }).catch(function () {
@@ -4268,12 +4270,19 @@
          document.getElementById('mut-name').innerText = app.selected.name;
 
          const sel = document.getElementById('mut-dest');
-         sel.innerHTML = '';
+         sel.innerHTML = '<option value="">Pilih outlet tujuan...</option>';
 
-         const sources = app.allOutlets.length > 0 ? app.allOutlets : [app.user.outlet];
+         const sources = app.rotationOutlets.length > 0 ? app.rotationOutlets : app.allOutlets;
+         const currentOutlet = String(app.selected.outlet || '').trim().toUpperCase();
          sources.forEach(o => {
-            if(o !== app.selected.outlet) sel.innerHTML += `<option value="${o}">${o}</option>`;
+            const outlet = String(o || '').trim().toUpperCase();
+            if(outlet && outlet !== currentOutlet) sel.innerHTML += `<option value="${outlet}">${outlet}</option>`;
          });
+
+         if(sel.options.length === 1) {
+            ui.toast('Daftar outlet tujuan belum tersedia. Muat ulang halaman lalu coba kembali.', 'error');
+            return;
+         }
 
          ui.modal.open('mod-mut');
       },
@@ -4281,7 +4290,10 @@
          const newOutlet = document.getElementById('mut-dest').value;
          if(!newOutlet) return ui.toast('Pilih Tujuan', 'error');
          ui.modal.close('mod-mut'); ui.loader(true);
-         google.script.run.withSuccessHandler(()=>{ ui.loader(false); ui.toast('Mutasi Sukses'); app.loadEmp(); }).apiUpdateEmployee('MUTATION', {rowIndex: document.getElementById('mut-idx').value, newOutlet});
+         google.script.run
+           .withSuccessHandler(()=>{ ui.loader(false); ui.toast('Mutasi Sukses'); app.loadEmp(); })
+           .withFailureHandler(error => { ui.loader(false); ui.toast(error && error.message ? error.message : String(error), 'error'); })
+           .apiUpdateEmployee('MUTATION', {rowIndex: document.getElementById('mut-idx').value, newOutlet});
       },
 
       prepEdit: (idx) => {
