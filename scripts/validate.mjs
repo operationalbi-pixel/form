@@ -146,6 +146,12 @@ if (!salesAnalysisHtml.includes('name="viewport"') || !salesAnalysisHtml.include
 if (!salesAnalysisHtml.includes('src="config.js"') || !salesAnalysisHtml.includes('src="api-client.js')) failures.push('Analisa Sales belum terhubung ke API BI-Space');
 if (!salesAnalysisHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Analisa Sales belum memakai sesi login BI-Space');
 if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('Analisa Sales belum memiliki navigasi kembali ke BI-Space');
+if (salesAnalysisHtml.includes('id="loginView"') || salesAnalysisHtml.includes('id="loginOutlet"') || salesAnalysisHtml.includes('function doLogin(')) failures.push('Analisa Sales masih memiliki login kedua di luar sesi BI-Space');
+if (!salesAnalysisHtml.includes('database Google Sheets outlet Anda') || salesAnalysisHtml.includes('BigQuery-only mode')) failures.push('UI Analisa Sales belum menampilkan sumber data Google Sheets');
+if (!chatBackend.includes("getProperty('SALES_ANALYSIS_SPREADSHEET_ID')") || !chatBackend.includes('GOOGLE SHEETS RUNTIME — V10')) failures.push('Backend Analisa Sales belum memakai database Google Sheets privat hasil migrasi');
+for (const tab of ['daily_sales', 'daily_targets', 'global_daily_analysis', 'global_daily_analysis_items', 'monthly_analysis', 'targets', 'weekly_analysis']) {
+  if (!chatBackend.includes(`${tab}: [`)) failures.push(`Backend Analisa Sales belum memetakan tab ${tab}`);
+}
 if (salesAnalysisHtml.includes('<?')) failures.push('Analisa Sales masih memiliki template server-side yang tidak didukung GitHub Pages');
 if (salesAnalysisHtml.includes('id="copyFallbackModal"') || salesAnalysisHtml.includes('showCopyFallback(')) failures.push('Copy Daily Report masih membuka modal salin manual');
 if (!salesAnalysisHtml.includes('dailyReportCopyCache.get(reportDate)') || !salesAnalysisHtml.includes('if(selDay && Number(selDay.sales)>0) prepareDailyReport(reportDate)')) failures.push('Daily Report belum dipersiapkan dari tanggal modal sebelum aksi clipboard mobile');
@@ -1013,7 +1019,7 @@ if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.inclu
 if (!backend.includes('function bqGetDailyTargetsByDate_(outletCodes, year, month)') || !backend.includes('function bqSaveDailyTargetUpdates_(key, updates, submittedBy)') || !backend.includes('function saveDailyTargets(token, payload)')) {
   failures.push('Backend baca/edit target harian per outlet belum lengkap');
 }
-if (!backend.includes("'_BQ_DAILY_CAL_V1'") || backend.includes('Number(targetsMap[oc])||0 : defaultTarget')) {
+if (!backend.includes("'_SHEETS_V10'") || backend.includes('Number(targetsMap[oc])||0 : defaultTarget')) {
   failures.push('Target bulanan kalender belum murni berasal dari akumulasi target harian atau cache belum dinaikkan');
 }
 if (!backend.includes('reported: !!row') || !backend.includes("if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh mengubah target harian.' }")) {
