@@ -17593,6 +17593,20 @@ function mppAllowedOutlet_(employee, requestedOutlet, allowAll) {
   return requested && requested !== 'ALL' ? requested : (allowAll ? 'ALL' : 'BIHQ');
 }
 
+function mppRotationOutlets_() {
+  return readActiveOutlets_().map(function (outlet) {
+    return String(outlet || '').trim().toUpperCase();
+  }).filter(Boolean);
+}
+
+function mppValidateRotationOutlet_(targetEmployee, requestedOutlet) {
+  const requested = String(requestedOutlet || '').trim().toUpperCase();
+  if (!requested) throw new Error('Outlet tujuan wajib dipilih.');
+  if (requested === targetEmployee.outlet) throw new Error('Outlet tujuan harus berbeda dari outlet asal.');
+  if (mppRotationOutlets_().indexOf(requested) < 0) throw new Error('Outlet tujuan tidak aktif atau tidak ditemukan.');
+  return requested;
+}
+
 function mppEmployeeRow_(rowIndex) {
   const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
   const row = Number(rowIndex || 0);
@@ -17634,7 +17648,7 @@ function getMppBootstrap(token) {
   return safe_(function () {
     const employee = mppSessionEmployee_(token);
     ensureMppSheets_();
-    return { user: mppUserView_(employee) };
+    return { user: mppUserView_(employee), rotationOutlets: mppRotationOutlets_() };
   });
 }
 
@@ -17661,9 +17675,9 @@ function updateMppEmployee(token, actionType, payload) {
   return safe_(function () {
     const employee = mppSessionEmployee_(token);
     payload = Object.assign({}, payload || {});
-    mppAssertRowAccess_(employee, payload.rowIndex);
+    const targetEmployee = mppAssertRowAccess_(employee, payload.rowIndex);
     const action = String(actionType || '').toUpperCase();
-    if (action === 'MUTATION') payload.newOutlet = mppAllowedOutlet_(employee, payload.newOutlet, false);
+    if (action === 'MUTATION') payload.newOutlet = mppValidateRotationOutlet_(targetEmployee, payload.newOutlet);
     if (['MUTATION', 'EDIT', 'RESIGN'].indexOf(action) < 0) throw new Error('Jenis perubahan karyawan tidak valid.');
     return mppWithWriteLock_(function () { return mppLegacyUpdateEmployee_(action, payload); });
   });

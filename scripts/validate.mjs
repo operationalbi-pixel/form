@@ -191,6 +191,8 @@ if (!chatBackend.includes('Math.max(0, Math.min(100, val))') || !chatBackend.inc
 if (!mppHtml.includes('app.tipAutoRefreshTimer') || !mppHtml.includes('app.refreshTipSilently')) failures.push('Daily Income Tip belum memperbarui perhitungan secara otomatis');
 if (!mppHtml.includes("app.deleteTipTx('LOAN', '${entry.id}')") || !mppHtml.includes('loan-delete-button')) failures.push('Transaksi pinjaman belum memiliki tombol hapus pada matriks');
 if (!mppHtml.includes('app.applyTipOptimisticDelta') || !mppHtml.includes('app.refreshTipSilently') || !mppHtml.includes('app.loadRekapTip({ silent: true })')) failures.push('Simpan pendapatan/pengeluaran Tip masih menunggu pemuatan ulang penuh');
+if (!chatBackend.includes('rotationOutlets: mppRotationOutlets_()') || !chatBackend.includes('mppValidateRotationOutlet_(targetEmployee, payload.newOutlet)')) failures.push('Rotasi staff outlet belum memakai daftar outlet aktif dan validasi tujuan khusus');
+if (!mppHtml.includes('app.rotationOutlets.length > 0 ? app.rotationOutlets : app.allOutlets') || !mppHtml.includes("withFailureHandler(error => { ui.loader(false);")) failures.push('Popup rotasi staff outlet belum memakai daftar tujuan lintas outlet atau belum menangani kegagalan');
 try {
   const tipContext = vm.createContext({ Intl });
   new vm.Script(chatBackend, { filename: 'docs/Code.gs#tip-allocation' }).runInContext(tipContext);
