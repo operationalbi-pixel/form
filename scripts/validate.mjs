@@ -277,6 +277,16 @@ try {
   const directRows = [];
   const autoResult = insertContext.autoProduceSalesWipRecursive_({ wipCatalog: directCatalog, rows: directRows }, directSale.item, directSale.item.name, 2, {}, 0);
   if (autoResult !== null || directRows.length) failures.push('DIRECT_WIP masih menghasilkan Production atau pemotongan raw material');
+  const fifoState = { OUTLET: { 'WIP-TEST': { '2026-09-12': [] } }, __balances: { OUTLET: { 'WIP-TEST': { '2026-09-12': -0.18 } } } };
+  const recoveryPlan = insertContext.salesWipProductionPlan_(fifoState, 'OUTLET', 'WIP-TEST', '2026-09-12', 0.18);
+  if (Math.abs(recoveryPlan.productionQty - 0.36) > 0.0000001 || Math.abs(recoveryPlan.lotShortage - 0.18) > 0.0000001) {
+    failures.push('Production WIP belum memulihkan saldo minus sekaligus menutup kekurangan lot FIFO');
+  }
+  insertContext.salesAddGeneratedWipLot_(fifoState, 'OUTLET', 'WIP-TEST', '2026-09-12', recoveryPlan.lotShortage, recoveryPlan.productionQty);
+  const recoveredLots = insertContext.salesConsumeInventoryLots_(fifoState, 'OUTLET', 'WIP-TEST', '2026-09-12', 0.18);
+  if (recoveredLots.some(lot => lot.uncovered) || Math.abs(insertContext.salesBalanceFor_(fifoState, 'OUTLET', 'WIP-TEST', '2026-09-12')) > 0.0000001) {
+    failures.push('Pemulihan WIP masih menyisakan lot tidak tertutup atau saldo minus');
+  }
   insertContext.mockRecallGeneratedWipAllocation_ = function () { throw new Error('Mock Recall DIRECT_WIP tidak boleh membuka generated recipe'); };
   insertContext.mockRecallWipExistingLots_ = function () { return []; };
   const recallState = { materials: [], wipCatalog: directCatalog };
@@ -287,6 +297,9 @@ try {
 }
 const frontendStockCard = await text('docs/stock-card.html');
 if (!frontendStockCard.includes("item.salesUsageMode==='DIRECT_WIP'?'DIRECT WIP':'WIP'")) failures.push('Mock Recall belum memberi label DIRECT WIP');
+if (!frontendStockCard.includes("label+' · '+elapsed+' dtk'") || !frontendStockCard.includes("startBihqBatchProgress('Upload '+(index+1)+'/'+rows.length")) {
+  failures.push('Progress Batch Usage belum bergerak dan menampilkan durasi saat server bekerja');
+}
 const modernUiCss = await text('docs/ui-modern.css');
 if (!frontendStockCard.includes('id="stockOpnameButton"') || !frontendStockCard.includes('id="stockOpnameDate"') || !frontendStockCard.includes('id="stockOpnameProgressBar"')) failures.push('UI Upload Stock Opname belum memiliki tombol, pilihan tanggal, dan progress upload');
 if (!frontendStockCard.includes('grid-template-columns:repeat(7,minmax(0,1fr))') || !modernUiCss.includes('grid-template-columns: repeat(7, minmax(0, 1fr))')) failures.push('Toolbar Stock Card desktop belum menampung tujuh aksi dalam satu baris');
