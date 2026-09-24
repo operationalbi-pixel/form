@@ -1579,13 +1579,13 @@ function findShowcaseLogTask_() {
 function markShowcaseLogTaskComplete_(employee, outlet, eventDate) {
   const task = findShowcaseLogTask_();
   if (!task) return false;
-  ensureBigQueryInfrastructure_();
-  if (readCompletionMap_(outlet)[task.id + '|' + eventDate]) return true;
-  insertAll_('task_completions', [{ insertId: Utilities.getUuid(), json: {
-    completion_id: Utilities.getUuid(), task_id: task.id, nik: employee.nik, outlet: outlet,
-    period_key: eventDate, completed_at: new Date().toISOString(), source: 'SHOWCASE_LOG'
-  }}]);
-  return true;
+  // Cloudflare LOG rows written with the Showcase movements are the completion
+  // source of truth. Do not mirror this status to BigQuery: a failed legacy
+  // insert would make the UI report failure after the D1 movements had already
+  // committed, inviting users to submit the same quantities twice.
+  const progress = readShowcaseLogProgress_(outlet, eventDate);
+  const selectedDay = (progress.days || []).filter(function (day) { return day.date === eventDate; })[0] || {};
+  return Boolean(selectedDay.stockIn && selectedDay.sold && selectedDay.waste);
 }
 
 function addStockLocation(token, requestedOutlet, locationName) {
