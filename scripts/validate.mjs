@@ -149,6 +149,8 @@ if (!salesAnalysisHtml.includes("location.href='index.html'")) failures.push('An
 if (salesAnalysisHtml.includes('id="loginView"') || salesAnalysisHtml.includes('id="loginOutlet"') || salesAnalysisHtml.includes('function doLogin(')) failures.push('Analisa Sales masih memiliki login kedua di luar sesi BI-Space');
 if (!salesAnalysisHtml.includes('database Google Sheets outlet Anda') || salesAnalysisHtml.includes('BigQuery-only mode')) failures.push('UI Analisa Sales belum menampilkan sumber data Google Sheets');
 if (!chatBackend.includes("getProperty('SALES_ANALYSIS_SPREADSHEET_ID')") || !chatBackend.includes('GOOGLE SHEETS RUNTIME — V10')) failures.push('Backend Analisa Sales belum memakai database Google Sheets privat hasil migrasi');
+if (!chatBackend.includes('function testSalesAnalysisDatabase()') || !chatBackend.includes('return SALES_ANALYSIS.testDatabase()')) failures.push('Fungsi tes database Analisa Sales belum tersedia di dropdown Apps Script');
+if (!chatBackend.includes('var SALES_SHEET_READ_CACHE = {}') || !chatBackend.includes('SALES_ANALYSIS.beginRequest()')) failures.push('Pembacaan Google Sheets Analisa Sales belum memakai cache per permintaan');
 for (const tab of ['daily_sales', 'daily_targets', 'global_daily_analysis', 'global_daily_analysis_items', 'monthly_analysis', 'targets', 'weekly_analysis']) {
   if (!chatBackend.includes(`${tab}: [`)) failures.push(`Backend Analisa Sales belum memetakan tab ${tab}`);
 }
