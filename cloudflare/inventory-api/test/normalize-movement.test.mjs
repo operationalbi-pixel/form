@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeMovement } from "../src/index.js";
+import { buildShowcaseSummary, normalizeMovement } from "../src/index.js";
 
 const baseRow = {
   record_id: "record-1",
@@ -42,4 +42,35 @@ test("real stock movements preserve their supplied item code", () => {
 
   assert.equal(row.item_code, "CCFH0330");
   assert.equal(row.unit, "PCS");
+});
+
+test("Showcase summary uses the latest logical version and returns daily totals", () => {
+  const rows = [
+    {
+      record_id: "in-1", logical_id: "in-1", version: 1, record_type: "MOVEMENT",
+      item_code: "CCFH0330", item_name: "SAMBAL HIJAU CC", direction: "IN", quantity: 10,
+      movement_type: "Transfer In", event_date: "2026-09-24", created_at: "2026-09-24T08:00:00Z",
+      source_file: "SHOWCASE_LOG", created_by: "100"
+    },
+    {
+      record_id: "sold-old", logical_id: "sold-1", version: 1, record_type: "MOVEMENT",
+      item_code: "CCFH0330", item_name: "SAMBAL HIJAU CC", direction: "OUT", quantity: 3,
+      movement_type: "Sold", event_date: "2026-09-25", created_at: "2026-09-25T08:00:00Z",
+      source_file: "SHOWCASE_LOG", created_by: "100"
+    },
+    {
+      record_id: "sold-new", logical_id: "sold-1", version: 2, record_type: "MOVEMENT",
+      item_code: "CCFH0330", item_name: "SAMBAL HIJAU CC", direction: "OUT", quantity: 2,
+      movement_type: "Sold", event_date: "2026-09-25", created_at: "2026-09-25T08:01:00Z",
+      source_file: "SHOWCASE_LOG", created_by: "100"
+    }
+  ];
+
+  const item = buildShowcaseSummary(rows, "2026-09-25")[0];
+  assert.equal(item.previous_balance, 10);
+  assert.equal(item.balance, 8);
+  assert.equal(item.total_sold, 2);
+  assert.deepEqual(item.previous_aging, { fresh: 0, green: 10, yellow: 0, red: 0 });
+  assert.deepEqual(item.balance_aging, { fresh: 0, green: 8, yellow: 0, red: 0 });
+  assert.deepEqual(item.sold_actors, [{ created_by: "100", source_file: "SHOWCASE_LOG" }]);
 });

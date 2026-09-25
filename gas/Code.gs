@@ -1126,9 +1126,8 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const outlet = isBihq && !requested ? '' : resolveStockOutlet_(employee, requested, outlets);
     const eventDate = normalizeDate_(requestedDate, true);
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
-    const totals = outlet ? readShowcaseLogTotals_(outlet, eventDate) : {};
-    // Aging hanya dibutuhkan untuk tampilan hari ini. Hari lampau tetap ringan dan tidak menjalankan query tambahan.
-    const aging = outlet && eventDate === todayIso_() ? readShowcaseAgingBreakdown_(outlet, eventDate) : {};
+    const snapshot = outlet ? readShowcaseLogSnapshot_(outlet, eventDate) : { totals: {}, aging: {}, progress: null };
+    const totals = snapshot.totals, aging = eventDate === todayIso_() ? snapshot.aging : {};
     const items = outlet ? readShowcaseItems_().map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
       const age = aging[String(item.code || '').trim().toUpperCase()] || aging['NAME|' + String(item.name || '').trim().toLowerCase()] || {};
@@ -1146,10 +1145,14 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     }) : [];
     const task = findShowcaseLogTask_();
     const tasks = readTasksForEmployee_(employee);
-    const completions = outlet ? readCompletionMap_(outlet) : {};
+    // Showcase tidak membaca task_completions BigQuery. Status halaman ini
+    // berasal langsung dari marker LOG Cloudflare pada snapshot yang sama.
+    const completions = {};
+    const selectedProgress = snapshot.progress && (snapshot.progress.days || []).filter(function (day) { return day.date === eventDate; })[0];
+    if (task && selectedProgress && selectedProgress.complete) completions[task.id + '|' + eventDate] = true;
     return {
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
-      items: items, progress: outlet ? readShowcaseLogProgress_(outlet, eventDate) : null, taskId: task ? task.id : '',
+      items: items, progress: snapshot.progress, taskId: task ? task.id : '',
       tasks: tasks, pages: readPagesForEmployee_(employee), completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
@@ -1174,7 +1177,8 @@ function saveShowcaseLog(token, payload) {
     showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
     const lock = acquireStockScopeLock_('showcase|' + outlet, 15000);
     try {
-    const existingTotals = readShowcaseLogTotals_(outlet, eventDate);
+    const snapshot = readShowcaseLogSnapshot_(outlet, eventDate);
+    const existingTotals = snapshot.totals;
     const entries = rawEntries.map(function (raw) {
       const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
       if (!item) throw new Error('Item Showcase tidak ditemukan atau kode item sudah berubah. Muat ulang halaman.');
@@ -1226,7 +1230,7 @@ function saveShowcaseLog(token, payload) {
         });
       });
 
-      const progress = readShowcaseLogProgress_(outlet, eventDate);
+      const progress = snapshot.progress;
       const selectedProgress = progress.days.filter(function (day) { return day.date === eventDate; })[0] || {};
       const now = new Date(), rows = [];
       entries.forEach(function (entry, entryIndex) {
@@ -1344,16 +1348,90 @@ function takeShowcaseProductLots_(pool, qty) {
   return taken;
 }
 
-/**
- * Breakdown umur stok Showcase berdasarkan TANGGAL MASUK SHOWCASE (event_date movement IN),
- * bukan tanggal kedatangan bahan di Store. Dipakai hanya untuk tanggal hari ini.
- * Bucket:
- * - fresh  : Hari H / masuk hari ini
- * - green  : H+1 / masuk kemarin (hari ke-2 di Showcase)
- * - yellow : H+2 / masuk 2 hari lalu (hari ke-3 di Showcase)
- * - red    : >H+2 / masuk 3 hari lalu atau lebih
- */
+// Snapshot Showcase (saldo, total harian, umur stok, dan progress) dibaca
+// sekaligus dari Cloudflare agar halaman tidak menjalankan query berulang.
+function buildShowcaseProgressCalendar_(anchorDate, rows) {
+  const anchor = new Date(anchorDate + 'T00:00:00Z');
+  const year = anchor.getUTCFullYear(), month = anchor.getUTCMonth();
+  const startDate = Utilities.formatDate(new Date(Date.UTC(year, month, 1)), 'UTC', 'yyyy-MM-dd');
+  const status = {};
+  (rows || []).forEach(function (row) {
+    const date = String(row.date || row.event_date || '').slice(0, 10);
+    if (!date) return;
+    status[date] = { stockIn: Boolean(row.stockIn), sold: Boolean(row.sold), waste: Boolean(row.waste) };
+  });
+  const today = todayIso_(), days = [], lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  for (let day = 1; day <= lastDay; day++) {
+    const date = Utilities.formatDate(new Date(Date.UTC(year, month, day)), 'UTC', 'yyyy-MM-dd');
+    const value = status[date] || { stockIn: false, sold: false, waste: false };
+    days.push({ day: day, date: date, stockIn: value.stockIn, sold: value.sold, waste: value.waste, complete: value.stockIn && value.sold && value.waste, future: date > today });
+  }
+  return { today: today, selectedDate: anchorDate, month: startDate.slice(0, 7), days: days };
+}
+
+function readShowcaseLogSnapshot_(outlet, eventDate) {
+  const body = cloudflareInventoryRequest_('GET', '/v1/showcase-log?' + cloudflareQueryString_({ outlet: outlet, date: eventDate }));
+  const totals = {}, aging = {}, employeeNames = readEmployeeNameMap_();
+  function actorText(actors) {
+    const unique = {};
+    (actors || []).forEach(function (actor) {
+      const nik = String(actor.created_by || ''), sourceFile = String(actor.source_file || '');
+      const text = (employeeNames[nik] || 'User tidak diketahui') + ' | ' + (sourceFile && sourceFile !== 'SHOWCASE_LOG' ? 'Generated By Upload' : 'Manual Input');
+      unique[text] = true;
+    });
+    return Object.keys(unique).join(', ');
+  }
+  (body.items || []).forEach(function (row) {
+    const code = String(row.item_code || '').trim().toUpperCase(), name = String(row.item_name || '').trim();
+    const value = {
+      previousBalance: Number(row.previous_balance || 0), balance: Number(row.balance || 0),
+      totalIn: Number(row.total_in || 0), totalSold: Number(row.total_sold || 0), totalWaste: Number(row.total_waste || 0),
+      inUsers: actorText(row.in_actors), soldUsers: actorText(row.sold_actors), wasteUsers: actorText(row.waste_actors)
+    };
+    if (name) totals[name.toLowerCase()] = value;
+    const age = { previous: row.previous_aging || {}, balance: row.balance_aging || {} };
+    if (code) aging[code] = age;
+    if (name) aging['NAME|' + name.toLowerCase()] = age;
+  });
+  return { totals: totals, aging: aging, progress: buildShowcaseProgressCalendar_(eventDate, body.progress || []) };
+}
+
 function readShowcaseAgingBreakdown_(outlet, eventDate) {
+  return readShowcaseLogSnapshot_(outlet, eventDate).aging;
+}
+
+function readShowcaseLogTotals_(outlet, eventDate) {
+  return readShowcaseLogSnapshot_(outlet, eventDate).totals;
+}
+
+function readShowcaseLogProgress_(outlet, anchorDate) {
+  const body = cloudflareInventoryRequest_('GET', '/v1/showcase-progress?' + cloudflareQueryString_({ outlet: outlet, month: String(anchorDate).slice(0, 7) }));
+  return buildShowcaseProgressCalendar_(anchorDate, body.data || []);
+}
+
+function getShowcaseLogMonitoring(token, monthKey) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
+    const parts = monthKey.split('-'), lastDay = new Date(Date.UTC(Number(parts[0]), Number(parts[1]), 0)).getUTCDate();
+    const outlets = readActiveOutlets_().filter(function (outlet) { return outlet !== 'BIHQ'; });
+    const body = cloudflareInventoryRequest_('GET', '/v1/showcase-progress?' + cloudflareQueryString_({ month: monthKey }));
+    const map = {};
+    (body.data || []).forEach(function (row) { map[String(row.outlet || '').toUpperCase() + '|' + String(row.date || '').slice(0, 10)] = row; });
+    const rows = [], today = todayIso_();
+    outlets.forEach(function (outlet) {
+      for (let day = 1; day <= lastDay; day++) {
+        const date = monthKey + '-' + String(day).padStart(2, '0');
+        if (date > today) continue;
+        const state = map[outlet + '|' + date] || {};
+        rows.push({ outlet: outlet, date: date, stockIn: Boolean(state.stockIn), sold: Boolean(state.sold), waste: Boolean(state.waste) });
+      }
+    });
+    return { monthKey: monthKey, today: today, outlets: outlets, rows: rows, generatedAt: new Date().toISOString(), requestedBy: employee.nik };
+  });
+}
+
+function legacyReadShowcaseAgingBreakdownBigQuery_(outlet, eventDate) {
   const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' ' +
     'AND outlet = @outlet AND location = \'Showcase\' AND event_date <= CAST(@eventDate AS DATE)), ' +
     'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (' +
@@ -1475,7 +1553,7 @@ function readShowcaseAgingBreakdown_(outlet, eventDate) {
   return result;
 }
 
-function readShowcaseLogTotals_(outlet, eventDate) {
+function legacyReadShowcaseLogTotalsBigQuery_(outlet, eventDate) {
   const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' ' +
     'AND outlet = @outlet AND location = \'Showcase\' AND event_date <= CAST(@eventDate AS DATE) ' +
     'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
@@ -1509,7 +1587,7 @@ function readShowcaseLogTotals_(outlet, eventDate) {
   return map;
 }
 
-function readShowcaseLogProgress_(outlet, anchorDate) {
+function legacyReadShowcaseLogProgressBigQuery_(outlet, anchorDate) {
   const anchor = new Date(anchorDate + 'T00:00:00Z');
   const year = anchor.getUTCFullYear(), month = anchor.getUTCMonth();
   const startDate = Utilities.formatDate(new Date(Date.UTC(year, month, 1)), 'UTC', 'yyyy-MM-dd');
@@ -1534,7 +1612,7 @@ function readShowcaseLogProgress_(outlet, anchorDate) {
   return { today: today, selectedDate: anchorDate, month: startDate.slice(0, 7), days: days };
 }
 
-function getShowcaseLogMonitoring(token, monthKey) {
+function legacyGetShowcaseLogMonitoringBigQuery_(token, monthKey) {
   return safe_(function () {
     const employee = requireAdmin_(token);
     monthKey = /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? String(monthKey) : todayIso_().slice(0, 7);
@@ -1583,9 +1661,9 @@ function markShowcaseLogTaskComplete_(employee, outlet, eventDate) {
   // source of truth. Do not mirror this status to BigQuery: a failed legacy
   // insert would make the UI report failure after the D1 movements had already
   // committed, inviting users to submit the same quantities twice.
-  const progress = readShowcaseLogProgress_(outlet, eventDate);
-  const selectedDay = (progress.days || []).filter(function (day) { return day.date === eventDate; })[0] || {};
-  return Boolean(selectedDay.stockIn && selectedDay.sold && selectedDay.waste);
+  // Marker LOG sudah ikut ditulis dalam batch transaksi yang sama. Hindari
+  // pembacaan jaringan kedua saat lock outlet masih dipegang.
+  return true;
 }
 
 function addStockLocation(token, requestedOutlet, locationName) {
