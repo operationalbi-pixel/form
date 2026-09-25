@@ -35,6 +35,7 @@ const chatEnhancements = await text('docs/chat-enhancements.js');
 const chatBackend = await text('docs/Code.gs');
 const inventoryWorker = await text('cloudflare/inventory-api/src/index.js');
 const stockCardHtml = await text('docs/stock-card.html');
+const frontendShowcase = await text('docs/showcaselog.html');
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
 }
@@ -390,6 +391,26 @@ if (!inventoryWorker.includes('async function listUploadProgress(') ||
     uploadProgressBackend.includes('runNamedQuery_(') ||
     uploadMonitoringBackend.includes('runNamedQuery_(')) {
   failures.push('Progress Daily Upload belum membaca transaksi aktual langsung dari Cloudflare');
+}
+const showcaseBackend = backend.slice(
+  backend.indexOf('function buildShowcaseProgressCalendar_('),
+  backend.indexOf('function legacyReadShowcaseAgingBreakdownBigQuery_(')
+);
+const showcaseBootstrapBackend = backend.slice(
+  backend.indexOf('function getShowcaseLogBootstrap('),
+  backend.indexOf('function saveShowcaseLog(')
+);
+if (!inventoryWorker.includes('async function listShowcaseLog(') ||
+    !inventoryWorker.includes('async function listShowcaseProgress(') ||
+    !inventoryWorker.includes('url.pathname === "/v1/showcase-log"') ||
+    !inventoryWorker.includes('url.pathname === "/v1/showcase-progress"') ||
+    !backend.includes("cloudflareInventoryRequest_('GET', '/v1/showcase-log?'") ||
+    !backend.includes("cloudflareInventoryRequest_('GET', '/v1/showcase-progress?'") ||
+    showcaseBackend.includes('runNamedQuery_(') ||
+    showcaseBootstrapBackend.includes('readCompletionMap_(') ||
+    showcaseBootstrapBackend.includes('runNamedQuery_(') ||
+    frontendShowcase.includes('setTimeout(load,250)')) {
+  failures.push('Showcase Log belum sepenuhnya membaca Cloudflare atau masih memuat ulang setelah penyimpanan');
 }
 if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('findStockPositionUpload: findStockPositionUpload') ||

@@ -986,6 +986,210 @@ async function listMovements(url, env, requestId) {
 }
 __name(listMovements, "listMovements");
 
+function showcaseAgeBuckets(lots, eventDate) {
+  const result = { fresh: 0, green: 0, yellow: 0, red: 0 };
+  const selectedTime = Date.parse(`${eventDate}T00:00:00Z`);
+  for (const lot of lots || []) {
+    const quantity = Math.max(0, Number(lot.quantity || 0));
+    if (quantity <= 1e-7) continue;
+    const entryTime = Date.parse(`${String(lot.entryDate || "").slice(0, 10)}T00:00:00Z`);
+    const age = Number.isFinite(entryTime) && Number.isFinite(selectedTime)
+      ? Math.max(0, Math.floor((selectedTime - entryTime) / 864e5))
+      : 3;
+    if (age === 0) result.fresh += quantity;
+    else if (age === 1) result.green += quantity;
+    else if (age === 2) result.yellow += quantity;
+    else result.red += quantity;
+  }
+  for (const key of Object.keys(result)) result[key] = Math.round(result[key] * 1e6) / 1e6;
+  return result;
+}
+__name(showcaseAgeBuckets, "showcaseAgeBuckets");
+
+function sortShowcaseLots(lots) {
+  lots.sort((left, right) =>
+    String(left.expiryDate || "9999-12-31").localeCompare(String(right.expiryDate || "9999-12-31")) ||
+    String(left.sourceDate || "").localeCompare(String(right.sourceDate || "")) ||
+    String(left.entryDate || "").localeCompare(String(right.entryDate || "")) ||
+    String(left.createdAt || "").localeCompare(String(right.createdAt || ""))
+  );
+}
+__name(sortShowcaseLots, "sortShowcaseLots");
+
+function applyShowcaseLotMovement(state, row) {
+  const quantity = Math.max(0, Number(row.quantity || 0));
+  if (quantity <= 1e-7) return;
+  const direction = cleanText(row.direction, 10).toUpperCase();
+  if (direction === "LOT" && cleanText(row.movement_type, 100) === "Lot Balance Override") {
+    let detail = null;
+    try { detail = JSON.parse(String(row.info || "")); } catch {}
+    if (Array.isArray(detail?.lots)) {
+      state.lots = detail.lots.filter((lot) => Number(lot.qty || 0) > 1e-7).map((lot) => ({
+        quantity: Number(lot.qty || 0),
+        entryDate: cleanText(lot.stockInDate || lot.showcaseDate || lot.arrivalDate || row.event_date, 10),
+        expiryDate: cleanText(lot.expiryDate, 10),
+        sourceDate: cleanText(lot.arrivalDate, 10),
+        createdAt: cleanText(row.created_at, 40)
+      }));
+      state.debt = 0;
+      sortShowcaseLots(state.lots);
+    }
+    return;
+  }
+  if (direction === "IN") {
+    let remaining = quantity;
+    if (state.debt > 1e-7) {
+      const covered = Math.min(remaining, state.debt);
+      state.debt -= covered;
+      remaining -= covered;
+    }
+    if (remaining > 1e-7) {
+      state.lots.push({
+        quantity: remaining,
+        entryDate: cleanText(row.event_date, 10),
+        expiryDate: cleanText(row.expiry_date, 10),
+        sourceDate: cleanText(row.arrival_date || row.event_date, 10),
+        createdAt: cleanText(row.created_at, 40)
+      });
+      sortShowcaseLots(state.lots);
+    }
+    return;
+  }
+  if (direction !== "OUT") return;
+  let remaining = quantity;
+  sortShowcaseLots(state.lots);
+  for (const lot of state.lots) {
+    if (remaining <= 1e-7) break;
+    const available = Math.max(0, Number(lot.quantity || 0));
+    const used = Math.min(available, remaining);
+    lot.quantity = available - used;
+    remaining -= used;
+  }
+  state.lots = state.lots.filter((lot) => Number(lot.quantity || 0) > 1e-7);
+  if (remaining > 1e-7) state.debt += remaining;
+}
+__name(applyShowcaseLotMovement, "applyShowcaseLotMovement");
+
+function buildShowcaseSummary(rows, eventDate) {
+  const states = new Map();
+  const ordered = activeMovements(rows).sort((left, right) =>
+    String(left.event_date).localeCompare(String(right.event_date)) ||
+    String(left.created_at).localeCompare(String(right.created_at)) ||
+    String(left.record_id).localeCompare(String(right.record_id))
+  );
+  for (const row of ordered) {
+    const itemCode = cleanText(row.item_code, 80).toUpperCase();
+    const itemName = cleanText(row.item_name, 180);
+    const key = itemCode || `NAME|${itemName.toLowerCase()}`;
+    if (!key) continue;
+    if (!states.has(key)) states.set(key, {
+      item_code: itemCode,
+      item_name: itemName,
+      previous_balance: 0,
+      balance: 0,
+      total_in: 0,
+      total_sold: 0,
+      total_waste: 0,
+      in_actors: new Map(),
+      sold_actors: new Map(),
+      waste_actors: new Map(),
+      lots: [], debt: 0, previous_aging: null, selectedDayStarted: false
+    });
+    const state = states.get(key);
+    const rowDate = cleanText(row.event_date, 10);
+    if (rowDate === eventDate && !state.selectedDayStarted) {
+      state.previous_aging = showcaseAgeBuckets(state.lots, eventDate);
+      state.selectedDayStarted = true;
+    }
+    const signed = signedMovement(row);
+    if (rowDate < eventDate) state.previous_balance += signed;
+    state.balance += signed;
+    if (rowDate === eventDate && Math.abs(signed) > 1e-7) {
+      const actorKey = `${cleanText(row.created_by, 100)}|${cleanText(row.source_file, 180)}`;
+      const actor = { created_by: cleanText(row.created_by, 100), source_file: cleanText(row.source_file, 180) };
+      const movementType = cleanText(row.movement_type, 100);
+      if (movementType === "Transfer In") { state.total_in += signed; state.in_actors.set(actorKey, actor); }
+      if (movementType === "Terjual" || movementType === "Sold") { state.total_sold -= signed; state.sold_actors.set(actorKey, actor); }
+      if (movementType === "Waste") { state.total_waste -= signed; state.waste_actors.set(actorKey, actor); }
+    }
+    applyShowcaseLotMovement(state, row);
+  }
+  return [...states.values()].map((state) => ({
+    item_code: state.item_code,
+    item_name: state.item_name,
+    previous_balance: Math.round(state.previous_balance * 1e6) / 1e6,
+    balance: Math.round(state.balance * 1e6) / 1e6,
+    total_in: Math.round(state.total_in * 1e6) / 1e6,
+    total_sold: Math.round(state.total_sold * 1e6) / 1e6,
+    total_waste: Math.round(state.total_waste * 1e6) / 1e6,
+    in_actors: [...state.in_actors.values()],
+    sold_actors: [...state.sold_actors.values()],
+    waste_actors: [...state.waste_actors.values()],
+    previous_aging: state.previous_aging || showcaseAgeBuckets(state.lots, eventDate),
+    balance_aging: showcaseAgeBuckets(state.lots, eventDate)
+  }));
+}
+__name(buildShowcaseSummary, "buildShowcaseSummary");
+
+async function readShowcaseProgressRows(env, month, outlet = "") {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const from = `${month}-01`, to = `${month}-${String(lastDay).padStart(2, "0")}`;
+  const outletCondition = outlet ? " AND outlet_code = ?" : "";
+  const bindings = outlet ? [from, to, outlet] : [from, to];
+  const sql = `SELECT record_id, logical_id, version, event_date, outlet_code, movement_type, created_at
+                 FROM __TABLE__
+                WHERE event_date BETWEEN ? AND ?${outletCondition}
+                  AND record_type = 'LOG' AND location_code = 'Showcase'
+                  AND movement_type IN ('Showcase Log In', 'Showcase Log Sold', 'Showcase Log Waste')`;
+  const entries = historyDatabasesForRange(env, from, to);
+  const results = await Promise.all([
+    env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all(),
+    ...entries.map((entry) => entry.database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings).all())
+  ]);
+  const status = new Map();
+  for (const row of activeMovements(results.flatMap((result) => result.results || []))) {
+    const key = `${cleanText(row.outlet_code, 40).toUpperCase()}|${cleanText(row.event_date, 10)}`;
+    const value = status.get(key) || { outlet: cleanText(row.outlet_code, 40).toUpperCase(), date: cleanText(row.event_date, 10), stockIn: false, sold: false, waste: false };
+    if (row.movement_type === "Showcase Log In") value.stockIn = true;
+    if (row.movement_type === "Showcase Log Sold") value.sold = true;
+    if (row.movement_type === "Showcase Log Waste") value.waste = true;
+    status.set(key, value);
+  }
+  return [...status.values()].sort((left, right) => left.outlet.localeCompare(right.outlet) || left.date.localeCompare(right.date));
+}
+__name(readShowcaseProgressRows, "readShowcaseProgressRows");
+
+async function listShowcaseLog(url, env, requestId) {
+  const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
+  const eventDate = isoDate(url.searchParams.get("date"));
+  if (!outlet || !eventDate) return apiError(400, "INVALID_FILTER", "Outlet dan tanggal Showcase wajib diisi.", requestId);
+  const sql = `SELECT record_id, logical_id, version, record_type, item_code, item_name, direction, quantity,
+                      movement_type, info, event_date, arrival_date, expiry_date, source_file, created_by, created_at
+                 FROM __TABLE__
+                WHERE outlet_code = ? AND location_code = 'Showcase'
+                  AND record_type = 'MOVEMENT' AND event_date <= ?`;
+  const entries = historyDatabasesForRange(env, "0000-01-01", eventDate);
+  const [movementResults, progress] = await Promise.all([
+    Promise.all([
+      env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(outlet, eventDate).all(),
+      ...entries.map((entry) => entry.database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(outlet, eventDate).all())
+    ]),
+    readShowcaseProgressRows(env, eventDate.slice(0, 7), outlet)
+  ]);
+  const movements = movementResults.flatMap((result) => result.results || []);
+  return responseJson({ ok: true, outlet, eventDate, items: buildShowcaseSummary(movements, eventDate), progress, requestId });
+}
+__name(listShowcaseLog, "listShowcaseLog");
+
+async function listShowcaseProgress(url, env, requestId) {
+  const month = cleanText(url.searchParams.get("month"), 7);
+  const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
+  if (!/^\d{4}-\d{2}$/.test(month)) return apiError(400, "INVALID_MONTH", "Bulan wajib memakai format YYYY-MM.", requestId);
+  return responseJson({ ok: true, month, data: await readShowcaseProgressRows(env, month, outlet), requestId });
+}
+__name(listShowcaseProgress, "listShowcaseProgress");
+
 async function listUploadProgress(url, env, requestId) {
   const month = cleanText(url.searchParams.get("month"), 7);
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
@@ -1502,6 +1706,8 @@ async function route(request, env) {
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
   if (url.pathname === "/v1/stock-card") return listStockCard(url, env, requestId);
   if (url.pathname === "/v1/movements") return listMovements(url, env, requestId);
+  if (url.pathname === "/v1/showcase-log") return listShowcaseLog(url, env, requestId);
+  if (url.pathname === "/v1/showcase-progress") return listShowcaseProgress(url, env, requestId);
   if (url.pathname === "/v1/upload-progress") return listUploadProgress(url, env, requestId);
   if (url.pathname === "/v1/mock-recall") return mockRecall(url, env, requestId);
   if (url.pathname === "/v1/transfers") return listTransfers(url, env, requestId);
@@ -1521,6 +1727,7 @@ var index_default = {
   }
 };
 export {
+  buildShowcaseSummary,
   index_default as default,
   normalizeMovement
 };
