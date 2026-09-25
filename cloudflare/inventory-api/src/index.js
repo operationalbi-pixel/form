@@ -2022,6 +2022,307 @@ async function midtransWebhook(request, env, requestId) {
 }
 __name(midtransWebhook, "midtransWebhook");
 
+/* ===================== STAFF PERFORMANCE (D1 ONLY) ===================== */
+
+function staffPerformanceDate(value, name) {
+  const date = isoDate(value);
+  if (!date) throw new Error(`INVALID_${name.toUpperCase()}`);
+  return date;
+}
+__name(staffPerformanceDate, "staffPerformanceDate");
+
+function staffPerformanceScope(url) {
+  return {
+    outlet: cleanText(url.searchParams.get("outlet"), 40).toUpperCase(),
+    from: isoDate(url.searchParams.get("from")),
+    to: isoDate(url.searchParams.get("to")),
+    nik: cleanText(url.searchParams.get("nik"), 80)
+  };
+}
+__name(staffPerformanceScope, "staffPerformanceScope");
+
+async function migrateStaffPerformanceMaster(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES);
+    const jobId = requiredText(payload.jobId, "job_id", 120);
+    const batchId = requiredText(payload.batchId || "master", "batch_id", 120);
+    const previous = await env.OPERATIONS_DB.prepare(
+      "SELECT written_rows FROM staff_performance_migration_batches WHERE job_id = ? AND batch_id = ? LIMIT 1"
+    ).bind(jobId, batchId).first();
+    if (previous) return responseJson({ ok: true, duplicate: true, writtenRows: Number(previous.written_rows || 0), requestId });
+
+    const outlets = limitedArray(payload.outlets || [], "outlets", 500);
+    const staff = limitedArray(payload.staff || [], "staff", 1e4);
+    const indicators = limitedArray(payload.indicators || [], "indicators", 5e3);
+    const statements = [];
+    for (const row of outlets) {
+      statements.push(env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_outlets(outlet_code, outlet_name, role, active, updated_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(outlet_code) DO UPDATE SET outlet_name = excluded.outlet_name,
+           role = excluded.role, active = excluded.active, updated_at = CURRENT_TIMESTAMP`
+      ).bind(requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), requiredText(row.outletName || row.outletCode, "outlet_name", 160), cleanText(row.role || "OUTLET", 40).toUpperCase(), row.active === false ? 0 : 1));
+    }
+    for (const row of staff) {
+      statements.push(env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_staff(nik, name, position, outlet_code, status, updated_at)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
+           outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
+      ).bind(requiredText(row.nik, "nik", 80), requiredText(row.name, "name", 180), requiredText(row.position, "position", 120), requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), cleanText(row.status || "Active", 40)));
+    }
+    for (const row of indicators) {
+      statements.push(env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_indicators(
+           indicator_id, outlet_code, category, indicator_name, weight_json, target,
+           threshold_a, threshold_b, threshold_c, threshold_d, status, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(indicator_id) DO UPDATE SET outlet_code = excluded.outlet_code,
+           category = excluded.category, indicator_name = excluded.indicator_name,
+           weight_json = excluded.weight_json, target = excluded.target,
+           threshold_a = excluded.threshold_a, threshold_b = excluded.threshold_b,
+           threshold_c = excluded.threshold_c, threshold_d = excluded.threshold_d,
+           status = excluded.status, updated_at = CURRENT_TIMESTAMP`
+      ).bind(
+        requiredText(row.indicatorId, "indicator_id", 100), cleanText(row.outletCode, 40).toUpperCase(),
+        requiredText(row.category || "General", "category", 120), requiredText(row.indicatorName, "indicator_name", 240),
+        JSON.stringify(row.weight ?? 0), cleanText(row.target, 120), cleanText(row.thresholdA, 120),
+        cleanText(row.thresholdB, 120), cleanText(row.thresholdC, 120), cleanText(row.thresholdD, 120),
+        cleanText(row.status || "Active", 40)
+      ));
+    }
+    const writtenRows = await runStatementBatches(env.OPERATIONS_DB, statements);
+    const receivedRows = outlets.length + staff.length + indicators.length;
+    await env.OPERATIONS_DB.batch([
+      env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_migration_batches(job_id, batch_id, batch_type, received_rows, written_rows, checkpoint_row)
+         VALUES (?, ?, 'MASTER', ?, ?, 0)`
+      ).bind(jobId, batchId, receivedRows, writtenRows),
+      env.OPERATIONS_DB.prepare(
+        `INSERT INTO upload_jobs(job_id, upload_type, source_hash, status, total_rows, processed_rows,
+           checkpoint_row, result_json, created_by, started_at, updated_at)
+         VALUES (?, 'STAFF_PERFORMANCE', ?, 'PROCESSING', ?, 0, 0, ?, 'APPS_SCRIPT_MIGRATION', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT(job_id) DO UPDATE SET total_rows = excluded.total_rows,
+           result_json = excluded.result_json, updated_at = CURRENT_TIMESTAMP`
+      ).bind(jobId, jobId, Number(payload.totalRows || 0), JSON.stringify({ masterRows: receivedRows }))
+    ]);
+    return responseJson({ ok: true, writtenRows, receivedRows, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_MIGRATION_MASTER", "Batch master Staff Performance tidak valid.", requestId);
+  }
+}
+__name(migrateStaffPerformanceMaster, "migrateStaffPerformanceMaster");
+
+async function migrateStaffPerformanceScores(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES);
+    const jobId = requiredText(payload.jobId, "job_id", 120);
+    const batchId = requiredText(payload.batchId, "batch_id", 120);
+    const checkpoint = Math.max(0, Number(payload.checkpoint || 0));
+    const totalRows = Math.max(0, Number(payload.totalRows || 0));
+    const rows = limitedArray(payload.rows || [], "rows", 500);
+    const previous = await env.OPERATIONS_DB.prepare(
+      "SELECT written_rows FROM staff_performance_migration_batches WHERE job_id = ? AND batch_id = ? LIMIT 1"
+    ).bind(jobId, batchId).first();
+    if (previous) return responseJson({ ok: true, duplicate: true, writtenRows: Number(previous.written_rows || 0), checkpoint, requestId });
+
+    const statements = rows.map((row) => env.OPERATIONS_DB.prepare(
+      `INSERT INTO staff_performance_scores(
+         transaction_id, score_date, nik, indicator_id, achievement, final_score, note, migrated_from, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'BIGQUERY', CURRENT_TIMESTAMP)
+       ON CONFLICT(score_date, nik, indicator_id) DO UPDATE SET
+         transaction_id = excluded.transaction_id, achievement = excluded.achievement,
+         final_score = excluded.final_score, note = excluded.note,
+         migrated_from = excluded.migrated_from, updated_at = CURRENT_TIMESTAMP`
+    ).bind(
+      requiredText(row.transactionId || `${row.scoreDate}_${row.nik}_${row.indicatorId}`, "transaction_id", 240),
+      staffPerformanceDate(row.scoreDate, "score_date"), requiredText(row.nik, "nik", 80),
+      requiredText(row.indicatorId, "indicator_id", 100), cleanText(row.achievement, 1000),
+      Number.isFinite(Number(row.finalScore)) ? Number(row.finalScore) : 0, cleanText(row.note, 2000)
+    ));
+    const writtenRows = await runStatementBatches(env.OPERATIONS_DB, statements);
+    const status = checkpoint >= totalRows ? "COMPLETED" : "PROCESSING";
+    await env.OPERATIONS_DB.batch([
+      env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_migration_batches(job_id, batch_id, batch_type, received_rows, written_rows, checkpoint_row)
+         VALUES (?, ?, 'SCORES', ?, ?, ?)`
+      ).bind(jobId, batchId, rows.length, writtenRows, checkpoint),
+      env.OPERATIONS_DB.prepare(
+        `UPDATE upload_jobs SET status = ?, total_rows = MAX(total_rows, ?),
+           processed_rows = MAX(processed_rows, ?), checkpoint_row = MAX(checkpoint_row, ?),
+           completed_at = CASE WHEN ? = 'COMPLETED' THEN CURRENT_TIMESTAMP ELSE completed_at END,
+           updated_at = CURRENT_TIMESTAMP WHERE job_id = ? AND upload_type = 'STAFF_PERFORMANCE'`
+      ).bind(status, totalRows, checkpoint, checkpoint, status, jobId)
+    ]);
+    return responseJson({ ok: true, writtenRows, receivedRows: rows.length, checkpoint, totalRows, status, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_MIGRATION_BATCH", "Batch data Staff Performance tidak valid.", requestId);
+  }
+}
+__name(migrateStaffPerformanceScores, "migrateStaffPerformanceScores");
+
+async function staffPerformanceMigrationStatus(url, env, requestId) {
+  const jobId = cleanText(url.searchParams.get("job_id"), 120);
+  const job = jobId
+    ? await env.OPERATIONS_DB.prepare("SELECT * FROM upload_jobs WHERE job_id = ? AND upload_type = 'STAFF_PERFORMANCE' LIMIT 1").bind(jobId).first()
+    : await env.OPERATIONS_DB.prepare("SELECT * FROM upload_jobs WHERE upload_type = 'STAFF_PERFORMANCE' ORDER BY created_at DESC LIMIT 1").first();
+  const counts = await env.OPERATIONS_DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM staff_performance_outlets) AS outlets,
+       (SELECT COUNT(*) FROM staff_performance_staff) AS staff,
+       (SELECT COUNT(*) FROM staff_performance_indicators) AS indicators,
+       (SELECT COUNT(*) FROM staff_performance_scores) AS scores`
+  ).first();
+  const batches = job ? await env.OPERATIONS_DB.prepare(
+    `SELECT batch_type, COUNT(*) AS batches, SUM(received_rows) AS received_rows,
+       SUM(written_rows) AS written_rows, MAX(checkpoint_row) AS checkpoint_row
+     FROM staff_performance_migration_batches WHERE job_id = ? GROUP BY batch_type`
+  ).bind(job.job_id).all() : { results: [] };
+  const processed = Number(job?.processed_rows || 0), total = Number(job?.total_rows || 0);
+  return responseJson({ ok: true, data: { job: job || null, progressPercent: total ? Math.min(100, Math.round(processed * 1e4 / total) / 100) : 0, counts, batches: batches.results || [] }, requestId });
+}
+__name(staffPerformanceMigrationStatus, "staffPerformanceMigrationStatus");
+
+async function staffPerformanceBootstrap(url, env, requestId) {
+  const { outlet } = staffPerformanceScope(url);
+  const staffQuery = outlet
+    ? env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, position AS Posisi, outlet_code AS Outlet, status AS Status
+       FROM staff_performance_staff WHERE outlet_code = ? ORDER BY name`).bind(outlet)
+    : env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, position AS Posisi, outlet_code AS Outlet, status AS Status
+       FROM staff_performance_staff ORDER BY outlet_code, name`);
+  const indicatorQuery = outlet
+    ? env.OPERATIONS_DB.prepare(`SELECT indicator_id AS ID_Indikator, outlet_code AS Outlet, category AS Kategori,
+       indicator_name AS Nama_Indikator, weight_json, target AS Target, threshold_a AS Batas_A,
+       threshold_b AS Batas_B, threshold_c AS Batas_C, threshold_d AS Batas_D, status AS Status
+       FROM staff_performance_indicators WHERE outlet_code = '' OR outlet_code = ? ORDER BY category, indicator_name`).bind(outlet)
+    : env.OPERATIONS_DB.prepare(`SELECT indicator_id AS ID_Indikator, outlet_code AS Outlet, category AS Kategori,
+       indicator_name AS Nama_Indikator, weight_json, target AS Target, threshold_a AS Batas_A,
+       threshold_b AS Batas_B, threshold_c AS Batas_C, threshold_d AS Batas_D, status AS Status
+       FROM staff_performance_indicators ORDER BY category, indicator_name`);
+  const [staff, indicators, outlets] = await Promise.all([
+    staffQuery.all(), indicatorQuery.all(), env.OPERATIONS_DB.prepare(
+      "SELECT outlet_code, outlet_name, role FROM staff_performance_outlets WHERE active = 1 ORDER BY outlet_code"
+    ).all()
+  ]);
+  const indicatorRows = (indicators.results || []).map((row) => {
+    let weight = row.weight_json;
+    try { weight = JSON.parse(row.weight_json); } catch {}
+    return { ...row, Bobot: weight };
+  });
+  const positions = [...new Set((staff.results || []).map((row) => row.Posisi).filter(Boolean))].sort();
+  return responseJson({ ok: true, data: { staff: staff.results || [], indicators: indicatorRows, outlets: (outlets.results || []).map((row) => row.outlet_code), outletDetails: outlets.results || [], positions }, requestId });
+}
+__name(staffPerformanceBootstrap, "staffPerformanceBootstrap");
+
+async function staffPerformanceLeaderboard(url, env, requestId) {
+  const scope = staffPerformanceScope(url);
+  if (!scope.from || !scope.to) return apiError(400, "INVALID_DATE_RANGE", "Periode tidak valid.", requestId);
+  const whereOutlet = scope.outlet ? " AND st.outlet_code = ?" : "";
+  const query = env.OPERATIONS_DB.prepare(
+    `SELECT s.score_date AS Tanggal, s.nik AS NIK, SUM(s.final_score) AS Score
+     FROM staff_performance_scores s JOIN staff_performance_staff st ON st.nik = s.nik
+     WHERE s.score_date BETWEEN ? AND ?${whereOutlet}
+     GROUP BY s.score_date, s.nik ORDER BY s.score_date, s.nik`
+  );
+  const result = scope.outlet ? await query.bind(scope.from, scope.to, scope.outlet).all() : await query.bind(scope.from, scope.to).all();
+  return responseJson({ ok: true, data: result.results || [], requestId });
+}
+__name(staffPerformanceLeaderboard, "staffPerformanceLeaderboard");
+
+async function staffPerformanceDailyStats(url, env, requestId) {
+  const scope = staffPerformanceScope(url);
+  if (!scope.from || !scope.to) return apiError(400, "INVALID_DATE_RANGE", "Periode tidak valid.", requestId);
+  const whereOutlet = scope.outlet ? " AND st.outlet_code = ?" : "";
+  const query = env.OPERATIONS_DB.prepare(
+    `SELECT DISTINCT s.score_date AS Tanggal, s.nik AS NIK
+     FROM staff_performance_scores s JOIN staff_performance_staff st ON st.nik = s.nik
+     WHERE s.score_date BETWEEN ? AND ?${whereOutlet} ORDER BY s.score_date, s.nik`
+  );
+  const result = scope.outlet ? await query.bind(scope.from, scope.to, scope.outlet).all() : await query.bind(scope.from, scope.to).all();
+  return responseJson({ ok: true, data: result.results || [], requestId });
+}
+__name(staffPerformanceDailyStats, "staffPerformanceDailyStats");
+
+async function staffPerformanceData(url, env, requestId) {
+  const scope = staffPerformanceScope(url);
+  if (!scope.from || !scope.to) return apiError(400, "INVALID_DATE_RANGE", "Periode tidak valid.", requestId);
+  const conditions = ["s.score_date BETWEEN ? AND ?"], values = [scope.from, scope.to];
+  if (scope.outlet) { conditions.push("st.outlet_code = ?"); values.push(scope.outlet); }
+  if (scope.nik) { conditions.push("s.nik = ?"); values.push(scope.nik); }
+  const result = await env.OPERATIONS_DB.prepare(
+    `SELECT s.transaction_id AS ID_Transaksi, s.score_date AS Tanggal, s.nik AS NIK,
+       s.indicator_id AS ID_Indikator, s.achievement AS Pencapaian,
+       s.final_score AS Skor_Final, s.note AS Note
+     FROM staff_performance_scores s JOIN staff_performance_staff st ON st.nik = s.nik
+     WHERE ${conditions.join(" AND ")} ORDER BY s.score_date, s.nik, s.indicator_id`
+  ).bind(...values).all();
+  return responseJson({ ok: true, data: result.results || [], requestId });
+}
+__name(staffPerformanceData, "staffPerformanceData");
+
+async function saveStaffPerformanceStaff(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 1e5);
+    const nik = requiredText(payload.nik, "nik", 80);
+    if (!payload.isEdit) {
+      const existing = await env.OPERATIONS_DB.prepare("SELECT nik FROM staff_performance_staff WHERE nik = ? LIMIT 1").bind(nik).first();
+      if (existing) return apiError(409, "NIK_EXISTS", "NIK sudah terdaftar.", requestId);
+    }
+    await env.OPERATIONS_DB.prepare(
+      `INSERT INTO staff_performance_staff(nik, name, position, outlet_code, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
+         outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
+    ).bind(nik, requiredText(payload.name, "name", 180), requiredText(payload.position, "position", 120), requiredText(payload.outletCode, "outlet_code", 40).toUpperCase(), cleanText(payload.status || "Active", 40)).run();
+    return responseJson({ ok: true, data: { success: true }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_STAFF", "Data staff tidak valid.", requestId);
+  }
+}
+__name(saveStaffPerformanceStaff, "saveStaffPerformanceStaff");
+
+async function deactivateStaffPerformanceStaff(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 1e5);
+    const nik = requiredText(payload.nik, "nik", 80);
+    const result = await env.OPERATIONS_DB.prepare(
+      "UPDATE staff_performance_staff SET status = 'Inactive', updated_at = CURRENT_TIMESTAMP WHERE nik = ?"
+    ).bind(nik).run();
+    if (!Number(result.meta?.changes || 0)) return apiError(404, "STAFF_NOT_FOUND", "Staff tidak ditemukan.", requestId);
+    return responseJson({ ok: true, data: { success: true }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_STAFF", "NIK tidak valid.", requestId);
+  }
+}
+__name(deactivateStaffPerformanceStaff, "deactivateStaffPerformanceStaff");
+
+async function saveStaffPerformanceScores(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 5e5);
+    const date = staffPerformanceDate(payload.date, "date");
+    const scores = limitedArray(payload.scores || [], "scores", 300);
+    const statements = scores.map((score) => {
+      const nik = requiredText(score.nik, "nik", 80);
+      const indicatorId = requiredText(score.indId, "indicator_id", 100);
+      return env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_scores(
+           transaction_id, score_date, nik, indicator_id, achievement, final_score, note, migrated_from, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'CLOUDFLARE', CURRENT_TIMESTAMP)
+         ON CONFLICT(score_date, nik, indicator_id) DO UPDATE SET
+           achievement = excluded.achievement, final_score = excluded.final_score,
+           note = excluded.note, migrated_from = 'CLOUDFLARE', updated_at = CURRENT_TIMESTAMP`
+      ).bind(`${date}_${nik}_${indicatorId}`, date, nik, indicatorId, cleanText(score.achievement, 1000), Number.isFinite(Number(score.score)) ? Number(score.score) : 0, cleanText(score.note, 2000));
+    });
+    const writtenRows = await runStatementBatches(env.OPERATIONS_DB, statements);
+    return responseJson({ ok: true, data: { success: true, writtenRows }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_SCORES", "Nilai staff tidak valid.", requestId);
+  }
+}
+__name(saveStaffPerformanceScores, "saveStaffPerformanceScores");
+
 /* ===================== END BERITA ACARA ADD-ON ===================== */
 
 async function route(request, env) {
@@ -2046,11 +2347,21 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/v1/ba/submission") return getBeritaAcaraSubmission(url, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/create") return createMidtransAssetPayment(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/claim") return claimMidtransAssetPayment(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/migrate/master") return migrateStaffPerformanceMaster(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/migrate/scores") return migrateStaffPerformanceScores(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff") return saveStaffPerformanceStaff(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/deactivate") return deactivateStaffPerformanceStaff(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/scores") return saveStaffPerformanceScores(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
   if (url.pathname === "/v1/sync/status") return masterSyncStatus(env, requestId);
   if (url.pathname === "/v1/migrate/stock-movements/status") return stockMovementMigrationStatus(env, requestId);
+  if (url.pathname === "/v1/staff-performance/migrate/status") return staffPerformanceMigrationStatus(url, env, requestId);
+  if (url.pathname === "/v1/staff-performance/bootstrap") return staffPerformanceBootstrap(url, env, requestId);
+  if (url.pathname === "/v1/staff-performance/leaderboard") return staffPerformanceLeaderboard(url, env, requestId);
+  if (url.pathname === "/v1/staff-performance/daily-stats") return staffPerformanceDailyStats(url, env, requestId);
+  if (url.pathname === "/v1/staff-performance/data") return staffPerformanceData(url, env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
   if (url.pathname === "/v1/stock-card") return listStockCard(url, env, requestId);

@@ -36,6 +36,8 @@ const chatBackend = await text('docs/Code.gs');
 const inventoryWorker = await text('cloudflare/inventory-api/src/index.js');
 const stockCardHtml = await text('docs/stock-card.html');
 const frontendShowcase = await text('docs/showcaselog.html');
+const staffPerformanceHtml = await text('docs/staff-performance.html');
+const staffPerformanceMigration = await text('gas/StaffPerformanceCloudflareMigration.gs');
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
 }
@@ -1037,6 +1039,21 @@ for (const action of ['lostFoundBootstrap', 'lostFoundOutlets', 'lostFoundItems'
 for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'salesAnalysisTargets', 'salesAnalysisUploadDailyTargets', 'salesAnalysisSaveDailyTargets', 'salesAnalysisDailyReport', 'salesAnalysisSaveDaily', 'salesAnalysisSaveWeekly', 'salesAnalysisSaveMonthly', 'salesAnalysisSaveGlobal', 'salesAnalysisAddGlobal', 'salesAnalysisDeleteGlobal']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
   if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
+}
+for (const action of ['staffPerformanceBootstrap', 'staffPerformanceLeaderboard', 'staffPerformanceDailyStats', 'staffPerformanceData', 'staffPerformanceSaveStaff', 'staffPerformanceDeleteStaff', 'staffPerformanceSubmitScore']) {
+  if (!allowedActions.has(action)) failures.push(`Endpoint Staff Performance '${action}' belum tersedia`);
+  if (!staffPerformanceHtml.includes(`'${action}'`)) failures.push(`UI Staff Performance belum memanggil '${action}'`);
+}
+if (!staffPerformanceHtml.includes('src="config.js"') || !staffPerformanceHtml.includes('src="api-client.js')) failures.push('Staff Performance belum terhubung ke Bakerzin Workspace');
+if (!staffPerformanceHtml.includes("localStorage.getItem('bakerzin_session')")) failures.push('Staff Performance belum memakai sesi Bakerzin Workspace');
+if (staffPerformanceHtml.includes('google.script.run') || staffPerformanceHtml.includes('BigQuery')) failures.push('Runtime Staff Performance masih memiliki jalur Google Apps Script lama atau BigQuery');
+if (!inventoryWorker.includes('/v1/staff-performance/bootstrap') || !inventoryWorker.includes('/v1/staff-performance/scores') || !inventoryWorker.includes('/v1/staff-performance/migrate/status')) failures.push('Worker Staff Performance belum menyediakan endpoint runtime dan progres migrasi');
+if (!staffPerformanceMigration.includes('startStaffPerformanceCloudflareMigration') || !staffPerformanceMigration.includes('checkStaffPerformanceCloudflareMigrationProgress') || !staffPerformanceMigration.includes('retryStaffPerformanceCloudflareMigration')) failures.push('Skrip migrasi Staff Performance belum menyediakan start, progress, dan retry');
+let staffPerformanceInlineIndex = 0;
+for (const match of staffPerformanceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  staffPerformanceInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/staff-performance.html#inline-${staffPerformanceInlineIndex}` }); }
+  catch (error) { failures.push(`docs/staff-performance.html inline script ${staffPerformanceInlineIndex}: ${error.message}`); }
 }
 if (!salesAnalysisHtml.includes('id="btnUploadDailyTargets"') || !salesAnalysisHtml.includes('id="btnCopyDailyReport"')) {
   failures.push('Kontrol BIHQ untuk upload target harian dan Copy Daily Report belum lengkap');
