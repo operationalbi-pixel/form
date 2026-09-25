@@ -1777,6 +1777,25 @@ function midtransAuthorization(serverKey) {
 }
 __name(midtransAuthorization, "midtransAuthorization");
 
+async function fetchMidtransWithRetry(url, options) {
+  const maximumAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === maximumAttempts) return response;
+      if (response.body) await response.body.cancel();
+    } catch (error) {
+      lastError = error;
+      if (attempt === maximumAttempts) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** (attempt - 1)));
+  }
+  throw lastError || new Error("MIDTRANS_NETWORK_ERROR");
+}
+__name(fetchMidtransWithRetry, "fetchMidtransWithRetry");
+
 function normalizeMidtransStatus(transactionStatus, fraudStatus) {
   const status = cleanText(transactionStatus, 40).toLowerCase();
   const fraud = cleanText(fraudStatus, 40).toLowerCase();
@@ -1806,7 +1825,7 @@ async function verifyMidtransSignature(payload, serverKey) {
 __name(verifyMidtransSignature, "verifyMidtransSignature");
 
 async function fetchMidtransTransaction(orderId, config) {
-  const response = await fetch(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
+  const response = await fetchMidtransWithRetry(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
     headers: { authorization: midtransAuthorization(config.serverKey), accept: "application/json" }
   });
   const payload = await response.json().catch(() => ({}));
@@ -1867,7 +1886,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
      VALUES (?, ?, 'IDR', 'PENDING', ?, ?, ?, ?, ?)`
   ).bind(orderId, amount, customerName, customerEmail, outlet || null, nik || null, config.environment).run();
   try {
-    const response = await fetch(`${config.snapBase}/snap/v1/transactions`, {
+    const response = await fetchMidtransWithRetry(`${config.snapBase}/snap/v1/transactions`, {
       method: "POST",
       headers: {
         authorization: midtransAuthorization(config.serverKey),
