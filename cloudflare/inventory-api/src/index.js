@@ -1754,12 +1754,262 @@ async function getBeritaAcaraSubmission(url, env, requestId) {
 }
 __name(getBeritaAcaraSubmission, "getBeritaAcaraSubmission");
 
+var MAX_MIDTRANS_PAYLOAD_BYTES = 64 * 1024;
+
+function midtransConfig(env) {
+  const serverKey = cleanText(env.MIDTRANS_SERVER_KEY, 512);
+  const clientKey = cleanText(env.MIDTRANS_CLIENT_KEY, 512);
+  const environment = cleanText(env.MIDTRANS_ENVIRONMENT || "sandbox", 20).toLowerCase();
+  if (!serverKey || !clientKey) throw new Error("MIDTRANS_NOT_CONFIGURED");
+  if (environment !== "sandbox" && environment !== "production") throw new Error("INVALID_MIDTRANS_ENVIRONMENT");
+  return {
+    serverKey,
+    clientKey,
+    environment,
+    apiBase: environment === "production" ? "https://api.midtrans.com" : "https://api.sandbox.midtrans.com",
+    snapBase: environment === "production" ? "https://app.midtrans.com" : "https://app.sandbox.midtrans.com"
+  };
+}
+__name(midtransConfig, "midtransConfig");
+
+function midtransAuthorization(serverKey) {
+  return `Basic ${btoa(`${serverKey}:`)}`;
+}
+__name(midtransAuthorization, "midtransAuthorization");
+
+function normalizeMidtransStatus(transactionStatus, fraudStatus) {
+  const status = cleanText(transactionStatus, 40).toLowerCase();
+  const fraud = cleanText(fraudStatus, 40).toLowerCase();
+  if (status === "settlement" || status === "capture" && (!fraud || fraud === "accept")) return "PAID";
+  if (status === "deny" || status === "cancel" || status === "failure") return "FAILED";
+  if (status === "expire") return "EXPIRED";
+  if (status === "refund" || status === "partial_refund") return "REFUNDED";
+  return "PENDING";
+}
+__name(normalizeMidtransStatus, "normalizeMidtransStatus");
+
+async function sha512Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-512", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+__name(sha512Hex, "sha512Hex");
+
+async function verifyMidtransSignature(payload, serverKey) {
+  const orderId = cleanText(payload?.order_id, 100);
+  const statusCode = cleanText(payload?.status_code, 10);
+  const grossAmount = cleanText(payload?.gross_amount, 40);
+  const supplied = cleanText(payload?.signature_key, 256).toLowerCase();
+  if (!orderId || !statusCode || !grossAmount || !supplied) return false;
+  const expected = await sha512Hex(`${orderId}${statusCode}${grossAmount}${serverKey}`);
+  return secureEqual(supplied, expected);
+}
+__name(verifyMidtransSignature, "verifyMidtransSignature");
+
+async function fetchMidtransTransaction(orderId, config) {
+  const response = await fetch(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
+    headers: { authorization: midtransAuthorization(config.serverKey), accept: "application/json" }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(cleanText(payload?.status_message || `MIDTRANS_STATUS_${response.status}`, 300));
+  return payload;
+}
+__name(fetchMidtransTransaction, "fetchMidtransTransaction");
+
+async function persistMidtransStatus(env, existing, payload) {
+  const grossAmount = Math.round(Number(payload?.gross_amount || 0));
+  if (!Number.isFinite(grossAmount) || grossAmount !== Number(existing.amount)) throw new Error("MIDTRANS_AMOUNT_MISMATCH");
+  const status = normalizeMidtransStatus(payload?.transaction_status, payload?.fraud_status);
+  await env.OPERATIONS_DB.prepare(
+    `UPDATE ba_asset_payments
+        SET status = ?, transaction_status = ?, fraud_status = ?, payment_type = ?,
+            midtrans_transaction_id = ?, paid_at = CASE WHEN ? = 'PAID' THEN COALESCE(paid_at, CURRENT_TIMESTAMP) ELSE paid_at END,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE order_id = ?`
+  ).bind(
+    status,
+    cleanText(payload?.transaction_status, 40) || null,
+    cleanText(payload?.fraud_status, 40) || null,
+    cleanText(payload?.payment_type, 60) || null,
+    cleanText(payload?.transaction_id, 120) || null,
+    status,
+    existing.order_id
+  ).run();
+  return status;
+}
+__name(persistMidtransStatus, "persistMidtransStatus");
+
+async function createMidtransAssetPayment(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
+    return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Data pembayaran tidak valid.", requestId);
+  }
+  let config;
+  try {
+    config = midtransConfig(env);
+  } catch (error) {
+    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+  }
+  const amount = Math.round(Number(payload?.amount || 0));
+  const customerName = cleanText(payload?.customerName, 120);
+  const customerEmail = cleanText(payload?.customerEmail, 180).toLowerCase();
+  const outlet = cleanText(payload?.outlet, 80).toUpperCase();
+  const nik = cleanText(payload?.nik, 80);
+  if (!Number.isSafeInteger(amount) || amount < 1) return apiError(400, "INVALID_AMOUNT", "Nominal pembayaran harus lebih dari Rp 0.", requestId);
+  if (!customerName || !customerEmail || !/^\S+@\S+\.\S+$/.test(customerEmail)) {
+    return apiError(400, "INVALID_CUSTOMER", "Nama dan email pembayar wajib valid.", requestId);
+  }
+  const orderId = `BA-ASSET-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  await env.OPERATIONS_DB.prepare(
+    `INSERT INTO ba_asset_payments(order_id, amount, currency, status, customer_name, customer_email, outlet, nik, environment)
+     VALUES (?, ?, 'IDR', 'PENDING', ?, ?, ?, ?, ?)`
+  ).bind(orderId, amount, customerName, customerEmail, outlet || null, nik || null, config.environment).run();
+  try {
+    const response = await fetch(`${config.snapBase}/snap/v1/transactions`, {
+      method: "POST",
+      headers: {
+        authorization: midtransAuthorization(config.serverKey),
+        accept: "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        transaction_details: { order_id: orderId, gross_amount: amount },
+        item_details: [{ id: "BA-ASSET", price: amount, quantity: 1, name: "Pembayaran Penjualan Asset" }],
+        customer_details: { first_name: customerName, email: customerEmail },
+        custom_field1: outlet,
+        custom_field2: nik
+      })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.token) throw new Error(cleanText(result?.error_messages?.join("; ") || result?.status_message || `MIDTRANS_CREATE_${response.status}`, 500));
+    await env.OPERATIONS_DB.prepare(
+      `UPDATE ba_asset_payments SET snap_token = ?, redirect_url = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?`
+    ).bind(cleanText(result.token, 512), cleanText(result.redirect_url, 1e3) || null, orderId).run();
+    return responseJson({
+      ok: true,
+      payment: {
+        orderId,
+        amount,
+        status: "PENDING",
+        token: result.token,
+        clientKey: config.clientKey,
+        snapJsUrl: `${config.snapBase}/snap/snap.js`,
+        environment: config.environment
+      },
+      requestId
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await env.OPERATIONS_DB.prepare(
+      "UPDATE ba_asset_payments SET status = 'FAILED', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?"
+    ).bind(cleanText(message, 500), orderId).run();
+    console.error(JSON.stringify({ event: "midtrans_create_failed", orderId, message, requestId }));
+    return apiError(502, "MIDTRANS_CREATE_FAILED", "Checkout Midtrans gagal dibuat.", requestId);
+  }
+}
+__name(createMidtransAssetPayment, "createMidtransAssetPayment");
+
+async function midtransAssetPaymentStatus(url, env, requestId) {
+  const orderId = cleanText(url.searchParams.get("order_id"), 100);
+  if (!orderId) return apiError(400, "INVALID_ORDER_ID", "order_id wajib diisi.", requestId);
+  let payment = await env.OPERATIONS_DB.prepare(
+    `SELECT order_id, amount, currency, status, transaction_status, payment_type, paid_at, created_at, updated_at
+       FROM ba_asset_payments WHERE order_id = ? LIMIT 1`
+  ).bind(orderId).first();
+  if (!payment) return apiError(404, "PAYMENT_NOT_FOUND", "Pembayaran tidak ditemukan.", requestId);
+  if (payment.status === "PENDING") {
+    try {
+      const config = midtransConfig(env);
+      const remote = await fetchMidtransTransaction(orderId, config);
+      await persistMidtransStatus(env, payment, remote);
+      payment = await env.OPERATIONS_DB.prepare(
+        `SELECT order_id, amount, currency, status, transaction_status, payment_type, paid_at, created_at, updated_at
+           FROM ba_asset_payments WHERE order_id = ? LIMIT 1`
+      ).bind(orderId).first();
+    } catch (error) {
+      console.log(JSON.stringify({ event: "midtrans_status_pending", orderId, message: error instanceof Error ? error.message : String(error), requestId }));
+    }
+  }
+  return responseJson({ ok: true, payment, requestId });
+}
+__name(midtransAssetPaymentStatus, "midtransAssetPaymentStatus");
+
+async function claimMidtransAssetPayment(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
+    return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Data penggunaan pembayaran tidak valid.", requestId);
+  }
+  const orderId = cleanText(payload?.orderId, 100);
+  const submissionId = cleanText(payload?.submissionId, 160);
+  const amount = Math.round(Number(payload?.amount || 0));
+  if (!orderId || !submissionId || !Number.isSafeInteger(amount) || amount < 1) {
+    return apiError(400, "INVALID_PAYMENT_CLAIM", "Order, submission, dan nominal pembayaran wajib valid.", requestId);
+  }
+  const result = await env.OPERATIONS_DB.prepare(
+    `UPDATE ba_asset_payments
+        SET consumed_by_submission = ?, consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+      WHERE order_id = ? AND status = 'PAID' AND amount = ?
+        AND (
+          consumed_by_submission IS NULL
+          OR consumed_by_submission = ?
+          OR NOT EXISTS (
+            SELECT 1 FROM ba_submissions b WHERE b.submission_id = ba_asset_payments.consumed_by_submission
+          )
+        )`
+  ).bind(submissionId, orderId, amount, submissionId).run();
+  if (Number(result.meta?.changes || 0) !== 1) {
+    return apiError(409, "PAYMENT_ALREADY_USED", "Pembayaran belum berhasil atau sudah digunakan oleh Berita Acara lain.", requestId);
+  }
+  return responseJson({ ok: true, payment: { orderId, amount, status: "PAID", submissionId }, requestId });
+}
+__name(claimMidtransAssetPayment, "claimMidtransAssetPayment");
+
+async function midtransWebhook(request, env, requestId) {
+  let payload;
+  try {
+    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
+  } catch {
+    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi Midtrans tidak valid.", requestId);
+  }
+  let config;
+  try {
+    config = midtransConfig(env);
+  } catch (error) {
+    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+  }
+  if (!await verifyMidtransSignature(payload, config.serverKey)) {
+    return apiError(401, "INVALID_MIDTRANS_SIGNATURE", "Tanda tangan notifikasi tidak valid.", requestId);
+  }
+  const orderId = cleanText(payload?.order_id, 100);
+  const existing = await env.OPERATIONS_DB.prepare(
+    "SELECT order_id, amount, status FROM ba_asset_payments WHERE order_id = ? LIMIT 1"
+  ).bind(orderId).first();
+  if (!existing) return apiError(404, "PAYMENT_NOT_FOUND", "Pembayaran tidak ditemukan.", requestId);
+  try {
+    const verified = await fetchMidtransTransaction(orderId, config);
+    const status = await persistMidtransStatus(env, existing, verified);
+    console.log(JSON.stringify({ event: "midtrans_webhook_processed", orderId, status, requestId }));
+    return responseJson({ ok: true, orderId, status, requestId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ event: "midtrans_webhook_failed", orderId, message, requestId }));
+    return apiError(400, "MIDTRANS_VERIFICATION_FAILED", "Verifikasi pembayaran gagal.", requestId);
+  }
+}
+__name(midtransWebhook, "midtransWebhook");
+
 /* ===================== END BERITA ACARA ADD-ON ===================== */
 
 async function route(request, env) {
   const requestId = request.headers.get("cf-ray") || crypto.randomUUID();
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") return health(env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/webhook") return midtransWebhook(request, env, requestId);
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
@@ -1775,6 +2025,9 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/v1/ba/migrate/status") return beritaAcaraMigrationStatus(env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/submissions") return listBeritaAcaraSubmissions(url, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/submission") return getBeritaAcaraSubmission(url, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/create") return createMidtransAssetPayment(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/claim") return claimMidtransAssetPayment(request, env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
   if (url.pathname === "/v1/sync/status") return masterSyncStatus(env, requestId);
@@ -1808,6 +2061,8 @@ export {
   buildCurrentShowcaseSummary,
   buildShowcaseSummary,
   index_default as default,
-  normalizeMovement
+  normalizeMidtransStatus,
+  normalizeMovement,
+  verifyMidtransSignature
 };
 //# sourceMappingURL=index.js.map

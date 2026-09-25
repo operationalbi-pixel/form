@@ -310,14 +310,14 @@
 
     // --- FLOW DEFINITIONS (SINKRON DENGAN BACKEND) ---
     const FLOW_FNB_REQUIRED = [
-        'Waste Pcs To Pcs', 'Penjualan & Dispose Asset', 
+        'Waste Pcs To Pcs',
         'Purchasing Non Supplier', 'Test Food', 'Revisi Stock Opname'
     ];
     
     const FLOW_AM_ONLY = [
         'KOL Foodies', 'Void', 'Konsumsi General Cleaning', 'Quotation', 'Invoice',
         'Refund Customer', 'Komplain Customer', 'Minute of Meeting', 'Customer Entertain',
-        'Discount Karyawan', 'Cancel Online'
+        'Discount Karyawan', 'Cancel Online', 'Penjualan & Dispose Asset'
     ];
 
     function initializeDashboard(user) {
@@ -715,7 +715,10 @@
         } else if (item.type === 'Konsumsi General Cleaning') {
             customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TANGGAL GC</label><div class="font-medium border-b pb-1">${jsonData.tanggalGC || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">JML PESERTA</label><div class="font-medium border-b pb-1">${jsonData.jumlahPeserta || '-'} Orang</div></div></div>${renderItemTable(item.type, jsonData.items, jsonData.grandTotal, true)}`;
         } else if (item.type === 'Penjualan & Dispose Asset') {
-            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TINDAKAN</label><div class="font-medium border-b pb-1">${jsonData.tindakan || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL BA</label><div class="font-medium border-b pb-1">${jsonData.tanggalBA || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>${renderAssetTable(jsonData.items, jsonData.grandTotalJual)}`;
+            const paymentProof = jsonData.paymentReceipt
+                ? `<a href="${jsonData.paymentReceipt}" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-emerald-700 font-bold hover:underline"><i class="fa-solid fa-receipt"></i> Lihat bukti pembayaran</a>`
+                : '<span class="font-bold text-gray-400">Tidak diperlukan / belum tersedia</span>';
+            customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">TINDAKAN</label><div class="font-medium border-b pb-1">${jsonData.tindakan || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">TANGGAL BA</label><div class="font-medium border-b pb-1">${jsonData.tanggalBA || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">STATUS PEMBAYARAN</label><div class="font-bold border-b pb-1 ${jsonData.paymentConfirmed ? 'text-emerald-700' : 'text-gray-500'}">${jsonData.paymentConfirmed ? 'Dikonfirmasi oleh pengaju' : 'Tidak diperlukan / belum dikonfirmasi'}</div></div><div><label class="block text-xs font-bold text-gray-400">BUKTI PEMBAYARAN</label><div class="border-b pb-1">${paymentProof}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>${renderAssetTable(jsonData.items, jsonData.grandTotalJual)}`;
         } else if (item.type === 'Refund Customer') {
             customContent = `<div class="grid grid-cols-2 gap-4 mb-4"><div><label class="block text-xs font-bold text-gray-400">CUSTOMER</label><div class="font-medium border-b pb-1">${jsonData.namaCustomer || '-'} (${jsonData.noTelp})</div></div><div><label class="block text-xs font-bold text-gray-400">JUMLAH REFUND</label><div class="font-medium border-b pb-1 text-blue-700 font-bold">Rp ${jsonData.jumlahRefund || '0'}</div></div><div><label class="block text-xs font-bold text-gray-400">BANK</label><div class="font-medium border-b pb-1">${jsonData.namaBank || '-'} - ${jsonData.noRek || '-'}</div></div><div><label class="block text-xs font-bold text-gray-400">ATAS NAMA</label><div class="font-medium border-b pb-1">${jsonData.atasNama || '-'}</div></div><div class="col-span-2"><label class="block text-xs font-bold text-gray-400">ALASAN</label><div class="p-2 bg-gray-50 rounded border text-gray-700 italic">${jsonData.alasan || '-'}</div></div></div>`;
         } 

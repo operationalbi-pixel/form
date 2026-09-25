@@ -108,9 +108,27 @@
             </div>
         </div>
 
+        <!-- Pembayaran asset -->
+        <div id="paymentSection" class="mt-8 rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-4">
+            <div>
+                <h3 class="font-bold text-emerald-900">Pembayaran Asset</h3>
+                <p class="mt-1 text-xs text-emerald-800">Nominal checkout mengikuti Grand Total Harga Jual dan diverifikasi otomatis oleh Midtrans.</p>
+            </div>
+            <div>
+                <label for="paymentEmail" class="mb-1 block text-xs font-bold uppercase text-emerald-900">Email penerima bukti pembayaran</label>
+                <input type="email" id="paymentEmail" autocomplete="email" placeholder="nama@email.com" class="w-full rounded border border-emerald-200 bg-white p-2 outline-none focus:border-emerald-600">
+            </div>
+            <button type="button" id="btnAssetPayment" class="w-full rounded-lg bg-emerald-600 px-4 py-3 font-bold text-white shadow transition hover:bg-emerald-700 active:scale-[0.99]">
+                LAKUKAN PEMBAYARAN ASSET
+            </button>
+            <div id="paymentVerification" class="hidden rounded-lg border border-emerald-200 bg-white p-3">
+                <p id="paymentStatus" class="text-xs font-medium text-gray-600">Checkout Midtrans belum dibuat.</p>
+            </div>
+        </div>
+
         <!-- Tombol Submit -->
-        <div class="mt-8">
-            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SIMPAN & KIRIM</button>
+        <div class="mt-4">
+            <button type="submit" id="btnSubmit" disabled class="w-full cursor-not-allowed bg-gradient-to-r from-gray-400 to-gray-500 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SELESAIKAN PEMBAYARAN DAHULU</button>
         </div>
     </form>
 </div>
@@ -120,6 +138,12 @@
         // --- INITIALIZATION & USER DATA (FIXED) ---
         const user = window.GLOBAL_USER;
         const existing = window.EXISTING_DATA;
+        let existingPayment = null;
+        let paymentOrderId = '';
+        let paymentAmount = 0;
+        let paymentConfirmed = false;
+        let paymentStatusTimer = null;
+        let snapScriptPromise = null;
         
         // Auto Populate User Data
         if (user) {
@@ -191,8 +215,9 @@
         };
 
         window.calcRow = function(tr) {
+            const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
             const hargaJual = window.parseRupiah(tr.querySelector('.harga-jual-input').value);
-            tr.dataset.totalJual = hargaJual;
+            tr.dataset.totalJual = qty * hargaJual;
             window.recalcTotal();
         }
 
@@ -204,6 +229,14 @@
                 tr.querySelector('.index-cell').textContent = index + 1; // Renumbering
             });
             document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+            if (paymentOrderId && grand !== paymentAmount && !existing) {
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                clearTimeout(paymentStatusTimer);
+                setPaymentStatus('Grand Total berubah. Buat pembayaran baru dengan nominal terbaru.', 'error');
+                refreshSubmitPaymentGate();
+            }
         }
 
         // Event Listener untuk Tombol Tambah Baris (FIXED)
@@ -252,9 +285,171 @@
 
         document.getElementById('btnAddPhoto').addEventListener('click', () => window.addPhotoSlot());
 
+        function setPaymentStatus(message, tone = 'normal') {
+            const status = document.getElementById('paymentStatus');
+            status.textContent = message;
+            status.className = tone === 'success'
+                ? 'text-xs font-bold text-emerald-700'
+                : tone === 'error'
+                    ? 'text-xs font-bold text-red-700'
+                    : 'text-xs font-medium text-gray-600';
+        }
+
+        function refreshSubmitPaymentGate() {
+            const submit = document.getElementById('btnSubmit');
+            if (existing) {
+                submit.disabled = false;
+                return;
+            }
+
+            const action = document.querySelector('[name="tindakan"]').value;
+            if (action === 'Dispose') {
+                submit.disabled = false;
+                submit.textContent = 'SIMPAN & KIRIM';
+                submit.classList.remove('cursor-not-allowed', 'from-gray-400', 'to-gray-500');
+                submit.classList.add('from-red-900', 'to-red-800', 'hover:from-red-800', 'hover:to-red-700');
+                return;
+            }
+
+            const ready = paymentConfirmed === true && paymentOrderId && paymentAmount === window.parseRupiah(document.getElementById('grandTotal').textContent);
+            submit.disabled = !ready;
+            submit.textContent = ready ? 'SIMPAN & KIRIM' : 'SELESAIKAN PEMBAYARAN DAHULU';
+            submit.classList.toggle('cursor-not-allowed', !ready);
+            submit.classList.toggle('from-gray-400', !ready);
+            submit.classList.toggle('to-gray-500', !ready);
+            submit.classList.toggle('from-red-900', ready);
+            submit.classList.toggle('to-red-800', ready);
+            submit.classList.toggle('hover:from-red-800', ready);
+            submit.classList.toggle('hover:to-red-700', ready);
+            if (ready) setPaymentStatus('Pembayaran berhasil diverifikasi Midtrans. Form dapat disimpan dan dikirim.', 'success');
+        }
+
+        function runServer(functionName, ...args) {
+            return new Promise((resolve, reject) => {
+                google.script.run
+                    .withSuccessHandler(resolve)
+                    .withFailureHandler(error => reject(new Error(error && error.message ? error.message : String(error))))
+                    [functionName](...args);
+            });
+        }
+
+        function loadSnapScript(url, clientKey) {
+            if (window.snap) return Promise.resolve();
+            if (snapScriptPromise) return snapScriptPromise;
+            snapScriptPromise = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = url;
+                script.dataset.clientKey = clientKey;
+                script.onload = resolve;
+                script.onerror = () => reject(new Error('Library Midtrans Snap gagal dimuat.'));
+                document.head.appendChild(script);
+            });
+            return snapScriptPromise;
+        }
+
+        async function checkPaymentStatus(showPendingMessage = true) {
+            if (!paymentOrderId) return false;
+            try {
+                const payment = await runServer('getAssetMidtransPaymentStatus', paymentOrderId, window.GLOBAL_USER);
+                if (payment && payment.status === 'PAID' && Number(payment.amount) === paymentAmount) {
+                    paymentConfirmed = true;
+                    clearTimeout(paymentStatusTimer);
+                    refreshSubmitPaymentGate();
+                    return true;
+                }
+                paymentConfirmed = false;
+                refreshSubmitPaymentGate();
+                if (showPendingMessage) setPaymentStatus('Pembayaran belum diterima. Selesaikan checkout Midtrans.', 'normal');
+            } catch (error) {
+                if (showPendingMessage) setPaymentStatus(error.message || 'Status pembayaran belum dapat diperiksa.', 'error');
+            }
+            return false;
+        }
+
+        function pollPaymentStatus(attempt = 0) {
+            clearTimeout(paymentStatusTimer);
+            if (!paymentOrderId || paymentConfirmed || attempt >= 90) return;
+            paymentStatusTimer = setTimeout(async () => {
+                const paid = await checkPaymentStatus(false);
+                if (!paid) pollPaymentStatus(attempt + 1);
+            }, attempt < 10 ? 2000 : 5000);
+        }
+
+        document.getElementById('btnAssetPayment').addEventListener('click', async function() {
+            const expectedAmount = window.parseRupiah(document.getElementById('grandTotal').textContent);
+            const email = document.getElementById('paymentEmail').value.trim();
+            if (expectedAmount <= 0) {
+                document.getElementById('paymentVerification').classList.remove('hidden');
+                setPaymentStatus('Isi Harga Jual asset terlebih dahulu sebelum membuka pembayaran.', 'error');
+                return;
+            }
+            if (!/^\S+@\S+\.\S+$/.test(email)) {
+                document.getElementById('paymentVerification').classList.remove('hidden');
+                setPaymentStatus('Masukkan email penerima bukti pembayaran yang valid.', 'error');
+                document.getElementById('paymentEmail').focus();
+                return;
+            }
+
+            const paymentButton = document.getElementById('btnAssetPayment');
+            paymentButton.disabled = true;
+            paymentButton.textContent = 'MENYIAPKAN MIDTRANS...';
+            document.getElementById('paymentVerification').classList.remove('hidden');
+            setPaymentStatus(`Membuat checkout ${window.formatRupiah(expectedAmount)}...`);
+            try {
+                const payment = await runServer('createAssetMidtransPayment', { amount: expectedAmount, email: email }, window.GLOBAL_USER);
+                paymentOrderId = payment.orderId;
+                paymentAmount = Number(payment.amount);
+                paymentConfirmed = false;
+                await loadSnapScript(payment.snapJsUrl, payment.clientKey);
+                setPaymentStatus(`Checkout ${window.formatRupiah(paymentAmount)} dibuka. Pilih metode pembayaran dan selesaikan transaksi.`);
+                window.snap.pay(payment.token, {
+                    onSuccess: function() {
+                        setPaymentStatus('Pembayaran diterima Midtrans. Sedang memverifikasi status server...');
+                        checkPaymentStatus();
+                        pollPaymentStatus();
+                    },
+                    onPending: function() {
+                        setPaymentStatus('Pembayaran masih menunggu penyelesaian. Status akan diperiksa otomatis.');
+                        pollPaymentStatus();
+                    },
+                    onError: function() {
+                        setPaymentStatus('Pembayaran gagal. Klik tombol pembayaran untuk mencoba kembali.', 'error');
+                    },
+                    onClose: function() {
+                        setPaymentStatus('Checkout ditutup. Jika sudah membayar, status akan diperiksa otomatis.');
+                        checkPaymentStatus();
+                        pollPaymentStatus();
+                    }
+                });
+                pollPaymentStatus();
+            } catch (error) {
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                setPaymentStatus(error.message || 'Checkout Midtrans gagal dibuat.', 'error');
+            } finally {
+                paymentButton.disabled = false;
+                paymentButton.textContent = 'LAKUKAN PEMBAYARAN ASSET';
+                refreshSubmitPaymentGate();
+            }
+        });
+
+        document.querySelector('[name="tindakan"]').addEventListener('change', function() {
+            const isSale = this.value === 'Penjualan';
+            document.getElementById('paymentSection').classList.toggle('hidden', this.value === 'Dispose');
+            if (!isSale) {
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                clearTimeout(paymentStatusTimer);
+            }
+            refreshSubmitPaymentGate();
+        });
+
         // --- LOAD EXISTING DATA / INIT DEFAULT ---
         if (existing) {
              let json = {}; try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+             existingPayment = json;
              if(json.tanggalBA) document.getElementById('dateInput').value = json.tanggalBA;
              if(json.tindakan) document.querySelector('[name="tindakan"]').value = json.tindakan;
              if(json.alasan) document.querySelector('[name="alasan"]').value = json.alasan;
@@ -274,6 +469,8 @@
              for(let k in json) {
                 if(k.startsWith('fotoTambahan')) window.addPhotoSlot(json[k], k);
              }
+
+             document.getElementById('paymentSection').classList.add('hidden');
              
              document.getElementById('revisiBadge').classList.remove('hidden');
              document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
@@ -281,6 +478,8 @@
              document.getElementById('btnSubmit').innerHTML = "SIMPAN PERBAIKAN";
              document.getElementById('btnSubmit').classList.replace('from-red-900', 'from-amber-600');
              document.getElementById('btnSubmit').classList.replace('to-red-800', 'to-amber-500');
+             document.getElementById('btnSubmit').disabled = false;
+             document.getElementById('btnSubmit').classList.remove('cursor-not-allowed', 'from-gray-400', 'to-gray-500');
 
         } else {
             window.addItemRow(); 
@@ -312,7 +511,15 @@
                 tindakan: form.querySelector('[name="tindakan"]').value,
                 alasan: form.querySelector('[name="alasan"]').value,
                 items: items,
-                grandTotalJual: document.getElementById('grandTotal').textContent // Total Harga Jual
+                grandTotalJual: document.getElementById('grandTotal').textContent,
+                paymentExpectedAmount: existingPayment && existingPayment.paymentExpectedAmount
+                    ? existingPayment.paymentExpectedAmount
+                    : window.parseRupiah(document.getElementById('grandTotal').textContent),
+                paymentOrderId: existingPayment ? (existingPayment.paymentOrderId || '') : paymentOrderId,
+                paymentConfirmed: existingPayment ? existingPayment.paymentConfirmed === true : paymentConfirmed,
+                paymentConfirmedAt: existingPayment ? (existingPayment.paymentConfirmedAt || null) : null,
+                paymentStatus: existingPayment ? (existingPayment.paymentStatus || '') : (paymentConfirmed ? 'PAID' : 'PENDING'),
+                paymentVerificationMethod: 'MIDTRANS_SERVER_WEBHOOK'
             };
 
             const fileInputs = document.querySelectorAll('.file-input');
