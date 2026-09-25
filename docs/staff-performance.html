@@ -609,23 +609,9 @@
         <h2>Member</h2>
         <p style="color:var(--text-muted); margin-bottom:24px;"> </p>
         
-        <div class="card">
-          <h4 style="margin-bottom:16px; color:var(--primary);">Add Member</h4>
-          <div style="display:grid; grid-template-columns:1fr 2fr 2fr 1.5fr auto; gap:12px; align-items:end;">
-            <div><label style="font-size:11px; font-weight:600;">NIK</label><input type="text" id="stfNik" class="form-control" placeholder="BGXXXXXX"></div>
-            <div><label style="font-size:11px; font-weight:600;">Nama Lengkap</label><input type="text" id="stfNama" class="form-control" placeholder="Nama"></div>
-            <div><label style="font-size:11px; font-weight:600;">Posisi</label>
-              <select id="stfPosisi" class="form-control">
-                 <option>Server</option><option>Captain</option><option>Cashier</option><option>Greeter</option><option>Barista</option>
-              </select>
-            </div>
-            <!-- FIX: Wrapper for Admin Select Replacement -->
-            <div id="divStfOutlet">
-                <label style="font-size:11px; font-weight:600;">Outlet</label>
-                <input type="text" id="stfOutlet" class="form-control" readonly>
-            </div>
-            <button class="btn btn-primary" onclick="saveNewStaff()">+ Simpan</button>
-          </div>
+        <div class="card" style="background:linear-gradient(135deg,#fff7ed,#fff); border-color:#fed7aa;">
+          <h4 style="margin-bottom:8px; color:var(--primary);">Master Data MPP</h4>
+          <p style="color:var(--text-muted); line-height:1.6;">Daftar staff disinkronkan otomatis dari sheet <b>EMP_LIST</b>. Penambahan, perubahan posisi, rotasi outlet, dan status resign dilakukan melalui menu MPP.</p>
         </div>
 
         <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
@@ -636,7 +622,7 @@
         <div class="card">
             <h4 style="margin-bottom:16px;">Staff Aktif</h4>
             <table>
-                <thead><tr><th>NIK</th><th>Nama</th><th style="width:250px;">Posisi</th><th>Outlet</th><th>Status</th><th style="text-align:right;">Aksi</th></tr></thead>
+                <thead><tr><th>NIK</th><th>Nama</th><th style="width:250px;">Posisi</th><th>Outlet</th><th>Status</th><th>Sumber</th></tr></thead>
                 <tbody id="staffTableActive"></tbody>
             </table>
         </div>
@@ -644,7 +630,7 @@
         <div class="card" style="opacity:0.8;">
             <h4 style="margin-bottom:16px; color:var(--text-muted);">Staff Non-Aktif</h4>
             <table>
-                <thead><tr><th>NIK</th><th>Nama</th><th>Posisi</th><th>Outlet</th><th>Status</th><th style="text-align:right;">Aksi</th></tr></thead>
+                <thead><tr><th>NIK</th><th>Nama</th><th>Posisi</th><th>Outlet</th><th>Status</th><th>Sumber</th></tr></thead>
                 <tbody id="staffTableInactive"></tbody>
             </table>
         </div>
@@ -1235,15 +1221,9 @@
        const q=document.getElementById('stfSearch').value.toLowerCase(); const fOut=document.getElementById('stfFilterOutlet')?document.getElementById('stfFilterOutlet').value:'';
        STATE.staffList.forEach(s=>{
           if(fOut && s.Outlet!==fOut) return; if(q && !s.Nama.toLowerCase().includes(q)) return;
-          const posOpts = ["Server","Captain","Cashier","Greeter","Barista"].map(p=>`<option ${s.Posisi===p?'selected':''}>${p}</option>`).join('');
-          const posHtml = `<div id="pv-${s.NIK}"><span>${s.Posisi}</span> <button style="background:none; border:none; cursor:pointer;" onclick="togPos('${s.NIK}')">✏️</button></div><div id="pe-${s.NIK}" class="hidden" style="display:flex; gap:2px;"><select id="ps-${s.NIK}" class="form-control" style="padding:2px;">${posOpts}</select><button style="border:none;background:none;" onclick="savePos('${s.NIK}')">✅</button><button style="border:none;background:none;" onclick="togPos('${s.NIK}')">❌</button></div>`;
-          
-          // FIX: Improved Status Select with Pill Style
+          const posHtml = `<span>${s.Posisi}</span>`;
           const statusClass = s.Status === 'Active' ? 'active' : 'inactive';
-          const statusHtml = `<select class="status-pill ${statusClass}" onchange="updStfStatus('${s.NIK}',this.value, this)">
-                <option value="Active" ${s.Status==='Active'?'selected':''}>ACTIVE</option>
-                <option value="Inactive" ${s.Status!=='Active'?'selected':''}>INACTIVE</option>
-            </select>`;
+          const statusHtml = `<span class="status-pill ${statusClass}">${s.Status==='Active'?'ACTIVE':'INACTIVE'}</span>`;
 
           const row=`<tr>
             <td>${s.NIK}</td>
@@ -1256,10 +1236,7 @@
             <td style="width:200px;">${posHtml}</td>
             <td><span class="badge">${s.Outlet}</span></td>
             <td>${statusHtml}</td>
-            <td style="text-align:right;">
-                <button class="btn btn-outline" style="padding:4px 8px;" onclick="openMut('${s.NIK}','${s.Nama}')">🔄</button> 
-                <button class="btn btn-outline" style="padding:4px 8px; color:var(--danger); border-color:var(--danger);" onclick="delStaff('${s.NIK}')">🗑️</button>
-            </td>
+            <td><span class="badge">MPP · EMP_LIST</span></td>
           </tr>`;
           if(s.Status==='Active') tA.innerHTML+=row; else tI.innerHTML+=row;
        });
