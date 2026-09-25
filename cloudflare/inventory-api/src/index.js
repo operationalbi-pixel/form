@@ -1777,6 +1777,25 @@ function midtransAuthorization(serverKey) {
 }
 __name(midtransAuthorization, "midtransAuthorization");
 
+async function fetchMidtransWithRetry(url, options) {
+  const maximumAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === maximumAttempts) return response;
+      if (response.body) await response.body.cancel();
+    } catch (error) {
+      lastError = error;
+      if (attempt === maximumAttempts) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** (attempt - 1)));
+  }
+  throw lastError || new Error("MIDTRANS_NETWORK_ERROR");
+}
+__name(fetchMidtransWithRetry, "fetchMidtransWithRetry");
+
 function normalizeMidtransStatus(transactionStatus, fraudStatus) {
   const status = cleanText(transactionStatus, 40).toLowerCase();
   const fraud = cleanText(fraudStatus, 40).toLowerCase();
@@ -1806,7 +1825,7 @@ async function verifyMidtransSignature(payload, serverKey) {
 __name(verifyMidtransSignature, "verifyMidtransSignature");
 
 async function fetchMidtransTransaction(orderId, config) {
-  const response = await fetch(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
+  const response = await fetchMidtransWithRetry(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
     headers: { authorization: midtransAuthorization(config.serverKey), accept: "application/json" }
   });
   const payload = await response.json().catch(() => ({}));
@@ -1850,7 +1869,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
   try {
     config = midtransConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
   }
   const amount = Math.round(Number(payload?.amount || 0));
   const customerName = cleanText(payload?.customerName, 120);
@@ -1867,7 +1886,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
      VALUES (?, ?, 'IDR', 'PENDING', ?, ?, ?, ?, ?)`
   ).bind(orderId, amount, customerName, customerEmail, outlet || null, nik || null, config.environment).run();
   try {
-    const response = await fetch(`${config.snapBase}/snap/v1/transactions`, {
+    const response = await fetchMidtransWithRetry(`${config.snapBase}/snap/v1/transactions`, {
       method: "POST",
       headers: {
         authorization: midtransAuthorization(config.serverKey),
@@ -1906,7 +1925,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
       "UPDATE ba_asset_payments SET status = 'FAILED', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?"
     ).bind(cleanText(message, 500), orderId).run();
     console.error(JSON.stringify({ event: "midtrans_create_failed", orderId, message, requestId }));
-    return apiError(502, "MIDTRANS_CREATE_FAILED", "Checkout Midtrans gagal dibuat.", requestId);
+    return apiError(502, "PAYMENT_CREATE_FAILED", "Checkout pembayaran gagal dibuat. Silakan coba kembali.", requestId);
   }
 }
 __name(createMidtransAssetPayment, "createMidtransAssetPayment");
@@ -1974,13 +1993,13 @@ async function midtransWebhook(request, env, requestId) {
   try {
     payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
   } catch {
-    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi Midtrans tidak valid.", requestId);
+    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi pembayaran tidak valid.", requestId);
   }
   let config;
   try {
     config = midtransConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
   }
   if (!await verifyMidtransSignature(payload, config.serverKey)) {
     return apiError(401, "INVALID_MIDTRANS_SIGNATURE", "Tanda tangan notifikasi tidak valid.", requestId);

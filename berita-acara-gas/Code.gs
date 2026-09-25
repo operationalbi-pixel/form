@@ -1313,7 +1313,7 @@ function rekamData(
       } catch (paymentError) {
         return {
           success: false,
-          message: 'Pembayaran Midtrans belum dapat diverifikasi: ' +
+          message: 'Pembayaran belum dapat diverifikasi: ' +
             String(
               paymentError &&
               paymentError.message ||
@@ -1330,7 +1330,7 @@ function rekamData(
       ) {
         return {
           success: false,
-          message: 'Pembayaran Midtrans belum berhasil atau nominalnya tidak sesuai Grand Total.'
+          message: 'Pembayaran belum berhasil atau nominalnya tidak sesuai Grand Total.'
         };
       }
 
@@ -1370,7 +1370,7 @@ function rekamData(
       } catch (claimError) {
         return {
           success: false,
-          message: 'Pembayaran Midtrans tidak dapat dipakai: ' +
+          message: 'Pembayaran tidak dapat dipakai: ' +
             String(
               claimError &&
               claimError.message ||

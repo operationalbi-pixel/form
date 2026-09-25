@@ -36,6 +36,9 @@ assert.ok(form.includes("createAssetMidtransPayment"));
 assert.ok(form.includes("getAssetMidtransPaymentStatus"));
 assert.ok(!form.includes('lynk.id'));
 assert.ok(!form.includes('paymentReceipt'));
+assert.ok(!form.includes('MENYIAPKAN MIDTRANS'));
+assert.ok(!form.includes('Checkout Midtrans'));
+assert.ok(!form.includes('diverifikasi otomatis oleh Midtrans'));
 for (const [index, match] of [...form.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].entries()) {
   const source = match[1].replace(/^\s*<\?!=[\s\S]*?\?>\s*$/gm, '');
   new vm.Script(source, { filename: `BeritaAcaraPenjualanDisposeAssetForm.html#${index + 1}` });
