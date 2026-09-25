@@ -17,7 +17,7 @@
   },
   "vars": {
     "ENVIRONMENT": "cloudflare-primary",
-    "MIDTRANS_ENVIRONMENT": "sandbox"
+    "MIDTRANS_ENVIRONMENT": "production"
   },
   "d1_databases": [
     {
