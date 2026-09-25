@@ -251,6 +251,7 @@ function apiActions_() {
     exportItem: exportStockCardItem,
     showcaseLogBootstrap: getShowcaseLogBootstrap,
     showcaseLogMonitoring: getShowcaseLogMonitoring,
+    showcaseLogAging: getShowcaseLogAging,
     saveShowcaseLog: saveShowcaseLog,
     complete: markTaskComplete
   });
@@ -1303,6 +1304,7 @@ function saveShowcaseLog(token, payload) {
         }});
       });
       insertStockCardRows_(rows);
+      removeScriptCacheKeys_([showcaseAgingCacheKey_(outlet, eventDate)]);
       const hasIn = Boolean(selectedProgress.stockIn || submittedIn);
       const hasSold = Boolean(selectedProgress.sold || submittedSold);
       const hasWaste = Boolean(selectedProgress.waste || submittedWaste);
@@ -1370,7 +1372,7 @@ function buildShowcaseProgressCalendar_(anchorDate, rows) {
 }
 
 function readShowcaseLogSnapshot_(outlet, eventDate) {
-  const body = cloudflareInventoryRequest_('GET', '/v1/showcase-log?' + cloudflareQueryString_({ outlet: outlet, date: eventDate }));
+  const body = cloudflareInventoryRequest_('GET', '/v1/showcase-log?' + cloudflareQueryString_({ outlet: outlet, date: eventDate, current: eventDate === todayIso_() ? 1 : '' }));
   const totals = {}, aging = {}, employeeNames = readEmployeeNameMap_();
   function actorText(actors) {
     const unique = {};
@@ -1389,11 +1391,42 @@ function readShowcaseLogSnapshot_(outlet, eventDate) {
       inUsers: actorText(row.in_actors), soldUsers: actorText(row.sold_actors), wasteUsers: actorText(row.waste_actors)
     };
     if (name) totals[name.toLowerCase()] = value;
-    const age = { previous: row.previous_aging || {}, balance: row.balance_aging || {} };
-    if (code) aging[code] = age;
-    if (name) aging['NAME|' + name.toLowerCase()] = age;
+    if (row.previous_aging || row.balance_aging) {
+      const age = { previous: row.previous_aging || {}, balance: row.balance_aging || {} };
+      if (code) aging[code] = age;
+      if (name) aging['NAME|' + name.toLowerCase()] = age;
+    }
   });
   return { totals: totals, aging: aging, progress: buildShowcaseProgressCalendar_(eventDate, body.progress || []) };
+}
+
+function showcaseAgingCacheKey_(outlet, eventDate) {
+  return 'showcase-aging-v1-' + String(outlet || '').toUpperCase() + '-' + String(eventDate || '');
+}
+
+function getShowcaseLogAging(token, requestedOutlet, requestedDate) {
+  return safe_(function () {
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
+    const outlets = employee.outlet === 'BIHQ' ? readActiveOutlets_() : [employee.outlet];
+    const outlet = resolveStockOutlet_(employee, requestedOutlet, outlets);
+    const eventDate = normalizeDate_(requestedDate, true);
+    const cacheKey = showcaseAgingCacheKey_(outlet, eventDate), cached = readScriptJsonCache_(cacheKey);
+    if (cached) return cached;
+    const body = cloudflareInventoryRequest_('GET', '/v1/showcase-aging?' + cloudflareQueryString_({ outlet: outlet, date: eventDate }));
+    const result = {
+      outlet: outlet, eventDate: eventDate,
+      items: (body.items || []).map(function (row) {
+        return {
+          itemCode: String(row.item_code || '').trim().toUpperCase(), itemName: String(row.item_name || '').trim(),
+          previousAging: row.previous_aging || null, balanceAging: row.balance_aging || null
+        };
+      })
+    };
+    writeScriptJsonCache_(cacheKey, result, 300);
+    return result;
+  });
 }
 
 function readShowcaseAgingBreakdown_(outlet, eventDate) {

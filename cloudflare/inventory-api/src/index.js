@@ -1131,6 +1131,33 @@ function buildShowcaseSummary(rows, eventDate) {
 }
 __name(buildShowcaseSummary, "buildShowcaseSummary");
 
+function buildCurrentShowcaseSummary(rows, balances, eventDate) {
+  const daily = buildShowcaseSummary(rows, eventDate);
+  const states = new Map(daily.map((item) => [cleanText(item.item_code, 80).toUpperCase() || `NAME|${cleanText(item.item_name, 180).toLowerCase()}`, item]));
+  for (const balance of balances || []) {
+    const itemCode = cleanText(balance.item_code, 80).toUpperCase();
+    const itemName = cleanText(balance.item_name, 180);
+    const key = itemCode || `NAME|${itemName.toLowerCase()}`;
+    if (!key) continue;
+    if (!states.has(key)) states.set(key, {
+      item_code: itemCode, item_name: itemName, balance: 0,
+      total_in: 0, total_sold: 0, total_waste: 0,
+      in_actors: [], sold_actors: [], waste_actors: []
+    });
+    const state = states.get(key);
+    const current = Number(balance.current_qty || 0);
+    const dayDelta = Number(state.balance || 0);
+    state.item_code = itemCode || state.item_code;
+    state.item_name = itemName || state.item_name;
+    state.previous_balance = Math.round((current - dayDelta) * 1e6) / 1e6;
+    state.balance = Math.round(current * 1e6) / 1e6;
+    state.previous_aging = null;
+    state.balance_aging = null;
+  }
+  return [...states.values()];
+}
+__name(buildCurrentShowcaseSummary, "buildCurrentShowcaseSummary");
+
 async function readShowcaseProgressRows(env, month, outlet = "") {
   const [year, monthNumber] = month.split("-").map(Number);
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
@@ -1163,7 +1190,33 @@ __name(readShowcaseProgressRows, "readShowcaseProgressRows");
 async function listShowcaseLog(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const eventDate = isoDate(url.searchParams.get("date"));
+  const current = url.searchParams.get("current") === "1";
   if (!outlet || !eventDate) return apiError(400, "INVALID_FILTER", "Outlet dan tanggal Showcase wajib diisi.", requestId);
+  if (current) {
+    const daySql = `SELECT record_id, logical_id, version, record_type, item_code, item_name, direction, quantity,
+                           movement_type, info, event_date, arrival_date, expiry_date, source_file, created_by, created_at
+                      FROM __TABLE__
+                     WHERE outlet_code = ? AND location_code = 'Showcase'
+                       AND record_type = 'MOVEMENT' AND event_date = ?`;
+    const entries = historyDatabasesForRange(env, eventDate, eventDate);
+    const [balances, dayResults, progress] = await Promise.all([
+      env.OPERATIONS_DB.prepare(
+        `SELECT item_code, item_name, current_qty FROM stock_balances
+          WHERE outlet_code = ? AND location_code = 'Showcase'`
+      ).bind(outlet).all(),
+      Promise.all([
+        env.OPERATIONS_DB.prepare(daySql.replace("__TABLE__", "stock_movements")).bind(outlet, eventDate).all(),
+        ...entries.map((entry) => entry.database.prepare(daySql.replace("__TABLE__", "stock_movements_history")).bind(outlet, eventDate).all())
+      ]),
+      readShowcaseProgressRows(env, eventDate.slice(0, 7), outlet)
+    ]);
+    const movements = dayResults.flatMap((result) => result.results || []);
+    return responseJson({
+      ok: true, outlet, eventDate,
+      items: buildCurrentShowcaseSummary(movements, balances.results || [], eventDate),
+      progress, agingPending: true, requestId
+    });
+  }
   const sql = `SELECT record_id, logical_id, version, record_type, item_code, item_name, direction, quantity,
                       movement_type, info, event_date, arrival_date, expiry_date, source_file, created_by, created_at
                  FROM __TABLE__
@@ -1181,6 +1234,30 @@ async function listShowcaseLog(url, env, requestId) {
   return responseJson({ ok: true, outlet, eventDate, items: buildShowcaseSummary(movements, eventDate), progress, requestId });
 }
 __name(listShowcaseLog, "listShowcaseLog");
+
+async function listShowcaseAging(url, env, requestId) {
+  const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
+  const eventDate = isoDate(url.searchParams.get("date"));
+  if (!outlet || !eventDate) return apiError(400, "INVALID_FILTER", "Outlet dan tanggal Showcase wajib diisi.", requestId);
+  const sql = `SELECT record_id, logical_id, version, record_type, item_code, item_name, direction, quantity,
+                      movement_type, info, event_date, arrival_date, expiry_date, source_file, created_by, created_at
+                 FROM __TABLE__
+                WHERE outlet_code = ? AND location_code = 'Showcase'
+                  AND record_type = 'MOVEMENT' AND event_date <= ?`;
+  const entries = historyDatabasesForRange(env, "0000-01-01", eventDate);
+  const results = await Promise.all([
+    env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(outlet, eventDate).all(),
+    ...entries.map((entry) => entry.database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(outlet, eventDate).all())
+  ]);
+  const items = buildShowcaseSummary(results.flatMap((result) => result.results || []), eventDate).map((item) => ({
+    item_code: item.item_code,
+    item_name: item.item_name,
+    previous_aging: item.previous_aging,
+    balance_aging: item.balance_aging
+  }));
+  return responseJson({ ok: true, outlet, eventDate, items, requestId });
+}
+__name(listShowcaseAging, "listShowcaseAging");
 
 async function listShowcaseProgress(url, env, requestId) {
   const month = cleanText(url.searchParams.get("month"), 7);
@@ -1707,6 +1784,7 @@ async function route(request, env) {
   if (url.pathname === "/v1/stock-card") return listStockCard(url, env, requestId);
   if (url.pathname === "/v1/movements") return listMovements(url, env, requestId);
   if (url.pathname === "/v1/showcase-log") return listShowcaseLog(url, env, requestId);
+  if (url.pathname === "/v1/showcase-aging") return listShowcaseAging(url, env, requestId);
   if (url.pathname === "/v1/showcase-progress") return listShowcaseProgress(url, env, requestId);
   if (url.pathname === "/v1/upload-progress") return listUploadProgress(url, env, requestId);
   if (url.pathname === "/v1/mock-recall") return mockRecall(url, env, requestId);
@@ -1727,6 +1805,7 @@ var index_default = {
   }
 };
 export {
+  buildCurrentShowcaseSummary,
   buildShowcaseSummary,
   index_default as default,
   normalizeMovement
