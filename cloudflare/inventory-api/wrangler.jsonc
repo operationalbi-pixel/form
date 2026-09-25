@@ -9,7 +9,8 @@
     "head_sampling_rate": 0.1
   },
   "vars": {
-    "ENVIRONMENT": "cloudflare-primary"
+    "ENVIRONMENT": "cloudflare-primary",
+    "MIDTRANS_ENVIRONMENT": "sandbox"
   },
   "d1_databases": [
     {

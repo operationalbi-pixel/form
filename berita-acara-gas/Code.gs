@@ -591,6 +591,91 @@ function baCloudflareRequest_(
   return body;
 }
 
+function createAssetMidtransPayment(
+  paymentData,
+  userData
+) {
+  const user =
+    requireBaSession_(
+      userData &&
+      userData.BA_SESSION
+    );
+
+  paymentData =
+    paymentData ||
+    {};
+
+  const result =
+    baCloudflareRequest_(
+      'post',
+      '/v1/ba/payments/midtrans/create',
+      {
+        amount:
+          Math.round(
+            Number(
+              paymentData.amount ||
+              0
+            )
+          ),
+        customerName:
+          String(
+            user.NAME ||
+            ''
+          ),
+        customerEmail:
+          String(
+            paymentData.email ||
+            ''
+          ),
+        outlet:
+          String(
+            user.OUTLET ||
+            ''
+          ),
+        nik:
+          String(
+            user.NIK ||
+            ''
+          )
+      }
+    );
+
+  return result.payment;
+}
+
+function getAssetMidtransPaymentStatus(
+  orderId,
+  userData
+) {
+  requireBaSession_(
+    userData &&
+    userData.BA_SESSION
+  );
+
+  const safeOrderId =
+    String(
+      orderId ||
+      ''
+    ).trim();
+
+  if (!safeOrderId) {
+    throw new Error(
+      'Order pembayaran tidak valid.'
+    );
+  }
+
+  const result =
+    baCloudflareRequest_(
+      'get',
+      '/v1/ba/payments/midtrans/status?order_id=' +
+      encodeURIComponent(
+        safeOrderId
+      )
+    );
+
+  return result.payment;
+}
+
 function baCloudflareAppend_(row) {
   row =
     Object.assign(
@@ -1111,6 +1196,14 @@ function rekamData(
         ).format(n);
       };
 
+    const plannedSubmissionId =
+      isUpdate
+        ? submissionId
+        : generateStructuredId(
+            baType,
+            userData.NIK
+          );
+
     if (
       !formData.grandTotal &&
       !formData.totalBill
@@ -1203,14 +1296,86 @@ function rekamData(
         };
       }
 
+      let verifiedPayment;
+
+      try {
+        verifiedPayment =
+          baCloudflareRequest_(
+            'get',
+            '/v1/ba/payments/midtrans/status?order_id=' +
+            encodeURIComponent(
+              String(
+                formData.paymentOrderId ||
+                ''
+              )
+            )
+          ).payment;
+      } catch (paymentError) {
+        return {
+          success: false,
+          message: 'Pembayaran Midtrans belum dapat diverifikasi: ' +
+            String(
+              paymentError &&
+              paymentError.message ||
+              paymentError
+            )
+        };
+      }
+
       if (
         expectedPayment !== calculatedPayment ||
-        formData.paymentConfirmed !== true ||
-        !formData.paymentReceipt
+        !verifiedPayment ||
+        verifiedPayment.status !== 'PAID' ||
+        Number(verifiedPayment.amount) !== calculatedPayment
       ) {
         return {
           success: false,
-          message: 'Pembayaran asset belum dikonfirmasi atau bukti transaksi belum diunggah.'
+          message: 'Pembayaran Midtrans belum berhasil atau nominalnya tidak sesuai Grand Total.'
+        };
+      }
+
+      formData.paymentConfirmed =
+        true;
+
+      formData.paymentConfirmedAt =
+        verifiedPayment.paid_at ||
+        new Date().toISOString();
+
+      formData.paymentStatus =
+        verifiedPayment.status;
+
+      formData.paymentType =
+        verifiedPayment.payment_type ||
+        '';
+
+      formData.paymentVerificationMethod =
+        'MIDTRANS_SERVER_WEBHOOK';
+
+      try {
+        baCloudflareRequest_(
+          'post',
+          '/v1/ba/payments/midtrans/claim',
+          {
+            orderId:
+              String(
+                formData.paymentOrderId ||
+                ''
+              ),
+            amount:
+              calculatedPayment,
+            submissionId:
+              plannedSubmissionId
+          }
+        );
+      } catch (claimError) {
+        return {
+          success: false,
+          message: 'Pembayaran Midtrans tidak dapat dipakai: ' +
+            String(
+              claimError &&
+              claimError.message ||
+              claimError
+            )
         };
       }
     }
@@ -1350,10 +1515,7 @@ function rekamData(
     }
 
     const newId =
-      generateStructuredId(
-        baType,
-        userData.NIK
-      );
+      plannedSubmissionId;
 
     const creatorPosition =
       String(

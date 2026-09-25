@@ -96,6 +96,30 @@ deploying Worker code that depends on them. Do not run the three SQL files as
 one migration set against every D1 database. Keep secrets in Cloudflare
 secrets and Apps Script Script Properties, never in source files.
 
+### Midtrans Snap for Penjualan Asset
+
+Apply `cloudflare/migrations/0003_ba_asset_payments.sql` only to the
+`bakerzin-inventory-operations` D1 database. Then save the matching Midtrans
+Sandbox keys as Worker secrets (do not put either value in this repository):
+
+```text
+wrangler secret put MIDTRANS_SERVER_KEY
+wrangler secret put MIDTRANS_CLIENT_KEY
+```
+
+Configure the Midtrans Payment Notification URL as:
+
+```text
+https://bakerzin-inventory-api.operational-bi.workers.dev/v1/ba/payments/midtrans/webhook
+```
+
+The checked-in `MIDTRANS_ENVIRONMENT` remains `sandbox` for the first end-to-end
+test. Change it to `production` only after a successful Sandbox payment, replace
+both secrets with the Production keys, redeploy, and perform one low-value live
+transaction. The form never trusts the browser callback: Cloudflare verifies the
+notification signature, checks Midtrans's Status API, matches the amount, and
+claims a paid order for one BA submission only.
+
 Validate the split schema locally from the repository root:
 
 ```text

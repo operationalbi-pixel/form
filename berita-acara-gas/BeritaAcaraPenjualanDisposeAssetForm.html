@@ -112,19 +112,17 @@
         <div id="paymentSection" class="mt-8 rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-4">
             <div>
                 <h3 class="font-bold text-emerald-900">Pembayaran Asset</h3>
-                <p class="mt-1 text-xs text-emerald-800">Bayar sesuai Grand Total Harga Jual. Checkout akan dibuka pada jendela kecil.</p>
+                <p class="mt-1 text-xs text-emerald-800">Nominal checkout mengikuti Grand Total Harga Jual dan diverifikasi otomatis oleh Midtrans.</p>
+            </div>
+            <div>
+                <label for="paymentEmail" class="mb-1 block text-xs font-bold uppercase text-emerald-900">Email penerima bukti pembayaran</label>
+                <input type="email" id="paymentEmail" autocomplete="email" placeholder="nama@email.com" class="w-full rounded border border-emerald-200 bg-white p-2 outline-none focus:border-emerald-600">
             </div>
             <button type="button" id="btnAssetPayment" class="w-full rounded-lg bg-emerald-600 px-4 py-3 font-bold text-white shadow transition hover:bg-emerald-700 active:scale-[0.99]">
                 LAKUKAN PEMBAYARAN ASSET
             </button>
-            <div id="paymentVerification" class="hidden space-y-3 rounded-lg border border-emerald-200 bg-white p-3">
-                <p id="paymentStatus" class="text-xs font-medium text-gray-600">Selesaikan pembayaran di jendela checkout, kemudian unggah bukti transaksi sukses.</p>
-                <label class="block text-xs font-bold text-gray-600 uppercase">Bukti pembayaran berhasil</label>
-                <input type="file" id="paymentReceipt" accept="image/*" class="file-input w-full rounded border p-2 text-xs" data-key="paymentReceipt">
-                <label class="flex items-start gap-2 text-xs text-gray-700">
-                    <input type="checkbox" id="paymentConfirmed" class="mt-0.5 h-4 w-4 accent-emerald-600">
-                    <span>Saya memastikan transaksi Lynk.id sudah berstatus berhasil dan nominalnya sesuai Grand Total.</span>
-                </label>
+            <div id="paymentVerification" class="hidden rounded-lg border border-emerald-200 bg-white p-3">
+                <p id="paymentStatus" class="text-xs font-medium text-gray-600">Checkout Midtrans belum dibuat.</p>
             </div>
         </div>
 
@@ -140,10 +138,12 @@
         // --- INITIALIZATION & USER DATA (FIXED) ---
         const user = window.GLOBAL_USER;
         const existing = window.EXISTING_DATA;
-        const PAYMENT_URL = 'https://lynk.id/bakerzin/odn2g5re40l4/checkout';
-        let paymentPopup = null;
-        let paymentPopupWatcher = null;
         let existingPayment = null;
+        let paymentOrderId = '';
+        let paymentAmount = 0;
+        let paymentConfirmed = false;
+        let paymentStatusTimer = null;
+        let snapScriptPromise = null;
         
         // Auto Populate User Data
         if (user) {
@@ -229,6 +229,14 @@
                 tr.querySelector('.index-cell').textContent = index + 1; // Renumbering
             });
             document.getElementById('grandTotal').textContent = window.formatRupiah(grand);
+            if (paymentOrderId && grand !== paymentAmount && !existing) {
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                clearTimeout(paymentStatusTimer);
+                setPaymentStatus('Grand Total berubah. Buat pembayaran baru dengan nominal terbaru.', 'error');
+                refreshSubmitPaymentGate();
+            }
         }
 
         // Event Listener untuk Tombol Tambah Baris (FIXED)
@@ -303,9 +311,7 @@
                 return;
             }
 
-            const receipt = document.getElementById('paymentReceipt');
-            const confirmed = document.getElementById('paymentConfirmed').checked;
-            const ready = receipt.files.length > 0 && confirmed;
+            const ready = paymentConfirmed === true && paymentOrderId && paymentAmount === window.parseRupiah(document.getElementById('grandTotal').textContent);
             submit.disabled = !ready;
             submit.textContent = ready ? 'SIMPAN & KIRIM' : 'SELESAIKAN PEMBAYARAN DAHULU';
             submit.classList.toggle('cursor-not-allowed', !ready);
@@ -315,42 +321,127 @@
             submit.classList.toggle('to-red-800', ready);
             submit.classList.toggle('hover:from-red-800', ready);
             submit.classList.toggle('hover:to-red-700', ready);
-            if (ready) setPaymentStatus('Bukti pembayaran siap. Form dapat disimpan dan dikirim.', 'success');
+            if (ready) setPaymentStatus('Pembayaran berhasil diverifikasi Midtrans. Form dapat disimpan dan dikirim.', 'success');
         }
 
-        document.getElementById('btnAssetPayment').addEventListener('click', function() {
+        function runServer(functionName, ...args) {
+            return new Promise((resolve, reject) => {
+                google.script.run
+                    .withSuccessHandler(resolve)
+                    .withFailureHandler(error => reject(new Error(error && error.message ? error.message : String(error))))
+                    [functionName](...args);
+            });
+        }
+
+        function loadSnapScript(url, clientKey) {
+            if (window.snap) return Promise.resolve();
+            if (snapScriptPromise) return snapScriptPromise;
+            snapScriptPromise = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = url;
+                script.dataset.clientKey = clientKey;
+                script.onload = resolve;
+                script.onerror = () => reject(new Error('Library Midtrans Snap gagal dimuat.'));
+                document.head.appendChild(script);
+            });
+            return snapScriptPromise;
+        }
+
+        async function checkPaymentStatus(showPendingMessage = true) {
+            if (!paymentOrderId) return false;
+            try {
+                const payment = await runServer('getAssetMidtransPaymentStatus', paymentOrderId, window.GLOBAL_USER);
+                if (payment && payment.status === 'PAID' && Number(payment.amount) === paymentAmount) {
+                    paymentConfirmed = true;
+                    clearTimeout(paymentStatusTimer);
+                    refreshSubmitPaymentGate();
+                    return true;
+                }
+                paymentConfirmed = false;
+                refreshSubmitPaymentGate();
+                if (showPendingMessage) setPaymentStatus('Pembayaran belum diterima. Selesaikan checkout Midtrans.', 'normal');
+            } catch (error) {
+                if (showPendingMessage) setPaymentStatus(error.message || 'Status pembayaran belum dapat diperiksa.', 'error');
+            }
+            return false;
+        }
+
+        function pollPaymentStatus(attempt = 0) {
+            clearTimeout(paymentStatusTimer);
+            if (!paymentOrderId || paymentConfirmed || attempt >= 90) return;
+            paymentStatusTimer = setTimeout(async () => {
+                const paid = await checkPaymentStatus(false);
+                if (!paid) pollPaymentStatus(attempt + 1);
+            }, attempt < 10 ? 2000 : 5000);
+        }
+
+        document.getElementById('btnAssetPayment').addEventListener('click', async function() {
             const expectedAmount = window.parseRupiah(document.getElementById('grandTotal').textContent);
+            const email = document.getElementById('paymentEmail').value.trim();
             if (expectedAmount <= 0) {
                 document.getElementById('paymentVerification').classList.remove('hidden');
                 setPaymentStatus('Isi Harga Jual asset terlebih dahulu sebelum membuka pembayaran.', 'error');
                 return;
             }
-
-            paymentPopup = window.open(PAYMENT_URL, 'assetPaymentCheckout', 'popup=yes,width=560,height=780,resizable=yes,scrollbars=yes');
-            document.getElementById('paymentVerification').classList.remove('hidden');
-            if (!paymentPopup) {
-                setPaymentStatus('Popup diblokir browser. Izinkan popup, lalu klik tombol pembayaran kembali.', 'error');
+            if (!/^\S+@\S+\.\S+$/.test(email)) {
+                document.getElementById('paymentVerification').classList.remove('hidden');
+                setPaymentStatus('Masukkan email penerima bukti pembayaran yang valid.', 'error');
+                document.getElementById('paymentEmail').focus();
                 return;
             }
 
-            setPaymentStatus(`Masukkan nominal ${window.formatRupiah(expectedAmount)} di Lynk.id, lalu selesaikan pembayaran.`);
-            clearInterval(paymentPopupWatcher);
-            paymentPopupWatcher = setInterval(function() {
-                if (paymentPopup && paymentPopup.closed) {
-                    clearInterval(paymentPopupWatcher);
-                    setPaymentStatus('Jendela checkout sudah ditutup. Unggah bukti transaksi sukses untuk melanjutkan.');
-                }
-            }, 700);
+            const paymentButton = document.getElementById('btnAssetPayment');
+            paymentButton.disabled = true;
+            paymentButton.textContent = 'MENYIAPKAN MIDTRANS...';
+            document.getElementById('paymentVerification').classList.remove('hidden');
+            setPaymentStatus(`Membuat checkout ${window.formatRupiah(expectedAmount)}...`);
+            try {
+                const payment = await runServer('createAssetMidtransPayment', { amount: expectedAmount, email: email }, window.GLOBAL_USER);
+                paymentOrderId = payment.orderId;
+                paymentAmount = Number(payment.amount);
+                paymentConfirmed = false;
+                await loadSnapScript(payment.snapJsUrl, payment.clientKey);
+                setPaymentStatus(`Checkout ${window.formatRupiah(paymentAmount)} dibuka. Pilih metode pembayaran dan selesaikan transaksi.`);
+                window.snap.pay(payment.token, {
+                    onSuccess: function() {
+                        setPaymentStatus('Pembayaran diterima Midtrans. Sedang memverifikasi status server...');
+                        checkPaymentStatus();
+                        pollPaymentStatus();
+                    },
+                    onPending: function() {
+                        setPaymentStatus('Pembayaran masih menunggu penyelesaian. Status akan diperiksa otomatis.');
+                        pollPaymentStatus();
+                    },
+                    onError: function() {
+                        setPaymentStatus('Pembayaran gagal. Klik tombol pembayaran untuk mencoba kembali.', 'error');
+                    },
+                    onClose: function() {
+                        setPaymentStatus('Checkout ditutup. Jika sudah membayar, status akan diperiksa otomatis.');
+                        checkPaymentStatus();
+                        pollPaymentStatus();
+                    }
+                });
+                pollPaymentStatus();
+            } catch (error) {
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                setPaymentStatus(error.message || 'Checkout Midtrans gagal dibuat.', 'error');
+            } finally {
+                paymentButton.disabled = false;
+                paymentButton.textContent = 'LAKUKAN PEMBAYARAN ASSET';
+                refreshSubmitPaymentGate();
+            }
         });
 
-        document.getElementById('paymentReceipt').addEventListener('change', refreshSubmitPaymentGate);
-        document.getElementById('paymentConfirmed').addEventListener('change', refreshSubmitPaymentGate);
         document.querySelector('[name="tindakan"]').addEventListener('change', function() {
             const isSale = this.value === 'Penjualan';
             document.getElementById('paymentSection').classList.toggle('hidden', this.value === 'Dispose');
             if (!isSale) {
-                document.getElementById('paymentConfirmed').checked = false;
-                document.getElementById('paymentReceipt').value = '';
+                paymentOrderId = '';
+                paymentAmount = 0;
+                paymentConfirmed = false;
+                clearTimeout(paymentStatusTimer);
             }
             refreshSubmitPaymentGate();
         });
@@ -379,8 +470,6 @@
                 if(k.startsWith('fotoTambahan')) window.addPhotoSlot(json[k], k);
              }
 
-             const receiptInput = document.getElementById('paymentReceipt');
-             if (json.paymentReceipt) receiptInput.dataset.oldVal = json.paymentReceipt;
              document.getElementById('paymentSection').classList.add('hidden');
              
              document.getElementById('revisiBadge').classList.remove('hidden');
@@ -423,13 +512,14 @@
                 alasan: form.querySelector('[name="alasan"]').value,
                 items: items,
                 grandTotalJual: document.getElementById('grandTotal').textContent,
-                paymentCheckoutUrl: PAYMENT_URL,
                 paymentExpectedAmount: existingPayment && existingPayment.paymentExpectedAmount
                     ? existingPayment.paymentExpectedAmount
                     : window.parseRupiah(document.getElementById('grandTotal').textContent),
-                paymentConfirmed: existingPayment ? existingPayment.paymentConfirmed !== false : document.getElementById('paymentConfirmed').checked,
-                paymentConfirmedAt: existingPayment ? (existingPayment.paymentConfirmedAt || null) : new Date().toISOString(),
-                paymentVerificationMethod: 'RECEIPT_UPLOAD'
+                paymentOrderId: existingPayment ? (existingPayment.paymentOrderId || '') : paymentOrderId,
+                paymentConfirmed: existingPayment ? existingPayment.paymentConfirmed === true : paymentConfirmed,
+                paymentConfirmedAt: existingPayment ? (existingPayment.paymentConfirmedAt || null) : null,
+                paymentStatus: existingPayment ? (existingPayment.paymentStatus || '') : (paymentConfirmed ? 'PAID' : 'PENDING'),
+                paymentVerificationMethod: 'MIDTRANS_SERVER_WEBHOOK'
             };
 
             const fileInputs = document.querySelectorAll('.file-input');
