@@ -2283,6 +2283,57 @@ async function saveStaffPerformanceStaff(request, env, requestId) {
 }
 __name(saveStaffPerformanceStaff, "saveStaffPerformanceStaff");
 
+async function syncStaffPerformanceStaff(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, MAX_MASTER_SYNC_BYTES);
+    const rows = limitedArray(payload.rows || [], "rows", 1e4);
+    if (!rows.length) throw new Error("EMPTY_STAFF_SYNC");
+    const incomingNiks = new Set();
+    const outletCodes = new Set();
+    const statements = [];
+    for (const row of rows) {
+      const nik = requiredText(row.nik, "nik", 80);
+      const outletCode = requiredText(row.outletCode, "outlet_code", 40).toUpperCase();
+      incomingNiks.add(nik);
+      outletCodes.add(outletCode);
+      statements.push(env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_staff(nik, name, position, outlet_code, status, updated_at)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
+           outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
+      ).bind(
+        nik, requiredText(row.name, "name", 180), cleanText(row.position || "-", 120),
+        outletCode, cleanText(row.status || "Active", 40)
+      ));
+    }
+    for (const outletCode of outletCodes) {
+      statements.push(env.OPERATIONS_DB.prepare(
+        `INSERT INTO staff_performance_outlets(outlet_code, outlet_name, role, active, updated_at)
+         VALUES (?, ?, 'OUTLET', 1, CURRENT_TIMESTAMP)
+         ON CONFLICT(outlet_code) DO UPDATE SET active = 1, updated_at = CURRENT_TIMESTAMP`
+      ).bind(outletCode, outletCode));
+    }
+    const existing = await env.OPERATIONS_DB.prepare("SELECT nik FROM staff_performance_staff").all();
+    for (const row of existing.results || []) {
+      const nik = cleanText(row.nik, 80);
+      if (nik && !incomingNiks.has(nik)) {
+        statements.push(env.OPERATIONS_DB.prepare(
+          "UPDATE staff_performance_staff SET status = 'Inactive', updated_at = CURRENT_TIMESTAMP WHERE nik = ?"
+        ).bind(nik));
+      }
+    }
+    const writtenRows = await runStatementBatches(env.OPERATIONS_DB, statements);
+    return responseJson({
+      ok: true,
+      data: { success: true, source: "MPP_EMP_LIST", receivedRows: rows.length, writtenRows, outlets: outletCodes.size },
+      requestId
+    });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_STAFF_SYNC", "Sinkronisasi master staff MPP tidak valid.", requestId);
+  }
+}
+__name(syncStaffPerformanceStaff, "syncStaffPerformanceStaff");
+
 async function deactivateStaffPerformanceStaff(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 1e5);
@@ -2351,6 +2402,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/migrate/scores") return migrateStaffPerformanceScores(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff") return saveStaffPerformanceStaff(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/deactivate") return deactivateStaffPerformanceStaff(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/sync") return syncStaffPerformanceStaff(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/scores") return saveStaffPerformanceScores(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);

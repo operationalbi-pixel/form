@@ -6389,9 +6389,44 @@ function staffPerformanceCloudflareData_(method, path, payload) {
   return response && response.data !== undefined ? response.data : response;
 }
 
+function staffPerformanceMppStaffRows_() {
+  const sheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet) throw new Error('Master Data MPP EMP_LIST tidak ditemukan.');
+  if (sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().map(function (row) {
+    const status = String(row[8] || 'Active').trim().toLowerCase();
+    return {
+      nik: normalizeNik_(row[0]), name: String(row[1] || '').trim(),
+      outletCode: String(row[2] || '').trim().toUpperCase(),
+      position: normalizeEmployeePosition_(row[4]) || '-',
+      status: status === 'resign' || status === 'inactive' ? 'Inactive' : 'Active'
+    };
+  }).filter(function (row) { return row.nik && row.name && row.outletCode; });
+}
+
+function syncStaffPerformanceStaffFromMpp_(force) {
+  const cache = CacheService.getScriptCache(), cacheKey = 'staff-performance-mpp-sync-v1';
+  if (!force && cache.get(cacheKey)) return { success: true, cached: true, source: 'MPP_EMP_LIST' };
+  const result = staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff/sync', {
+    rows: staffPerformanceMppStaffRows_()
+  });
+  cache.put(cacheKey, new Date().toISOString(), 300);
+  return result;
+}
+
+function refreshStaffPerformanceStaffAfterMppWrite_() {
+  try {
+    CacheService.getScriptCache().remove('staff-performance-mpp-sync-v1');
+    syncStaffPerformanceStaffFromMpp_(true);
+  } catch (error) {
+    console.warn('Sinkronisasi Staff Performance ditunda: ' + String(error && error.message || error));
+  }
+}
+
 function getStaffPerformanceBootstrap(token, requestedOutlet) {
   return safe_(function () {
     const context = staffPerformanceContext_(token, requestedOutlet);
+    syncStaffPerformanceStaffFromMpp_(false);
     const data = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
     data.user = userView_(context.employee);
     data.selectedOutlet = context.outlet;
@@ -6431,25 +6466,15 @@ function getStaffPerformanceData(token, startDate, endDate, requestedOutlet, spe
 
 function saveStaffPerformanceStaff(token, data) {
   return safe_(function () {
-    data = data || {};
-    const context = staffPerformanceContext_(token, data.outlet);
-    const targetOutlet = context.isBihq ? String(data.outlet || '').trim().toUpperCase() : context.outlet;
-    if (!targetOutlet) throw new Error('Outlet staff wajib dipilih.');
-    return staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff', {
-      nik: String(data.nik || '').trim(), name: String(data.nama || '').trim(),
-      position: String(data.posisi || '').trim(), outletCode: targetOutlet,
-      status: String(data.status || 'Active').trim(), isEdit: Boolean(data.isEdit)
-    });
+    staffPerformanceContext_(token, data && data.outlet);
+    throw new Error('Master staff dikelola dari menu MPP. Perubahan EMP_LIST akan otomatis tersinkron ke Staff Performance.');
   });
 }
 
 function deleteStaffPerformanceStaff(token, nik, requestedOutlet) {
   return safe_(function () {
-    const context = staffPerformanceContext_(token, requestedOutlet);
-    const bootstrap = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
-    const allowed = (bootstrap.staff || []).some(function (row) { return String(row.NIK || '').trim() === String(nik || '').trim(); });
-    if (!allowed) throw new Error('Staff tidak ditemukan pada outlet yang dapat Anda kelola.');
-    return staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff/deactivate', { nik: String(nik || '').trim() });
+    staffPerformanceContext_(token, requestedOutlet);
+    throw new Error('Status staff dikelola dari menu MPP. Perubahan EMP_LIST akan otomatis tersinkron ke Staff Performance.');
   });
 }
 
@@ -17895,7 +17920,9 @@ function addMppEmployee(token, payload) {
     if (!payload.nik || !payload.name) throw new Error('NIK dan nama karyawan wajib diisi.');
     const existing = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET).getDataRange().getDisplayValues();
     if (existing.some(function (row, index) { return index > 0 && normalizeNik_(row[0]) === normalizeNik_(payload.nik); })) throw new Error('NIK sudah terdaftar.');
-    return mppWithWriteLock_(function () { return mppLegacyAddEmployee_(payload); });
+    const result = mppWithWriteLock_(function () { return mppLegacyAddEmployee_(payload); });
+    refreshStaffPerformanceStaffAfterMppWrite_();
+    return result;
   });
 }
 
@@ -17907,7 +17934,9 @@ function updateMppEmployee(token, actionType, payload) {
     const action = String(actionType || '').toUpperCase();
     if (action === 'MUTATION') payload.newOutlet = mppValidateRotationOutlet_(targetEmployee, payload.newOutlet);
     if (['MUTATION', 'EDIT', 'RESIGN'].indexOf(action) < 0) throw new Error('Jenis perubahan karyawan tidak valid.');
-    return mppWithWriteLock_(function () { return mppLegacyUpdateEmployee_(action, payload); });
+    const result = mppWithWriteLock_(function () { return mppLegacyUpdateEmployee_(action, payload); });
+    refreshStaffPerformanceStaffAfterMppWrite_();
+    return result;
   });
 }
 

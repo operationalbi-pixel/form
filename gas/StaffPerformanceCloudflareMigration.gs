@@ -12,6 +12,8 @@ const STAFF_PERFORMANCE_MIGRATION = Object.freeze({
   TABLE_ID: 'Data_Performance',
   LOCATION: 'asia-southeast1',
   CONFIG_SHEET_ID: '19A_QtC62JP6uQcCkQu0yUKTV60kuy2MfXIXKz7aVDSU',
+  MPP_MASTER_SPREADSHEET_ID: '1PktH42uGDx64B4ZU4_UMYPnZWomNlXu5WYoIfpndrDw',
+  MPP_STAFF_SHEET: 'EMP_LIST',
   WORKER_URL: 'https://bakerzin-inventory-api.operational-bi.workers.dev',
   BATCH_SIZE: 300,
   STATE_KEY: 'STAFF_PERFORMANCE_CF_MIGRATION_STATE',
@@ -147,12 +149,17 @@ function retryStaffPerformanceCloudflareMigration() {
 
 function migrateStaffPerformanceMaster_(state) {
   const source = SpreadsheetApp.getActiveSpreadsheet();
-  const staffSheet = source.getSheetByName('Data_Staff');
+  const staffSheet = SpreadsheetApp.openById(STAFF_PERFORMANCE_MIGRATION.MPP_MASTER_SPREADSHEET_ID)
+    .getSheetByName(STAFF_PERFORMANCE_MIGRATION.MPP_STAFF_SHEET);
   const indicatorSheet = source.getSheetByName('Config_Indicators');
-  if (!staffSheet || !indicatorSheet) throw new Error('Sheet Data_Staff atau Config_Indicators tidak ditemukan. Jalankan dari project Staff Performance lama.');
+  if (!staffSheet || !indicatorSheet) throw new Error('Sheet EMP_LIST Master Data MPP atau Config_Indicators tidak ditemukan.');
 
   const staff = staffPerformanceRows_(staffSheet).map(function (row) {
-    return { nik: text_(row[0]), name: text_(row[1]), position: text_(row[2]), outletCode: text_(row[3]).toUpperCase(), status: text_(row[4]) || 'Active' };
+    const status = text_(row[8]).toLowerCase();
+    return {
+      nik: text_(row[0]), name: text_(row[1]), outletCode: text_(row[2]).toUpperCase(),
+      position: text_(row[4]) || '-', status: status === 'resign' || status === 'inactive' ? 'Inactive' : 'Active'
+    };
   }).filter(function (row) { return row.nik && row.name && row.position && row.outletCode; });
 
   const indicators = staffPerformanceRows_(indicatorSheet).map(function (row) {
