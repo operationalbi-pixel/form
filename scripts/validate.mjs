@@ -400,16 +400,27 @@ const showcaseBootstrapBackend = backend.slice(
   backend.indexOf('function getShowcaseLogBootstrap('),
   backend.indexOf('function saveShowcaseLog(')
 );
+const showcaseSaveFrontend = frontendShowcase.slice(
+  frontendShowcase.indexOf('function save(){'),
+  frontendShowcase.indexOf("byId('eventDate').value=today()")
+);
 if (!inventoryWorker.includes('async function listShowcaseLog(') ||
+    !inventoryWorker.includes('async function listShowcaseAging(') ||
+    !inventoryWorker.includes('function buildCurrentShowcaseSummary(') ||
     !inventoryWorker.includes('async function listShowcaseProgress(') ||
     !inventoryWorker.includes('url.pathname === "/v1/showcase-log"') ||
+    !inventoryWorker.includes('url.pathname === "/v1/showcase-aging"') ||
     !inventoryWorker.includes('url.pathname === "/v1/showcase-progress"') ||
     !backend.includes("cloudflareInventoryRequest_('GET', '/v1/showcase-log?'") ||
+    !backend.includes("cloudflareInventoryRequest_('GET', '/v1/showcase-aging?'") ||
+    !backend.includes("current: eventDate === todayIso_() ? 1 : ''") ||
     !backend.includes("cloudflareInventoryRequest_('GET', '/v1/showcase-progress?'") ||
+    !frontendShowcase.includes("BAKERZIN_API.call('showcaseLogAging'") ||
     showcaseBackend.includes('runNamedQuery_(') ||
     showcaseBootstrapBackend.includes('readCompletionMap_(') ||
     showcaseBootstrapBackend.includes('runNamedQuery_(') ||
-    frontendShowcase.includes('setTimeout(load,250)')) {
+    frontendShowcase.includes('setTimeout(load,250)') ||
+    showcaseSaveFrontend.includes('loadShowcaseMonitoring(')) {
   failures.push('Showcase Log belum sepenuhnya membaca Cloudflare atau masih memuat ulang setelah penyimpanan');
 }
 if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||

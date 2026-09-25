@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildShowcaseSummary, normalizeMovement } from "../src/index.js";
+import { buildCurrentShowcaseSummary, buildShowcaseSummary, normalizeMovement } from "../src/index.js";
 
 const baseRow = {
   record_id: "record-1",
@@ -73,4 +73,21 @@ test("Showcase summary uses the latest logical version and returns daily totals"
   assert.deepEqual(item.previous_aging, { fresh: 0, green: 10, yellow: 0, red: 0 });
   assert.deepEqual(item.balance_aging, { fresh: 0, green: 8, yellow: 0, red: 0 });
   assert.deepEqual(item.sold_actors, [{ created_by: "100", source_file: "SHOWCASE_LOG" }]);
+});
+
+test("current Showcase summary derives opening balance from compact balance and today's delta", () => {
+  const rows = [{
+    record_id: "sold-1", logical_id: "sold-1", version: 1, record_type: "MOVEMENT",
+    item_code: "CCFH0330", item_name: "SAMBAL HIJAU CC", direction: "OUT", quantity: 2,
+    movement_type: "Sold", event_date: "2026-09-25", created_at: "2026-09-25T08:00:00Z",
+    source_file: "SHOWCASE_LOG", created_by: "100"
+  }];
+  const balances = [{ item_code: "CCFH0330", item_name: "SAMBAL HIJAU CC", current_qty: 8 }];
+
+  const item = buildCurrentShowcaseSummary(rows, balances, "2026-09-25")[0];
+  assert.equal(item.previous_balance, 10);
+  assert.equal(item.balance, 8);
+  assert.equal(item.total_sold, 2);
+  assert.equal(item.previous_aging, null);
+  assert.equal(item.balance_aging, null);
 });
