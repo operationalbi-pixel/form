@@ -160,6 +160,13 @@ function apiActions_() {
     salesAnalysisSaveGlobal: saveSalesAnalysisGlobal,
     salesAnalysisAddGlobal: addSalesAnalysisGlobalItem,
     salesAnalysisDeleteGlobal: deleteSalesAnalysisGlobalItem,
+    staffPerformanceBootstrap: getStaffPerformanceBootstrap,
+    staffPerformanceLeaderboard: getStaffPerformanceLeaderboard,
+    staffPerformanceDailyStats: getStaffPerformanceDailyStats,
+    staffPerformanceData: getStaffPerformanceData,
+    staffPerformanceSaveStaff: saveStaffPerformanceStaff,
+    staffPerformanceDeleteStaff: deleteStaffPerformanceStaff,
+    staffPerformanceSubmitScore: submitStaffPerformanceScore,
     socializationBootstrap: getSocializationBootstrap,
     socializationMaterials: getSocializationMaterials,
     socializationSaveMaterial: saveSocializationMaterial,
@@ -6360,6 +6367,108 @@ function cloudflareQueryString_(params) {
   }).map(function (key) {
     return encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
   }).join('&');
+}
+
+// ---------- Daily Staff Performance (Cloudflare D1 only) ----------
+
+function staffPerformanceContext_(token, requestedOutlet) {
+  const session = requireSession_(token);
+  const employee = findEmployee_(session.nik);
+  assertEmployeeActive_(employee);
+  const isBihq = employee.outlet === 'BIHQ';
+  const requested = String(requestedOutlet || '').trim().toUpperCase();
+  return {
+    employee: employee,
+    isBihq: isBihq,
+    outlet: isBihq ? requested : String(employee.outlet || '').trim().toUpperCase()
+  };
+}
+
+function staffPerformanceCloudflareData_(method, path, payload) {
+  const response = cloudflareInventoryRequest_(method, path, payload);
+  return response && response.data !== undefined ? response.data : response;
+}
+
+function getStaffPerformanceBootstrap(token, requestedOutlet) {
+  return safe_(function () {
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    const data = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
+    data.user = userView_(context.employee);
+    data.selectedOutlet = context.outlet;
+    data.role = context.isBihq ? 'All' : 'OUTLET';
+    data.backend = 'CLOUDFLARE_D1';
+    return data;
+  });
+}
+
+function getStaffPerformanceLeaderboard(token, startDate, endDate, requestedOutlet) {
+  return safe_(function () {
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    return staffPerformanceCloudflareData_('GET', '/v1/staff-performance/leaderboard?' + cloudflareQueryString_({
+      from: normalizeDate_(startDate, true), to: normalizeDate_(endDate, true), outlet: context.outlet
+    }));
+  });
+}
+
+function getStaffPerformanceDailyStats(token, startDate, endDate, requestedOutlet) {
+  return safe_(function () {
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    return staffPerformanceCloudflareData_('GET', '/v1/staff-performance/daily-stats?' + cloudflareQueryString_({
+      from: normalizeDate_(startDate, true), to: normalizeDate_(endDate, true), outlet: context.outlet
+    }));
+  });
+}
+
+function getStaffPerformanceData(token, startDate, endDate, requestedOutlet, specificNik) {
+  return safe_(function () {
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    return staffPerformanceCloudflareData_('GET', '/v1/staff-performance/data?' + cloudflareQueryString_({
+      from: normalizeDate_(startDate, true), to: normalizeDate_(endDate, true), outlet: context.outlet,
+      nik: String(specificNik || '').trim()
+    }));
+  });
+}
+
+function saveStaffPerformanceStaff(token, data) {
+  return safe_(function () {
+    data = data || {};
+    const context = staffPerformanceContext_(token, data.outlet);
+    const targetOutlet = context.isBihq ? String(data.outlet || '').trim().toUpperCase() : context.outlet;
+    if (!targetOutlet) throw new Error('Outlet staff wajib dipilih.');
+    return staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff', {
+      nik: String(data.nik || '').trim(), name: String(data.nama || '').trim(),
+      position: String(data.posisi || '').trim(), outletCode: targetOutlet,
+      status: String(data.status || 'Active').trim(), isEdit: Boolean(data.isEdit)
+    });
+  });
+}
+
+function deleteStaffPerformanceStaff(token, nik, requestedOutlet) {
+  return safe_(function () {
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    const bootstrap = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
+    const allowed = (bootstrap.staff || []).some(function (row) { return String(row.NIK || '').trim() === String(nik || '').trim(); });
+    if (!allowed) throw new Error('Staff tidak ditemukan pada outlet yang dapat Anda kelola.');
+    return staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff/deactivate', { nik: String(nik || '').trim() });
+  });
+}
+
+function submitStaffPerformanceScore(token, payload, requestedOutlet) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = staffPerformanceContext_(token, requestedOutlet);
+    const scores = Array.isArray(payload.scores) ? payload.scores : [];
+    if (scores.length > 300) throw new Error('Maksimal 300 nilai dalam satu penyimpanan.');
+    const bootstrap = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
+    const allowedNiks = {};
+    (bootstrap.staff || []).forEach(function (row) { allowedNiks[String(row.NIK || '').trim()] = true; });
+    scores.forEach(function (score) {
+      if (!allowedNiks[String(score.nik || '').trim()]) throw new Error('Staff tidak ditemukan pada outlet yang dapat Anda kelola.');
+    });
+    return staffPerformanceCloudflareData_('POST', '/v1/staff-performance/scores', {
+      date: normalizeDate_(payload.date, true), scores: scores
+    });
+  });
 }
 
 function cloudflareReadUploadProgress_(monthKey, outlet) {
@@ -13284,6 +13393,12 @@ function ensureTaskSheet_() {
     sheet.appendRow([
       'SHOWCASE_LOG_DAILY', 'Showcase Log', 'Input harian Stock In, Sold, dan Waste untuk Showcase.',
       'FORM', 'showcaselog', 'DAILY', 'ALL', 'Hari ini', true, new Date(), 'SYSTEM', 'storefront'
+    ]);
+  }
+  if (existingTargets.indexOf('staff-performance') < 0) {
+    sheet.appendRow([
+      'STAFF_PERFORMANCE_DAILY', 'Staff Performance', 'Penilaian dan pemantauan performa harian tim outlet.',
+      'FORM', 'staff-performance', 'DAILY', 'ALL', 'Hari ini', true, new Date(), 'SYSTEM', 'monitoring', ''
     ]);
   }
   splitCombinedMppScheduleTipTask_(sheet);

@@ -1,0 +1,1921 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <base target="_top">
+  <title>Daily Staff Performance</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <script src="config.js"></script>
+  <script src="api-client.js?v=20260925-staff-performance1"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  
+  <style>
+    :root { 
+        --primary: #800000; 
+        --primary-light: #9e2a2a;
+        --secondary: #eab308;
+        --bg-body: #f8fafc; 
+        --bg-card: #ffffff; 
+        --text-main: #0f172a; 
+        --text-muted: #64748b;
+        --border: #e2e8f0; 
+        --success: #10b981; 
+        --danger: #ef4444; 
+        --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+        --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        --radius: 12px;
+    }
+
+    * { box-sizing:border-box; margin:0; padding:0; outline:none; -webkit-font-smoothing: antialiased; }
+    
+    body { 
+        font-family: 'Plus Jakarta Sans', sans-serif; 
+        background-color: var(--bg-body); 
+        color: var(--text-main); 
+        height: 100vh; 
+        display: flex; 
+        overflow: hidden; 
+        font-size: 14px; 
+    }
+    
+    /* --- LOADING SPINNER & ICONS --- */
+    .spinner {
+        width: 20px; height: 20px;
+        border: 2px solid #e2e8f0;
+        border-top: 2px solid var(--secondary);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin: auto;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    .status-icon-svg {
+        width: 24px; height: 24px;
+        fill: var(--success);
+        display: block; margin: auto;
+        animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    @keyframes popIn { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+    /* --- LOGIN PAGE --- */
+    #login-page { 
+        position:fixed; top:0; left:0; width:100%; height:100%; 
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        display:flex; flex-direction: column; justify-content:center; align-items:center; z-index:9999; 
+    }
+    .login-box { 
+        width:100%; max-width:420px; background:white; padding:48px; 
+        text-align:center; border-radius:16px; 
+        box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    }
+    .brand-logo { font-size: 24px; font-weight: 800; color: var(--primary); letter-spacing: -0.5px; margin-bottom: 8px; }
+    .login-input { 
+        width:100%; padding:14px; border:1px solid var(--border); 
+        border-radius:8px; margin-bottom:24px; text-align:center; 
+        font-size: 14px; transition: all 0.2s;
+    }
+    .login-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(128, 0, 0, 0.1); }
+    .btn-login { 
+        width:100%; background:var(--primary); color:white; padding:14px; 
+        border:none; border-radius:50px; cursor:pointer; font-weight:600; 
+        font-size: 14px; letter-spacing: 0.5px; transition: transform 0.1s;
+    }
+    .btn-login:active { transform: scale(0.98); }
+    
+    .login-footer {
+        margin-top: 40px;
+        font-size: 11px;
+        color: var(--text-muted);
+        opacity: 0.7;
+        font-weight: 500;
+        letter-spacing: 0.5px;
+    }
+
+    /* --- LAYOUT --- */
+    #main-app { display:none; width:100%; height:100%; }
+    
+    .sidebar { 
+        width:260px; background: #ffffff; 
+        border-right: 1px solid var(--border);
+        display:flex; flex-direction:column; padding:24px; 
+        color: var(--text-main);
+        flex-shrink: 0;
+    }
+    .sidebar-header { margin-bottom: 32px; display: flex; align-items: center; gap: 10px; }
+    .sidebar-header h3 { font-weight: 800; font-size: 18px; color: var(--primary); letter-spacing: -0.5px; }
+    
+    .menu-item { 
+        padding:12px 16px; margin-bottom:8px; cursor:pointer; display:flex; 
+        gap:12px; border-radius:8px; color: var(--text-muted); font-weight: 500;
+        transition: all 0.2s; align-items: center;
+    }
+    .menu-item:hover { background: #fff1f2; color: var(--primary); }
+    .menu-item.active { background: var(--primary); color: white; box-shadow: var(--shadow-sm); }
+    
+    .user-profile {
+        margin-top:auto; padding-top: 20px; border-top: 1px solid var(--border);
+        display: flex; gap: 10px; align-items: center;
+    }
+    .avatar-circle {
+        width: 36px; height: 36px; border-radius: 50%; background: var(--primary); 
+        color: white; display: flex; align-items: center; justify-content: center; 
+        font-weight: 700; font-size: 12px; flex-shrink: 0;
+    }
+    
+    .content { flex:1; padding:32px; overflow-y:auto; scroll-behavior: smooth; }
+    
+    /* --- COMPONENTS --- */
+    h2 { font-weight: 700; color: var(--text-main); margin-bottom: 0; font-size: 24px; letter-spacing: -0.5px; }
+    
+    .card { 
+        background: var(--bg-card); padding:24px; border-radius: var(--radius); 
+        box-shadow: var(--shadow-sm); margin-bottom:24px; border: 1px solid var(--border);
+    }
+    
+    .btn { 
+        padding:10px 20px; border:none; border-radius:8px; cursor:pointer; 
+        font-size:13px; display:inline-flex; align-items:center; gap:8px; 
+        font-weight: 600; transition: all 0.2s;
+    }
+    .btn-primary { 
+        background:var(--primary); color:white; 
+        box-shadow: 0 4px 6px -1px rgba(128, 0, 0, 0.2);
+    }
+    .btn-primary:hover { background: var(--primary-light); transform: translateY(-1px); }
+    .btn-outline { border:1px solid var(--border); background:white; color: var(--text-main); }
+    .btn-outline:hover { background: #f8fafc; border-color: #cbd5e1; }
+    .btn-icon { background:none; border:none; cursor:pointer; font-size:14px; padding:4px; display:flex; align-items:center;}
+    
+    .form-control { 
+        width:100%; padding:10px 12px; border:1px solid var(--border); 
+        border-radius:8px; font-size:13px; color: var(--text-main);
+        background-color: #fff;
+    }
+    .form-control:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(128, 0, 0, 0.05); }
+
+    /* --- IMPROVED STATUS BADGE SELECT --- */
+    .status-pill {
+        appearance: none; -webkit-appearance: none;
+        padding: 6px 16px; border-radius: 50px;
+        font-size: 11px; font-weight: 700; text-align: center;
+        border: 1px solid transparent; cursor: pointer;
+        transition: all 0.2s; text-transform: uppercase;
+        letter-spacing: 0.5px; outline: none;
+    }
+    .status-pill.active { background-color: #dcfce7; color: #166534; border-color: #bbf7d0; }
+    .status-pill.active:hover { background-color: #bbf7d0; }
+    .status-pill.inactive { background-color: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+    .status-pill.inactive:hover { background-color: #e2e8f0; }
+    
+    /* --- TABLE MODERN --- */
+    table { width:100%; border-collapse:separate; border-spacing: 0; margin-top:10px; }
+    th { 
+        background:#f8fafc; padding:16px; text-align:left; 
+        border-bottom:1px solid var(--border); font-weight:600; 
+        color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    td { padding:16px; border-bottom:1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background-color: #fcfcfc; }
+    
+    .rank-cell { font-size: 16px; font-weight: 700; color: var(--text-muted); text-align: center; width: 60px;}
+    tr.podium-1 td { background-color: #fffbeb; border-bottom-color: #fef3c7; }
+    tr.podium-2 td { background-color: #f8fafc; } 
+    tr.podium-3 td { background-color: #fff; }
+
+    .staff-info { display: flex; align-items: center; gap: 12px; }
+    .staff-avatar {
+        width: 40px; height: 40px; border-radius: 10px; background: #e2e8f0;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; color: #fff; font-size: 14px;
+        box-shadow: var(--shadow-sm);
+        object-fit: cover; flex-shrink: 0;
+    }
+    .score-badge {
+        display: inline-block; padding: 4px 10px; border-radius: 20px;
+        font-weight: 700; font-size: 13px; min-width: 50px; text-align: center;
+    }
+    
+    /* --- DASHBOARD POSITION TABS --- */
+    .dashboard-tabs-wrapper {
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        padding-bottom: 5px;
+        margin-bottom: 24px;
+        scrollbar-width: none; /* Firefox */
+    }
+    .dashboard-tabs-wrapper::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+    
+    .dash-tab-btn {
+        padding: 8px 18px;
+        border-radius: 50px;
+        background: white;
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        white-space: nowrap;
+        box-shadow: var(--shadow-sm);
+    }
+    .dash-tab-btn:hover {
+        background: #f8fafc;
+        border-color: #cbd5e1;
+    }
+    .dash-tab-btn.active {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
+        box-shadow: 0 4px 6px -1px rgba(128, 0, 0, 0.25);
+    }
+
+    /* --- NEW LAYOUT STYLES FOR INPUT PAGE --- */
+    
+    /* Container for split layout */
+    .fillin-wrapper {
+        display: flex;
+        gap: 0;
+        height: 100%;
+        background: white;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        overflow: hidden;
+    }
+    
+    /* Second Sidebar (Positions) */
+    .fillin-sidebar {
+        width: 240px;
+        background: #f8fafc;
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        padding-top: 20px;
+        padding-bottom: 20px;
+    }
+    
+    .pos-tab-item {
+        padding: 14px 24px;
+        cursor: pointer;
+        font-weight: 500;
+        color: var(--text-muted);
+        border-left: 4px solid transparent;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    
+    .pos-tab-item:hover {
+        background: #f1f5f9;
+        color: var(--text-main);
+    }
+    
+    .pos-tab-item.active {
+        background: white;
+        color: var(--primary);
+        border-left-color: var(--primary);
+        font-weight: 700;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    
+    /* Right Content Area */
+    .fillin-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden; /* Manage scroll internally */
+    }
+    
+    /* Chrome Tabs Container (Also holds the date navigator now) */
+    .chrome-tabs-container {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between; /* Space between tabs and controls */
+        padding: 20px 30px 0; 
+        background: #f1f5f9;
+        border-bottom: 1px solid #cbd5e1;
+        flex-shrink: 0; /* Prevent shrinking */
+    }
+    
+    /* Wrapper for tabs to scroll if needed */
+    .chrome-tabs-wrapper {
+        display: flex;
+        align-items: flex-end;
+        overflow-x: auto;
+        flex: 1;
+        padding-bottom: 0;
+        gap: -5px; /* Overlap effect */
+        
+        /* Smooth Scrollbar */
+        scrollbar-width: thin;
+        scrollbar-color: #cbd5e1 transparent;
+    }
+    
+    .chrome-tabs-wrapper::-webkit-scrollbar {
+        height: 6px;
+    }
+    .chrome-tabs-wrapper::-webkit-scrollbar-thumb {
+        background-color: #cbd5e1;
+        border-radius: 4px;
+    }
+    
+    .chrome-tab {
+        padding: 10px 16px; /* Slightly reduced padding */
+        min-width: 120px;   /* Reduced min width */
+        max-width: 160px;   /* Constrained max width */
+        /* Layout flex for badge & name */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        
+        background: #e2e8f0;
+        border: 1px solid #cbd5e1;
+        border-bottom: none;
+        border-radius: 10px 10px 0 0; /* Rounded top corners */
+        color: var(--text-muted);
+        font-weight: 600;
+        font-size: 12px; /* Smaller font */
+        cursor: pointer;
+        margin-right: -4px; /* Tighter overlap */
+        z-index: 1;
+        position: relative;
+        white-space: nowrap;
+        transition: all 0.2s;
+    }
+    
+    .chrome-tab:hover {
+        background: #f8fafc;
+        z-index: 2;
+    }
+    
+    .chrome-tab.active {
+        background: white;
+        color: var(--primary);
+        border-color: #cbd5e1;
+        border-bottom: 1px solid white; /* Merge with content below */
+        z-index: 10;
+        padding-top: 12px; /* Pop up slightly */
+        margin-bottom: -1px; /* CRITICAL: Overlap the container border */
+        box-shadow: 0 -2px 5px rgba(0,0,0,0.02);
+    }
+
+    /* Score Badge inside Tab */
+    .tab-score-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 12px;
+        background: #cbd5e1;
+        color: white;
+        font-weight: 700;
+        min-width: 24px;
+        text-align: center;
+    }
+    .chrome-tab.active .tab-score-badge {
+        background: var(--primary); /* Red badge when active */
+        box-shadow: 0 2px 4px rgba(128, 0, 0, 0.2);
+    }
+    
+    /* Header Controls (Date & Filter) in top right */
+    .fillin-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px; /* Align with bottom of tabs */
+        padding-left: 20px;
+        z-index: 20; /* Ensure clicks works */
+    }
+    
+    /* Form Area connected to tabs */
+    .fillin-form-area {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0; 
+        background: white;
+        position: relative; /* Context for sticky header */
+    }
+    
+    /* STICKY HEADER FIX & RED THEME */
+    #fillTable {
+        border-collapse: collapse; /* Ensure no gaps */
+        margin-top: 0;
+        width: 100%;
+    }
+    #fillTable th {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        /* SOFT GRAY HEADER THEME */
+        background: #f8fafc; 
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        padding: 16px 20px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 700;
+    }
+    #fillTable td {
+        padding: 12px 20px; /* Adjust padding for content */
+        border-bottom: 1px solid var(--border);
+    }
+    
+    .date-navigator {
+        display: flex;
+        align-items: center;
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 50px;
+        padding: 4px 8px;
+        box-shadow: var(--shadow-sm);
+    }
+
+    /* --- UTILS --- */
+    .hidden { display:none !important; }
+    .skeleton { background: #e2e8f0; border-radius: 4px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+    
+    /* --- TOAST NOTIFICATION --- */
+    .toast-overlay {
+        position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        z-index: 3000; pointer-events: none; opacity: 0; transition: all 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55);
+    }
+    .toast-overlay.active { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    .toast-content {
+        background: rgba(255, 255, 255, 0.98);
+        backdrop-filter: blur(12px);
+        padding: 32px 48px;
+        border-radius: 20px;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        display: flex; flex-direction: column; align-items: center; gap: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        text-align: center;
+    }
+    .toast-icon { font-size: 40px; color: var(--success); }
+    .toast-title { font-weight: 800; font-size: 20px; color: var(--text-main); }
+    .toast-msg { color: var(--text-muted); font-size: 14px; }
+    
+    /* --- MODALS --- */
+    .modal-overlay { 
+        position:fixed; top:0; left:0; width:100%; height:100%; 
+        background:rgba(15, 23, 42, 0.4); backdrop-filter: blur(4px);
+        z-index:2000; display:flex; justify-content:center; align-items:center; 
+        opacity:0; pointer-events:none; transition:0.3s; 
+    }
+    .modal-overlay.active { opacity:1; pointer-events:all; }
+    .modal-box { 
+        background:white; width:500px; padding:32px; border-radius:16px; 
+        transform:translateY(20px) scale(0.95); transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); 
+        max-height:90vh; overflow-y:auto; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+    }
+    .modal-box.modal-lg { width:900px; }
+    .modal-overlay.active .modal-box { transform:translateY(0) scale(1); }
+    #pdf-template { display:none; }
+    @media (max-width: 820px) {
+      body { overflow:auto; height:auto; min-height:100dvh; }
+      #main-app { min-height:100dvh; height:auto; flex-direction:column; }
+      .sidebar { width:100%; padding:14px; position:sticky; top:0; z-index:30; flex-direction:row; flex-wrap:wrap; gap:6px; }
+      .sidebar-header { width:100%; margin-bottom:4px; }
+      .menu-item { padding:9px 11px; margin:0; font-size:12px; }
+      .user-profile { width:100%; margin-top:4px; padding-top:8px; }
+      .content { padding:16px; overflow:visible; }
+      .modal-box, .modal-box.modal-lg { width:calc(100vw - 24px); padding:20px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Workspace session loader; no second login is required. -->
+  <div id="login-page">
+    <div class="login-box">
+      <div class="brand-logo">TEAMS PERFORMANCE</div>
+      <p style="color:var(--text-muted); font-size:14px; margin-bottom:24px;">Menyiapkan data performa dari Cloudflare…</p>
+      <div class="spinner" aria-label="Memuat"></div>
+      <div id="login-msg" style="margin-top:16px; color:var(--danger); font-size:13px; font-weight:500;"></div>
+    </div>
+    <div class="login-footer"> © 2025 | Bakerzin | Crafted By Day & Nite Promise</div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="successToast" class="toast-overlay">
+      <div class="toast-content">
+         <div class="toast-icon">✨</div>
+         <div class="toast-title">Berhasil Disimpan!</div>
+         <div class="toast-msg">Data penilaian staff telah diperbarui.</div>
+      </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="main-app">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div style="width:32px; height:32px; background:var(--primary); border-radius:8px; display:flex; align-items:center; justify-content:center; color:white;">⚡</div>
+        <h3>TEAM PERFORMANCE</h3>
+      </div>
+      
+      <div class="menu-item active" onclick="nav('dashboard',this)"><span>📊</span> Dashboard</div>
+      <div class="menu-item" onclick="nav('fillin',this)"><span>📝</span> Input Penilaian</div>
+      <div class="menu-item" onclick="nav('member',this)"><span>👥</span> Teams</div>
+      <div class="menu-item" onclick="nav('indicator',this)"><span>⚙️</span> Konfigurasi</div>
+      
+      <div class="user-profile">
+        <div class="avatar-circle" id="userAvatar">U</div>
+        <div style="display:flex; flex-direction:column; overflow:hidden;">
+            <div id="lblOutlet" style="font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">-</div>
+            <div id="lblRole" style="font-size:11px; color:var(--text-muted);">-</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      
+      <!-- DASHBOARD -->
+      <div id="page-dashboard" class="page-section">
+        
+        <!-- 1. CHART (Top of screen) -->
+        <div style="background:white; padding:24px; border-radius:12px; border:1px solid var(--border); box-shadow:var(--shadow-sm); margin-bottom:32px; height:350px; display:flex; flex-direction:column;">
+             <h4 style="font-size:14px; margin-bottom:16px; color:var(--primary); font-weight:700;">📈 Total staff yang dinilai</h4>
+             <div style="flex:1; position:relative; min-height:0;">
+                <canvas id="dailyStatsChart"></canvas>
+             </div>
+        </div>
+
+        <!-- 2. HEADER -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+           <div>
+             <h2>Leaderboard</h2>
+             <p style="color:var(--text-muted); margin-top:4px;">Peringkat staff berdasarkan performa</p>
+           </div>
+           <div id="dashOutletFilterDiv" class="hidden" style="width: 200px;">
+             <select id="dashOutletFilter" class="form-control" onchange="loadDashboard()"></select>
+           </div>
+        </div>
+
+        <!-- 3. TABLE CARD -->
+        <div class="card">
+          <div style="display:grid; grid-template-columns: 1fr auto auto auto; gap:12px; align-items:end; margin-bottom:16px;">
+             <div>
+                <label style="font-size:12px; font-weight:600; color:var(--text-muted);">Cari Nama</label>
+                <input type="text" id="dashSearch" class="form-control" placeholder="Ketik nama..." onkeyup="filterAndRenderDashboardTable()">
+             </div>
+             <div>
+                <label style="font-size:12px; font-weight:600; color:var(--text-muted);">Dari</label>
+                <input type="date" id="dashStart" class="form-control">
+             </div>
+             <div>
+                <label style="font-size:12px; font-weight:600; color:var(--text-muted);">Sampai</label>
+                <input type="date" id="dashEnd" class="form-control">
+             </div>
+             <button class="btn btn-primary" onclick="loadDashboard()">
+                <span>Filter Data</span>
+             </button>
+          </div>
+          
+          <!-- POSITION TABS -->
+          <div id="dashPositionTabs" class="dashboard-tabs-wrapper">
+             <!-- Tabs will be injected here JS -->
+          </div>
+
+          <div id="debugInfo" style="font-size:12px; color:var(--text-muted); margin-bottom:10px; display:flex; align-items:center; gap:5px;">
+             <span style="width:8px; height:8px; background:var(--success); border-radius:50%; display:inline-block;"></span> 
+             <span>Sistem Siap</span>
+          </div>
+
+          <div style="overflow-x:auto;">
+            <table id="dashTable">
+              <thead>
+                <tr>
+                  <th style="width:80px; text-align:center;"></th>
+                  <th>Nama Staff</th>
+                  <th>Posisi</th>
+                  <th>Rata-rata Score</th>
+                  <th style="text-align:right;"> </th>
+                </tr>
+              </thead>
+              <tbody id="dashTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- MEMBER -->
+      <div id="page-member" class="page-section hidden">
+        <h2>Member</h2>
+        <p style="color:var(--text-muted); margin-bottom:24px;"> </p>
+        
+        <div class="card">
+          <h4 style="margin-bottom:16px; color:var(--primary);">Add Member</h4>
+          <div style="display:grid; grid-template-columns:1fr 2fr 2fr 1.5fr auto; gap:12px; align-items:end;">
+            <div><label style="font-size:11px; font-weight:600;">NIK</label><input type="text" id="stfNik" class="form-control" placeholder="BGXXXXXX"></div>
+            <div><label style="font-size:11px; font-weight:600;">Nama Lengkap</label><input type="text" id="stfNama" class="form-control" placeholder="Nama"></div>
+            <div><label style="font-size:11px; font-weight:600;">Posisi</label>
+              <select id="stfPosisi" class="form-control">
+                 <option>Server</option><option>Captain</option><option>Cashier</option><option>Greeter</option><option>Barista</option>
+              </select>
+            </div>
+            <!-- FIX: Wrapper for Admin Select Replacement -->
+            <div id="divStfOutlet">
+                <label style="font-size:11px; font-weight:600;">Outlet</label>
+                <input type="text" id="stfOutlet" class="form-control" readonly>
+            </div>
+            <button class="btn btn-primary" onclick="saveNewStaff()">+ Simpan</button>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+           <input type="text" id="stfSearch" class="form-control" placeholder="Cari staff..." style="width:300px;" onkeyup="filterStaffTables()">
+           <div id="stfOutletFilterDiv" class="hidden"><select id="stfFilterOutlet" class="form-control" onchange="filterStaffTables()"></select></div>
+        </div>
+        
+        <div class="card">
+            <h4 style="margin-bottom:16px;">Staff Aktif</h4>
+            <table>
+                <thead><tr><th>NIK</th><th>Nama</th><th style="width:250px;">Posisi</th><th>Outlet</th><th>Status</th><th style="text-align:right;">Aksi</th></tr></thead>
+                <tbody id="staffTableActive"></tbody>
+            </table>
+        </div>
+        
+        <div class="card" style="opacity:0.8;">
+            <h4 style="margin-bottom:16px; color:var(--text-muted);">Staff Non-Aktif</h4>
+            <table>
+                <thead><tr><th>NIK</th><th>Nama</th><th>Posisi</th><th>Outlet</th><th>Status</th><th style="text-align:right;">Aksi</th></tr></thead>
+                <tbody id="staffTableInactive"></tbody>
+            </table>
+        </div>
+      </div>
+
+      <!-- INDICATOR -->
+      <div id="page-indicator" class="page-section hidden">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+           <h2>Konfigurasi Indikator</h2>
+           <div id="indOutletFilterDiv" class="hidden"><select id="indOutletFilter" class="form-control" style="width:200px;" onchange="renderIndicatorTable()"></select></div>
+        </div>
+        
+        <div class="card">
+          <h4 style="margin-bottom:16px;">Matriks</h4>
+          <div style="overflow-x:auto;">
+            <table id="indTable">
+                <thead></thead><tbody id="indTableBody"></tbody><tfoot id="indTableFoot"></tfoot>
+            </table>
+          </div>
+        </div>
+        
+        <div class="card" style="background:#f8fafc; border:1px dashed var(--border);">
+            <h4 style="margin-bottom:16px; color:var(--text-muted);">Arsip</h4>
+            <table id="indTableArchive"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+
+      <!-- FILL IN (NEW LAYOUT) -->
+      <div id="page-fillin" class="page-section hidden" style="height: calc(100vh - 40px); padding: 0;">
+        
+        <div class="fillin-wrapper">
+            <!-- LEFT SIDEBAR: POSITIONS -->
+            <div class="fillin-sidebar">
+                <div style="padding: 0 24px 16px; font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 1px; border-bottom: 1px solid var(--border); margin-bottom: 10px;">
+                    POSISI
+                </div>
+                <div id="positionTabs" style="display: flex; flex-direction: column; gap: 4px;">
+                    <!-- Vertical tabs go here -->
+                </div>
+            </div>
+
+            <!-- RIGHT CONTENT: TABS & FORM -->
+            <div class="fillin-content">
+                
+                <!-- Chrome Tabs Container (includes Date Navigator) -->
+                <div class="chrome-tabs-container">
+                    <!-- Staff Tabs (Left) -->
+                    <div id="staffTabs" class="chrome-tabs-wrapper">
+                        <!-- Chrome tabs go here -->
+                    </div>
+
+                    <!-- Controls (Right): Date & Outlet -->
+                    <div class="fillin-controls">
+                        <!-- Date Widget -->
+                        <div class="date-navigator">
+                            <button class="btn-icon" onclick="changeDate(-1)">&#9664;</button>
+                            <div style="text-align:center; min-width:120px; padding: 0 8px;">
+                                <div style="font-size:9px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">PERIODE</div>
+                                <div id="fillDateDisplay" style="font-weight:700; font-size:12px; color:var(--text-main);">Loading...</div>
+                            </div>
+                            <button class="btn-icon" onclick="changeDate(1)">&#9654;</button>
+                            <input type="date" id="fillDate" class="hidden">
+                        </div>
+
+                        <div id="fillOutletFilter" class="hidden">
+                            <select id="selFillOutlet" class="form-control" style="padding: 6px 12px; height: 36px;" onchange="initFillInPage()"></select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Form Area -->
+                <div class="fillin-form-area">
+                    <!-- REMOVED HEADER INFO BLOCK -->
+
+                    <table id="fillTable">
+                        <thead><tr><th>Kategori</th><th>Indikator</th><th>Target</th><th>Bobot</th><th>Pencapaian</th><th>Skor</th><th>Catatan</th><th style="width:60px;">Status</th></tr></thead>
+                        <tbody id="fillTableBody"></tbody>
+                    </table>
+                    
+                    <div style="height: 50px;"></div>
+                </div>
+
+            </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MODALS -->
+  <div class="modal-overlay" id="alertModal"><div class="modal-box" style="text-align:center;">
+      <div style="font-size:48px; margin-bottom:16px;">ℹ️</div>
+      <h3 style="margin-bottom:8px;">Info</h3>
+      <div id="alertMessage" style="margin-bottom:24px; color:var(--text-muted);"></div>
+      <button class="btn btn-primary" onclick="closeModal('alertModal')">Mengerti</button>
+  </div></div>
+
+  <div class="modal-overlay" id="confirmModal"><div class="modal-box" style="text-align:center;">
+      <div style="font-size:48px; margin-bottom:16px;">❓</div>
+      <h3 style="margin-bottom:8px;">Konfirmasi</h3>
+      <div id="confirmMessage" style="margin-bottom:24px; color:var(--text-muted);"></div>
+      <button class="btn btn-outline" onclick="closeModal('confirmModal')">Batal</button> 
+      <button class="btn btn-primary" id="btnConfirmYes">Ya, Lanjutkan</button>
+  </div></div>
+
+  <div class="modal-overlay" id="mutationModal"><div class="modal-box">
+      <h3>🔄 Mutasi Staff</h3>
+      <div style="margin-bottom:24px; color:var(--text-muted);">Pindahkan staff ke outlet lain</div>
+      <div style="margin-bottom:16px;">
+          <label style="font-size:12px; font-weight:600;">Staff</label>
+          <div style="font-size:16px; font-weight:bold;" id="mutStaffName"></div>
+      </div>
+      <input type="hidden" id="mutNik">
+      <div style="margin-bottom:24px;">
+          <label style="font-size:12px; font-weight:600;">Outlet Tujuan</label>
+          <select id="mutNewOutlet" class="form-control"></select>
+      </div>
+      <div style="text-align:right;">
+          <button class="btn btn-outline" onclick="closeModal('mutationModal')">Batal</button> 
+          <button class="btn btn-primary" onclick="submitMutation()">Simpan Perubahan</button>
+      </div>
+  </div></div>
+  
+  <div class="modal-overlay" id="reportModal"><div class="modal-box modal-lg">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+          <div>
+              <h3 id="reportStaffInfo" style="margin:0;">Laporan</h3>
+              <div style="font-size:12px; color:var(--text-muted);">Detail kinerja staff</div>
+          </div>
+          <button class="btn btn-outline" style="border:none;" onclick="closeModal('reportModal')">✕ Tutup</button>
+      </div>
+      
+      <div style="background:#f8fafc; padding:16px; border-radius:12px; display:flex; gap:12px; margin-bottom:24px; border:1px solid var(--border);">
+          <input type="date" id="repStart" class="form-control">
+          <span style="align-self:center;">s/d</span>
+          <input type="date" id="repEnd" class="form-control">
+          <button class="btn btn-primary" onclick="updateStaffReport()">Update Data</button>
+      </div>
+      
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:24px;">
+          <div style="background:linear-gradient(135deg, #800000 0%, #5a0000 100%); padding:20px; border-radius:12px; color:white; text-align:center;">
+              <div style="font-size:12px; opacity:0.8;">RATA-RATA SCORE</div>
+              <h1 id="repAvg" style="font-size:48px; margin:0;">0</h1>
+          </div>
+          <div style="background:white; border:1px solid var(--border); padding:20px; border-radius:12px; text-align:center; display:flex; flex-direction:column; justify-content:center;">
+              <div style="font-size:12px; color:var(--text-muted);">PREDIKAT</div>
+              <h2 id="repPredikat" style="margin:0;">-</h2>
+          </div>
+      </div>
+      
+      <div style="height:280px; margin-bottom:24px;">
+          <canvas id="staffChart"></canvas>
+      </div>
+      
+      <div style="text-align:right;">
+          <button class="btn btn-primary" onclick="generatePDF()">
+             <span>📄 Download Laporan PDF</span>
+          </button>
+      </div>
+  </div></div>
+
+  <script>
+    let STATE = { 
+        user:null, 
+        staffList:[], 
+        indicators:[], 
+        outlets:[], 
+        positions:[], 
+        activeReportNik:null, 
+        reportData:[], 
+        activeStaffNik:null, 
+        currentDailyData:[],
+        processedDashData: [], // Stores aggregated leaderboard data
+        activeDashPosition: 'Server' // Default position for Dashboard
+    };
+    let chartInstance = null;
+    let dailyStatsChartInstance = null; // New Instance for Daily Stats
+    let rowTimers = {}; // Store timer per row (indicator ID)
+    const WORKSPACE_TOKEN = (() => { try { return localStorage.getItem('bakerzin_session') || ''; } catch (error) { return ''; } })();
+
+    function unwrapWorkspaceResponse(response) {
+      if (!response || response.ok !== true) throw new Error(response && response.error ? response.error : 'Respons server tidak valid.');
+      return response.data;
+    }
+
+    function staffApiCall(action, args) {
+      if (!WORKSPACE_TOKEN) return Promise.reject(new Error('Sesi Bakerzin Workspace tidak ditemukan.'));
+      return BAKERZIN_API.call(action, [WORKSPACE_TOKEN].concat(args || [])).then(unwrapWorkspaceResponse);
+    }
+
+    // --- CHART CONFIG ---
+    Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
+    Chart.defaults.color = '#64748b';
+
+    // --- HELPER UI ---
+    function createAvatar(name) {
+       // Reverted to initials only
+       const initials = name.split(' ').slice(0,2).map(n=>n[0]).join('').toUpperCase();
+       const colors = ['#F59E0B', '#10B981', '#3B82F6', '#6366F1', '#EC4899', '#8B5CF6'];
+       const color = colors[name.length % colors.length];
+       return `<div class="staff-avatar" style="background:${color}">${initials}</div>`;
+    }
+
+    // Helper for Short Name in Tabs
+    function formatTabName(name) {
+       if(!name) return '';
+       const parts = name.trim().split(' ');
+       if(parts.length === 1) return parts[0];
+       // Return First Name + 1st char of 2nd name + ...
+       return parts[0] + ' ' + parts[1].charAt(0).toUpperCase() + '...';
+    }
+    
+    function showToast() {
+       const t = document.getElementById('successToast');
+       t.classList.add('active');
+       setTimeout(() => t.classList.remove('active'), 3000);
+    }
+
+    function getLocalDateISO(d) { const date = d||new Date(); return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0'); }
+    
+    function normalizeDateStr(dateStr) {
+      if(!dateStr) return "";
+      try {
+        let clean = dateStr.split('T')[0].split(' ')[0];
+        const parts = clean.split('-');
+        if(parts.length === 3) {
+          return parts[0] + '-' + parts[1].padStart(2,'0') + '-' + parts[2].padStart(2,'0');
+        }
+        return clean;
+      } catch(e) { return dateStr; }
+    }
+
+    async function bootStaffPerformance() {
+      try {
+        if (!WORKSPACE_TOKEN) throw new Error('Silakan login melalui Bakerzin Workspace.');
+        const bootstrap = await staffApiCall('staffPerformanceBootstrap', ['']);
+        STATE.user = {
+          ...bootstrap.user,
+          outlet: bootstrap.user.outlet,
+          nama_outlet: bootstrap.user.outlet,
+          role: bootstrap.role || (bootstrap.user.isAdmin ? 'All' : 'OUTLET')
+        };
+        initApp(bootstrap);
+      } catch (error) {
+        document.getElementById('login-msg').innerText = error.message || String(error);
+        setTimeout(() => { window.location.href = 'index.html'; }, 2500);
+      }
+    }
+
+    function initApp(bootstrap) {
+      document.getElementById('login-page').style.opacity='0';
+      setTimeout(()=>{
+          document.getElementById('login-page').style.display='none'; 
+          document.getElementById('main-app').style.display='flex';
+      }, 300);
+
+      document.getElementById('lblOutlet').innerText=STATE.user.nama_outlet; 
+      document.getElementById('lblRole').innerText=STATE.user.role;
+      document.getElementById('userAvatar').innerText = STATE.user.nama_outlet.substring(0,1);
+      
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      
+      document.getElementById('dashStart').value = getLocalDateISO(firstDay);
+      document.getElementById('dashEnd').value = getLocalDateISO(now);
+      
+      if(STATE.user.role==='All'||STATE.user.outlet==='BIHQ'){
+         const divStf = document.getElementById('divStfOutlet');
+         if (divStf) divStf.innerHTML=`<label style="font-size:11px; font-weight:600;">Outlet</label><select id="stfOutlet" class="form-control"></select>`;
+         ['fillOutletFilter','dashOutletFilterDiv','stfOutletFilterDiv','indOutletFilterDiv'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
+      } else { 
+          const stfInput = document.getElementById('stfOutlet');
+          if (stfInput) stfInput.value=STATE.user.outlet; 
+      }
+      applyInitialData(bootstrap);
+    }
+
+    function applyInitialData(res) {
+         STATE.staffList=res.staff||[]; STATE.indicators=res.indicators||[]; STATE.outlets=res.outlets||[]; STATE.positions=res.positions||[];
+         const opts = STATE.outlets.map(o=>`<option value="${o}">${o}</option>`).join('');
+         
+         const stfOutSelect = document.querySelector('select#stfOutlet'); 
+         if(stfOutSelect) stfOutSelect.innerHTML=opts;
+         
+         document.getElementById('selFillOutlet').innerHTML='<option value="">All Outlets</option>'+opts;
+         document.getElementById('dashOutletFilter').innerHTML='<option value="">All Outlets</option>'+opts;
+         document.getElementById('stfFilterOutlet').innerHTML='<option value="">All Outlets</option>'+opts;
+         document.getElementById('mutNewOutlet').innerHTML='<option value="">Pilih Outlet</option>'+opts;
+         
+         const indOut = document.getElementById('indOutletFilter');
+         indOut.innerHTML=opts; if((STATE.user.role==='All' || STATE.user.outlet==='BIHQ') && STATE.outlets.length>0) indOut.value=STATE.outlets[0];
+
+         renderStaffTable(); renderIndicatorTable(); loadDashboard();
+    }
+
+    function fetchData(){
+      staffApiCall('staffPerformanceBootstrap', [''])
+        .then(applyInitialData)
+        .catch(error => alert('Gagal memuat data Cloudflare: ' + (error.message || error)));
+    }
+
+    function nav(p, menuElement) {
+       // Hide all pages
+       document.querySelectorAll('.page-section').forEach(e=>e.classList.add('hidden')); 
+       // Show target page
+       document.getElementById('page-'+p).classList.remove('hidden');
+       
+       // Handle overflow for fillin page specific layout
+       if (p === 'fillin') {
+           document.querySelector('.content').style.padding = '0';
+           document.querySelector('.content').style.overflowY = 'hidden'; // Inner wrapper handles scroll
+       } else {
+           document.querySelector('.content').style.padding = '32px';
+           document.querySelector('.content').style.overflowY = 'auto';
+       }
+
+       document.querySelectorAll('.menu-item').forEach(e=>e.classList.remove('active'));
+       if (menuElement) menuElement.classList.add('active');
+       if(p==='fillin'){ document.getElementById('fillDate').value=getLocalDateISO(); updateDateDisplay(); initFillInPage(); }
+       if(p==='dashboard') loadDashboard();
+    }
+
+    // --- DASHBOARD LOGIC (IMPROVED WITH TABS & STACKED CHART) ---
+    function loadDashboard(){
+       const s=document.getElementById('dashStart').value; const e=document.getElementById('dashEnd').value;
+       const out = document.getElementById('dashOutletFilter') ? document.getElementById('dashOutletFilter').value : STATE.user.outlet;
+       const tb = document.getElementById('dashTableBody');
+       
+       // SKELETON LOADING
+       tb.innerHTML = '';
+       for(let i=0; i<3; i++) {
+           tb.innerHTML += `<tr>
+               <td><div class="skeleton" style="height:20px; width:20px; border-radius:50%; margin:auto;"></div></td>
+               <td><div style="display:flex; gap:10px;"><div class="skeleton" style="width:40px; height:40px; border-radius:10px;"></div><div style="width:100px;"><div class="skeleton" style="height:14px; width:100%; margin-bottom:5px;"></div><div class="skeleton" style="height:10px; width:60%;"></div></div></div></td>
+               <td><div class="skeleton" style="height:14px; width:80px;"></div></td>
+               <td><div class="skeleton" style="height:20px; width:40px; border-radius:10px;"></div></td>
+               <td><div class="skeleton" style="height:30px; width:60px; border-radius:6px; margin-left:auto;"></div></td>
+           </tr>`;
+       }
+       const debugEl = document.getElementById('debugInfo'); debugEl.innerHTML = '<span>⏳ Memuat data live...</span>';
+       
+       // 1. Fetch Leaderboard
+       staffApiCall('staffPerformanceLeaderboard', [s, e, out]).then(data=>{
+          debugEl.innerText = ` `;
+          
+          if(!data || data.length === 0) {
+              STATE.processedDashData = [];
+          } else {
+              const staffMap = {};
+              const isGlobal = STATE.user.role === 'All' || STATE.user.outlet === 'BIHQ';
+    
+              STATE.staffList.forEach(st=>{
+                 if(isGlobal && out && st.Outlet!==out) return;
+                 if(!isGlobal && st.Outlet!==STATE.user.outlet) return;
+                 
+                 const normNik = String(st.NIK).trim().toUpperCase();
+                 staffMap[normNik] = { ...st, totalScore:0, count:0 };
+              });
+    
+              data.forEach(r=>{
+                 const key = String(r.NIK).trim().toUpperCase();
+                 if(staffMap[key]) {
+                     let rawScore = r.Score !== undefined ? r.Score : r.score;
+                     let val = Number(rawScore);
+                     if(isNaN(val)) val = 0;
+                     staffMap[key].totalScore += val;
+                     staffMap[key].count++;
+                 }
+              });
+              
+              const arr = [];
+              for (const key in staffMap) {
+                  const st = staffMap[key];
+                  let avg = 0;
+                  if (st.count > 0) {
+                      avg = parseFloat((st.totalScore / st.count).toFixed(1));
+                  }
+                  arr.push({ ...st, avg: avg });
+              }
+              // Sort overall by Score first
+              arr.sort((a,b)=>b.avg-a.avg);
+              
+              STATE.processedDashData = arr;
+          }
+          
+          // Initial Render - Tabs & Table
+          renderDashboardTabs();
+          filterAndRenderDashboardTable();
+          
+       }).catch(error => {
+          debugEl.innerText = 'Gagal memuat leaderboard';
+          console.error(error);
+       });
+
+       // 2. Fetch Daily Stats for Chart
+       staffApiCall('staffPerformanceDailyStats', [s, e, out]).then(statsData => {
+           renderDailyChart(statsData, s, e, out);
+       }).catch(error => console.error('Gagal memuat statistik harian', error));
+    }
+    
+    // --- DAILY CHART LOGIC ---
+    function renderDailyChart(data, startDate, endDate, selectedOutlet) {
+        // Generate Date Range Array to ensure X-axis continuity
+        const dateRange = [];
+        let curr = new Date(startDate);
+        const end = new Date(endDate);
+        while(curr <= end) {
+            dateRange.push(getLocalDateISO(curr));
+            curr.setDate(curr.getDate() + 1);
+        }
+
+        // Identify unique positions (for legend & stacking)
+        const positions = STATE.positions.length > 0 ? STATE.positions.sort() : ['Server','Captain','Cashier','Greeter','Barista'];
+        
+        // Structure data: date -> position -> count
+        const processed = {};
+        dateRange.forEach(d => {
+            processed[d] = {};
+            positions.forEach(p => processed[d][p] = 0);
+        });
+
+        // Loop through raw data from Backend (unique Tanggal + NIK)
+        // Check STATE.staffList to determine if NIK belongs to selected outlet (if any) and what Posisi
+        const isGlobal = STATE.user.role === 'All' || STATE.user.outlet === 'BIHQ';
+        
+        data.forEach(row => {
+            const rowDate = normalizeDateStr(row.Tanggal);
+            const staff = STATE.staffList.find(s => String(s.NIK).trim().toUpperCase() === String(row.NIK).trim().toUpperCase());
+            
+            if (staff) {
+                // Filter Outlet Logic
+                if (isGlobal && selectedOutlet && staff.Outlet !== selectedOutlet) return;
+                if (!isGlobal && staff.Outlet !== STATE.user.outlet) return;
+                
+                // If passed filter, increment count
+                if (processed[rowDate]) {
+                    const pos = staff.Posisi || 'Unknown';
+                    if (processed[rowDate][pos] !== undefined) {
+                        processed[rowDate][pos]++;
+                    }
+                }
+            }
+        });
+
+        // Prepare Datasets for Chart.js
+        const colors = ['#800000', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6', '#EC4899', '#64748B'];
+        const datasets = positions.map((pos, idx) => ({
+            label: pos,
+            data: dateRange.map(d => processed[d][pos]),
+            backgroundColor: colors[idx % colors.length],
+            stack: 'Stack 0',
+            barPercentage: 0.6,
+            borderRadius: 4
+        }));
+
+        // Render Chart
+        const ctx = document.getElementById('dailyStatsChart').getContext('2d');
+        if(dailyStatsChartInstance) dailyStatsChartInstance.destroy();
+
+        dailyStatsChartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: dateRange.map(d => d.split('-')[2]), // Show only day number
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 6 } },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                scales: {
+                    x: { 
+                        stacked: true, 
+                        grid: { display: false } 
+                    },
+                    y: { 
+                        stacked: true, 
+                        beginAtZero: true, 
+                        grid: { color: '#f1f5f9' },
+                        ticks: { stepSize: 1 }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderDashboardTabs() {
+        const container = document.getElementById('dashPositionTabs');
+        container.innerHTML = '';
+        
+        // Ensure "Server" is first, then alphabetical
+        let sortedPos = [...STATE.positions].sort();
+        const serverIdx = sortedPos.indexOf('Server');
+        if(serverIdx > -1) {
+            sortedPos.splice(serverIdx, 1);
+            sortedPos.unshift('Server');
+        }
+        
+        // If current Active Pos is not in list (e.g. data changed), reset to first
+        if (!sortedPos.includes(STATE.activeDashPosition) && sortedPos.length > 0) {
+            STATE.activeDashPosition = sortedPos[0];
+        }
+
+        sortedPos.forEach(p => {
+            const btn = document.createElement('div');
+            btn.className = `dash-tab-btn ${p === STATE.activeDashPosition ? 'active' : ''}`;
+            btn.innerText = p;
+            btn.onclick = () => {
+                STATE.activeDashPosition = p;
+                renderDashboardTabs(); // Update active class
+                filterAndRenderDashboardTable(); // Update table
+            };
+            container.appendChild(btn);
+        });
+    }
+
+    // --- SEARCH & TAB FILTER COMBINED ---
+    function filterAndRenderDashboardTable() {
+      const tb = document.getElementById('dashTableBody');
+      const input = document.getElementById("dashSearch");
+      const filterName = input.value.toUpperCase();
+      
+      const filteredData = STATE.processedDashData.filter(item => {
+          // 1. Filter by Tab Position
+          const matchesPos = item.Posisi === STATE.activeDashPosition;
+          // 2. Filter by Name Search
+          const matchesName = item.Nama.toUpperCase().indexOf(filterName) > -1;
+          
+          return matchesPos && matchesName;
+      });
+      
+      tb.innerHTML = '';
+      
+      if(filteredData.length === 0) {
+          tb.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:32px; color:var(--text-muted);">Tidak ada staff pada posisi ini.</td></tr>';
+          return;
+      }
+      
+      filteredData.forEach((x, i)=>{
+         let c='var(--primary)';
+         if(x.avg>=90) c= 'var(--success)';
+         else if(x.avg>=75) c= 'var(--secondary)';
+         else c= 'var(--danger)';
+         
+         // BADGE LOGIC & ROW CLASS
+         let rankBadge = `${i+1}`;
+         let rankStyle = "font-weight:700; color:var(--text-muted);";
+         let rowClass = "";
+         
+         if (i === 0) { rankBadge = "🥇"; rankStyle = "font-size:28px;"; rowClass="podium-1"; }
+         else if (i === 1) { rankBadge = "🥈"; rankStyle = "font-size:24px;"; rowClass="podium-2"; }
+         else if (i === 2) { rankBadge = "🥉"; rankStyle = "font-size:20px;"; rowClass="podium-3"; }
+         
+         // Hide rank if > 3
+         if (i > 2) rankBadge = "";
+
+         const scoreBadge = x.avg > 0 
+            ? `<span class="score-badge" style="background:${c}; color:white;">${x.avg}</span>` 
+            : `<span class="score-badge" style="background:#f1f5f9; color:#94a3b8;">0</span>`;
+
+         tb.innerHTML+=`<tr class="${rowClass}">
+           <td style="text-align:center;"><div class="rank-cell" style="${rankStyle}">${rankBadge}</div></td>
+           <td>
+              <div class="staff-info">
+                ${createAvatar(x.Nama)}
+                <div style="font-weight:600; color:var(--text-main);">${x.Nama}<div style="font-size:11px; color:var(--text-muted); font-weight:400;">${x.NIK}</div></div>
+              </div>
+           </td>
+           <td><span style="font-size:12px; padding:4px 8px; background:#f1f5f9; border-radius:6px; font-weight:600;">${x.Posisi}</span></td>
+           <td>${scoreBadge}</td>
+           <td style="text-align:right;"><button class="btn btn-outline" style="padding:6px 12px; font-size:12px;" onclick="openStaffReport('${x.NIK}')">Detail</button></td>
+         </tr>`;
+      });
+    }
+
+    // --- STAFF ---
+    function filterStaffTables() {
+        // FIX: Previously this function was missing.
+        // It simply triggers renderStaffTable() which contains the filtering logic.
+        renderStaffTable();
+    }
+
+    function renderStaffTable(){
+       const tA=document.getElementById('staffTableActive'); const tI=document.getElementById('staffTableInactive'); tA.innerHTML=''; tI.innerHTML='';
+       const q=document.getElementById('stfSearch').value.toLowerCase(); const fOut=document.getElementById('stfFilterOutlet')?document.getElementById('stfFilterOutlet').value:'';
+       STATE.staffList.forEach(s=>{
+          if(fOut && s.Outlet!==fOut) return; if(q && !s.Nama.toLowerCase().includes(q)) return;
+          const posOpts = ["Server","Captain","Cashier","Greeter","Barista"].map(p=>`<option ${s.Posisi===p?'selected':''}>${p}</option>`).join('');
+          const posHtml = `<div id="pv-${s.NIK}"><span>${s.Posisi}</span> <button style="background:none; border:none; cursor:pointer;" onclick="togPos('${s.NIK}')">✏️</button></div><div id="pe-${s.NIK}" class="hidden" style="display:flex; gap:2px;"><select id="ps-${s.NIK}" class="form-control" style="padding:2px;">${posOpts}</select><button style="border:none;background:none;" onclick="savePos('${s.NIK}')">✅</button><button style="border:none;background:none;" onclick="togPos('${s.NIK}')">❌</button></div>`;
+          
+          // FIX: Improved Status Select with Pill Style
+          const statusClass = s.Status === 'Active' ? 'active' : 'inactive';
+          const statusHtml = `<select class="status-pill ${statusClass}" onchange="updStfStatus('${s.NIK}',this.value, this)">
+                <option value="Active" ${s.Status==='Active'?'selected':''}>ACTIVE</option>
+                <option value="Inactive" ${s.Status!=='Active'?'selected':''}>INACTIVE</option>
+            </select>`;
+
+          const row=`<tr>
+            <td>${s.NIK}</td>
+            <td>
+                <div class="staff-info">
+                    ${createAvatar(s.Nama)}
+                    <div style="font-weight:600;">${s.Nama}</div>
+                </div>
+            </td>
+            <td style="width:200px;">${posHtml}</td>
+            <td><span class="badge">${s.Outlet}</span></td>
+            <td>${statusHtml}</td>
+            <td style="text-align:right;">
+                <button class="btn btn-outline" style="padding:4px 8px;" onclick="openMut('${s.NIK}','${s.Nama}')">🔄</button> 
+                <button class="btn btn-outline" style="padding:4px 8px; color:var(--danger); border-color:var(--danger);" onclick="delStaff('${s.NIK}')">🗑️</button>
+            </td>
+          </tr>`;
+          if(s.Status==='Active') tA.innerHTML+=row; else tI.innerHTML+=row;
+       });
+    }
+    function togPos(n){ document.getElementById('pv-'+n).classList.toggle('hidden'); document.getElementById('pe-'+n).classList.toggle('hidden'); }
+    
+    // FIX: Updated savePos to construct payload with correct lowercase keys for backend
+    function savePos(n){ 
+        const np=document.getElementById('ps-'+n).value; 
+        const s=STATE.staffList.find(x=>x.NIK==n); 
+        if(s) {
+            const payload = {
+                nik: s.NIK,
+                nama: s.Nama,
+                posisi: np,
+                outlet: s.Outlet,
+                status: s.Status,
+                isEdit: true
+            };
+            staffApiCall('staffPerformanceSaveStaff', [payload]).then(fetchData).catch(error => alert(error.message || error));
+        }
+    }
+    
+    function saveNewStaff(){ 
+        const d={
+            nik:document.getElementById('stfNik').value, 
+            nama:document.getElementById('stfNama').value, 
+            posisi:document.getElementById('stfPosisi').value, 
+            outlet:document.getElementById('stfOutlet').value, 
+            status:'Active', 
+            isEdit:false
+        }; 
+        if(!d.nik) return alert("Lengkapi!"); 
+        staffApiCall('staffPerformanceSaveStaff', [d]).then(fetchData).catch(error => alert(error.message || error));
+    }
+    
+    function delStaff(n){
+      const staff = STATE.staffList.find(item => String(item.NIK) === String(n));
+      showConfirm("Nonaktifkan staff ini?", ()=>staffApiCall('staffPerformanceDeleteStaff', [n, staff ? staff.Outlet : STATE.user.outlet]).then(fetchData).catch(error => alert(error.message || error)));
+    }
+    
+    function updStfStatus(nik, st, el) { 
+        // Immediate visual feedback
+        if(el) {
+            el.className = `status-pill ${st === 'Active' ? 'active' : 'inactive'}`;
+        }
+        
+        const s = STATE.staffList.find(x=>x.NIK==nik); 
+        if(s) {
+             const payload = {
+                nik: s.NIK,
+                nama: s.Nama,
+                posisi: s.Posisi,
+                outlet: s.Outlet,
+                status: st,
+                isEdit: true
+            };
+            staffApiCall('staffPerformanceSaveStaff', [payload]).then(fetchData).catch(error => alert(error.message || error));
+        }
+    }
+    
+    function openMut(n,nm){ document.getElementById('mutNik').value=n; document.getElementById('mutStaffName').innerText=nm; openModal('mutationModal'); }
+    function submitMutation(){ const n=document.getElementById('mutNik').value; const o=document.getElementById('mutNewOutlet').value; if(!o)return alert("Pilih Outlet"); const s=STATE.staffList.find(x=>x.NIK==n); if(s) {
+            const payload = {
+                nik: s.NIK,
+                nama: s.Nama,
+                posisi: s.Posisi,
+                status: s.Status,
+                outlet: o,
+                isEdit: true
+            };
+            staffApiCall('staffPerformanceSaveStaff', [payload]).then(()=>{closeModal('mutationModal');fetchData();alert("Sukses");}).catch(error => alert(error.message || error));
+        }
+    }
+
+    // --- INDICATOR ---
+    function renderIndicatorTable(){
+       const tbA=document.getElementById('indTableBody'); const tbD=document.querySelector('#indTableArchive tbody'); const h=document.querySelector('#indTable thead'); const f=document.getElementById('indTableFoot');
+       tbA.innerHTML=''; tbD.innerHTML=''; h.innerHTML=''; f.innerHTML='';
+       let fOut=STATE.user.outlet; if((STATE.user.role==='All' || STATE.user.outlet==='BIHQ')){ const d=document.getElementById('indOutletFilter'); if(d && d.value) fOut=d.value; }
+       
+       let hh='<tr><th style="width:80px;">Status</th><th>Outlet</th><th>Kategori</th><th>Indikator</th><th>Target</th>';
+       STATE.positions.forEach(p=>hh+=`<th class="matrix-header">${p}</th>`); hh+='</tr>'; h.innerHTML=hh; 
+       let tots={}; STATE.positions.forEach(p=>tots[p]=0);
+
+       STATE.indicators.forEach(i=>{
+          const iOut=(i.Outlet||'').trim(); const tOut=(fOut||'').trim(); if(iOut!=='' && iOut!==tOut) return;
+          const dis=i.Status==='Disabled'; let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){wObj={}}
+          let cells=''; STATE.positions.forEach(p=>{ let v=0; if(typeof wObj==='object'&&wObj!==null)v=parseFloat(wObj[p])||0; else v=parseFloat(i.Bobot)||0; if(!dis)tots[p]+=v; cells+=`<td class="matrix-cell" style="color:${v>0?'var(--text-main)':'#cbd5e1'}; text-align:center;">${v}%</td>`; });
+          const row=`<tr><td><span class="badge" style="background:${dis?'#fee2e2':'#d1fae5'}">${dis?'Disabled':'Active'}</span></td><td>${i.Outlet||'Global'}</td><td>${i.Kategori}</td><td>${i.Nama_Indikator}</td><td>${i.Target||'-'}</td>${cells}</tr>`;
+          if(dis) tbD.innerHTML+=row; else tbA.innerHTML+=row;
+       });
+       let fh='<tr><td colspan="5" style="text-align:right;font-weight:bold;">TOTAL BOBOT:</td>'; STATE.positions.forEach(p=>{ const v=Math.abs(tots[p]-100)<0.1; fh+=`<td class="matrix-footer ${v?'':'invalid'}">${tots[p].toFixed(0)}%</td>`; }); f.innerHTML=fh+'</tr>';
+    }
+
+    // --- FILL IN (NEW LAYOUT) ---
+    function initFillInPage(){
+       const pc=document.getElementById('positionTabs'); 
+       // We don't set staffTabs innerHTML here anymore, handled in renderStfTabs
+       pc.innerHTML='';
+       
+       let tOut=STATE.user.outlet; if(STATE.user.role==='All' || STATE.user.outlet==='BIHQ'){ const s=document.getElementById('selFillOutlet'); if(s) tOut=s.value; }
+       
+       const stfs=STATE.staffList.filter(s=>s.Status==='Active' && (!tOut || s.Outlet===tOut));
+       if(stfs.length===0){ 
+           document.getElementById('fillTableBody').innerHTML=''; 
+           document.getElementById('staffTabs').innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center; width:100%;">Tidak ada staff aktif di outlet ini.</div>';
+           return; 
+       }
+       
+       const poss=[...new Set(stfs.map(s=>s.Posisi))].sort();
+       poss.forEach((p,i)=>{ 
+           const b=document.createElement('div'); 
+           b.className=`pos-tab-item ${i===0?'active':''}`; 
+           b.innerHTML = `<span>${p}</span>`;
+           b.onclick=()=>renderStfTabs(p,stfs,b); 
+           pc.appendChild(b); 
+       });
+       
+       if(poss.length>0) renderStfTabs(poss[0],stfs,pc.firstChild);
+    }
+
+    function renderStfTabs(p, all, btn){
+       // Handle Active State for Position Tabs
+       document.querySelectorAll('#positionTabs .pos-tab-item').forEach(b=>b.classList.remove('active')); 
+       if(btn) btn.classList.add('active');
+       
+       const sc=document.getElementById('staffTabs'); 
+       sc.innerHTML='';
+       
+       const fil=all.filter(s=>s.Posisi===p);
+       fil.forEach((s,i)=>{ 
+           const b=document.createElement('div'); 
+           b.className=`chrome-tab ${i===0?'active':''}`; 
+           const dName = formatTabName(s.Nama); // Use Helper
+           // Initial render with placeholder score
+           b.innerHTML = `<span class="tab-score-badge">-</span> ${dName}`;
+           b.title = s.Nama; // Tooltip for full name
+           b.onclick=()=>selStaff(s.NIK,b); 
+           sc.appendChild(b); 
+       });
+       
+       if(fil.length>0) selStaff(fil[0].NIK,sc.firstChild); 
+       else {
+           document.getElementById('fillTableBody').innerHTML='';
+           // Removed: document.getElementById('fillStaffName').innerText='-';
+       }
+    }
+    
+    function selStaff(nik,btn){
+       // Clear ALL timers when switching staff to prevent wrong data save
+       for(let k in rowTimers) clearTimeout(rowTimers[k]);
+       rowTimers = {};
+       
+       STATE.activeStaffNik=nik; 
+       
+       // Active State for Chrome Tabs
+       document.querySelectorAll('#staffTabs .chrome-tab').forEach(b=>b.classList.remove('active')); 
+       if(btn) btn.classList.add('active');
+       
+       const s=STATE.staffList.find(x=>x.NIK==nik); 
+       
+       const d=document.getElementById('fillDate').value; 
+       document.getElementById('fillTableBody').innerHTML='<tr><td colspan="7" style="text-align:center; padding:20px;">Loading form...</td></tr>';
+       staffApiCall('staffPerformanceData', [d, d, s ? s.Outlet : STATE.user.outlet, nik])
+         .then(res=>{ STATE.currentDailyData=res||[]; renderScoreSheet(); })
+         .catch(error => { document.getElementById('fillTableBody').innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--danger);">'+(error.message||error)+'</td></tr>'; });
+    }
+    
+    function renderScoreSheet(){
+       const tb=document.getElementById('fillTableBody'); tb.innerHTML='';
+       const s=STATE.staffList.find(x=>x.NIK==STATE.activeStaffNik); if(!s) return;
+       const tOut=(s.Outlet||'').trim(); const pos=s.Posisi;
+       
+       const rel=STATE.indicators.filter(i=>{
+          if(i.Status==='Disabled')return false; if(i.Outlet && i.Outlet!==tOut)return false;
+          let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){}
+          let w=0; if(typeof wObj==='object'&&wObj!==null)w=parseFloat(wObj[pos])||0; else w=parseFloat(i.Bobot)||0;
+          return w>0;
+       });
+       if(rel.length===0){ tb.innerHTML='<tr><td colspan="7" style="text-align:center; padding:20px;">Tidak ada indikator untuk posisi ini.</td></tr>'; return; }
+       
+       let tot=0;
+       rel.forEach(i=>{
+          let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){}
+          let w=0; if(typeof wObj==='object'&&wObj!==null)w=parseFloat(wObj[pos])||0; else w=parseFloat(i.Bobot)||0;
+          const ex=STATE.currentDailyData.find(d=>String(d.ID_Indikator)===String(i.ID_Indikator));
+          const val=ex?ex.Pencapaian:''; const sc=ex?parseFloat(ex.Skor_Final)||0:0; const nt=ex?ex.Note||'':''; tot+=sc;
+          const pA=i.Batas_A||0; const pB=i.Batas_B||0; const pC=i.Batas_C||0; const pD=i.Batas_D||0;
+          let inp=''; 
+          
+          if(String(i.Batas_A)==='YESNO') {
+              inp=`<select id="ach_${i.ID_Indikator}" class="form-control" onchange="calc('${i.ID_Indikator}',${w},'YESNO')" ${ex?'disabled':''}><option value="">-</option><option value="YES" ${val==='YES'?'selected':''}>Ya</option><option value="NO" ${val==='NO'?'selected':''}>Tidak</option></select>`;
+          } else {
+              // LOGIKA BARU: Tentukan Grade Awal jika ada value
+              let g='', c='';
+              if(val !== '') {
+                  const n = parseFloat(val)||0;
+                  if(n >= pA) { g='A'; c='#3b82f6'; }      // Biru
+                  else if(n >= pB) { g='B'; c='#10b981'; } // Hijau
+                  else if(n >= pC) { g='C'; c='#eab308'; } // Kuning
+                  else { g='D'; c='#ef4444'; }             // Merah
+              }
+
+              // WRAPPER FLEX UNTUK INPUT + GRADE
+              inp = `<div style="display:flex; align-items:center; gap:8px;">
+                 <input type="number" id="ach_${i.ID_Indikator}" class="form-control" value="${val}" 
+                        onchange="calc('${i.ID_Indikator}',${w},${pA},${pB},${pC},${pD})" 
+                        oninput="calc('${i.ID_Indikator}',${w},${pA},${pB},${pC},${pD})" 
+                        ${ex?'readonly':''} style="width:80px;">
+                 <span id="grade_${i.ID_Indikator}" style="font-weight:800; font-size:16px; color:${c}; width:20px; text-align:center;">${g}</span>
+              </div>`;
+          }
+          
+          // Round Checkmark Icon SVG
+          const checkIcon = `<svg class="status-icon-svg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
+
+          tb.innerHTML+=`<tr>
+            <td>${i.Kategori}</td>
+            <td><b>${i.Nama_Indikator}</b></td>
+            <td>${i.Target||'-'}</td>
+            <td><span class="badge">${w}%</span></td>
+            <td>${inp}</td>
+            <td id="sc_${i.ID_Indikator}" class="score-cell" style="font-weight:bold; color:var(--primary);">${sc}</td>
+            <td><div style="display:flex;gap:5px;"><input type="text" id="nte_${i.ID_Indikator}" class="form-control" value="${nt}" ${ex?'readonly':''} placeholder="Catatan..." oninput="triggerRowSave('${i.ID_Indikator}')"><button style="border:none;background:none;" onclick="enEdit('${i.ID_Indikator}')">✏️</button></div></td>
+            <!-- ROW STATUS INDICATOR -->
+            <td style="text-align:center; vertical-align:middle;">
+                <div id="status_${i.ID_Indikator}">
+                    ${ex ? checkIcon : ''}
+                </div>
+            </td>
+          </tr>`;
+       });
+       
+       // UPDATE TAB TEXT with score badge
+       const activeTab = document.querySelector('#staffTabs .chrome-tab.active');
+       if (activeTab) {
+           const dName = formatTabName(s.Nama);
+           activeTab.innerHTML = `<span class="tab-score-badge">${tot.toFixed(0)}</span> ${dName}`;
+       }
+    }
+    
+    function calc(id,w,a,b,c,d){
+       const v=document.getElementById('ach_'+id).value; let s=0;
+       
+       if(a==='YESNO') {
+           s=v==='YES'?w:0; 
+       } else { 
+           const n=parseFloat(v)||0; 
+           let g='', col='';
+           
+           if(n>=a) { s=w; g='A'; col='#3b82f6'; }           // Biru
+           else if(n>=b) { s=w*0.5; g='B'; col='#10b981'; }  // Hijau
+           else if(n>=c) { s=w*0.25; g='C'; col='#eab308'; } // Kuning
+           else { s=0; g='D'; col='#ef4444'; }               // Merah
+
+           // UPDATE GRADE DISPLAY
+           const gradeEl = document.getElementById('grade_'+id);
+           if(gradeEl) {
+               gradeEl.innerText = g;
+               gradeEl.style.color = col;
+           }
+       }
+       
+       document.getElementById('sc_'+id).innerText=s.toFixed(1);
+       
+       let t=0; document.querySelectorAll('.score-cell').forEach(e=>t+=parseFloat(e.innerText)); 
+       
+       // Update tab text dynamically
+       const sInfo = STATE.staffList.find(x=>x.NIK==STATE.activeStaffNik);
+       if(sInfo) {
+           const activeTab = document.querySelector('#staffTabs .chrome-tab.active');
+           if (activeTab) {
+                const dName = formatTabName(sInfo.Nama);
+                activeTab.innerHTML = `<span class="tab-score-badge">${t.toFixed(0)}</span> ${dName}`;
+           }
+       }
+       
+       // TRIGGER ROW AUTO SAVE
+       triggerRowSave(id);
+    }
+    
+    function enEdit(id){ document.getElementById('ach_'+id).removeAttribute('readonly'); document.getElementById('ach_'+id).removeAttribute('disabled'); document.getElementById('nte_'+id).removeAttribute('readonly'); document.getElementById('ach_'+id).focus(); }
+    
+    // --- ROW AUTO SAVE LOGIC (GRANULAR) ---
+    
+    function triggerRowSave(indId) {
+        // Set Status to Loading Spinner
+        const statusEl = document.getElementById(`status_${indId}`);
+        if(statusEl) statusEl.innerHTML = '<div class="spinner"></div>';
+        
+        // Clear existing timer for THIS row
+        if(rowTimers[indId]) clearTimeout(rowTimers[indId]);
+        
+        // Set new timer (1.0 seconds)
+        rowTimers[indId] = setTimeout(() => {
+            submitSingleRow(indId);
+        }, 1000);
+    }
+    
+    function submitSingleRow(indId) {
+        if(!STATE.activeStaffNik) return;
+        
+        const el = document.getElementById('ach_'+indId);
+        if(!el) return;
+        
+        const score = document.getElementById('sc_'+indId).innerText;
+        const note = document.getElementById('nte_'+indId).value;
+        const payload = {
+            date: document.getElementById('fillDate').value,
+            scores: [{
+                indId: indId,
+                nik: STATE.activeStaffNik,
+                achievement: el.value,
+                score: score,
+                note: note
+            }]
+        };
+        
+        const activeStaff = STATE.staffList.find(item => String(item.NIK) === String(STATE.activeStaffNik));
+        staffApiCall('staffPerformanceSubmitScore', [payload, activeStaff ? activeStaff.Outlet : STATE.user.outlet]).then(() => {
+            // Update Icon to Checkmark
+            const statusEl = document.getElementById(`status_${indId}`);
+            const checkIcon = `<svg class="status-icon-svg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
+            if(statusEl) statusEl.innerHTML = checkIcon;
+            
+            // Clean up timer memory
+            delete rowTimers[indId];
+            
+        }).catch(e => {
+            const statusEl = document.getElementById(`status_${indId}`);
+            if(statusEl) statusEl.innerHTML = '<span style="color:var(--danger); font-size:18px;">❌</span>';
+            console.error("Save failed for row " + indId, e);
+        });
+    }
+
+    // --- UTILS ---
+    function openModal(id){ document.getElementById(id).classList.add('active'); }
+    function closeModal(id){ document.getElementById(id).classList.remove('active'); }
+    function showConfirm(m,cb){ document.getElementById('confirmMessage').innerText=m; const b=document.getElementById('btnConfirmYes'); const n=b.cloneNode(true); b.parentNode.replaceChild(n,b); n.onclick=()=>{closeModal('confirmModal');cb();}; openModal('confirmModal'); }
+    function updateDateDisplay(){ const d=new Date(document.getElementById('fillDate').value); document.getElementById('fillDateDisplay').innerText=d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'}); }
+    function changeDate(d){ const c=new Date(document.getElementById('fillDate').value); c.setDate(c.getDate()+d); document.getElementById('fillDate').value=getLocalDateISO(c); updateDateDisplay(); selStaff(STATE.activeStaffNik, document.querySelector('#staffTabs .chrome-tab.active')); }
+    
+    // --- REPORT & PDF ---
+    function openStaffReport(nik) { 
+        STATE.activeReportNik=nik; 
+        const s=STATE.staffList.find(x=>x.NIK==nik); 
+        if(!s)return; 
+        document.getElementById('reportStaffInfo').innerText=s.Nama; 
+        document.getElementById('repStart').value=document.getElementById('dashStart').value; 
+        document.getElementById('repEnd').value=document.getElementById('dashEnd').value; 
+        updateStaffReport(); 
+        openModal('reportModal'); 
+    }
+    
+    function updateStaffReport() { 
+        const s=document.getElementById('repStart').value; 
+        const e=document.getElementById('repEnd').value; 
+        const staff = STATE.staffList.find(item => String(item.NIK) === String(STATE.activeReportNik));
+        staffApiCall('staffPerformanceData', [s, e, staff ? staff.Outlet : STATE.user.outlet, STATE.activeReportNik]).then(d=>{
+            STATE.reportData=d.filter(x=>String(x.NIK)===String(STATE.activeReportNik)); 
+            renderChartAndStats(s,e); 
+        }).catch(error => alert(error.message || error));
+    }
+    
+    function renderChartAndStats(s,e) {
+       const m={}; let c=new Date(s); const l=new Date(e); while(c<=l){m[getLocalDateISO(c)]=0; c.setDate(c.getDate()+1);}
+       STATE.reportData.forEach(d=>{
+           const k=normalizeDateStr(d.Tanggal); 
+           if(m[k]!==undefined) m[k]+=parseFloat(d.Skor_Final)||0;
+       });
+       const vals=Object.values(m); const cleanVals=vals.filter(v=>v>0); const avg=cleanVals.length?(cleanVals.reduce((a,b)=>a+b,0)/cleanVals.length).toFixed(1):0;
+       document.getElementById('repAvg').innerText=avg; 
+       
+       let predikat = 'POOR'; let color='#ef4444';
+       if(avg>=90){ predikat='EXCELLENT'; color='#10b981'; } else if(avg>=75){ predikat='GOOD'; color='#eab308'; }
+       const pEl=document.getElementById('repPredikat'); pEl.innerText=predikat; pEl.style.color=color;
+
+       const ctx=document.getElementById('staffChart').getContext('2d'); 
+       if(chartInstance)chartInstance.destroy();
+       
+       // Create gradient
+       let gradient = ctx.createLinearGradient(0, 0, 0, 400);
+       gradient.addColorStop(0, 'rgba(128, 0, 0, 0.2)');
+       gradient.addColorStop(1, 'rgba(128, 0, 0, 0)');
+
+       chartInstance=new Chart(ctx,{
+           type:'line',
+           data:{
+               labels:Object.keys(m).map(d=>d.split('-')[2]),
+               datasets:[{
+                   label:'Score',
+                   data:vals,
+                   borderColor:'#800000',
+                   backgroundColor: gradient,
+                   fill:true,
+                   tension: 0.4,
+                   pointRadius: 4,
+                   pointHoverRadius: 6
+               }]
+           },
+           options:{
+               responsive:true,
+               maintainAspectRatio:false,
+               scales:{
+                   y:{beginAtZero:true,max:100, grid:{display:true, color:'#f1f5f9'}},
+                   x:{grid:{display:false}}
+               },
+               plugins:{legend:{display:false}}
+           }
+       });
+    }
+    
+    async function generatePDF() { 
+       const btn=document.querySelector('#reportModal button.btn-primary'); 
+       const originalText = btn.innerText; 
+       btn.innerText="Memuat Data..."; 
+       btn.disabled=true;
+
+       const st = STATE.staffList.find(x => x.NIK == STATE.activeReportNik);
+       const startDate = document.getElementById('repStart').value;
+       const endDate = document.getElementById('repEnd').value;
+
+       try {
+           // 1. FETCH FRESH DATA FROM CLOUDFLARE D1
+           const freshData = await staffApiCall('staffPerformanceData', [startDate, endDate, st ? st.Outlet : STATE.user.outlet, STATE.activeReportNik]);
+
+           console.log("PDF Fresh Data:", freshData); // Debugging
+
+           btn.innerText = "Generating PDF...";
+
+           // 2. RECALCULATE STATS (Average & Predikat) based on fresh data
+           const dateMap = {};
+           let currentDate = new Date(startDate);
+           const lastDate = new Date(endDate);
+           
+           // Init map keys to ensure date continuity isn't broken in avg calc if needed, 
+           // though usually avg is based on existing data points.
+           // Let's stick to existing logic: average of days present in data or just sum/count?
+           // The previous logic in renderChartAndStats used a map filled with 0s for the date range.
+           // Let's replicate that for consistency.
+           while (currentDate <= lastDate) {
+               dateMap[getLocalDateISO(currentDate)] = 0;
+               currentDate.setDate(currentDate.getDate() + 1);
+           }
+
+           freshData.forEach(d => {
+               const k = normalizeDateStr(d.Tanggal);
+               if (dateMap[k] !== undefined) {
+                   dateMap[k] += parseFloat(d.Skor_Final) || 0;
+               }
+           });
+
+           const vals = Object.values(dateMap);
+           const cleanVals = vals.filter(v => v > 0); // Only count days with score > 0? Or all days? 
+           // Previous logic: const cleanVals=vals.filter(v=>v>0);
+           const avgScore = cleanVals.length ? (cleanVals.reduce((a,b)=>a+b,0)/cleanVals.length).toFixed(1) : 0;
+           
+           let predikat = 'POOR'; 
+           if (avgScore >= 90) predikat = 'EXCELLENT';
+           else if (avgScore >= 75) predikat = 'GOOD';
+
+           // 3. GENERATE SUMMARY TABLE (Loop Master Indicators)
+           const summary = {}; 
+           const staffPos = st.Posisi;
+           const staffOutlet = (st.Outlet || '').trim().toUpperCase();
+
+           // A. Master List Loop
+           STATE.indicators.forEach(ind => {
+               if (ind.Status === 'Disabled') return;
+               const indOutlet = (ind.Outlet || '').trim().toUpperCase();
+               if (indOutlet && indOutlet !== staffOutlet) return;
+
+               // Weight Calculation
+               let w = 0;
+               let wObj = null;
+               try {
+                   if (typeof ind.Bobot === 'string' && ind.Bobot.includes(':')) {
+                       wObj = JSON.parse(ind.Bobot);
+                   } else if (typeof ind.Bobot === 'object') {
+                       wObj = ind.Bobot;
+                   }
+               } catch (e) {}
+
+               if (wObj && typeof wObj === 'object') {
+                   const key = Object.keys(wObj).find(k => k.trim().toLowerCase() === String(staffPos).trim().toLowerCase());
+                   if (key) w = parseFloat(wObj[key]) || 0;
+               } else {
+                   w = parseFloat(ind.Bobot) || 0;
+               }
+
+               if (w > 0) {
+                   summary[ind.ID_Indikator] = {
+                       name: ind.Nama_Indikator,
+                       category: ind.Kategori,
+                       type: String(ind.Batas_A) === 'YESNO' ? 'YESNO' : 'SCORE',
+                       a: 0, b: 0, c: 0, d: 0, total: 0,
+                       config: ind
+                   };
+               }
+           });
+
+           // B. Fill with Fresh Data
+           freshData.forEach(d => {
+               // Ensure ID comparison is string-safe
+               const s = summary[String(d.ID_Indikator)];
+               if (s) {
+                   s.total++;
+                   const val = d.Pencapaian;
+                   
+                   if (s.type === 'YESNO') {
+                       if (String(val).toUpperCase() === 'YES') s.a++;
+                       else if (String(val).toUpperCase() === 'NO') s.b++;
+                   } else {
+                       const n = parseFloat(val) || 0;
+                       const bA = parseFloat(s.config.Batas_A) || 0;
+                       const bB = parseFloat(s.config.Batas_B) || 0;
+                       const bC = parseFloat(s.config.Batas_C) || 0;
+                       
+                       if (n >= bA) s.a++;
+                       else if (n >= bB) s.b++;
+                       else if (n >= bC) s.c++;
+                       else s.d++; 
+                   }
+               }
+           });
+
+           let rowsSummaryYesNo = '';
+           let rowsSummaryScore = '';
+
+           for (const key in summary) {
+               const s = summary[key];
+               if (s.type === 'YESNO') {
+                   rowsSummaryYesNo += `
+                   <tr style="border-bottom:1px solid #eee;">
+                       <td style="padding:8px;">${s.category}</td>
+                       <td style="padding:8px;">${s.name}</td>
+                       <td style="padding:8px; text-align:center; background:#f0fdf4;">${s.a}</td> 
+                       <td style="padding:8px; text-align:center; background:#fff7ed;">${s.b}</td> 
+                       <td style="padding:8px; text-align:center; font-weight:bold;">${s.total}</td>
+                   </tr>`;
+               } else {
+                   rowsSummaryScore += `
+                   <tr style="border-bottom:1px solid #eee;">
+                       <td style="padding:8px;">${s.category}</td>
+                       <td style="padding:8px;">${s.name}</td>
+                       <td style="padding:8px; text-align:center; background:#f0fdf4;">${s.a}</td> 
+                       <td style="padding:8px; text-align:center; background:#fff7ed;">${s.b}</td> 
+                       <td style="padding:8px; text-align:center; background:#fefce8;">${s.c}</td> 
+                       <td style="padding:8px; text-align:center; background:#fef2f2;">${s.d}</td> 
+                       <td style="padding:8px; text-align:center; font-weight:bold;">${s.total}</td>
+                   </tr>`;
+               }
+           }
+           
+           const img=document.getElementById('staffChart').toDataURL('image/png');
+
+           const h=`
+           <div style="padding:40px; font-family:'Helvetica Neue', sans-serif; color:#333; max-width:800px; margin:0 auto; background:white;">
+             
+             <!-- HEADER -->
+             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:3px solid #800000; padding-bottom:20px; margin-bottom:30px;">
+                <div>
+                    <h1 style="margin:0; color:#800000; font-size:24px; text-transform:uppercase; letter-spacing:1px;">Performance Report</h1>
+                    <div style="font-size:12px; color:#666; margin-top:5px;">DAILY STAFF MONITORING SYSTEM</div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="font-weight:bold; font-size:14px; margin-bottom:4px;">${startDate} — ${endDate}</div>
+                    <div style="font-size:10px; color:#888;">Generated: ${new Date().toLocaleDateString()}</div>
+                </div>
+             </div>
+
+             <!-- INFO CARD -->
+             <div style="display:flex; gap:20px; margin-bottom:30px;">
+                <div style="flex:1; background:#f8fafc; padding:20px; border-radius:12px; border:1px solid #e2e8f0;">
+                    <table style="width:100%; font-size:13px;">
+                        <tr><td style="color:#64748b; padding-bottom:8px; width:100px;">Nama Staff</td><td style="font-weight:bold;">: ${st.Nama}</td></tr>
+                        <tr><td style="color:#64748b; padding-bottom:8px;">NIK</td><td style="font-weight:bold;">: ${st.NIK}</td></tr>
+                        <tr><td style="color:#64748b; padding-bottom:8px;">Posisi</td><td style="font-weight:bold;">: ${st.Posisi}</td></tr>
+                        <tr><td style="color:#64748b;">Outlet</td><td style="font-weight:bold;">: ${st.Outlet}</td></tr>
+                    </table>
+                </div>
+                <div style="width:140px; background:linear-gradient(135deg, #800000 0%, #600000 100%); color:white; padding:20px; border-radius:12px; text-align:center; display:flex; flex-direction:column; justify-content:center; box-shadow:0 10px 15px -3px rgba(0,0,0,0.1);">
+                    <div style="font-size:10px; opacity:0.8; margin-bottom:5px; letter-spacing:1px;">SCORE AVG</div>
+                    <div style="font-size:36px; font-weight:800; line-height:1;">${avgScore}</div>
+                    <div style="font-size:11px; margin-top:8px; background:rgba(255,255,255,0.2); padding:4px 8px; border-radius:20px;">${predikat}</div>
+                </div>
+             </div>
+
+             <!-- CHART -->
+             <div style="margin-bottom:40px;">
+                <h3 style="margin:0 0 15px 0; font-size:14px; color:#800000; border-bottom:1px solid #e2e8f0; padding-bottom:8px; text-transform:uppercase;">📈 Grafik Performance</h3>
+                <div style="border:1px solid #e2e8f0; padding:10px; border-radius:12px;">
+                    <img src="${img}" style="width:100%; max-height:220px; object-fit:contain;">
+                </div>
+             </div>
+
+             <!-- SUMMARY TABLES -->
+             ${rowsSummaryYesNo ? `
+             <div style="margin-bottom:30px;">
+                <h3 style="margin:0 0 15px 0; font-size:14px; color:#800000; border-bottom:1px solid #e2e8f0; padding-bottom:8px; text-transform:uppercase;">📊 Ringkasan Indikator </h3>
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <thead style="background:#f1f5f9; color:#475569;">
+                        <tr>
+                            <th style="padding:10px; text-align:left; border-radius:6px 0 0 6px;">Kategori</th>
+                            <th style="padding:10px; text-align:left;">Indikator</th>
+                            <th style="padding:10px; text-align:center; color:#15803d;">YA</th>
+                            <th style="padding:10px; text-align:center; color:#b91c1c;">TIDAK</th>
+                            <th style="padding:10px; text-align:center; border-radius:0 6px 6px 0;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsSummaryYesNo}</tbody>
+                </table>
+             </div>` : ''}
+
+             ${rowsSummaryScore ? `
+             <div style="margin-bottom:30px;">
+                <h3 style="margin:0 0 15px 0; font-size:14px; color:#800000; border-bottom:1px solid #e2e8f0; padding-bottom:8px; text-transform:uppercase;"> </h3>
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <thead style="background:#f1f5f9; color:#475569;">
+                        <tr>
+                            <th style="padding:10px; text-align:left; border-radius:6px 0 0 6px;">Kategori</th>
+                            <th style="padding:10px; text-align:left;">Indikator</th>
+                            <th style="padding:10px; text-align:center; color:#15803d;">A</th>
+                            <th style="padding:10px; text-align:center; color:#b91c1c;">B</th>
+                            <th style="padding:10px; text-align:center; color:#a16207;">C</th>
+                            <th style="padding:10px; text-align:center; color:#b91c1c;">D</th>
+                            <th style="padding:10px; text-align:center; border-radius:0 6px 6px 0;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsSummaryScore}</tbody>
+                </table>
+             </div>` : ''}
+
+           </div>`;
+           
+           const div=document.createElement('div'); div.innerHTML=h; document.body.appendChild(div);
+           await html2pdf().set({
+               margin: 10,
+               filename: `Laporan_${st.Nama}_${new Date().toISOString().split('T')[0]}.pdf`,
+               image: { type: 'jpeg', quality: 0.98 },
+               html2canvas: { scale: 2, useCORS: true },
+               jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+           }).from(div).save();
+           
+           document.body.removeChild(div);
+
+       } catch (e) {
+           alert("Gagal memuat data PDF: " + e.message);
+       } finally {
+           btn.innerText = originalText;
+           btn.disabled = false;
+       }
+    }
+
+    window.addEventListener('DOMContentLoaded', bootStaffPerformance);
+  </script>
+</body>
+</html>
