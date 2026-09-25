@@ -108,9 +108,29 @@
             </div>
         </div>
 
+        <!-- Pembayaran asset -->
+        <div id="paymentSection" class="mt-8 rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-4">
+            <div>
+                <h3 class="font-bold text-emerald-900">Pembayaran Asset</h3>
+                <p class="mt-1 text-xs text-emerald-800">Bayar sesuai Grand Total Harga Jual. Checkout akan dibuka pada jendela kecil.</p>
+            </div>
+            <button type="button" id="btnAssetPayment" class="w-full rounded-lg bg-emerald-600 px-4 py-3 font-bold text-white shadow transition hover:bg-emerald-700 active:scale-[0.99]">
+                LAKUKAN PEMBAYARAN ASSET
+            </button>
+            <div id="paymentVerification" class="hidden space-y-3 rounded-lg border border-emerald-200 bg-white p-3">
+                <p id="paymentStatus" class="text-xs font-medium text-gray-600">Selesaikan pembayaran di jendela checkout, kemudian unggah bukti transaksi sukses.</p>
+                <label class="block text-xs font-bold text-gray-600 uppercase">Bukti pembayaran berhasil</label>
+                <input type="file" id="paymentReceipt" accept="image/*" class="file-input w-full rounded border p-2 text-xs" data-key="paymentReceipt">
+                <label class="flex items-start gap-2 text-xs text-gray-700">
+                    <input type="checkbox" id="paymentConfirmed" class="mt-0.5 h-4 w-4 accent-emerald-600">
+                    <span>Saya memastikan transaksi Lynk.id sudah berstatus berhasil dan nominalnya sesuai Grand Total.</span>
+                </label>
+            </div>
+        </div>
+
         <!-- Tombol Submit -->
-        <div class="mt-8">
-            <button type="submit" id="btnSubmit" class="w-full bg-gradient-to-r from-red-900 to-red-800 hover:from-red-800 hover:to-red-700 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SIMPAN & KIRIM</button>
+        <div class="mt-4">
+            <button type="submit" id="btnSubmit" disabled class="w-full cursor-not-allowed bg-gradient-to-r from-gray-400 to-gray-500 text-white font-bold py-4 rounded-lg shadow-lg transition transform active:scale-[0.99]">SELESAIKAN PEMBAYARAN DAHULU</button>
         </div>
     </form>
 </div>
@@ -120,6 +140,10 @@
         // --- INITIALIZATION & USER DATA (FIXED) ---
         const user = window.GLOBAL_USER;
         const existing = window.EXISTING_DATA;
+        const PAYMENT_URL = 'https://lynk.id/bakerzin/odn2g5re40l4/checkout';
+        let paymentPopup = null;
+        let paymentPopupWatcher = null;
+        let existingPayment = null;
         
         // Auto Populate User Data
         if (user) {
@@ -191,8 +215,9 @@
         };
 
         window.calcRow = function(tr) {
+            const qty = parseFloat(tr.querySelector('.qty-input').value) || 0;
             const hargaJual = window.parseRupiah(tr.querySelector('.harga-jual-input').value);
-            tr.dataset.totalJual = hargaJual;
+            tr.dataset.totalJual = qty * hargaJual;
             window.recalcTotal();
         }
 
@@ -252,9 +277,88 @@
 
         document.getElementById('btnAddPhoto').addEventListener('click', () => window.addPhotoSlot());
 
+        function setPaymentStatus(message, tone = 'normal') {
+            const status = document.getElementById('paymentStatus');
+            status.textContent = message;
+            status.className = tone === 'success'
+                ? 'text-xs font-bold text-emerald-700'
+                : tone === 'error'
+                    ? 'text-xs font-bold text-red-700'
+                    : 'text-xs font-medium text-gray-600';
+        }
+
+        function refreshSubmitPaymentGate() {
+            const submit = document.getElementById('btnSubmit');
+            if (existing) {
+                submit.disabled = false;
+                return;
+            }
+
+            const action = document.querySelector('[name="tindakan"]').value;
+            if (action === 'Dispose') {
+                submit.disabled = false;
+                submit.textContent = 'SIMPAN & KIRIM';
+                submit.classList.remove('cursor-not-allowed', 'from-gray-400', 'to-gray-500');
+                submit.classList.add('from-red-900', 'to-red-800', 'hover:from-red-800', 'hover:to-red-700');
+                return;
+            }
+
+            const receipt = document.getElementById('paymentReceipt');
+            const confirmed = document.getElementById('paymentConfirmed').checked;
+            const ready = receipt.files.length > 0 && confirmed;
+            submit.disabled = !ready;
+            submit.textContent = ready ? 'SIMPAN & KIRIM' : 'SELESAIKAN PEMBAYARAN DAHULU';
+            submit.classList.toggle('cursor-not-allowed', !ready);
+            submit.classList.toggle('from-gray-400', !ready);
+            submit.classList.toggle('to-gray-500', !ready);
+            submit.classList.toggle('from-red-900', ready);
+            submit.classList.toggle('to-red-800', ready);
+            submit.classList.toggle('hover:from-red-800', ready);
+            submit.classList.toggle('hover:to-red-700', ready);
+            if (ready) setPaymentStatus('Bukti pembayaran siap. Form dapat disimpan dan dikirim.', 'success');
+        }
+
+        document.getElementById('btnAssetPayment').addEventListener('click', function() {
+            const expectedAmount = window.parseRupiah(document.getElementById('grandTotal').textContent);
+            if (expectedAmount <= 0) {
+                document.getElementById('paymentVerification').classList.remove('hidden');
+                setPaymentStatus('Isi Harga Jual asset terlebih dahulu sebelum membuka pembayaran.', 'error');
+                return;
+            }
+
+            paymentPopup = window.open(PAYMENT_URL, 'assetPaymentCheckout', 'popup=yes,width=560,height=780,resizable=yes,scrollbars=yes');
+            document.getElementById('paymentVerification').classList.remove('hidden');
+            if (!paymentPopup) {
+                setPaymentStatus('Popup diblokir browser. Izinkan popup, lalu klik tombol pembayaran kembali.', 'error');
+                return;
+            }
+
+            setPaymentStatus(`Masukkan nominal ${window.formatRupiah(expectedAmount)} di Lynk.id, lalu selesaikan pembayaran.`);
+            clearInterval(paymentPopupWatcher);
+            paymentPopupWatcher = setInterval(function() {
+                if (paymentPopup && paymentPopup.closed) {
+                    clearInterval(paymentPopupWatcher);
+                    setPaymentStatus('Jendela checkout sudah ditutup. Unggah bukti transaksi sukses untuk melanjutkan.');
+                }
+            }, 700);
+        });
+
+        document.getElementById('paymentReceipt').addEventListener('change', refreshSubmitPaymentGate);
+        document.getElementById('paymentConfirmed').addEventListener('change', refreshSubmitPaymentGate);
+        document.querySelector('[name="tindakan"]').addEventListener('change', function() {
+            const isSale = this.value === 'Penjualan';
+            document.getElementById('paymentSection').classList.toggle('hidden', this.value === 'Dispose');
+            if (!isSale) {
+                document.getElementById('paymentConfirmed').checked = false;
+                document.getElementById('paymentReceipt').value = '';
+            }
+            refreshSubmitPaymentGate();
+        });
+
         // --- LOAD EXISTING DATA / INIT DEFAULT ---
         if (existing) {
              let json = {}; try { json = JSON.parse(existing.Data_JSON); } catch(e){}
+             existingPayment = json;
              if(json.tanggalBA) document.getElementById('dateInput').value = json.tanggalBA;
              if(json.tindakan) document.querySelector('[name="tindakan"]').value = json.tindakan;
              if(json.alasan) document.querySelector('[name="alasan"]').value = json.alasan;
@@ -274,6 +378,10 @@
              for(let k in json) {
                 if(k.startsWith('fotoTambahan')) window.addPhotoSlot(json[k], k);
              }
+
+             const receiptInput = document.getElementById('paymentReceipt');
+             if (json.paymentReceipt) receiptInput.dataset.oldVal = json.paymentReceipt;
+             document.getElementById('paymentSection').classList.add('hidden');
              
              document.getElementById('revisiBadge').classList.remove('hidden');
              document.getElementById('docIdDisplay').textContent = existing.Submission_ID;
@@ -281,6 +389,8 @@
              document.getElementById('btnSubmit').innerHTML = "SIMPAN PERBAIKAN";
              document.getElementById('btnSubmit').classList.replace('from-red-900', 'from-amber-600');
              document.getElementById('btnSubmit').classList.replace('to-red-800', 'to-amber-500');
+             document.getElementById('btnSubmit').disabled = false;
+             document.getElementById('btnSubmit').classList.remove('cursor-not-allowed', 'from-gray-400', 'to-gray-500');
 
         } else {
             window.addItemRow(); 
@@ -312,7 +422,14 @@
                 tindakan: form.querySelector('[name="tindakan"]').value,
                 alasan: form.querySelector('[name="alasan"]').value,
                 items: items,
-                grandTotalJual: document.getElementById('grandTotal').textContent // Total Harga Jual
+                grandTotalJual: document.getElementById('grandTotal').textContent,
+                paymentCheckoutUrl: PAYMENT_URL,
+                paymentExpectedAmount: existingPayment && existingPayment.paymentExpectedAmount
+                    ? existingPayment.paymentExpectedAmount
+                    : window.parseRupiah(document.getElementById('grandTotal').textContent),
+                paymentConfirmed: existingPayment ? existingPayment.paymentConfirmed !== false : document.getElementById('paymentConfirmed').checked,
+                paymentConfirmedAt: existingPayment ? (existingPayment.paymentConfirmedAt || null) : new Date().toISOString(),
+                paymentVerificationMethod: 'RECEIPT_UPLOAD'
             };
 
             const fileInputs = document.querySelectorAll('.file-input');

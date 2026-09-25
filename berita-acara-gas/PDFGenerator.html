@@ -268,7 +268,7 @@
             // TIPE 2: BERITA ACARA STANDARD (Semua Form Lain)
             // ============================================================
             else {
-                const isFnbFlow = (item.type === 'Waste Pcs To Pcs' || item.type === 'Revisi Stock Opname' || item.type === 'Penjualan & Dispose Asset' || item.type === 'Purchasing Non Supplier' || item.type === 'Test Food');
+                const isFnbFlow = (item.type === 'Waste Pcs To Pcs' || item.type === 'Revisi Stock Opname' || item.type === 'Purchasing Non Supplier' || item.type === 'Test Food');
                 
                 docName = `BA_${safeStr(item.type)}_${safeStr(item.Submission_ID)}.pdf`; 
 
@@ -625,6 +625,10 @@
                 // 2. Discount Karyawan (Single Photo)
                 if (jsonData.fotoBill && typeof jsonData.fotoBill === 'string' && jsonData.fotoBill.startsWith('data:image')) {
                      photosToPrint.push({ src: jsonData.fotoBill, label: 'FOTO BILL' });
+                }
+
+                if (jsonData.paymentReceipt && typeof jsonData.paymentReceipt === 'string' && jsonData.paymentReceipt.startsWith('data:image')) {
+                     photosToPrint.push({ src: jsonData.paymentReceipt, label: 'BUKTI PEMBAYARAN ASSET' });
                 }
 
                 // 3. Existing Logic

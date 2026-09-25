@@ -299,7 +299,6 @@ function baNotificationState_(row) {
 
   const fnbFlow = [
     'Waste Pcs To Pcs',
-    'Penjualan & Dispose Asset',
     'Purchasing Non Supplier',
     'Test Food',
     'Revisi Stock Opname'
@@ -1182,6 +1181,40 @@ function rekamData(
       }
     }
 
+    if (
+      baType === 'Penjualan & Dispose Asset' &&
+      !isUpdate &&
+      String(formData.tindakan || '').trim() === 'Penjualan'
+    ) {
+      const expectedPayment =
+        parseFloat(formData.paymentExpectedAmount) || 0;
+
+      const calculatedPayment =
+        parseFloat(
+          String(formData.grandTotalJual || '')
+            .replace(/[^0-9,-]+/g, '')
+            .replace(',', '.')
+        ) || 0;
+
+      if (calculatedPayment <= 0) {
+        return {
+          success: false,
+          message: 'Grand Total Harga Jual harus lebih dari Rp 0 sebelum pembayaran.'
+        };
+      }
+
+      if (
+        expectedPayment !== calculatedPayment ||
+        formData.paymentConfirmed !== true ||
+        !formData.paymentReceipt
+      ) {
+        return {
+          success: false,
+          message: 'Pembayaran asset belum dikonfirmasi atau bukti transaksi belum diunggah.'
+        };
+      }
+    }
+
     formData =
       baCompressImages_(
         formData
@@ -1333,7 +1366,6 @@ function rekamData(
     const requiresFnb =
       [
         'Waste Pcs To Pcs',
-        'Penjualan & Dispose Asset',
         'Purchasing Non Supplier',
         'Test Food',
         'Revisi Stock Opname'
@@ -1526,7 +1558,6 @@ function getAllSubmissions(
 
         const listFnbFlow = [
           'Waste Pcs To Pcs',
-          'Penjualan & Dispose Asset',
           'Purchasing Non Supplier',
           'Test Food',
           'Revisi Stock Opname'
@@ -1657,7 +1688,6 @@ function getSubmissionDetail(
 
     const listFnbFlow = [
       'Waste Pcs To Pcs',
-      'Penjualan & Dispose Asset',
       'Purchasing Non Supplier',
       'Test Food',
       'Revisi Stock Opname'
@@ -1823,7 +1853,6 @@ function approveBa(
 
   const listFnbFlow = [
     'Waste Pcs To Pcs',
-    'Penjualan & Dispose Asset',
     'Purchasing Non Supplier',
     'Test Food',
     'Revisi Stock Opname'
