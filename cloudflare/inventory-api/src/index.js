@@ -1869,7 +1869,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
   try {
     config = midtransConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
   }
   const amount = Math.round(Number(payload?.amount || 0));
   const customerName = cleanText(payload?.customerName, 120);
@@ -1925,7 +1925,7 @@ async function createMidtransAssetPayment(request, env, requestId) {
       "UPDATE ba_asset_payments SET status = 'FAILED', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?"
     ).bind(cleanText(message, 500), orderId).run();
     console.error(JSON.stringify({ event: "midtrans_create_failed", orderId, message, requestId }));
-    return apiError(502, "MIDTRANS_CREATE_FAILED", "Checkout Midtrans gagal dibuat.", requestId);
+    return apiError(502, "PAYMENT_CREATE_FAILED", "Checkout pembayaran gagal dibuat. Silakan coba kembali.", requestId);
   }
 }
 __name(createMidtransAssetPayment, "createMidtransAssetPayment");
@@ -1993,13 +1993,13 @@ async function midtransWebhook(request, env, requestId) {
   try {
     payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
   } catch {
-    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi Midtrans tidak valid.", requestId);
+    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi pembayaran tidak valid.", requestId);
   }
   let config;
   try {
     config = midtransConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "MIDTRANS_NOT_CONFIGURED", "Midtrans belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
   }
   if (!await verifyMidtransSignature(payload, config.serverKey)) {
     return apiError(401, "INVALID_MIDTRANS_SIGNATURE", "Tanda tangan notifikasi tidak valid.", requestId);
