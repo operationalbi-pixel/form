@@ -1908,7 +1908,7 @@ function uploadBihqBatch(token, payload) {
     const results = [];
     batch.groups.forEach(function (group) {
       const prepared = group.prepared;
-      if (!prepared.items || !prepared.items.length) {
+      if ((!prepared.items || !prepared.items.length) && (!prepared.recoveryTransfers || !prepared.recoveryTransfers.length)) {
         results.push({ outlet: group.outlet, uploaded: 0, skipped: prepared.skippedDuplicates ? prepared.skippedDuplicates.length : 0 });
         return;
       }
@@ -1918,7 +1918,7 @@ function uploadBihqBatch(token, payload) {
         if (batch.type === 'GOODS_RECEIPT') writeBihqGoodsReceiptGroup_(group.context, prepared);
         else writeBihqGoodsDeliveryGroup_(group.context, prepared);
       } finally { lock.releaseLock(); }
-      results.push({ outlet: group.outlet, uploaded: prepared.items.length, skipped: prepared.skippedDuplicates.length });
+      results.push({ outlet: group.outlet, uploaded: prepared.items.length, recoveredTransfers: (prepared.recoveryTransfers || []).length, skipped: prepared.skippedDuplicates.length });
     });
     return { uploaded: true, type: batch.type, fileName: batch.fileName, outletCount: results.length, results: results };
   });
@@ -1962,8 +1962,9 @@ function writeBihqGoodsDeliveryGroup_(context, prepared) {
         created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000 } });
     });
   });
+  appendGoodsDeliveryRecoveryEvents_(context, prepared, pendingRows, now);
   insertStockCardRows_(stockRows);
-  insertAll_('stock_transfers', pendingRows);
+  cloudflareWriteTransferEvents_(pendingRows);
   notifyPendingStockTransfers_(pendingRows);
 }
 
@@ -2277,7 +2278,7 @@ function createInterOutletStockTransfer(token, payload) {
       });
       if (pendingRows.length && photoData.length) pendingRows[0].json.photo_data_json = JSON.stringify(photoData);
       insertStockCardRows_(stockRows);
-      insertAll_('stock_transfers', pendingRows);
+      cloudflareWriteTransferEvents_(pendingRows);
       notifyPendingStockTransfers_(pendingRows);
       return { sent: true, transferId: transferId, fromOutlet: fromOutlet, toOutlet: toOutlet, itemCount: lines.length, photoCount: photoData.length };
     } finally { lock.releaseLock(); }
@@ -2373,7 +2374,7 @@ function acceptInterOutletStockTransfer(token, transferId, requestedOutlet, rece
         line.expiryDate = receivedExpiryDate;
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
-      insertAll_('stock_transfers', acceptedRows);
+      cloudflareWriteTransferEvents_(acceptedRows);
       transfer.status = 'ACCEPTED';
       transfer.toLocation = receiveLocation;
       transfer.acceptedBy = employee.nik;
@@ -2507,6 +2508,21 @@ function updateStockMovement(token, payload) {
   });
 }
 
+function appendGoodsDeliveryRecoveryEvents_(context, prepared, pendingRows, now) {
+  (prepared.recoveryTransfers || []).forEach(function (line) {
+    const eventId = Utilities.getUuid();
+    const destination = line.destinationName + ' (' + line.destinationCode + ')';
+    pendingRows.push({ insertId: eventId, json: {
+      event_id: eventId, transfer_id: line.transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
+      to_outlet: line.destinationCode, to_location: null, item_code: line.item.code, category: line.item.category,
+      item_name: line.item.name, unit: line.item.unit, qty: line.qty,
+      note: cleanText_('Transfer To ' + destination + ' | GD ' + line.gdNumber + ' | Pemulihan event Cloudflare | ' + prepared.fileName + ' | Baris ' + line.sourceRow, 300),
+      expiry_date: line.expiryDate || null, delivery_date: line.transactionDate,
+      created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000
+    }});
+  });
+}
+
 function uploadedStockCorrectionType_(movementType) {
   return ['Terjual', 'Sold', 'Goods Receipt', 'Transfer Out', 'Transfer In', 'Transfer Out Antar Outlet', 'Item Journal'].indexOf(String(movementType || '')) >= 0;
 }
@@ -2525,9 +2541,10 @@ function readUploadedStockCorrectionRow_(outlet, location, item, logicalId) {
 function appendTransferQtyCorrection_(movement, newQty, reason, employee, now) {
   const transferId = String(movement.transfer_id || '');
   if (!transferId) return false;
-  const sql = 'SELECT ' + stockTransferSelectFields_() + ' FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` ' +
-    'WHERE transfer_id = @transferId AND item_code = @itemCode AND status IN (\'PENDING\', \'CORRECTED\') ORDER BY created_at';
-  const rows = runNamedQuery_(sql, { transferId: transferId, itemCode: String(movement.item_code || '') }, { useQueryCache: false });
+  const rows = cloudflareReadTransferEvents_({ transfer_id: transferId }).filter(function (row) {
+    return String(row.item_code || '') === String(movement.item_code || '') &&
+      ['PENDING', 'CORRECTED'].indexOf(String(row.status || '')) >= 0;
+  });
   const corrections = {};
   rows.filter(function (row) { return String(row.status || '') === 'CORRECTED'; }).forEach(function (row) {
     corrections[String(row.source_event_id || '')] = row;
@@ -2542,7 +2559,7 @@ function appendTransferQtyCorrection_(movement, newQty, reason, employee, now) {
   })[0];
   if (!pending) return false;
   const eventId = Utilities.getUuid();
-  insertAll_('stock_transfers', [{ insertId: eventId, json: {
+  cloudflareWriteTransferEvents_([{ insertId: eventId, json: {
     event_id: eventId, transfer_id: transferId, status: 'CORRECTED', source_event_id: String(pending.event_id || ''),
     from_outlet: String(pending.from_outlet || ''), from_location: String(pending.from_location || ''),
     to_outlet: String(pending.to_outlet || ''), to_location: pending.to_location || null,
@@ -6579,6 +6596,22 @@ function cloudflareWriteStockRows_(rows) {
   return { received: rows.length, accepted: accepted, duplicates: duplicates };
 }
 
+function cloudflareWriteTransferEvents_(rows) {
+  if (!Array.isArray(rows) || !rows.length) return { received: 0, written: 0 };
+  let written = 0;
+  const batchSize = 500;
+  for (let index = 0; index < rows.length; index += batchSize) {
+    const result = cloudflareInventoryRequest_('POST', '/v1/transfer-events', { rows: rows.slice(index, index + batchSize) });
+    written += Number(result.written || 0);
+  }
+  return { received: rows.length, written: written };
+}
+
+function cloudflareReadTransferEvents_(params) {
+  const body = cloudflareInventoryRequest_('GET', '/v1/transfer-events?' + cloudflareQueryString_(params || {}));
+  return Array.isArray(body.data) ? body.data : [];
+}
+
 function ensureStockCardReadInfrastructure_() {
   // The actual read below is the readiness check. Avoid a separate /health
   // request because that endpoint inspects every history partition and can
@@ -6745,12 +6778,10 @@ function stockTransferMovementRow_(transferId, outlet, location, item, direction
 }
 
 function readPendingStockTransfers_(outlet) {
-  const sql = 'SELECT ' + stockTransferSelectFields_() + ' FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` p ' +
-    'WHERE p.status IN (\'PENDING\', \'CORRECTED\') AND p.to_outlet = @outlet ' +
-    'AND NOT EXISTS (SELECT 1 FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` a WHERE a.transfer_id = p.transfer_id AND a.status IN (\'ACCEPTED\', \'REJECTED\')) ORDER BY p.created_at DESC, p.item_name, p.expiry_date';
   const grouped = {};
-  runNamedQuery_(sql, { outlet: outlet }).forEach(function (row) {
+  cloudflareReadTransferEvents_({ outlet: outlet }).forEach(function (row) {
     const id = String(row.transfer_id || '');
+    if (!id || String(row.to_outlet || '') !== String(outlet || '')) return;
     if (!grouped[id]) grouped[id] = [];
     grouped[id].push(row);
   });
@@ -7270,7 +7301,7 @@ function uploadGoodsDelivery(token, payload) {
     const context = resolveStockContext_(token, payload.outlet, payload.location);
     const prepared = prepareGoodsDeliveryImport_(context, payload, false);
     if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-    if (!prepared.items.length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
+    if (!prepared.items.length && !(prepared.recoveryTransfers || []).length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
     try {
@@ -7324,8 +7355,9 @@ function uploadGoodsDelivery(token, payload) {
           }});
         });
       });
+      appendGoodsDeliveryRecoveryEvents_(context, prepared, pendingRows, now);
       insertStockCardRows_(stockRows);
-      insertAll_('stock_transfers', pendingRows);
+      cloudflareWriteTransferEvents_(pendingRows);
       notifyPendingStockTransfers_(pendingRows);
       return {
         uploaded: true, outlet: context.outlet, location: context.location,
@@ -7333,6 +7365,7 @@ function uploadGoodsDelivery(token, payload) {
         sourceItemCount: prepared.sourceItemCount, movementCount: stockRows.length, pendingLineCount: pendingRows.length,
         transferCount: Object.keys(transferIds).length, duplicateRowsSkipped: prepared.skippedDuplicates.length,
         duplicateRowsUploaded: prepared.allowedDuplicates.length,
+        recoveredTransferLineCount: (prepared.recoveryTransfers || []).length,
         deliveryCount: prepared.deliveryCount, destinationCount: prepared.destinationCount,
         newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
         negativeItemCount: prepared.negativeItemCount
@@ -7429,16 +7462,29 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, 
   const duplicates = findGoodsDeliveryDuplicateRows_(context.outlet, sourceItems);
   const requestedSkipRows = normalizeGoodsDeliverySkipRows_(payload.skipDuplicateRows);
   const requestedAllowRows = normalizeGoodsDeliverySkipRows_(payload.allowDuplicateRows);
-  const duplicateRowMap = {}, skippedDuplicates = [], allowedDuplicates = [], unresolvedDuplicates = [];
+  const duplicateRowMap = {}, recoveryRowMap = {}, skippedDuplicates = [], allowedDuplicates = [], unresolvedDuplicates = [], recoveryTransfers = [];
+  const itemBySourceRow = {};
+  items.forEach(function (item) { itemBySourceRow[item.sourceRow] = item; });
   duplicates.forEach(function (duplicate) {
     duplicateRowMap[duplicate.sourceRow] = true;
-    if (requestedSkipRows[duplicate.sourceRow]) skippedDuplicates.push(duplicate);
+    if (duplicate.recoveryMovements && duplicate.recoveryMovements.length) {
+      recoveryRowMap[duplicate.sourceRow] = true;
+      skippedDuplicates.push(duplicate);
+      const item = itemBySourceRow[duplicate.sourceRow];
+      duplicate.recoveryMovements.forEach(function (movement) {
+        recoveryTransfers.push({
+          transferId: movement.transferId, qty: movement.qty, expiryDate: movement.expiryDate,
+          transactionDate: item.transactionDate, gdNumber: item.gdNumber, destinationCode: item.destinationCode,
+          destinationName: item.destinationName, item: item.item, sourceRow: item.sourceRow
+        });
+      });
+    } else if (requestedSkipRows[duplicate.sourceRow]) skippedDuplicates.push(duplicate);
     else if (requestedAllowRows[duplicate.sourceRow]) allowedDuplicates.push(duplicate);
     else unresolvedDuplicates.push(duplicate);
   });
   const remainingSourceRowMap = {};
   sourceItems.forEach(function (sourceItem) {
-    if (!(duplicateRowMap[sourceItem.sourceRow] && requestedSkipRows[sourceItem.sourceRow])) remainingSourceRowMap[sourceItem.sourceRow] = true;
+    if (!(duplicateRowMap[sourceItem.sourceRow] && (requestedSkipRows[sourceItem.sourceRow] || recoveryRowMap[sourceItem.sourceRow]))) remainingSourceRowMap[sourceItem.sourceRow] = true;
   });
   const filteredItems = items.filter(function (item) { return remainingSourceRowMap[item.sourceRow]; });
   const remainingCodeMap = {}, filteredTotals = {}, transferGroupMap = {};
@@ -7458,6 +7504,7 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, 
   baseResult.unresolvedDuplicates = unresolvedDuplicates;
   baseResult.skippedDuplicates = skippedDuplicates;
   baseResult.allowedDuplicates = allowedDuplicates;
+  baseResult.recoveryTransfers = recoveryTransfers;
   baseResult.items = filteredItems;
   baseResult.sourceItemCount = Object.keys(remainingSourceRowMap).length;
   baseResult.masterChanges = Object.keys(masterChangeMap).filter(function (code) { return remainingCodeMap[code]; }).map(function (code) { return masterChangeMap[code]; });
@@ -7635,18 +7682,25 @@ function goodsDeliveryDuplicateKey_(item) {
 function findGoodsDeliveryDuplicateRows_(outlet, sourceItems) {
   if (!sourceItems || !sourceItems.length) return [];
   const dates = sourceItems.map(function (item) { return item.transactionDate; }).sort();
-  const sql = 'SELECT CAST(event_date AS STRING) AS event_date, item_code, ANY_VALUE(item_name) AS item_name, ' +
-    'SUM(qty) AS qty, ANY_VALUE(unit) AS unit, source_hash, source_file, source_row, CAST(MIN(created_at) AS STRING) AS created_at ' +
-    'FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND direction = \'OUT\' AND movement_type = \'Transfer Out Antar Outlet\' ' +
-    'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
-    'GROUP BY event_date, item_code, source_hash, source_file, source_row';
-  const existingByHash = {};
-  runNamedQuery_(sql, { outlet: outlet, startDate: dates[0], endDate: dates[dates.length - 1] }).forEach(function (row) {
-    const hash = String(row.source_hash || '');
-    if (hash && !existingByHash[hash]) existingByHash[hash] = {
-      existingFile: String(row.source_file || ''), existingRow: Number(row.source_row || 0), existingCreatedAt: String(row.created_at || '')
+  const existingByHash = {}, transferEventMap = {};
+  cloudflareReadTransferEvents_({ outlet: outlet }).forEach(function (row) {
+    const transferId = String(row.transfer_id || '');
+    if (transferId) transferEventMap[transferId] = true;
+  });
+  cloudflareReadMovements_({
+    outlet: outlet, from: dates[0], to: dates[dates.length - 1],
+    record_type: 'MOVEMENT', movement_type: 'Transfer Out Antar Outlet'
+  }).forEach(function (row) {
+    const hash = String(row.sourceHash || '');
+    if (!hash) return;
+    if (!existingByHash[hash]) existingByHash[hash] = {
+      existingFile: String(row.sourceFile || ''), existingRow: Number(row.sourceRow || 0),
+      existingCreatedAt: String(row.createdAt || ''), movements: []
     };
+    existingByHash[hash].movements.push({
+      transferId: String(row.transferId || ''), qty: Number(row.qty || 0), expiryDate: String(row.expiryDate || ''),
+      itemCode: String(row.itemCode || ''), itemName: String(row.itemName || ''), category: String(row.category || ''), unit: String(row.unit || '')
+    });
   });
   const seenInFile = {}, duplicates = [];
   sourceItems.slice().sort(function (a, b) { return a.sourceRow - b.sourceRow; }).forEach(function (item) {
@@ -7657,7 +7711,10 @@ function findGoodsDeliveryDuplicateRows_(outlet, sourceItems) {
         itemCode: item.itemCode, itemName: item.itemName, qty: item.qty, unit: item.unit,
         matchType: existing ? 'DATABASE' : 'FILE', existingFile: existing ? existing.existingFile : '',
         existingRow: existing ? existing.existingRow : earlier.sourceRow,
-        existingCreatedAt: existing ? existing.existingCreatedAt : ''
+        existingCreatedAt: existing ? existing.existingCreatedAt : '',
+        recoveryMovements: existing ? existing.movements.filter(function (movement) {
+          return movement.transferId && !transferEventMap[movement.transferId];
+        }) : []
       });
     } else seenInFile[hash] = item;
   });
@@ -7677,16 +7734,16 @@ function getStockTransferHistory(token, requestedOutlet) {
 }
 
 function readStockTransfer_(transferId, outlet) {
-  const sql = 'SELECT ' + stockTransferSelectFields_() + ' ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` WHERE transfer_id = @transferId AND (to_outlet = @outlet OR from_outlet = @outlet) ORDER BY created_at, status, item_name, expiry_date';
-  const rows = runNamedQuery_(sql, { transferId: transferId, outlet: outlet });
+  const rows = cloudflareReadTransferEvents_({ transfer_id: transferId }).filter(function (row) {
+    return String(row.to_outlet || '') === String(outlet || '') || String(row.from_outlet || '') === String(outlet || '');
+  });
   return buildStockTransferFromRows_(rows);
 }
 
 function readTransferPhotoData_(transferId) {
-  const sql = 'SELECT photo_data_json FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` ' +
-    'WHERE transfer_id = @transferId AND photo_data_json IS NOT NULL AND LENGTH(photo_data_json) > 0 LIMIT 1';
-  const rows = runNamedQuery_(sql, { transferId: transferId });
+  const rows = cloudflareReadTransferEvents_({ transfer_id: transferId }).filter(function (row) {
+    return Boolean(String(row.photo_data_json || ''));
+  });
   if (!rows.length) return [];
   try {
     const photos = JSON.parse(String(rows[0].photo_data_json || '[]'));
@@ -7703,10 +7760,8 @@ function readTransferPhotoData_(transferId) {
 }
 
 function readStockTransferHistory_(outlet) {
-  const sql = 'SELECT ' + stockTransferSelectFields_() + ' ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers` WHERE from_outlet = @outlet OR to_outlet = @outlet ORDER BY created_at DESC';
   const grouped = {};
-  runNamedQuery_(sql, { outlet: outlet }).forEach(function (row) {
+  cloudflareReadTransferEvents_({ outlet: outlet }).forEach(function (row) {
     const id = String(row.transfer_id || '');
     if (!id) return;
     if (!grouped[id]) grouped[id] = [];
@@ -10190,7 +10245,7 @@ function rejectInterOutletStockTransfer(token, transferId, requestedOutlet, reas
       });
       if (stockRows.length) insertStockCardRows_(stockRows);
       const eventId = Utilities.getUuid(), receiptNo = stockTransferReceiptNumber_(transfer);
-      insertAll_('stock_transfers', [{ insertId: eventId, json: {
+      cloudflareWriteTransferEvents_([{ insertId: eventId, json: {
         event_id: eventId, transfer_id: transferId, status: 'REJECTED', from_outlet: transfer.fromOutlet, from_location: transfer.fromLocation,
         to_outlet: outlet, to_location: null, created_by: transfer.createdBy, created_by_name: transfer.createdByName,
         created_at: now.getTime() / 1000, rejected_by: employee.nik, rejected_by_name: employee.name,

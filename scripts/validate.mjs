@@ -465,13 +465,41 @@ if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStoc
 if (!backend.includes('correctMovement: correctUploadedStockMovement') || !backend.includes('function correctUploadedStockMovement(token, payload)')) failures.push('Endpoint koreksi transaksi upload Stock Card belum tersedia');
 if (!backend.includes("ensureBigQueryTable_('stock_movement_corrections'") || !backend.includes('old_qty: oldQty, new_qty: newQty, reason: reason')) failures.push('Audit QTY lama, QTY baru, dan alasan koreksi belum tersimpan');
 if (!backend.includes("'UPDATE ' + corrections + ' SET old_qty = old_qty * CAST(@factor AS FLOAT64), new_qty = new_qty * CAST(@factor AS FLOAT64)")) failures.push('Audit koreksi QTY belum ikut berubah saat Unit Default dikonversi');
-if (!backend.includes('function appendLocalTransferCounterpartCorrection_(') || !backend.includes("p.status IN (\\'PENDING\\', \\'CORRECTED\\')")) failures.push('Koreksi transfer belum menjaga pasangan lokal dan QTY transfer pending');
+if (!backend.includes('function appendLocalTransferCounterpartCorrection_(') ||
+    !backend.includes("cloudflareReadTransferEvents_({ transfer_id: transferId })")) failures.push('Koreksi transfer belum menjaga pasangan lokal dan QTY transfer pending di Cloudflare');
+if (backend.includes("insertAll_('stock_transfers'") ||
+    !backend.includes("function readPendingStockTransfers_(outlet) {\n  const grouped = {};\n  cloudflareReadTransferEvents_({ outlet: outlet })") ||
+    !backend.includes("function readStockTransfer_(transferId, outlet) {\n  const rows = cloudflareReadTransferEvents_({ transfer_id: transferId })")) {
+  failures.push('Alur transfer Stock Card masih menulis atau membaca stock_transfers melalui BigQuery');
+}
+if (!backend.includes('function appendGoodsDeliveryRecoveryEvents_(') ||
+    !backend.includes('recoveredTransferLineCount: (prepared.recoveryTransfers || []).length')) {
+  failures.push('Goods Delivery belum dapat memulihkan event transfer tanpa menggandakan stock OUT');
+}
+if (!inventoryWorker.includes('source_event_id: cleanText(source.source_event_id') ||
+    !inventoryWorker.includes('"photo_data_json", "source_event_id"')) {
+  failures.push('Worker transfer belum menyimpan relasi source_event_id');
+}
 if (!frontendStockCard.includes('id="uploadedCorrectionModal"') || !frontendStockCard.includes('id="uploadedCorrectionReason"') || !frontendStockCard.includes("server('correctMovement'")) failures.push('Modal koreksi transaksi dan alasan wajib belum tersedia di Stock Card');
 if (!frontendStockCard.includes('clone.summaryRows=[row]') || !frontendStockCard.includes('map[key].summaryRows.push(row)')) failures.push('Baris penjualan yang diringkas belum dapat dipilih satu per satu saat koreksi');
 if (!frontendStockCard.includes('inputmode="decimal"') || !frontendStockCard.includes("parseLocaleNumber(byId('uploadedCorrectionQty').value)")) failures.push('QTY koreksi belum menerima format desimal perangkat Indonesia');
 try {
   const transferContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#transfer-correction-test' }).runInContext(transferContext);
+  transferContext.cloudflareReadTransferEvents_ = () => [];
+  transferContext.cloudflareReadMovements_ = () => [{
+    sourceHash: 'HASH-1', sourceFile: 'gd.xlsx', sourceRow: 7, createdAt: '2026-09-26T01:00:00Z',
+    transferId: 'TRF-RECOVERY', qty: 5, expiryDate: '2026-10-01', itemCode: 'ITEM-1',
+    itemName: 'Mushroom', category: 'FOOD', unit: 'KG'
+  }];
+  const recoveryDuplicates = transferContext.findGoodsDeliveryDuplicateRows_('BICP', [{
+    rowHash: 'HASH-1', sourceRow: 7, transactionDate: '2026-09-26', gdNumber: 'GD-1',
+    itemCode: 'ITEM-1', itemName: 'Mushroom', qty: 5, unit: 'KG'
+  }]);
+  if (!recoveryDuplicates.length || recoveryDuplicates[0].recoveryMovements.length !== 1 ||
+      recoveryDuplicates[0].recoveryMovements[0].transferId !== 'TRF-RECOVERY') {
+    failures.push('Pemulihan Goods Delivery tidak menemukan stock OUT Cloudflare yang kehilangan event transfer');
+  }
   const rows = [
     { event_id: 'LINE-1', transfer_id: 'TRF-1', status: 'PENDING', from_outlet: 'BICP', from_location: 'Store', to_outlet: 'BIPS', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', qty: 638, created_at: '2026-09-04T01:00:00Z' },
     { event_id: 'FIX-1', transfer_id: 'TRF-1', status: 'CORRECTED', source_event_id: 'LINE-1', from_outlet: 'BICP', from_location: 'Store', to_outlet: 'BIPS', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', qty: 6.38, created_at: '2026-09-04T02:00:00Z' },

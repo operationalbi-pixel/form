@@ -603,7 +603,8 @@ function normalizeTransferEvent(row) {
     receipt_no: cleanText(source.receipt_no ?? source.receiptNo, 160) || null,
     photo_file_ids: cleanText(source.photo_file_ids ?? source.photoFileIds, 2e3) || null,
     photo_count: Math.max(0, Number.parseInt(String(source.photo_count ?? source.photoCount ?? 0), 10) || 0),
-    photo_data_json: cleanText(source.photo_data_json ?? source.photoDataJson, 1e6) || null
+    photo_data_json: cleanText(source.photo_data_json ?? source.photoDataJson, 1e6) || null,
+    source_event_id: cleanText(source.source_event_id ?? source.sourceEventId, 160) || null
   };
 }
 __name(normalizeTransferEvent, "normalizeTransferEvent");
@@ -617,7 +618,7 @@ async function writeTransferEvents(request, env, requestId) {
   const input = Array.isArray(payload?.rows) ? payload.rows : null;
   if (!input || input.length === 0 || input.length > 500) return apiError(400, "INVALID_BATCH", "Batch transfer harus berisi 1 sampai 500 baris.", requestId);
   try {
-    const columns = ["event_id", "transfer_id", "status", "from_outlet", "from_location", "to_outlet", "to_location", "item_code", "category", "item_name", "unit", "qty", "received_qty", "note", "expiry_date", "delivery_date", "created_by", "created_by_name", "created_at", "accepted_by", "accepted_by_name", "accepted_at", "received_at", "storage_entered_at", "product_temperature", "rejected_by", "rejected_by_name", "rejected_at", "rejection_reason", "receipt_no", "photo_file_ids", "photo_count", "photo_data_json"];
+    const columns = ["event_id", "transfer_id", "status", "from_outlet", "from_location", "to_outlet", "to_location", "item_code", "category", "item_name", "unit", "qty", "received_qty", "note", "expiry_date", "delivery_date", "created_by", "created_by_name", "created_at", "accepted_by", "accepted_by_name", "accepted_at", "received_at", "storage_entered_at", "product_temperature", "rejected_by", "rejected_by_name", "rejected_at", "rejection_reason", "receipt_no", "photo_file_ids", "photo_count", "photo_data_json", "source_event_id"];
     const statements2 = input.map((raw) => {
       const row = normalizeTransferEvent(raw);
       return env.OPERATIONS_DB.prepare(
@@ -2445,6 +2446,7 @@ export {
   index_default as default,
   normalizeMidtransStatus,
   normalizeMovement,
+  normalizeTransferEvent,
   verifyMidtransSignature
 };
 //# sourceMappingURL=index.js.map

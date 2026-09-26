@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCurrentShowcaseSummary, buildShowcaseSummary, normalizeMovement } from "../src/index.js";
+import { buildCurrentShowcaseSummary, buildShowcaseSummary, normalizeMovement, normalizeTransferEvent } from "../src/index.js";
 
 const baseRow = {
   record_id: "record-1",
@@ -42,6 +42,21 @@ test("real stock movements preserve their supplied item code", () => {
 
   assert.equal(row.item_code, "CCFH0330");
   assert.equal(row.unit, "PCS");
+});
+
+test("transfer events preserve the source line relationship", () => {
+  const row = normalizeTransferEvent({
+    insertId: "accept-1",
+    json: {
+      transfer_id: "transfer-1",
+      status: "ACCEPTED",
+      source_event_id: "pending-1",
+      created_at: "2026-09-26T08:00:00Z"
+    }
+  });
+
+  assert.equal(row.event_id, "accept-1");
+  assert.equal(row.source_event_id, "pending-1");
 });
 
 test("Showcase summary uses the latest logical version and returns daily totals", () => {
