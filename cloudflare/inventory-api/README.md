@@ -39,7 +39,9 @@ still the production source during verification.
   overlap.
 - Balance anomalies remain unchanged during copy. Corrections are entered from
   the application so their audit trail is preserved.
-- Application cutover: not started.
+- Application cutover: Stock Card movements, balances, Goods Delivery transfer
+  events, and transfer lifecycle reads/writes now use Cloudflare. Remaining
+  legacy BigQuery utilities are being retired separately.
 
 ## Live service
 
@@ -49,6 +51,7 @@ still the production source during verification.
 - Protected status: `GET /v1/sync/status`
 - Protected ledger copy: `POST /v1/migrate/stock-movements`
 - Protected ledger-copy status: `GET /v1/migrate/stock-movements/status`
+- Protected transfer events: `GET|POST /v1/transfer-events`
 
 Protected routes require the `x-api-key` header. Never commit the API key.
 
@@ -95,6 +98,11 @@ Apply future D1 migrations deliberately to the corresponding database before
 deploying Worker code that depends on them. Do not run the three SQL files as
 one migration set against every D1 database. Keep secrets in Cloudflare
 secrets and Apps Script Script Properties, never in source files.
+
+`cloudflare/migrations/0005_transfer_source_event.sql` applies only to
+`bakerzin-inventory-operations`. It must be applied before deploying the Worker
+version that stores `source_event_id` for transfer correction and receipt
+reconciliation.
 
 ### Midtrans Snap for Penjualan Asset
 
