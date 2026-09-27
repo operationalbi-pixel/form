@@ -233,37 +233,38 @@
         box-shadow: 0 4px 6px -1px rgba(128, 0, 0, 0.25);
     }
 
-    /* --- NEW LAYOUT STYLES FOR INPUT PAGE --- */
-    
-    /* Container for split layout */
+    /* --- INPUT PENILAIAN --- */
+    #page-fillin { height:calc(100dvh - 40px); padding:0; }
     .fillin-wrapper {
         display: flex;
-        gap: 0;
         height: 100%;
-        background: white;
-        border-radius: var(--radius);
+        min-width:0;
+        background:#fff;
+        border-radius:20px;
         border: 1px solid var(--border);
         overflow: hidden;
+        box-shadow:0 14px 40px rgba(15,23,42,.08);
     }
-    
-    /* Second Sidebar (Positions) */
     .fillin-sidebar {
-        width: 240px;
-        background: #f8fafc;
+        width: 218px;
+        background:linear-gradient(180deg,#fff 0%,#f8fafc 100%);
         border-right: 1px solid var(--border);
         display: flex;
         flex-direction: column;
         flex-shrink: 0;
-        padding-top: 20px;
-        padding-bottom: 20px;
+        padding:22px 14px;
+        overflow-y:auto;
     }
-    
+    .fillin-sidebar-title { padding:0 12px 14px; font-size:11px; font-weight:800; color:var(--text-muted); letter-spacing:1.2px; }
+    #positionTabs { display:flex; flex-direction:column; gap:6px; }
     .pos-tab-item {
-        padding: 14px 24px;
+        padding: 12px 14px;
         cursor: pointer;
-        font-weight: 500;
+        font-weight: 650;
+        font-size:13px;
         color: var(--text-muted);
-        border-left: 4px solid transparent;
+        border:1px solid transparent;
+        border-radius:12px;
         transition: all 0.2s;
         display: flex;
         align-items: center;
@@ -276,156 +277,129 @@
     }
     
     .pos-tab-item.active {
-        background: white;
+        background:#fff5f5;
         color: var(--primary);
-        border-left-color: var(--primary);
+        border-color:#fecaca;
         font-weight: 700;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        box-shadow:0 5px 14px rgba(128,0,0,.08);
     }
-    
-    /* Right Content Area */
     .fillin-content {
         flex: 1;
+        min-width:0;
         display: flex;
         flex-direction: column;
-        overflow: hidden; /* Manage scroll internally */
+        overflow: hidden;
     }
-    
-    /* Chrome Tabs Container (Also holds the date navigator now) */
     .chrome-tabs-container {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between; /* Space between tabs and controls */
-        padding: 20px 30px 0; 
-        background: #f1f5f9;
-        border-bottom: 1px solid #cbd5e1;
-        flex-shrink: 0; /* Prevent shrinking */
+        display:grid;
+        grid-template-columns:minmax(0,1fr) auto;
+        align-items:center;
+        gap:16px;
+        padding:16px 18px;
+        background:rgba(248,250,252,.96);
+        border-bottom:1px solid var(--border);
+        flex-shrink:0;
     }
-    
-    /* Wrapper for tabs to scroll if needed */
     .chrome-tabs-wrapper {
         display: flex;
-        align-items: flex-end;
+        align-items:center;
         overflow-x: auto;
-        flex: 1;
-        padding-bottom: 0;
-        gap: -5px; /* Overlap effect */
-        
-        /* Smooth Scrollbar */
+        min-width:0;
+        gap:8px;
+        padding:2px 2px 7px;
         scrollbar-width: thin;
         scrollbar-color: #cbd5e1 transparent;
     }
-    
-    .chrome-tabs-wrapper::-webkit-scrollbar {
-        height: 6px;
-    }
-    .chrome-tabs-wrapper::-webkit-scrollbar-thumb {
-        background-color: #cbd5e1;
-        border-radius: 4px;
-    }
-    
+    .chrome-tabs-wrapper::-webkit-scrollbar { height:5px; }
+    .chrome-tabs-wrapper::-webkit-scrollbar-thumb { background-color:#cbd5e1; border-radius:4px; }
     .chrome-tab {
-        padding: 10px 16px; /* Slightly reduced padding */
-        min-width: 120px;   /* Reduced min width */
-        max-width: 160px;   /* Constrained max width */
-        /* Layout flex for badge & name */
+        padding:10px 13px;
+        min-width:132px;
+        max-width:190px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        gap: 6px;
-        
-        background: #e2e8f0;
-        border: 1px solid #cbd5e1;
-        border-bottom: none;
-        border-radius: 10px 10px 0 0; /* Rounded top corners */
+        justify-content:flex-start;
+        gap:8px;
+        background:#fff;
+        border:1px solid #dbe3ec;
+        border-radius:12px;
         color: var(--text-muted);
         font-weight: 600;
-        font-size: 12px; /* Smaller font */
+        font-size:12px;
         cursor: pointer;
-        margin-right: -4px; /* Tighter overlap */
-        z-index: 1;
-        position: relative;
         white-space: nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
         transition: all 0.2s;
     }
-    
-    .chrome-tab:hover {
-        background: #f8fafc;
-        z-index: 2;
-    }
-    
+    .chrome-tab:hover { border-color:#fca5a5; transform:translateY(-1px); }
     .chrome-tab.active {
-        background: white;
-        color: var(--primary);
-        border-color: #cbd5e1;
-        border-bottom: 1px solid white; /* Merge with content below */
-        z-index: 10;
-        padding-top: 12px; /* Pop up slightly */
-        margin-bottom: -1px; /* CRITICAL: Overlap the container border */
-        box-shadow: 0 -2px 5px rgba(0,0,0,0.02);
+        background:var(--primary);
+        color:#fff;
+        border-color:var(--primary);
+        box-shadow:0 8px 18px rgba(128,0,0,.18);
     }
-
-    /* Score Badge inside Tab */
     .tab-score-badge {
         font-size: 10px;
         padding: 2px 6px;
         border-radius: 12px;
-        background: #cbd5e1;
-        color: white;
+        background:#e2e8f0;
+        color:#475569;
         font-weight: 700;
         min-width: 24px;
         text-align: center;
     }
-    .chrome-tab.active .tab-score-badge {
-        background: var(--primary); /* Red badge when active */
-        box-shadow: 0 2px 4px rgba(128, 0, 0, 0.2);
-    }
-    
-    /* Header Controls (Date & Filter) in top right */
+    .chrome-tab.active .tab-score-badge { background:#fff; color:var(--primary); }
     .fillin-controls {
         display: flex;
         align-items: center;
-        gap: 12px;
-        margin-bottom: 8px; /* Align with bottom of tabs */
-        padding-left: 20px;
-        z-index: 20; /* Ensure clicks works */
+        gap:10px;
+        z-index:20;
     }
-    
-    /* Form Area connected to tabs */
     .fillin-form-area {
         flex: 1;
-        overflow-y: auto;
-        padding: 0; 
+        min-height:0;
+        overflow:auto;
+        padding:0 0 70px;
         background: white;
-        position: relative; /* Context for sticky header */
+        position:relative;
     }
-    
-    /* STICKY HEADER FIX & RED THEME */
     #fillTable {
-        border-collapse: collapse; /* Ensure no gaps */
-        margin-top: 0;
-        width: 100%;
+        border-collapse:separate;
+        border-spacing:0;
+        margin:0;
+        width:100%;
+        min-width:1120px;
+        table-layout:fixed;
     }
+    #fillTable th:nth-child(1){width:110px} #fillTable th:nth-child(2){width:170px}
+    #fillTable th:nth-child(3){width:210px} #fillTable th:nth-child(4){width:78px}
+    #fillTable th:nth-child(5){width:150px} #fillTable th:nth-child(6){width:72px}
+    #fillTable th:nth-child(7){width:190px} #fillTable th:nth-child(8){width:76px}
     #fillTable th {
         position: sticky;
         top: 0;
-        z-index: 100;
-        /* SOFT GRAY HEADER THEME */
-        background: #f8fafc; 
+        z-index:10;
+        background:#f8fafc;
         color: var(--text-muted);
         border-bottom: 1px solid var(--border);
-        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-        padding: 16px 20px;
+        padding:14px 16px;
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.5px;
         font-weight: 700;
     }
     #fillTable td {
-        padding: 12px 20px; /* Adjust padding for content */
+        padding:16px;
         border-bottom: 1px solid var(--border);
+        vertical-align:middle;
+        line-height:1.45;
     }
-    
+    #fillTable tbody tr:hover td { background:#fffbfb; }
+    .score-input-wrap,.score-note-wrap { display:flex; align-items:center; gap:8px; min-width:0; }
+    .score-input-wrap .form-control { width:88px; }
+    .score-note-wrap .form-control { min-width:0; }
+    .score-edit-btn { border:0; background:#fff1f2; color:var(--primary); width:34px; height:34px; border-radius:9px; cursor:pointer; }
     .date-navigator {
         display: flex;
         align-items: center;
@@ -435,6 +409,17 @@
         padding: 4px 8px;
         box-shadow: var(--shadow-sm);
     }
+
+    /* --- CONFIGURATION EDITOR --- */
+    .config-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:24px; }
+    .config-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .config-note { margin-top:6px; color:var(--text-muted); font-size:13px; }
+    .indicator-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .indicator-form-grid .wide { grid-column:1/-1; }
+    .indicator-weight-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .indicator-weight-item { padding:10px; border:1px solid var(--border); border-radius:10px; background:#f8fafc; }
+    .indicator-weight-item label { display:block; font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:6px; }
+    .indicator-edit-btn { border:0; background:#fff1f2; color:var(--primary); border-radius:8px; padding:7px 10px; font-weight:700; cursor:pointer; }
 
     /* --- UTILS --- */
     .hidden { display:none !important; }
@@ -486,6 +471,44 @@
       .user-profile { width:100%; margin-top:4px; padding-top:8px; }
       .content { padding:16px; overflow:visible; }
       .modal-box, .modal-box.modal-lg { width:calc(100vw - 24px); padding:20px; }
+      #page-fillin { height:auto; min-height:calc(100dvh - 150px); }
+      .fillin-wrapper { display:block; height:auto; overflow:visible; border-radius:16px; }
+      .fillin-sidebar { width:100%; padding:12px; border-right:0; border-bottom:1px solid var(--border); overflow:visible; }
+      .fillin-sidebar-title { padding:0 2px 9px; }
+      #positionTabs { flex-direction:row; overflow-x:auto; padding-bottom:5px; }
+      .pos-tab-item { flex:0 0 auto; padding:9px 12px; white-space:nowrap; }
+      .fillin-content { overflow:visible; }
+      .chrome-tabs-container { display:flex; flex-direction:column; align-items:stretch; padding:12px; gap:10px; }
+      .chrome-tabs-wrapper { width:100%; }
+      .chrome-tab { min-width:138px; }
+      .fillin-controls { width:100%; justify-content:space-between; flex-wrap:wrap; }
+      .date-navigator { flex:1; justify-content:center; }
+      #fillOutletFilter { flex:1; }
+      #selFillOutlet { width:100%; }
+      .fillin-form-area { overflow:visible; padding:12px 12px 80px; }
+      #fillTable { min-width:0; display:block; }
+      #fillTable thead { display:none; }
+      #fillTable tbody { display:block; }
+      #fillTable tbody tr { display:block; margin-bottom:12px; padding:8px 14px; border:1px solid var(--border); border-radius:14px; box-shadow:0 7px 20px rgba(15,23,42,.06); background:#fff; }
+      #fillTable tbody tr.fill-empty { text-align:center; }
+      #fillTable tbody tr.fill-empty td { display:block; }
+      #fillTable tbody tr.fill-empty td::before { display:none; }
+      #fillTable td { display:grid; grid-template-columns:105px minmax(0,1fr); gap:12px; align-items:start; width:100%; padding:10px 0; border-bottom:1px dashed #e2e8f0; overflow-wrap:anywhere; }
+      #fillTable td:last-child { border-bottom:0; }
+      #fillTable td::before { content:attr(data-label); color:var(--text-muted); font-size:10px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; }
+      #fillTable tbody tr:hover td { background:transparent; }
+      .score-input-wrap,.score-note-wrap { width:100%; }
+      .score-note-wrap .form-control { width:100%; }
+      .config-header { flex-direction:column; }
+      .config-actions,.config-actions .form-control,.config-actions .btn { width:100%; }
+      .indicator-form-grid { grid-template-columns:1fr; }
+      .indicator-weight-grid { grid-template-columns:1fr 1fr; }
+    }
+    @media (max-width: 460px) {
+      .sidebar { position:relative; }
+      .menu-item { flex:1 1 45%; justify-content:center; }
+      #fillTable td { grid-template-columns:88px minmax(0,1fr); }
+      .indicator-weight-grid { grid-template-columns:1fr; }
     }
   </style>
 </head>
@@ -521,7 +544,6 @@
       
       <div class="menu-item active" onclick="nav('dashboard',this)"><span>📊</span> Dashboard</div>
       <div class="menu-item" onclick="nav('fillin',this)"><span>📝</span> Input Penilaian</div>
-      <div class="menu-item" onclick="nav('member',this)"><span>👥</span> Teams</div>
       <div class="menu-item" onclick="nav('indicator',this)"><span>⚙️</span> Konfigurasi</div>
       
       <div class="user-profile">
@@ -604,45 +626,16 @@
         </div>
       </div>
 
-      <!-- MEMBER -->
-      <div id="page-member" class="page-section hidden">
-        <h2>Member</h2>
-        <p style="color:var(--text-muted); margin-bottom:24px;"> </p>
-        
-        <div class="card" style="background:linear-gradient(135deg,#fff7ed,#fff); border-color:#fed7aa;">
-          <h4 style="margin-bottom:8px; color:var(--primary);">Master Data MPP</h4>
-          <p style="color:var(--text-muted); line-height:1.6;">Daftar staff disinkronkan otomatis dari sheet <b>EMP_LIST</b>. Penambahan, perubahan posisi, rotasi outlet, dan status resign dilakukan melalui menu MPP.</p>
-          <p style="color:var(--text-muted); line-height:1.6; margin-top:8px;">Konfigurasi indikator dibaca langsung dari sheet <b>Config_Indicators</b>. Hasil penilaian disimpan di database operasional Cloudflare.</p>
-        </div>
-
-        <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
-           <input type="text" id="stfSearch" class="form-control" placeholder="Cari staff..." style="width:300px;" onkeyup="filterStaffTables()">
-           <div id="stfOutletFilterDiv" class="hidden"><select id="stfFilterOutlet" class="form-control" onchange="filterStaffTables()"></select></div>
-        </div>
-        
-        <div class="card">
-            <h4 style="margin-bottom:16px;">Staff Aktif</h4>
-            <table>
-                <thead><tr><th>NIK</th><th>Nama</th><th style="width:250px;">Posisi</th><th>Outlet</th><th>Status</th><th>Sumber</th></tr></thead>
-                <tbody id="staffTableActive"></tbody>
-            </table>
-        </div>
-        
-        <div class="card" style="opacity:0.8;">
-            <h4 style="margin-bottom:16px; color:var(--text-muted);">Staff Non-Aktif</h4>
-            <table>
-                <thead><tr><th>NIK</th><th>Nama</th><th>Posisi</th><th>Outlet</th><th>Status</th><th>Sumber</th></tr></thead>
-                <tbody id="staffTableInactive"></tbody>
-            </table>
-        </div>
-      </div>
-
       <!-- INDICATOR -->
       <div id="page-indicator" class="page-section hidden">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-           <h2>Konfigurasi Indikator</h2>
-           <div id="indOutletFilterDiv" class="hidden"><select id="indOutletFilter" class="form-control" style="width:200px;" onchange="renderIndicatorTable()"></select></div>
+        <div class="config-header">
+           <div><h2>Konfigurasi Indikator</h2><p class="config-note">Indikator dibaca langsung dari Config_Indicators. Hasil penilaian tersimpan di Cloudflare.</p></div>
+           <div class="config-actions">
+             <div id="indOutletFilterDiv" class="hidden"><select id="indOutletFilter" class="form-control" onchange="renderIndicatorTable()"></select></div>
+             <button id="btnAddIndicator" class="btn btn-primary hidden" onclick="openIndicatorEditor()">+ Tambah indikator</button>
+           </div>
         </div>
+        <div id="indicatorReadOnlyNote" class="card" style="padding:12px 16px; background:#f8fafc; color:var(--text-muted);">Konfigurasi hanya dapat diubah oleh BIHQ.</div>
         
         <div class="card">
           <h4 style="margin-bottom:16px;">Matriks</h4>
@@ -660,15 +653,13 @@
       </div>
 
       <!-- FILL IN (NEW LAYOUT) -->
-      <div id="page-fillin" class="page-section hidden" style="height: calc(100vh - 40px); padding: 0;">
+      <div id="page-fillin" class="page-section hidden">
         
         <div class="fillin-wrapper">
             <!-- LEFT SIDEBAR: POSITIONS -->
             <div class="fillin-sidebar">
-                <div style="padding: 0 24px 16px; font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 1px; border-bottom: 1px solid var(--border); margin-bottom: 10px;">
-                    POSISI
-                </div>
-                <div id="positionTabs" style="display: flex; flex-direction: column; gap: 4px;">
+                <div class="fillin-sidebar-title">POSISI</div>
+                <div id="positionTabs">
                     <!-- Vertical tabs go here -->
                 </div>
             </div>
@@ -706,7 +697,7 @@
                 <div class="fillin-form-area">
                     <!-- REMOVED HEADER INFO BLOCK -->
 
-                    <table id="fillTable">
+                    <table id="fillTable" aria-label="Form penilaian staff">
                         <thead><tr><th>Kategori</th><th>Indikator</th><th>Target</th><th>Bobot</th><th>Pencapaian</th><th>Skor</th><th>Catatan</th><th style="width:60px;">Status</th></tr></thead>
                         <tbody id="fillTableBody"></tbody>
                     </table>
@@ -736,6 +727,30 @@
       <div id="confirmMessage" style="margin-bottom:24px; color:var(--text-muted);"></div>
       <button class="btn btn-outline" onclick="closeModal('confirmModal')">Batal</button> 
       <button class="btn btn-primary" id="btnConfirmYes">Ya, Lanjutkan</button>
+  </div></div>
+
+  <div class="modal-overlay" id="indicatorModal"><div class="modal-box modal-lg">
+      <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:22px;">
+        <div><h3 id="indicatorModalTitle">Tambah indikator</h3><div class="config-note">Perubahan tersimpan langsung ke sheet Config_Indicators.</div></div>
+        <button class="btn-icon" onclick="closeModal('indicatorModal')" aria-label="Tutup">✕</button>
+      </div>
+      <input type="hidden" id="indicatorId">
+      <div class="indicator-form-grid">
+        <div><label>Outlet</label><select id="indicatorOutlet" class="form-control"></select></div>
+        <div><label>Status</label><select id="indicatorStatus" class="form-control"><option value="Active">Active</option><option value="Disabled">Disabled</option></select></div>
+        <div><label>Kategori</label><input id="indicatorCategory" class="form-control" placeholder="Contoh: Disiplin"></div>
+        <div><label>Nama indikator</label><input id="indicatorName" class="form-control" placeholder="Nama indikator"></div>
+        <div class="wide"><label>Target / panduan penilaian</label><textarea id="indicatorTarget" class="form-control" rows="3" placeholder="Tuliskan target yang jelas"></textarea></div>
+        <div><label>Batas A</label><input id="indicatorThresholdA" class="form-control" placeholder="Angka atau YESNO"></div>
+        <div><label>Batas B</label><input id="indicatorThresholdB" class="form-control"></div>
+        <div><label>Batas C</label><input id="indicatorThresholdC" class="form-control"></div>
+        <div><label>Batas D</label><input id="indicatorThresholdD" class="form-control"></div>
+        <div class="wide"><label>Bobot per posisi (%)</label><div id="indicatorWeightFields" class="indicator-weight-grid"></div></div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:24px;">
+        <button class="btn btn-outline" onclick="closeModal('indicatorModal')">Batal</button>
+        <button id="btnSaveIndicator" class="btn btn-primary" onclick="saveIndicatorConfig()">Simpan konfigurasi</button>
+      </div>
   </div></div>
 
   <div class="modal-overlay" id="mutationModal"><div class="modal-box">
@@ -845,6 +860,9 @@
        return parts[0] + ' ' + parts[1].charAt(0).toUpperCase() + '...';
     }
 
+    function isBihqUser() { return !!(STATE.user && (STATE.user.role === 'All' || STATE.user.outlet === 'BIHQ')); }
+    function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+
     function indicatorWeightForPosition(indicator, position) {
        const raw = indicator && indicator.Bobot;
        let parsed = raw;
@@ -862,8 +880,10 @@
        return parseFloat(parsed) || 0;
     }
     
-    function showToast() {
+    function showToast(title, message) {
        const t = document.getElementById('successToast');
+       t.querySelector('.toast-title').innerText=title||'Berhasil Disimpan!';
+       t.querySelector('.toast-msg').innerText=message||'Data penilaian staff telah diperbarui.';
        t.classList.add('active');
        setTimeout(() => t.classList.remove('active'), 3000);
     }
@@ -916,10 +936,11 @@
       document.getElementById('dashStart').value = getLocalDateISO(firstDay);
       document.getElementById('dashEnd').value = getLocalDateISO(now);
       
-      if(STATE.user.role==='All'||STATE.user.outlet==='BIHQ'){
+      if(isBihqUser()){
          const divStf = document.getElementById('divStfOutlet');
          if (divStf) divStf.innerHTML=`<label style="font-size:11px; font-weight:600;">Outlet</label><select id="stfOutlet" class="form-control"></select>`;
-         ['fillOutletFilter','dashOutletFilterDiv','stfOutletFilterDiv','indOutletFilterDiv'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
+         ['fillOutletFilter','dashOutletFilterDiv','indOutletFilterDiv','btnAddIndicator'].forEach(id=>document.getElementById(id).classList.remove('hidden'));
+         document.getElementById('indicatorReadOnlyNote').classList.add('hidden');
       } else { 
           const stfInput = document.getElementById('stfOutlet');
           if (stfInput) stfInput.value=STATE.user.outlet; 
@@ -936,17 +957,16 @@
          
          document.getElementById('selFillOutlet').innerHTML='<option value="">All Outlets</option>'+opts;
          document.getElementById('dashOutletFilter').innerHTML='<option value="">All Outlets</option>'+opts;
-         document.getElementById('stfFilterOutlet').innerHTML='<option value="">All Outlets</option>'+opts;
          document.getElementById('mutNewOutlet').innerHTML='<option value="">Pilih Outlet</option>'+opts;
          
          const indOut = document.getElementById('indOutletFilter');
          indOut.innerHTML=opts; if((STATE.user.role==='All' || STATE.user.outlet==='BIHQ') && STATE.outlets.length>0) indOut.value=STATE.outlets[0];
 
-         renderStaffTable(); renderIndicatorTable(); loadDashboard();
+         renderIndicatorTable(); loadDashboard();
     }
 
     function fetchData(){
-      staffApiCall('staffPerformanceBootstrap', [''])
+      return staffApiCall('staffPerformanceBootstrap', [''])
         .then(applyInitialData)
         .catch(error => alert('Gagal memuat data Cloudflare: ' + (error.message || error)));
     }
@@ -1332,22 +1352,67 @@
 
     // --- INDICATOR ---
     function renderIndicatorTable(){
-       const tbA=document.getElementById('indTableBody'); const tbD=document.querySelector('#indTableArchive tbody'); const h=document.querySelector('#indTable thead'); const f=document.getElementById('indTableFoot');
-       tbA.innerHTML=''; tbD.innerHTML=''; h.innerHTML=''; f.innerHTML='';
-       let fOut=STATE.user.outlet; if((STATE.user.role==='All' || STATE.user.outlet==='BIHQ')){ const d=document.getElementById('indOutletFilter'); if(d && d.value) fOut=d.value; }
-       
+       const tbA=document.getElementById('indTableBody'); const archive=document.getElementById('indTableArchive'); const tbD=archive.querySelector('tbody'); const h=document.querySelector('#indTable thead'); const hD=archive.querySelector('thead'); const f=document.getElementById('indTableFoot');
+       tbA.innerHTML=''; tbD.innerHTML=''; h.innerHTML=''; hD.innerHTML=''; f.innerHTML='';
+       let fOut=STATE.user.outlet; if(isBihqUser()){ const d=document.getElementById('indOutletFilter'); if(d && d.value) fOut=d.value; }
+       const actionHead=isBihqUser()?'<th style="width:82px;">Aksi</th>':'';
        let hh='<tr><th style="width:80px;">Status</th><th>Outlet</th><th>Kategori</th><th>Indikator</th><th>Target</th>';
-       STATE.positions.forEach(p=>hh+=`<th class="matrix-header">${p}</th>`); hh+='</tr>'; h.innerHTML=hh; 
+       STATE.positions.forEach(p=>hh+=`<th class="matrix-header">${escapeHtml(p)}</th>`); hh+=actionHead+'</tr>'; h.innerHTML=hh; hD.innerHTML=hh;
        let tots={}; STATE.positions.forEach(p=>tots[p]=0);
 
        STATE.indicators.forEach(i=>{
           const iOut=(i.Outlet||'').trim(); const tOut=(fOut||'').trim(); if(iOut!=='' && iOut!==tOut) return;
           const dis=String(i.Status||'').trim().toLowerCase()==='disabled';
           let cells=''; STATE.positions.forEach(p=>{ const v=indicatorWeightForPosition(i,p); if(!dis)tots[p]+=v; cells+=`<td class="matrix-cell" style="color:${v>0?'var(--text-main)':'#cbd5e1'}; text-align:center;">${v}%</td>`; });
-          const row=`<tr><td><span class="badge" style="background:${dis?'#fee2e2':'#d1fae5'}">${dis?'Disabled':'Active'}</span></td><td>${i.Outlet||'Global'}</td><td>${i.Kategori}</td><td>${i.Nama_Indikator}</td><td>${i.Target||'-'}</td>${cells}</tr>`;
+          const edit=isBihqUser()?`<td><button class="indicator-edit-btn" onclick="openIndicatorEditor('${escapeHtml(i.ID_Indikator)}')">Edit</button></td>`:'';
+          const row=`<tr><td><span class="badge" style="background:${dis?'#fee2e2':'#d1fae5'}">${dis?'Disabled':'Active'}</span></td><td>${escapeHtml(i.Outlet||'Global')}</td><td>${escapeHtml(i.Kategori)}</td><td>${escapeHtml(i.Nama_Indikator)}</td><td>${escapeHtml(i.Target||'-')}</td>${cells}${edit}</tr>`;
           if(dis) tbD.innerHTML+=row; else tbA.innerHTML+=row;
        });
-       let fh='<tr><td colspan="5" style="text-align:right;font-weight:bold;">TOTAL BOBOT:</td>'; STATE.positions.forEach(p=>{ const v=Math.abs(tots[p]-100)<0.1; fh+=`<td class="matrix-footer ${v?'':'invalid'}">${tots[p].toFixed(0)}%</td>`; }); f.innerHTML=fh+'</tr>';
+       if(!tbA.innerHTML) tbA.innerHTML=`<tr><td colspan="${5+STATE.positions.length+(isBihqUser()?1:0)}" style="text-align:center;color:var(--text-muted);">Belum ada indikator aktif.</td></tr>`;
+       if(!tbD.innerHTML) tbD.innerHTML=`<tr><td colspan="${5+STATE.positions.length+(isBihqUser()?1:0)}" style="text-align:center;color:var(--text-muted);">Tidak ada indikator dalam arsip.</td></tr>`;
+       let fh='<tr><td colspan="5" style="text-align:right;font-weight:bold;">TOTAL BOBOT:</td>'; STATE.positions.forEach(p=>{ const v=Math.abs(tots[p]-100)<0.1; fh+=`<td class="matrix-footer ${v?'':'invalid'}">${tots[p].toFixed(0)}%</td>`; }); if(isBihqUser()) fh+='<td></td>'; f.innerHTML=fh+'</tr>';
+    }
+
+    function openIndicatorEditor(indicatorId){
+       if(!isBihqUser()) return alert('Hanya BIHQ yang dapat mengubah konfigurasi indikator.');
+       const item=indicatorId ? STATE.indicators.find(i=>String(i.ID_Indikator)===String(indicatorId)) : null;
+       document.getElementById('indicatorModalTitle').innerText=item?'Edit indikator':'Tambah indikator';
+       document.getElementById('indicatorId').value=item?item.ID_Indikator:'';
+       document.getElementById('indicatorOutlet').innerHTML='<option value="">Global (semua outlet)</option>'+STATE.outlets.map(o=>`<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+       document.getElementById('indicatorOutlet').value=item?(item.Outlet||''):((document.getElementById('indOutletFilter')||{}).value||'');
+       document.getElementById('indicatorStatus').value=item?(item.Status||'Active'):'Active';
+       document.getElementById('indicatorCategory').value=item?(item.Kategori||''):'';
+       document.getElementById('indicatorName').value=item?(item.Nama_Indikator||''):'';
+       document.getElementById('indicatorTarget').value=item?(item.Target||''):'';
+       document.getElementById('indicatorThresholdA').value=item?(item.Batas_A||''):'';
+       document.getElementById('indicatorThresholdB').value=item?(item.Batas_B||''):'';
+       document.getElementById('indicatorThresholdC').value=item?(item.Batas_C||''):'';
+       document.getElementById('indicatorThresholdD').value=item?(item.Batas_D||''):'';
+       document.getElementById('indicatorWeightFields').innerHTML=STATE.positions.map((p,index)=>`<div class="indicator-weight-item"><label>${escapeHtml(p)}</label><input class="form-control indicator-weight-input" type="number" min="0" max="100" step="0.1" data-position="${escapeHtml(p)}" value="${item?indicatorWeightForPosition(item,p):0}"></div>`).join('');
+       openModal('indicatorModal');
+    }
+
+    function saveIndicatorConfig(){
+       if(!isBihqUser()) return alert('Hanya BIHQ yang dapat mengubah konfigurasi indikator.');
+       const payload={
+          id:document.getElementById('indicatorId').value,
+          outlet:document.getElementById('indicatorOutlet').value,
+          category:document.getElementById('indicatorCategory').value.trim(),
+          name:document.getElementById('indicatorName').value.trim(),
+          target:document.getElementById('indicatorTarget').value.trim(),
+          thresholdA:document.getElementById('indicatorThresholdA').value.trim(),
+          thresholdB:document.getElementById('indicatorThresholdB').value.trim(),
+          thresholdC:document.getElementById('indicatorThresholdC').value.trim(),
+          thresholdD:document.getElementById('indicatorThresholdD').value.trim(),
+          status:document.getElementById('indicatorStatus').value,
+          weights:{}
+       };
+       document.querySelectorAll('.indicator-weight-input').forEach(input=>{ const value=Number(input.value||0); if(value>0) payload.weights[input.dataset.position]=value; });
+       if(!payload.category||!payload.name) return alert('Kategori dan nama indikator wajib diisi.');
+       const button=document.getElementById('btnSaveIndicator'); button.disabled=true; button.innerText='Menyimpan...';
+       staffApiCall('staffPerformanceSaveIndicator',[payload]).then(()=>{
+          closeModal('indicatorModal'); showToast('Konfigurasi tersimpan','Indikator berhasil diperbarui di Config_Indicators.'); return fetchData();
+       }).catch(error=>alert(error.message||error)).finally(()=>{ button.disabled=false; button.innerText='Simpan konfigurasi'; });
     }
 
     // --- FILL IN (NEW LAYOUT) ---
@@ -1418,10 +1483,10 @@
        const s=STATE.staffList.find(x=>x.NIK==nik); 
        
        const d=document.getElementById('fillDate').value; 
-       document.getElementById('fillTableBody').innerHTML='<tr><td colspan="7" style="text-align:center; padding:20px;">Loading form...</td></tr>';
+       document.getElementById('fillTableBody').innerHTML='<tr class="fill-empty"><td colspan="8" style="text-align:center; padding:20px;">Memuat form penilaian...</td></tr>';
        staffApiCall('staffPerformanceData', [d, d, s ? s.Outlet : STATE.user.outlet, nik])
          .then(res=>{ STATE.currentDailyData=res||[]; renderScoreSheet(); })
-         .catch(error => { document.getElementById('fillTableBody').innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--danger);">'+(error.message||error)+'</td></tr>'; });
+         .catch(error => { document.getElementById('fillTableBody').innerHTML='<tr class="fill-empty"><td colspan="8" style="text-align:center;color:var(--danger);">'+escapeHtml(error.message||error)+'</td></tr>'; });
     }
     
     function renderScoreSheet(){
@@ -1434,7 +1499,7 @@
           if(i.Outlet && String(i.Outlet).trim().toUpperCase()!==tOut.toUpperCase())return false;
           return indicatorWeightForPosition(i,pos)>0;
        });
-       if(rel.length===0){ tb.innerHTML='<tr><td colspan="7" style="text-align:center; padding:20px;">Tidak ada indikator untuk posisi ini.</td></tr>'; return; }
+       if(rel.length===0){ tb.innerHTML='<tr class="fill-empty"><td colspan="8" style="text-align:center; padding:20px;">Tidak ada indikator untuk posisi ini.</td></tr>'; return; }
        
        let tot=0;
        rel.forEach(i=>{
@@ -1458,7 +1523,7 @@
               }
 
               // WRAPPER FLEX UNTUK INPUT + GRADE
-              inp = `<div style="display:flex; align-items:center; gap:8px;">
+              inp = `<div class="score-input-wrap">
                  <input type="number" id="ach_${i.ID_Indikator}" class="form-control" value="${val}" 
                         onchange="calc('${i.ID_Indikator}',${w},${pA},${pB},${pC},${pD})" 
                         oninput="calc('${i.ID_Indikator}',${w},${pA},${pB},${pC},${pD})" 
@@ -1471,15 +1536,15 @@
           const checkIcon = `<svg class="status-icon-svg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
 
           tb.innerHTML+=`<tr>
-            <td>${i.Kategori}</td>
-            <td><b>${i.Nama_Indikator}</b></td>
-            <td>${i.Target||'-'}</td>
-            <td><span class="badge">${w}%</span></td>
-            <td>${inp}</td>
-            <td id="sc_${i.ID_Indikator}" class="score-cell" style="font-weight:bold; color:var(--primary);">${sc}</td>
-            <td><div style="display:flex;gap:5px;"><input type="text" id="nte_${i.ID_Indikator}" class="form-control" value="${nt}" ${ex?'readonly':''} placeholder="Catatan..." oninput="triggerRowSave('${i.ID_Indikator}')"><button style="border:none;background:none;" onclick="enEdit('${i.ID_Indikator}')">✏️</button></div></td>
+            <td data-label="Kategori">${escapeHtml(i.Kategori)}</td>
+            <td data-label="Indikator"><b>${escapeHtml(i.Nama_Indikator)}</b></td>
+            <td data-label="Target">${escapeHtml(i.Target||'-')}</td>
+            <td data-label="Bobot"><span class="badge">${w}%</span></td>
+            <td data-label="Pencapaian">${inp}</td>
+            <td data-label="Skor" id="sc_${i.ID_Indikator}" class="score-cell" style="font-weight:bold; color:var(--primary);">${sc}</td>
+            <td data-label="Catatan"><div class="score-note-wrap"><input type="text" id="nte_${i.ID_Indikator}" class="form-control" value="${escapeHtml(nt)}" ${ex?'readonly':''} placeholder="Catatan..." oninput="triggerRowSave('${i.ID_Indikator}')"><button class="score-edit-btn" aria-label="Edit nilai" onclick="enEdit('${i.ID_Indikator}')">✏️</button></div></td>
             <!-- ROW STATUS INDICATOR -->
-            <td style="text-align:center; vertical-align:middle;">
+            <td data-label="Status" style="text-align:center; vertical-align:middle;">
                 <div id="status_${i.ID_Indikator}">
                     ${ex ? checkIcon : ''}
                 </div>

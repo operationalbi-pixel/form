@@ -1068,7 +1068,7 @@ for (const action of ['salesAnalysisBootstrap', 'salesAnalysisDashboard', 'sales
   if (!allowedActions.has(action)) failures.push(`Endpoint Analisa Sales '${action}' belum tersedia`);
   if (!salesAnalysisHtml.includes(`'${action}'`)) failures.push(`UI Analisa Sales belum memanggil '${action}'`);
 }
-for (const action of ['staffPerformanceBootstrap', 'staffPerformanceLeaderboard', 'staffPerformanceDailyStats', 'staffPerformanceData', 'staffPerformanceSaveStaff', 'staffPerformanceDeleteStaff', 'staffPerformanceSubmitScore']) {
+for (const action of ['staffPerformanceBootstrap', 'staffPerformanceLeaderboard', 'staffPerformanceDailyStats', 'staffPerformanceData', 'staffPerformanceSaveStaff', 'staffPerformanceDeleteStaff', 'staffPerformanceSaveIndicator', 'staffPerformanceSubmitScore']) {
   if (!allowedActions.has(action)) failures.push(`Endpoint Staff Performance '${action}' belum tersedia`);
   if (!staffPerformanceHtml.includes(`'${action}'`)) failures.push(`UI Staff Performance belum memanggil '${action}'`);
 }
@@ -1080,8 +1080,10 @@ if (!staffPerformanceMigration.includes('startStaffPerformanceCloudflareMigratio
 if (!staffPerformanceMigration.includes("MPP_MASTER_SPREADSHEET_ID: '1PktH42uGDx64B4ZU4_UMYPnZWomNlXu5WYoIfpndrDw'") || !staffPerformanceMigration.includes("MPP_STAFF_SHEET: 'EMP_LIST'") || staffPerformanceMigration.includes("getSheetByName('Data_Staff')")) failures.push('Migrasi Staff Performance belum memakai EMP_LIST Master Data MPP');
 if (!backend.includes('function syncStaffPerformanceStaffFromMpp_(') || !backend.includes("'/v1/staff-performance/staff/sync'") || !backend.includes('refreshStaffPerformanceStaffAfterMppWrite_();')) failures.push('Sinkronisasi EMP_LIST MPP ke Cloudflare Staff Performance belum aktif');
 if (!backend.includes("STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID: '19A_QtC62JP6uQcCkQu0yUKTV60kuy2MfXIXKz7aVDSU'") || !backend.includes("STAFF_PERFORMANCE_INDICATOR_SHEET: 'Config_Indicators'") || !backend.includes('function staffPerformanceIndicatorRows_(') || !backend.includes('data.indicators = staffPerformanceIndicatorRows_(context.outlet);')) failures.push('Indikator Staff Performance belum dibaca langsung dari Google Sheets Config_Indicators');
-if (!staffPerformanceHtml.includes('function indicatorWeightForPosition(') || !staffPerformanceHtml.includes('Config_Indicators') || !staffPerformanceHtml.includes('Hasil penilaian disimpan di database operasional Cloudflare')) failures.push('UI Staff Performance belum memakai bobot indikator Sheet secara toleran dan menjelaskan pemisahan sumber data');
-if (!staffPerformanceHtml.includes('Master Data MPP') || !staffPerformanceHtml.includes('MPP · EMP_LIST')) failures.push('Halaman Staff Performance belum menjelaskan sumber master staff MPP');
+if (!staffPerformanceHtml.includes('function indicatorWeightForPosition(') || !staffPerformanceHtml.includes('Config_Indicators') || !staffPerformanceHtml.includes('Hasil penilaian tersimpan di Cloudflare')) failures.push('UI Staff Performance belum memakai bobot indikator Sheet secara toleran dan menjelaskan pemisahan sumber data');
+if (staffPerformanceHtml.includes("nav('member'") || staffPerformanceHtml.includes('id="page-member"')) failures.push('Halaman Teams Staff Performance belum dihapus setelah fungsi staff dipindahkan ke MPP');
+if (!staffPerformanceHtml.includes('function openIndicatorEditor(') || !staffPerformanceHtml.includes("staffApiCall('staffPerformanceSaveIndicator'") || !backend.includes('function saveStaffPerformanceIndicator(') || !backend.includes('Hanya pengguna BIHQ')) failures.push('Editor Config_Indicators khusus BIHQ belum lengkap');
+if (!staffPerformanceHtml.includes('@media (max-width: 820px)') || !staffPerformanceHtml.includes('data-label="Pencapaian"') || !staffPerformanceHtml.includes('table-layout:fixed')) failures.push('Input Penilaian belum memiliki layout desktop dan mobile yang aman dari tumpang tindih');
 let staffPerformanceInlineIndex = 0;
 for (const match of staffPerformanceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   staffPerformanceInlineIndex += 1;

@@ -43,6 +43,48 @@ assert.deepEqual(Array.from(rows, row => row.ID_Indikator), ['IND-GLOBAL', 'IND-
 assert.equal(rows[1].Outlet, 'BICP');
 assert.equal(rows[1].Bobot, '{"waiter":40}');
 
+const saveStart = backend.indexOf('function saveStaffPerformanceIndicator(');
+const saveEnd = backend.indexOf('\nfunction syncStaffPerformanceStaffFromMpp_(', saveStart);
+assert.ok(saveStart >= 0 && saveEnd > saveStart, 'BIHQ indicator writer must exist');
+const stored = sheetValues.map(row => row.slice());
+const saveContext = {
+  CONFIG: context.CONFIG,
+  PropertiesService: context.PropertiesService,
+  safe_: fn => fn(),
+  staffPerformanceContext_: () => ({ isBihq: true }),
+  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+  Utilities: { getUuid: () => '12345678-1234-1234-1234-123456789abc' },
+  SpreadsheetApp: {
+    flush() {},
+    openById() {
+      return { getSheetByName: () => ({
+        getLastRow: () => stored.length,
+        getLastColumn: () => stored[0].length,
+        getRange(row, column, rows = 1, columns = 1) {
+          return {
+            getDisplayValues: () => Array.from({ length: rows }, (_, r) => Array.from({ length: columns }, (_, c) => stored[row - 1 + r]?.[column - 1 + c] || '')),
+            setValue(value) {
+              while (stored.length < row) stored.push(Array(stored[0].length).fill(''));
+              stored[row - 1][column - 1] = value;
+            }
+          };
+        }
+      }) };
+    }
+  }
+};
+vm.createContext(saveContext);
+new vm.Script(backend.slice(saveStart, saveEnd)).runInContext(saveContext);
+const saved = saveContext.saveStaffPerformanceIndicator('token', {
+  id: 'IND-BICP', outlet: 'BICP', category: 'Service', name: 'Upselling premium', status: 'Active',
+  target: '10', thresholdA: '9', thresholdB: '8', thresholdC: '7', thresholdD: '6', weights: { Waiter: 45 }
+});
+assert.equal(saved.success, true);
+assert.equal(stored[2][3], 'Upselling premium');
+assert.equal(stored[2][4], '{"Waiter":45}');
+saveContext.staffPerformanceContext_ = () => ({ isBihq: false });
+assert.throws(() => saveContext.saveStaffPerformanceIndicator('token', { category: 'X', name: 'Y' }), /Hanya pengguna BIHQ/);
+
 const html = await readFile('docs/staff-performance.html', 'utf8');
 const weightStart = html.indexOf('function indicatorWeightForPosition(');
 const weightEnd = html.indexOf('\n    function showToast(', weightStart);
@@ -54,4 +96,4 @@ assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"waiter":40}' }, ' 
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '25' }, 'Server'), 25);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"Server":60}' }, 'Waiter'), 0);
 
-console.log('OK: Staff Performance reads Config_Indicators and matches position weights safely.');
+console.log('OK: Staff Performance reads and BIHQ securely edits Config_Indicators, with safe position weights.');
