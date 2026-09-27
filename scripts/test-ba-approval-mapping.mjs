@@ -69,4 +69,51 @@ assert.match(pdfGenerator, /item\.Approval_1_Position/);
 assert.match(pdfGenerator, /item\.Approval_2_Position/);
 assert.doesNotMatch(pdfGenerator, /const isFnbFlow/);
 
-console.log('OK: dynamic BA approval mapping, skipped steps, EMP_LIST positions, and timeline are configured.');
+const authCalls = [];
+const authContext = {
+  BI_SPACE_API_URL: 'https://example.test/exec',
+  ScriptApp: { getOAuthToken: () => 'owner-token' },
+  console: { error() {} },
+  UrlFetchApp: {
+    fetch(url, options) {
+      authCalls.push({ url, options });
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => '<!DOCTYPE html><title>Sign in</title>',
+        getHeaders: () => ({ 'Content-Type': 'text/html' })
+      };
+    }
+  }
+};
+vm.createContext(authContext);
+vm.runInContext(extractFunction(backend, 'consumeBiSpaceHandoff_'), authContext);
+assert.throws(
+  () => authContext.consumeBiSpaceHandoff_('a'.repeat(64)),
+  /Validasi sesi BI-Space sedang tidak tersedia/
+);
+assert.equal(authCalls[0].options.headers.Authorization, 'Bearer owner-token');
+
+const cachedValues = new Map();
+const fallbackContext = {
+  BA_FORM_TYPES: ['Test'],
+  BA_FNB_FIRST_TYPES: [],
+  console: { warn() {} },
+  CacheService: {
+    getScriptCache: () => ({
+      get: key => cachedValues.get(key) || null,
+      put: (key, value, ttl) => cachedValues.set(key, `${value}|${ttl}`)
+    })
+  },
+  baCloudflareRequest_: () => {
+    throw new Error('Cloudflare BA Error (404): Endpoint tidak ditemukan.');
+  }
+};
+vm.createContext(fallbackContext);
+vm.runInContext(extractFunction(backend, 'baDefaultApprovalConfig_'), fallbackContext);
+vm.runInContext(extractFunction(backend, 'baApprovalConfigRows_'), fallbackContext);
+const fallbackRows = fallbackContext.baApprovalConfigRows_(true);
+assert.equal(fallbackRows.length, 1);
+assert.equal(fallbackRows[0].approval1, 'AREA MANAGER');
+assert.match(cachedValues.get('ba-approval-config-v1'), /\|30$/);
+
+console.log('OK: dynamic BA approval mapping, safe Cloudflare fallback, protected BI-Space handoff, skipped steps, EMP_LIST positions, and timeline are configured.');

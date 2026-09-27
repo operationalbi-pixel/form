@@ -190,6 +190,12 @@ function consumeBiSpaceHandoff_(handoff) {
       {
         method: 'post',
 
+        headers: {
+          Authorization:
+            'Bearer ' +
+            ScriptApp.getOAuthToken()
+        },
+
         payload: {
           mobilePayload:
             JSON.stringify({
@@ -212,11 +218,33 @@ function consumeBiSpaceHandoff_(handoff) {
     );
   }
 
-  const result =
-    JSON.parse(
+  const raw =
+    String(
       response.getContentText() ||
-      '{}'
+      ''
+    ).trim();
+
+  let result;
+
+  try {
+    result = JSON.parse(raw || '{}');
+  } catch (error) {
+    console.error(
+      'Validasi BI-Space mengembalikan respons non-JSON. ' +
+      'HTTP ' + response.getResponseCode() +
+      ', Content-Type: ' +
+      String(
+        response.getHeaders()['Content-Type'] ||
+        response.getHeaders()['content-type'] ||
+        '-'
+      )
     );
+
+    throw new Error(
+      'Validasi sesi BI-Space sedang tidak tersedia. ' +
+      'Silakan kembali ke BI-Space dan coba lagi beberapa saat.'
+    );
+  }
 
   if (
     !result.ok ||
@@ -731,11 +759,29 @@ function baApprovalConfigRows_(forceRefresh) {
     }
   );
 
-  const result =
-    baCloudflareRequest_(
-      'get',
-      '/v1/ba/approval-config'
+  let result;
+
+  try {
+    result =
+      baCloudflareRequest_(
+        'get',
+        '/v1/ba/approval-config'
+      );
+  } catch (error) {
+    console.warn(
+      'Konfigurasi approval Cloudflare belum tersedia; ' +
+      'menggunakan alur bawaan. ' +
+      (error && error.message ? error.message : error)
     );
+
+    cache.put(
+      cacheKey,
+      JSON.stringify(defaults),
+      30
+    );
+
+    return defaults;
+  }
 
   (result.data || []).forEach(
     function (row) {
