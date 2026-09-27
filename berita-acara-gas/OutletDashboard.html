@@ -355,6 +355,28 @@
     let currentPage = 1;
     const itemsPerPage = 10;
 
+    // Cloudflare mengirim Unix timestamp dalam detik. Browser Date memakai
+    // milidetik, jadi normalkan nilainya sebelum dipakai untuk tampilan/filter.
+    function parseBaTimestamp(value) {
+        if (value instanceof Date) return new Date(value.getTime());
+        const raw = String(value == null ? '' : value).trim();
+        if (!raw) return new Date(NaN);
+        if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+            const numeric = Number(raw);
+            return new Date(Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric);
+        }
+        return new Date(raw);
+    }
+
+    function formatBaTimestamp(value, includeTime = false) {
+        const date = parseBaTimestamp(value);
+        if (Number.isNaN(date.getTime())) return '-';
+        const options = includeTime
+            ? { timeZone: 'Asia/Jakarta', dateStyle: 'short', timeStyle: 'short' }
+            : { timeZone: 'Asia/Jakarta' };
+        return date.toLocaleString('id-ID', options);
+    }
+
     // --- SYSTEM INITIALIZATION ---
     function initializeDashboard(user) {
         window.userData = user;
@@ -566,7 +588,8 @@
 
             let matchDate = true;
             if (startDateVal || endDateVal) {
-                const itemDate = new Date(item.Timestamp);
+                const itemDate = parseBaTimestamp(item.Timestamp);
+                if (Number.isNaN(itemDate.getTime())) return false;
                 itemDate.setHours(0,0,0,0);
                 if (startDateVal) {
                     const start = new Date(startDateVal);
@@ -653,7 +676,7 @@
                 <td class="px-6 py-4">${infoText}</td>
 
                 <td class="px-6 py-4 font-medium text-gray-500">${row.Outlet}</td>
-                <td class="px-6 py-4 text-sm text-gray-600">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
+                <td class="px-6 py-4 text-sm text-gray-600">${formatBaTimestamp(row.Timestamp)}</td>
                 <td class="px-6 py-4 text-center"><span class="px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${statusColor} shadow-sm">${row.currentStatus}</span></td>
                 <td class="px-6 py-4 text-right"><button onclick="viewDetail('${row.Submission_ID}')" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition">Detail</button></td>
             </tr>
@@ -714,7 +737,7 @@
                     </div>
                     <div class="text-right">
                         <span class="inline-block px-2 py-1 bg-gray-100 rounded text-xs font-mono font-bold text-gray-600 mb-1">${item.Submission_ID}</span>
-                        <div class="text-gray-400 text-xs">${new Date(item.Timestamp).toLocaleString('id-ID')}</div>
+                        <div class="text-gray-400 text-xs">${formatBaTimestamp(item.Timestamp, true)}</div>
                     </div>
                 </div>
 

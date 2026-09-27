@@ -320,6 +320,29 @@
         'Discount Karyawan', 'Cancel Online', 'Penjualan & Dispose Asset'
     ];
 
+    // Cloudflare menyimpan waktu BA sebagai Unix timestamp (detik), sedangkan
+    // Date JavaScript mengharapkan milidetik. Tetap dukung nilai ISO/milidetik
+    // agar dokumen lama dan data dari Apps Script tetap kompatibel.
+    function parseBaTimestamp(value) {
+        if (value instanceof Date) return new Date(value.getTime());
+        const raw = String(value == null ? '' : value).trim();
+        if (!raw) return new Date(NaN);
+        if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+            const numeric = Number(raw);
+            return new Date(Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric);
+        }
+        return new Date(raw);
+    }
+
+    function formatBaTimestamp(value, includeTime = false) {
+        const date = parseBaTimestamp(value);
+        if (Number.isNaN(date.getTime())) return '-';
+        const options = includeTime
+            ? { timeZone: 'Asia/Jakarta', dateStyle: 'short', timeStyle: 'short' }
+            : { timeZone: 'Asia/Jakarta' };
+        return date.toLocaleString('id-ID', options);
+    }
+
     function initializeDashboard(user) {
         window.userData = user;
         document.getElementById('roleDisplay').textContent = user.POSITION;
@@ -436,7 +459,8 @@
             }
 
             if (fStart || fEnd) {
-                const itemDate = new Date(item.Timestamp);
+                const itemDate = parseBaTimestamp(item.Timestamp);
+                if (Number.isNaN(itemDate.getTime())) return false;
                 itemDate.setHours(0,0,0,0);
                 if (fStart) { const sDate = new Date(fStart); sDate.setHours(0,0,0,0); if (itemDate < sDate) return false; }
                 if (fEnd) { const eDate = new Date(fEnd); eDate.setHours(0,0,0,0); if (itemDate > eDate) return false; }
@@ -459,7 +483,9 @@
             const bNeedsAction = checkCanApprove(b, position);
             if (aNeedsAction && !bNeedsAction) return -1;
             if (!aNeedsAction && bNeedsAction) return 1;
-            return new Date(b.Timestamp) - new Date(a.Timestamp);
+            const bTime = parseBaTimestamp(b.Timestamp).getTime() || 0;
+            const aTime = parseBaTimestamp(a.Timestamp).getTime() || 0;
+            return bTime - aTime;
         });
 
         // 2. Simpan Full Data untuk Referensi
@@ -520,7 +546,7 @@
 
                 <td data-mobile-label="Outlet" class="px-6 py-4 text-slate-600 font-bold text-xs">${row.Outlet}</td>
                 <td data-mobile-label="Pembuat" class="px-6 py-4 text-slate-500 text-xs">${row.NAME}</td>
-                <td data-mobile-label="Tanggal" class="px-6 py-4 text-slate-400 text-xs font-mono">${new Date(row.Timestamp).toLocaleDateString('id-ID')}</td>
+                <td data-mobile-label="Tanggal" class="px-6 py-4 text-slate-400 text-xs font-mono">${formatBaTimestamp(row.Timestamp)}</td>
                 <td data-mobile-label="Detail" class="px-6 py-4 text-center">
                     <button onclick="showAppDetail(${absoluteIndex})" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
                 </td>
@@ -670,7 +696,7 @@
             <div class="absolute top-4 right-4 border-4 border-${color}-600 text-${color}-600 font-bold text-xl px-4 py-2 rounded transform -rotate-12 opacity-80 pointer-events-none z-10 text-center bg-white/80 backdrop-blur-sm shadow-sm">
                 ${text}<br>
                 <span class="text-xs text-black block mt-1">By: ${approverName}</span>
-                <span class="text-[10px] text-gray-600 block">${appDate ? new Date(appDate).toLocaleDateString('id-ID') : ''}</span>
+                <span class="text-[10px] text-gray-600 block">${appDate ? formatBaTimestamp(appDate) : ''}</span>
             </div>`;
         }
         
