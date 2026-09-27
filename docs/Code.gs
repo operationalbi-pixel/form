@@ -20,6 +20,8 @@ const CONFIG = Object.freeze({
   MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS',
   CHAT_SPREADSHEET_ID: '1-2UtuE33BtRu4xxAdKUvP69VlmYGhK9_Z-fMjEXE8ao',
   SALES_ANALYSIS_SPREADSHEET_ID: '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8',
+  STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID: '19A_QtC62JP6uQcCkQu0yUKTV60kuy2MfXIXKz7aVDSU',
+  STAFF_PERFORMANCE_INDICATOR_SHEET: 'Config_Indicators',
   STORE_CODE_SHEET: 'STORE CODE',
   STOCK_MASTER_SHEET: 'STOCK_ITEMS',
   STOCK_LOCATION_SHEET: 'STOCK_LOCATIONS',
@@ -6421,6 +6423,66 @@ function staffPerformanceMppStaffRows_() {
   }).filter(function (row) { return row.nik && row.name && row.outletCode; });
 }
 
+function staffPerformanceIndicatorRows_(requestedOutlet) {
+  const spreadsheetId = String(
+    PropertiesService.getScriptProperties().getProperty('STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID') ||
+    CONFIG.STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID
+  ).trim();
+  const sheetName = CONFIG.STAFF_PERFORMANCE_INDICATOR_SHEET;
+  let sheet;
+  try {
+    sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(sheetName);
+  } catch (error) {
+    throw new Error('Spreadsheet indikator Staff Performance tidak dapat diakses. Pastikan akun pemilik deployment memiliki izin ke spreadsheet ' + spreadsheetId + '. Detail: ' + String(error && error.message || error));
+  }
+  if (!sheet) throw new Error('Sheet ' + sheetName + ' tidak ditemukan pada database indikator Staff Performance.');
+  if (sheet.getLastRow() < 2) return [];
+
+  const values = sheet.getDataRange().getDisplayValues();
+  const headers = values.shift().map(function (value) {
+    return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+  });
+  function columnIndex_(aliases, legacyIndex) {
+    for (let i = 0; i < aliases.length; i++) {
+      const index = headers.indexOf(aliases[i]);
+      if (index >= 0) return index;
+    }
+    return legacyIndex;
+  }
+  const columns = {
+    id: columnIndex_(['ID_INDIKATOR', 'INDICATOR_ID', 'ID'], 0),
+    outlet: columnIndex_(['OUTLET', 'OUTLET_CODE', 'KODE_OUTLET'], 1),
+    category: columnIndex_(['KATEGORI', 'CATEGORY'], 2),
+    name: columnIndex_(['NAMA_INDIKATOR', 'INDIKATOR', 'INDICATOR_NAME'], 3),
+    weight: columnIndex_(['BOBOT', 'WEIGHT', 'WEIGHT_JSON'], 4),
+    target: columnIndex_(['TARGET'], 5),
+    thresholdA: columnIndex_(['BATAS_A', 'THRESHOLD_A'], 6),
+    thresholdB: columnIndex_(['BATAS_B', 'THRESHOLD_B'], 7),
+    thresholdC: columnIndex_(['BATAS_C', 'THRESHOLD_C'], 8),
+    thresholdD: columnIndex_(['BATAS_D', 'THRESHOLD_D'], 9),
+    status: columnIndex_(['STATUS'], 10)
+  };
+  const outlet = String(requestedOutlet || '').trim().toUpperCase();
+  return values.map(function (row) {
+    const rowOutlet = String(row[columns.outlet] || '').trim().toUpperCase();
+    return {
+      ID_Indikator: String(row[columns.id] || '').trim(),
+      Outlet: rowOutlet,
+      Kategori: String(row[columns.category] || '').trim(),
+      Nama_Indikator: String(row[columns.name] || '').trim(),
+      Bobot: String(row[columns.weight] || '').trim(),
+      Target: String(row[columns.target] || '').trim(),
+      Batas_A: String(row[columns.thresholdA] || '').trim(),
+      Batas_B: String(row[columns.thresholdB] || '').trim(),
+      Batas_C: String(row[columns.thresholdC] || '').trim(),
+      Batas_D: String(row[columns.thresholdD] || '').trim(),
+      Status: String(row[columns.status] || 'Active').trim() || 'Active'
+    };
+  }).filter(function (row) {
+    return row.ID_Indikator && row.Nama_Indikator && (!outlet || !row.Outlet || row.Outlet === outlet);
+  });
+}
+
 function syncStaffPerformanceStaffFromMpp_(force) {
   const cache = CacheService.getScriptCache(), cacheKey = 'staff-performance-mpp-sync-v1';
   if (!force && cache.get(cacheKey)) return { success: true, cached: true, source: 'MPP_EMP_LIST' };
@@ -6445,10 +6507,12 @@ function getStaffPerformanceBootstrap(token, requestedOutlet) {
     const context = staffPerformanceContext_(token, requestedOutlet);
     syncStaffPerformanceStaffFromMpp_(false);
     const data = staffPerformanceCloudflareData_('GET', '/v1/staff-performance/bootstrap?' + cloudflareQueryString_({ outlet: context.outlet }));
+    data.indicators = staffPerformanceIndicatorRows_(context.outlet);
     data.user = userView_(context.employee);
     data.selectedOutlet = context.outlet;
     data.role = context.isBihq ? 'All' : 'OUTLET';
     data.backend = 'CLOUDFLARE_D1';
+    data.indicatorSource = 'GOOGLE_SHEETS_CONFIG_INDICATORS';
     return data;
   });
 }
