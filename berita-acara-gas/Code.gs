@@ -49,6 +49,33 @@ const BA_FNB_FIRST_TYPES = [
   'Revisi Stock Opname'
 ];
 
+/**
+ * Jalankan sekali dari editor Apps Script setelah penambahan scope baru.
+ * Fungsi ini memicu layar izin Google Sheets untuk akun pemilik deployment.
+ */
+function authorizeBeritaAcaraServices() {
+  const spreadsheet =
+    SpreadsheetApp.openById(
+      BA_MPP_SPREADSHEET_ID
+    );
+  const sheet =
+    spreadsheet.getSheetByName(
+      BA_MPP_EMP_LIST_SHEET
+    );
+
+  if (!sheet) {
+    throw new Error(
+      'Sheet EMP_LIST Master Data MPP tidak ditemukan.'
+    );
+  }
+
+  return {
+    success: true,
+    spreadsheet: spreadsheet.getName(),
+    sheet: sheet.getName()
+  };
+}
+
 // --- BI-SPACE SINGLE SIGN-ON ---
 const BI_SPACE_API_URL =
   'https://script.google.com/macros/s/AKfycbw2_tBBWOn9Ld6QcCJBorJyZ06Lh1ZB_gEnIEqc76N7D2WWOv3trlGVqtIAqYml060_/exec';

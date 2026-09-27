@@ -860,6 +860,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!baBackend.includes('function requireBaSession_(')) failures.push('Operasi Berita Acara belum dilindungi sesi server-side');
   if (!baBackend.includes('function baResolveApprovalState_(') || !baBackend.includes('Current_Approval_Position')) failures.push('Alur approval Berita Acara belum memakai pemetaan dinamis');
   if (!baBackend.includes("BA_MPP_EMP_LIST_SHEET =\n  'EMP_LIST'") || !baBackend.includes('getRange(2, 5, lastRow - 1, 1)')) failures.push('Dropdown posisi approval belum berasal dari EMP_LIST kolom E');
+  if (!baBackend.includes('function authorizeBeritaAcaraServices()')) failures.push('Backend Berita Acara belum memiliki fungsi otorisasi satu kali untuk scope Spreadsheet');
   if (!baBackend.includes('function notifyBiSpaceBaEvent_(')) failures.push('Backend Berita Acara belum mengirim aktivitas ke push BI-Space');
   if (!baBackend.includes('function notifyCommittedBaEvent(') || !baBackend.includes("getRawLatestRow(\n      submissionId,\n      true")) failures.push('Approval Berita Acara belum memakai metadata-only dan notifikasi terverifikasi setelah commit');
   for (const kind of ['NEW', 'UPDATED', 'APPROVED', 'REJECTED']) {
@@ -886,6 +887,7 @@ for (const [ok, message] of transferAuditRequirements) {
   const baIndexPath = 'berita-acara-gas/Index.html';
   const baIndex = await text(baIndexPath);
   if (!baIndex.includes('initialBiSpaceUser')) failures.push('Berita Acara belum memuat identitas dari sesi BI-Space');
+  if (!baIndex.includes('font-awesome/6.0.0/css/all.min.css')) failures.push('Shell Berita Acara belum memuat ikon Font Awesome untuk tombol pemetaan approval');
   if (!baIndex.includes('function switchBaMode(')) failures.push('Mode Approval dan User Berita Acara belum dapat ditukar');
   if (/id=["'](?:nik|outlet|loginBtn)["']/.test(baIndex)) failures.push('Halaman login lama masih tampil pada Berita Acara');
   const approvalDashboard = await text('berita-acara-gas/ApprovalDashboard.html');
@@ -897,6 +899,8 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!approvalDashboard.includes('ba-approve-button')) failures.push('Tombol Approve belum dilindungi dari pemenggalan teks');
   if (!approvalDashboard.includes('function sendCommittedNotification(') || !approvalDashboard.includes("sendCommittedNotification(item.Submission_ID, 'APPROVED')") || !approvalDashboard.includes('.withFailureHandler(error =>')) failures.push('Approval Dashboard belum merespons cepat dan menangani kegagalan server');
   if (!approvalDashboard.includes('openApprovalSettings()') || !approvalDashboard.includes('Pemetaan Approval')) failures.push('Approval Dashboard belum memiliki pengaturan pemetaan approval');
+  if (!approvalDashboard.includes('fas fa-cog') || !/<div class="h-8 w-\[1px\][\s\S]*?<button onclick="openApprovalSettings\(\)"/.test(approvalDashboard)) failures.push('Ikon gerigi pemetaan approval belum terlihat di kanan garis vertikal');
+  if (!outletDashboard.includes('ba-user-toolbar') || !outletDashboard.includes('ba-user-filters') || !outletDashboard.includes('ba-user-history-table')) failures.push('Dashboard User Berita Acara belum memiliki toolbar dan tabel responsif yang rapi');
   if (!approvalDashboard.includes('function renderApprovalTimeline(') || !outletDashboard.includes('function renderApprovalTimeline(')) failures.push('Detail Berita Acara belum menampilkan timeline approval');
   if (!baResponsive.includes('.ba-approval-toolbar')) failures.push('Filter Approval belum memiliki tata letak mobile khusus');
   if (!baResponsive.includes('white-space: nowrap !important')) failures.push('Teks aksi Approval masih dapat melipat');
@@ -939,6 +943,7 @@ for (const [ok, message] of transferAuditRequirements) {
       ? baManifest.dependencies.enabledAdvancedServices
       : [];
     if (baScopes.some(scope => /bigquery/i.test(String(scope)))) failures.push('Manifest Berita Acara masih meminta OAuth scope BigQuery');
+    if (!baScopes.includes('https://www.googleapis.com/auth/spreadsheets')) failures.push('Manifest Berita Acara belum meminta izin Spreadsheet untuk membaca EMP_LIST');
     if (baServices.some(service => /bigquery/i.test(String(service.serviceId || service.userSymbol || '')))) failures.push('Manifest Berita Acara masih mengaktifkan Advanced Service BigQuery');
   } catch (error) {
     failures.push(`berita-acara-gas/appsscript.json: ${error.message}`);
@@ -956,6 +961,8 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!gasSetupScript.includes('function Test-NpxCandidate')) failures.push('Setup GAS belum memvalidasi instalasi Node.js/npx');
   if (!gasSetupScript.includes('c97fa376d2becdc8863fcd3ca2dd9a83a9f3468ee7ccf7a6d076ec66a645c77a')) failures.push('Unduhan Node.js portable belum dilindungi verifikasi SHA-256');
 }
+if (!apiClient.includes('function installBakerzinTypography()') || !apiClient.includes('--bakerzin-ui-font')) failures.push('Tipografi global Bakerzin Workspace belum dipasang melalui API client bersama');
+if (!(await text('docs/absensibreak.html')).includes('--sans: "Plus Jakarta Sans"')) failures.push('Absensi Break belum memakai tipografi Plus Jakarta Sans yang seragam');
 if (/['"]Transfer (?:In|Out)(?: Antar Outlet)?['"]\s*,\s*['"]['"]/.test(backend)) {
   failures.push('Masih ada transaksi Transfer In/Out otomatis yang dibuat dengan keterangan kosong');
 }

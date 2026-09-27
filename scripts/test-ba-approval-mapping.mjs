@@ -7,6 +7,7 @@ const dashboard = await readFile('berita-acara-gas/ApprovalDashboard.html', 'utf
 const outletDashboard = await readFile('berita-acara-gas/OutletDashboard.html', 'utf8');
 const pdfGenerator = await readFile('berita-acara-gas/PDFGenerator.html', 'utf8');
 const worker = await readFile('cloudflare/inventory-api/src/index.js', 'utf8');
+const manifest = JSON.parse(await readFile('berita-acara-gas/appsscript.json', 'utf8'));
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -63,6 +64,12 @@ assert.match(worker, /CREATE TABLE IF NOT EXISTS ba_approval_config/);
 assert.match(worker, /\/v1\/ba\/approval-config/);
 assert.match(backend, /getRange\(2, 5, lastRow - 1, 1\)/);
 assert.match(dashboard, /Pemetaan Approval/);
+assert.match(dashboard, /fas fa-cog/);
+assert.match(dashboard, /h-8 w-\[1px\][\s\S]*openApprovalSettings\(\)/);
+assert.match(outletDashboard, /ba-user-toolbar/);
+assert.match(outletDashboard, /ba-user-filters/);
+assert.match(outletDashboard, /ba-user-history-table/);
+assert.ok(manifest.oauthScopes.includes('https://www.googleapis.com/auth/spreadsheets'));
 assert.match(dashboard, /function renderApprovalTimeline\(/);
 assert.match(outletDashboard, /function renderApprovalTimeline\(/);
 assert.match(pdfGenerator, /item\.Approval_1_Position/);

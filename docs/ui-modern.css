@@ -1,11 +1,23 @@
 /* Bakerzin shared polish layer — intentionally additive to preserve existing UI behavior. */
 :root {
   color-scheme: light;
+  --bakerzin-ui-font: "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif;
   --ui-focus: rgba(159, 23, 43, .18);
   --ui-surface: rgba(255, 255, 255, .96);
   --ui-border: rgba(74, 52, 59, .12);
   --ui-shadow-sm: 0 8px 24px rgba(54, 35, 40, .06);
   --ui-shadow-lg: 0 24px 64px rgba(54, 35, 40, .14);
+}
+
+html,
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--bakerzin-ui-font);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 html {
