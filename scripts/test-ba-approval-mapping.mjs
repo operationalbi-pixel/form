@@ -50,6 +50,15 @@ assert.equal(state.currentStatus, 'Approved');
 assert.equal(state.timeline[1].status, 'SKIPPED');
 assert.equal(state.timeline[2].status, 'SKIPPED');
 
+state = context.baResolveApprovalState_({
+  ...base,
+  am_approved_date: '2026-09-20T08:00:00Z',
+  am_approved_by: 'Area Manager Lama'
+}, { Test: { approval1: 'AREA MANAGER', approval2: '' } });
+assert.equal(state.currentStatus, 'Approved');
+assert.equal(state.timeline[1].status, 'APPROVED');
+assert.equal(state.timeline[1].name, 'Area Manager Lama');
+
 assert.match(worker, /CREATE TABLE IF NOT EXISTS ba_approval_config/);
 assert.match(worker, /\/v1\/ba\/approval-config/);
 assert.match(backend, /getRange\(2, 5, lastRow - 1, 1\)/);

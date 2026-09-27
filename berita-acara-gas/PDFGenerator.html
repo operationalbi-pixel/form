@@ -741,17 +741,17 @@
                 doc.setDrawColor(150); doc.setLineWidth(0.1); doc.setTextColor(0);
 
                 const approvalSignatures = [];
-                if (item.Approval_1_Position) approvalSignatures.push({
-                    role: item.Approval_1_Position,
-                    name: item.FNB_Approved_By || item.FNB_Rejected_By,
-                    date: item.FNB_Approved_Date || item.FNB_Rejected_Date,
-                    status: item.FNB_Rejected_Date ? 'REJECTED' : (item.FNB_Approved_Date ? 'APPROVED' : null)
-                });
-                if (item.Approval_2_Position) approvalSignatures.push({
-                    role: item.Approval_2_Position,
-                    name: item.AM_Approved_By || item.AM_Rejected_By,
-                    date: item.AM_Approved_Date || item.AM_Rejected_Date,
-                    status: item.AM_Rejected_Date ? 'REJECTED' : (item.AM_Approved_Date ? 'APPROVED' : null)
+                const approvalTimeline = Array.isArray(item.Approval_Timeline) ? item.Approval_Timeline : [];
+                [1, 2].forEach(stepNumber => {
+                    const timelineStep = approvalTimeline.find(entry => Number(entry.step) === stepNumber);
+                    const role = stepNumber === 1 ? item.Approval_1_Position : item.Approval_2_Position;
+                    if (!role) return;
+                    approvalSignatures.push({
+                        role,
+                        name: timelineStep && timelineStep.name,
+                        date: timelineStep && timelineStep.at,
+                        status: timelineStep && (timelineStep.status === 'APPROVED' || timelineStep.status === 'REJECTED') ? timelineStep.status : null
+                    });
                 });
                 const signatureCount = approvalSignatures.length + 1;
                 const signatureGap = 5;

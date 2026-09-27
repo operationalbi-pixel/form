@@ -980,9 +980,26 @@ function baResolveApprovalState_(row, configMap) {
     String(config.approval1 || '').trim().toUpperCase();
   const approval2 =
     String(config.approval2 || '').trim().toUpperCase();
-  const rejected1 = !!row.fnb_rejected_date;
+  const useLegacyAmAsApproval1 =
+    approval1 === 'AREA MANAGER' &&
+    !approval2 &&
+    !row.fnb_approved_date &&
+    !row.fnb_rejected_date;
+  const approval1ApprovedDate =
+    row.fnb_approved_date ||
+    (useLegacyAmAsApproval1 ? row.am_approved_date : null);
+  const approval1RejectedDate =
+    row.fnb_rejected_date ||
+    (useLegacyAmAsApproval1 ? row.am_rejected_date : null);
+  const approval1ApprovedBy =
+    row.fnb_approved_by ||
+    (useLegacyAmAsApproval1 ? row.am_approved_by : null);
+  const approval1RejectedBy =
+    row.fnb_rejected_by ||
+    (useLegacyAmAsApproval1 ? row.am_rejected_by : null);
+  const rejected1 = !!approval1RejectedDate;
   const rejected2 = !!row.am_rejected_date;
-  const approved1 = !approval1 || !!row.fnb_approved_date;
+  const approved1 = !approval1 || !!approval1ApprovedDate;
   const approved2 = !approval2 || !!row.am_approved_date;
   let currentStatus = 'Approved';
   let currentPosition = '';
@@ -1020,10 +1037,10 @@ function baResolveApprovalState_(row, configMap) {
         label: approval1 ? 'Persetujuan 1' : 'Skipped',
         status: !approval1
           ? 'SKIPPED'
-          : (rejected1 ? 'REJECTED' : (row.fnb_approved_date ? 'APPROVED' : 'PENDING')),
-        name: row.fnb_approved_by || row.fnb_rejected_by || approval1 || '-',
+          : (rejected1 ? 'REJECTED' : (approval1ApprovedDate ? 'APPROVED' : 'PENDING')),
+        name: approval1ApprovedBy || approval1RejectedBy || approval1 || '-',
         position: approval1,
-        at: row.fnb_approved_date || row.fnb_rejected_date || null
+        at: approval1ApprovedDate || approval1RejectedDate || null
       },
       {
         step: 2,
