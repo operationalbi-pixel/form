@@ -858,14 +858,14 @@ for (const [ok, message] of transferAuditRequirements) {
   if (/\bBigQuery\.|BQ_PROJECT_ID|BQ_DATASET_ID|BQ_TABLE_ID|runBqQuery\s*\(|insertToBq\s*\(|berita-acara-digital|berita_acara_app/.test(baBackend)) failures.push('Backend Berita Acara masih memiliki akses atau fallback BigQuery');
   if (!/consumeBeritaAcaraHandoff/.test(baBackend)) failures.push('Backend Berita Acara belum memvalidasi handoff melalui EMP_LIST BI-Space');
   if (!baBackend.includes('function requireBaSession_(')) failures.push('Operasi Berita Acara belum dilindungi sesi server-side');
-  if (!/creatorPosition\s*===\s*['"]AREA MANAGER['"]/.test(baBackend)) failures.push('Dokumen buatan AREA MANAGER belum auto approve');
-  if (!/creatorPosition\s*===\s*['"]FNB['"]/.test(baBackend)) failures.push('Dokumen buatan FNB belum melewati tahap approval FNB otomatis');
+  if (!baBackend.includes('function baResolveApprovalState_(') || !baBackend.includes('Current_Approval_Position')) failures.push('Alur approval Berita Acara belum memakai pemetaan dinamis');
+  if (!baBackend.includes("BA_MPP_EMP_LIST_SHEET =\n  'EMP_LIST'") || !baBackend.includes('getRange(2, 5, lastRow - 1, 1)')) failures.push('Dropdown posisi approval belum berasal dari EMP_LIST kolom E');
   if (!baBackend.includes('function notifyBiSpaceBaEvent_(')) failures.push('Backend Berita Acara belum mengirim aktivitas ke push BI-Space');
   if (!baBackend.includes('function notifyCommittedBaEvent(') || !baBackend.includes("getRawLatestRow(\n      submissionId,\n      true")) failures.push('Approval Berita Acara belum memakai metadata-only dan notifikasi terverifikasi setelah commit');
   for (const kind of ['NEW', 'UPDATED', 'APPROVED', 'REJECTED']) {
     if (!new RegExp("kind\\s*:\\s*['\\\"]" + kind + "['\\\"]").test(baBackend)) failures.push(`Notifikasi Berita Acara belum mencakup ${kind}`);
   }
-  if (/SpreadsheetApp\.openById|USER_SHEET_NAME|USER_SS_ID/.test(baBackend)) failures.push('Backend Berita Acara masih memakai database login lama');
+  if (/USER_SHEET_NAME|USER_SS_ID/.test(baBackend)) failures.push('Backend Berita Acara masih memakai database login lama');
 
   const baMobileIndex = await text('berita-acara-gas/Index.html');
   const baResponsive = await text('berita-acara-gas/MobileResponsiveStyles.html');
@@ -896,6 +896,8 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!approvalDashboard.includes('ba-approval-table-wrap')) failures.push('Approval Dashboard belum memiliki pembungkus tabel khusus mobile');
   if (!approvalDashboard.includes('ba-approve-button')) failures.push('Tombol Approve belum dilindungi dari pemenggalan teks');
   if (!approvalDashboard.includes('function sendCommittedNotification(') || !approvalDashboard.includes("sendCommittedNotification(item.Submission_ID, 'APPROVED')") || !approvalDashboard.includes('.withFailureHandler(error =>')) failures.push('Approval Dashboard belum merespons cepat dan menangani kegagalan server');
+  if (!approvalDashboard.includes('openApprovalSettings()') || !approvalDashboard.includes('Pemetaan Approval')) failures.push('Approval Dashboard belum memiliki pengaturan pemetaan approval');
+  if (!approvalDashboard.includes('function renderApprovalTimeline(') || !outletDashboard.includes('function renderApprovalTimeline(')) failures.push('Detail Berita Acara belum menampilkan timeline approval');
   if (!baResponsive.includes('.ba-approval-toolbar')) failures.push('Filter Approval belum memiliki tata letak mobile khusus');
   if (!baResponsive.includes('white-space: nowrap !important')) failures.push('Teks aksi Approval masih dapat melipat');
   if (!baResponsive.includes('#appContainer .ba-mode-switch')) failures.push('Tombol pergantian mode belum memiliki layout mobile khusus');
