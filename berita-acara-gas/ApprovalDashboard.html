@@ -87,6 +87,9 @@
                         <div class="text-xs font-bold text-slate-700" id="approverName">Loading...</div>
                         <div class="text-[10px] text-slate-400 font-medium">Authorized Approver</div>
                     </div>
+                    <button onclick="openApprovalSettings()" class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700" title="Pemetaan approval" aria-label="Buka pemetaan approval">
+                        <i class="fa-solid fa-gear"></i>
+                    </button>
                     <div class="h-8 w-[1px] bg-slate-200 mx-1"></div>
                     <button onclick="window.location.reload()" class="text-slate-400 hover:text-red-600 transition p-2 rounded-full hover:bg-red-50" title="Logout">
                         <i class="fa-solid fa-power-off"></i>
@@ -292,6 +295,32 @@
         </div>
     </div>
 
+    <!-- APPROVAL MAPPING MODAL -->
+    <div id="approvalSettingsModal" class="fixed inset-0 z-[80] hidden items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+        <div class="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-5">
+                <div>
+                    <h3 class="text-lg font-extrabold text-slate-800">Pemetaan Approval</h3>
+                    <p class="mt-1 text-xs text-slate-500">Posisi bersumber dari EMP_LIST kolom E. Kolom kosong otomatis dilewati.</p>
+                </div>
+                <button onclick="closeApprovalSettings()" class="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 hover:bg-white hover:text-slate-700" aria-label="Tutup"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="overflow-auto p-6">
+                <div id="approvalSettingsState" class="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-700">Memuat pemetaan approval...</div>
+                <div id="approvalSettingsTableWrap" class="hidden overflow-hidden rounded-xl border border-slate-200">
+                    <table class="w-full min-w-[680px] text-left text-sm">
+                        <thead class="bg-slate-100 text-[11px] uppercase tracking-wider text-slate-500"><tr><th class="px-5 py-4">Nama Form / Berita Acara</th><th class="px-5 py-4">Approval 1</th><th class="px-5 py-4">Approval 2</th></tr></thead>
+                        <tbody id="approvalSettingsBody" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
+                <span id="approvalSettingsHint" class="text-xs text-slate-500"></span>
+                <div class="flex gap-3"><button onclick="closeApprovalSettings()" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600">Batal</button><button id="saveApprovalSettingsBtn" onclick="saveApprovalSettings()" class="rounded-lg bg-blue-700 px-5 py-2 text-xs font-bold text-white shadow-sm hover:bg-blue-800">Simpan Pemetaan</button></div>
+            </div>
+        </div>
+    </div>
+
     <!-- TOAST CONTAINER -->
     <div id="toast-container"></div>
 </div>
@@ -303,22 +332,34 @@
     let currentSelectedIndex = -1;
     let currentTab = 'need_action';
     let tempApproveIndex = -1; 
+    let approvalSettings = null;
     
     // --- PAGINATION VARIABLES ---
     let currentPage = 1;
     const itemsPerPage = 10;
 
-    // --- FLOW DEFINITIONS (SINKRON DENGAN BACKEND) ---
-    const FLOW_FNB_REQUIRED = [
-        'Waste Pcs To Pcs',
-        'Purchasing Non Supplier', 'Test Food', 'Revisi Stock Opname'
-    ];
-    
-    const FLOW_AM_ONLY = [
-        'KOL Foodies', 'Void', 'Konsumsi General Cleaning', 'Quotation', 'Invoice',
-        'Refund Customer', 'Komplain Customer', 'Minute of Meeting', 'Customer Entertain',
-        'Discount Karyawan', 'Cancel Online', 'Penjualan & Dispose Asset'
-    ];
+    // Cloudflare menyimpan waktu BA sebagai Unix timestamp (detik), sedangkan
+    // Date JavaScript mengharapkan milidetik. Tetap dukung nilai ISO/milidetik
+    // agar dokumen lama dan data dari Apps Script tetap kompatibel.
+    function parseBaTimestamp(value) {
+        if (value instanceof Date) return new Date(value.getTime());
+        const raw = String(value == null ? '' : value).trim();
+        if (!raw) return new Date(NaN);
+        if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+            const numeric = Number(raw);
+            return new Date(Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric);
+        }
+        return new Date(raw);
+    }
+
+    function formatBaTimestamp(value, includeTime = false) {
+        const date = parseBaTimestamp(value);
+        if (Number.isNaN(date.getTime())) return '-';
+        const options = includeTime
+            ? { timeZone: 'Asia/Jakarta', dateStyle: 'short', timeStyle: 'short' }
+            : { timeZone: 'Asia/Jakarta' };
+        return date.toLocaleString('id-ID', options);
+    }
 
     // Cloudflare menyimpan waktu BA sebagai Unix timestamp (detik), sedangkan
     // Date JavaScript mengharapkan milidetik. Tetap dukung nilai ISO/milidetik
@@ -350,6 +391,83 @@
         loadData();
     }
 
+    function escapeBaHtml(value) {
+        return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    }
+
+    function openApprovalSettings() {
+        const modal = document.getElementById('approvalSettingsModal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        document.getElementById('approvalSettingsState').classList.remove('hidden');
+        document.getElementById('approvalSettingsTableWrap').classList.add('hidden');
+        google.script.run
+            .withSuccessHandler(renderApprovalSettings)
+            .withFailureHandler(error => {
+                const state = document.getElementById('approvalSettingsState');
+                state.className = 'rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-700';
+                state.textContent = error && error.message ? error.message : 'Pemetaan approval gagal dimuat.';
+            })
+            .getBaApprovalSettings(window.userData);
+    }
+
+    function closeApprovalSettings() {
+        const modal = document.getElementById('approvalSettingsModal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+
+    function renderApprovalSettings(settings) {
+        approvalSettings = settings;
+        const state = document.getElementById('approvalSettingsState');
+        const wrap = document.getElementById('approvalSettingsTableWrap');
+        const save = document.getElementById('saveApprovalSettingsBtn');
+        const positions = settings.positions || [];
+        const options = ['<option value="">— Lewati / Skipped —</option>'].concat(positions.map(position => `<option value="${escapeBaHtml(position)}">${escapeBaHtml(position)}</option>`)).join('');
+        document.getElementById('approvalSettingsBody').innerHTML = (settings.rows || []).map((row, index) => `
+            <tr class="bg-white hover:bg-slate-50/70">
+                <td class="px-5 py-3 font-semibold text-slate-700">${escapeBaHtml(row.baType)}</td>
+                <td class="px-5 py-3"><select data-approval-index="${index}" data-approval-step="1" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" ${settings.canEdit ? '' : 'disabled'}>${options}</select></td>
+                <td class="px-5 py-3"><select data-approval-index="${index}" data-approval-step="2" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" ${settings.canEdit ? '' : 'disabled'}>${options}</select></td>
+            </tr>`).join('');
+        (settings.rows || []).forEach((row, index) => {
+            const first = document.querySelector(`[data-approval-index="${index}"][data-approval-step="1"]`);
+            const second = document.querySelector(`[data-approval-index="${index}"][data-approval-step="2"]`);
+            if (first) first.value = row.approval1 || '';
+            if (second) second.value = row.approval2 || '';
+        });
+        state.classList.add('hidden');
+        wrap.classList.remove('hidden');
+        save.classList.toggle('hidden', !settings.canEdit);
+        document.getElementById('approvalSettingsHint').textContent = settings.canEdit ? 'Perubahan berlaku untuk dokumen berikutnya dan dokumen yang masih menunggu.' : 'Mode lihat saja. Hanya Area Manager yang dapat mengubah pemetaan.';
+    }
+
+    function saveApprovalSettings() {
+        if (!approvalSettings || !approvalSettings.canEdit) return;
+        const rows = (approvalSettings.rows || []).map((row, index) => ({
+            baType: row.baType,
+            approval1: document.querySelector(`[data-approval-index="${index}"][data-approval-step="1"]`).value,
+            approval2: document.querySelector(`[data-approval-index="${index}"][data-approval-step="2"]`).value
+        }));
+        const button = document.getElementById('saveApprovalSettingsBtn');
+        button.disabled = true;
+        button.textContent = 'Menyimpan...';
+        google.script.run
+            .withSuccessHandler(() => {
+                button.disabled = false;
+                button.textContent = 'Simpan Pemetaan';
+                closeApprovalSettings();
+                showToast('Pemetaan approval berhasil disimpan.');
+                loadData();
+            })
+            .withFailureHandler(error => {
+                button.disabled = false;
+                button.textContent = 'Simpan Pemetaan';
+                showToast(error && error.message ? error.message : 'Pemetaan gagal disimpan.', 'error');
+            })
+            .saveBaApprovalSettings(rows, window.userData);
+    }
+
     // --- DATA FETCHING (SAFE LOAD) ---
     function loadData() {
         document.getElementById('approvalBody').innerHTML = '<tr><td colspan="8" class="text-center py-20"><div class="flex flex-col items-center justify-center"><i class="fas fa-circle-notch fa-spin text-blue-600 text-3xl mb-4"></i><span class="text-slate-500 font-medium">Sedang memuat data...</span></div></td></tr>';
@@ -378,14 +496,10 @@
         const user = window.userData;
         const position = (user.POSITION || '').toUpperCase().trim();
         
-        const relevantData = data.filter(ba => {
-            const isAmFlow = [...FLOW_AM_ONLY, ...FLOW_FNB_REQUIRED];
-            const isFnbFlow = FLOW_FNB_REQUIRED;
-
-            if (position === 'AREA MANAGER') return isAmFlow.includes(ba.type);
-            if (position === 'FNB') return isFnbFlow.includes(ba.type);
-            return false;
-        });
+        const relevantData = data.filter(ba =>
+            String(ba.Approval_1_Position || '').toUpperCase() === position ||
+            String(ba.Approval_2_Position || '').toUpperCase() === position
+        );
 
         originalData = relevantData;
         updateNeedActionBadge(relevantData, position);
@@ -592,46 +706,18 @@
 
     // --- Helper Checks (Approval Logic) ---
     function checkIsApprovedByMe(ba, position) {
-        if (position === 'AREA MANAGER') return !!ba.AM_Approved_Date;
-        if (position === 'FNB') return !!ba.FNB_Approved_Date;
-        return false;
+        const normalized = String(position || '').toUpperCase();
+        return (String(ba.Approval_1_Position || '').toUpperCase() === normalized && !!ba.FNB_Approved_Date) ||
+            (String(ba.Approval_2_Position || '').toUpperCase() === normalized && !!ba.AM_Approved_Date);
     }
     
     function checkCanReject(ba, position) {
-        // PERBAIKAN LOGIKA REJECT BUTTON: 
-        // Izinkan Reject jika dokumen belum selesai (belum ada rejected global)
-        // Dan user belum melakukan aksi (Approve/Reject)
-        if (ba.currentStatus === 'Rejected') return false; 
-        
-        const isFnbFlow = FLOW_FNB_REQUIRED;
-        if (position === 'AREA MANAGER') {
-            if (!isFnbFlow.includes(ba.type)) return !ba.AM_Rejected_Date && !ba.AM_Approved_Date;
-            if (isFnbFlow.includes(ba.type)) {
-                // Untuk FNB Flow: AM hanya bisa reject JIKA FNB sudah approve, DAN AM belum reject/approve
-                return !!ba.FNB_Approved_Date && !ba.AM_Rejected_Date && !ba.AM_Approved_Date;
-            }
-        }
-        
-        if (position === 'FNB') {
-            if (isFnbFlow.includes(ba.type)) return !ba.FNB_Rejected_Date && !ba.FNB_Approved_Date;
-        }
-        return false;
+        if (ba.currentStatus === 'Rejected' || ba.currentStatus === 'Approved') return false;
+        return String(ba.Current_Approval_Position || '').toUpperCase() === String(position || '').toUpperCase();
     }
 
     function checkCanApprove(ba, position) {
-        if (checkIsApprovedByMe(ba, position)) return false;
-        if (ba.currentStatus === 'Rejected') return false; 
-        
-        const isFnbFlow = FLOW_FNB_REQUIRED;
-        if (position === 'AREA MANAGER') {
-            if (!isFnbFlow.includes(ba.type)) return !ba.AM_Rejected_Date;
-            if (isFnbFlow.includes(ba.type)) return !!ba.FNB_Approved_Date && !ba.AM_Rejected_Date;
-        }
-        
-        if (position === 'FNB') {
-            if (isFnbFlow.includes(ba.type)) return !ba.FNB_Rejected_Date;
-        }
-        return false;
+        return checkCanReject(ba, position);
     }
 
     // --- Detail & Modal Logic (FETCH ON DEMAND) ---
@@ -657,6 +743,30 @@
                 container.innerHTML = `<div class="text-red-500 text-center p-4">Gagal memuat detail data.<br>Error: ${error.message}</div>`;
             })
             .getSubmissionDetail(itemLite.Submission_ID);
+    }
+
+    function renderApprovalTimeline(item) {
+        const timeline = Array.isArray(item.Approval_Timeline) ? item.Approval_Timeline : [];
+        if (!timeline.length) return '';
+        return `<div class="overflow-x-auto rounded-xl border border-slate-200 bg-white p-5">
+            <div class="grid min-w-[620px] grid-cols-3">
+                ${timeline.map((entry, index) => {
+                    const done = entry.status === 'COMPLETED' || entry.status === 'APPROVED';
+                    const rejected = entry.status === 'REJECTED';
+                    const skipped = entry.status === 'SKIPPED';
+                    const dotClass = done ? 'bg-emerald-500 text-white' : (rejected ? 'bg-red-500 text-white' : (skipped ? 'bg-slate-300 text-white' : 'border-2 border-amber-400 bg-white text-amber-500'));
+                    const icon = done ? '<i class="fa-solid fa-check"></i>' : (rejected ? '<i class="fa-solid fa-xmark"></i>' : (skipped ? '<i class="fa-solid fa-forward-step"></i>' : '<span class="h-2 w-2 rounded-full bg-amber-400"></span>'));
+                    const title = entry.status === 'APPROVED' ? 'Disetujui' : (entry.status === 'REJECTED' ? 'Ditolak' : (entry.status === 'PENDING' ? 'Menunggu Persetujuan' : entry.label));
+                    return `<div class="relative px-3 text-center">
+                        ${index ? `<div class="absolute right-1/2 top-4 h-0.5 w-full ${done || rejected ? 'bg-emerald-300' : 'bg-slate-200'}"></div>` : ''}
+                        <div class="relative z-10 mx-auto flex h-9 w-9 items-center justify-center rounded-full ${dotClass}">${icon}</div>
+                        <div class="mt-3 text-xs font-extrabold text-slate-700">${escapeBaHtml(title)}</div>
+                        <div class="mt-1 text-xs font-semibold text-slate-600">${escapeBaHtml(entry.name || entry.position || '-')}</div>
+                        <div class="mt-1 text-[10px] text-slate-400">${entry.at ? formatBaTimestamp(entry.at, true) : (skipped ? 'Tidak diperlukan' : 'Belum diproses')}</div>
+                    </div>`;
+                }).join('')}
+            </div>
+        </div>`;
     }
 
     function renderFullDetail(item) {
@@ -804,6 +914,8 @@
                     </div>
                 </div>
                 ${stampHTML}
+
+                ${renderApprovalTimeline(item)}
 
                 <div class="grid grid-cols-2 gap-4 bg-blue-50 p-4 rounded border border-blue-100 text-xs">
                     <div><span class="block font-bold text-gray-400">NAMA</span><span class="font-bold text-gray-900 text-sm uppercase border-b border-gray-300 block w-full pb-1">${item.NAME}</span></div>
@@ -1129,24 +1241,34 @@
         // Find and update item in originalData
         const item = originalData.find(x => x.Submission_ID === submissionId);
         if (item) {
+            const currentStep = Number(item.Current_Approval_Step || 0);
             if (newStatus === 'Approved') {
-                if (userPos === 'AREA MANAGER') {
-                    item.AM_Approved_Date = now;
-                    item.AM_Approved_By = userName;
-                } else if (userPos === 'FNB') {
+                if (currentStep === 1) {
                     item.FNB_Approved_Date = now;
                     item.FNB_Approved_By = userName;
+                } else if (currentStep === 2) {
+                    item.AM_Approved_Date = now;
+                    item.AM_Approved_By = userName;
                 }
-                // We update currentStatus visually, though logic relies on Dates
-                item.currentStatus = 'Approved'; 
+                if (currentStep === 1 && item.Approval_2_Position) {
+                    item.Current_Approval_Step = 2;
+                    item.Current_Approval_Position = item.Approval_2_Position;
+                    item.currentStatus = `Menunggu Approval ${item.Approval_2_Position}`;
+                } else {
+                    item.Current_Approval_Step = 0;
+                    item.Current_Approval_Position = '';
+                    item.currentStatus = 'Approved';
+                }
             } else if (newStatus === 'Rejected') {
-                if (userPos === 'AREA MANAGER') {
-                    item.AM_Rejected_Date = now;
-                    item.AM_Rejected_By = userName;
-                } else if (userPos === 'FNB') {
+                if (currentStep === 1) {
                     item.FNB_Rejected_Date = now;
                     item.FNB_Rejected_By = userName;
+                } else if (currentStep === 2) {
+                    item.AM_Rejected_Date = now;
+                    item.AM_Rejected_By = userName;
                 }
+                item.Current_Approval_Step = 0;
+                item.Current_Approval_Position = '';
                 item.currentStatus = 'Rejected';
             }
         }
