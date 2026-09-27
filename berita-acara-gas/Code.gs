@@ -448,6 +448,106 @@ function notifyBiSpaceBaEvent_(
   }
 }
 
+/**
+ * Verifies the committed decision, then sends its BI-Space notification.
+ * The browser invokes this after a successful write so delivery does not delay the approval response.
+ */
+function notifyCommittedBaEvent(
+  submissionId,
+  kind,
+  userData
+) {
+  const trustedUser =
+    requireBaSession_(
+      userData &&
+      userData.BA_SESSION
+    );
+
+  kind =
+    String(kind || '')
+      .trim()
+      .toUpperCase();
+
+  if (kind !== 'APPROVED' && kind !== 'REJECTED') {
+    throw new Error('Jenis notifikasi tidak valid.');
+  }
+
+  const row =
+    getRawLatestRow(
+      submissionId,
+      true
+    );
+
+  if (!row) {
+    throw new Error('Dokumen untuk notifikasi tidak ditemukan.');
+  }
+
+  const position =
+    String(trustedUser.POSITION || '')
+      .trim()
+      .toUpperCase();
+
+  const actor =
+    String(trustedUser.NAME || '')
+      .trim()
+      .toUpperCase();
+
+  const committedBy =
+    position === 'FNB'
+      ? (kind === 'APPROVED' ? row.fnb_approved_by : row.fnb_rejected_by)
+      : (kind === 'APPROVED' ? row.am_approved_by : row.am_rejected_by);
+
+  const committedAt =
+    position === 'FNB'
+      ? (kind === 'APPROVED' ? row.fnb_approved_date : row.fnb_rejected_date)
+      : (kind === 'APPROVED' ? row.am_approved_date : row.am_rejected_date);
+
+  if (
+    (position !== 'FNB' && position !== 'AREA MANAGER') ||
+    String(committedBy || '').trim().toUpperCase() !== actor
+  ) {
+    throw new Error('Notifikasi ditolak karena keputusan belum terverifikasi.');
+  }
+
+  const notificationCache = CacheService.getScriptCache();
+  const notificationKey = (
+    'ba-notify:' + kind + ':' + submissionId + ':' + String(committedAt || '')
+  ).slice(0, 240);
+
+  if (notificationCache.get(notificationKey)) {
+    return { success: true, deduplicated: true };
+  }
+
+  const state =
+    baNotificationState_(row);
+
+  const event =
+    kind === 'APPROVED'
+      ? { kind: 'APPROVED' }
+      : { kind: 'REJECTED' };
+
+  Object.assign(
+    event,
+    {
+      submissionId: submissionId,
+      baType: row.ba_type,
+      outlet: row.outlet,
+      ownerNik: row.nik,
+      status: state.status,
+      nextApproval: state.nextApproval
+    }
+  );
+
+  const result = notifyBiSpaceBaEvent_(
+    trustedUser,
+    event
+  );
+
+  notificationCache.put(notificationKey, '1', 21600);
+
+  return { success: true, notification: result };
+}
+
 // ==========================================
 // CLOUDFLARE-ONLY HELPER
 // ==========================================
@@ -790,7 +890,8 @@ function baCloudflareRowId_(row) {
 }
 
 function getRawLatestRow(
-  submissionId
+  submissionId,
+  metadataOnly
 ) {
   submissionId =
     String(
@@ -808,7 +909,8 @@ function getRawLatestRow(
       '/v1/ba/submission?submission_id=' +
       encodeURIComponent(
         submissionId
-      )
+      ) +
+      (metadataOnly ? '&metadata_only=1' : '')
     );
 
   return result.data ||
@@ -2002,7 +2104,8 @@ function approveBa(
 
   const oldRow =
     getRawLatestRow(
-      submissionId
+      submissionId,
+      true
     );
 
   if (!oldRow) {
@@ -2041,7 +2144,6 @@ function approveBa(
     );
 
   delete newRow.row_id;
-  delete newRow.data_object_key;
   delete newRow.created_at;
   delete newRow.rn;
 
@@ -2126,39 +2228,9 @@ function approveBa(
       newRow
     );
 
-    const approvedState =
-      baNotificationState_(
-        newRow
-      );
-
-    notifyBiSpaceBaEvent_(
-      trustedUser,
-      {
-        kind:
-          'APPROVED',
-
-        submissionId:
-          submissionId,
-
-        baType:
-          newRow.ba_type,
-
-        outlet:
-          newRow.outlet,
-
-        ownerNik:
-          newRow.nik,
-
-        status:
-          approvedState.status,
-
-        nextApproval:
-          approvedState.nextApproval
-      }
-    );
-
     return {
       success: true,
+      notificationPending: true,
       message:
         'Berhasil Disetujui (Cloudflare)!'
     };
@@ -2201,7 +2273,8 @@ function rejectBa(
 
   const oldRow =
     getRawLatestRow(
-      submissionId
+      submissionId,
+      true
     );
 
   if (!oldRow) {
@@ -2219,7 +2292,6 @@ function rejectBa(
     );
 
   delete newRow.row_id;
-  delete newRow.data_object_key;
   delete newRow.created_at;
   delete newRow.rn;
 
@@ -2285,39 +2357,9 @@ function rejectBa(
       newRow
     );
 
-    const rejectedState =
-      baNotificationState_(
-        newRow
-      );
-
-    notifyBiSpaceBaEvent_(
-      trustedUser,
-      {
-        kind:
-          'REJECTED',
-
-        submissionId:
-          submissionId,
-
-        baType:
-          newRow.ba_type,
-
-        outlet:
-          newRow.outlet,
-
-        ownerNik:
-          newRow.nik,
-
-        status:
-          rejectedState.status,
-
-        nextApproval:
-          rejectedState.nextApproval
-      }
-    );
-
     return {
       success: true,
+      notificationPending: true,
       message:
         'Berhasil Ditolak (Cloudflare)!'
     };

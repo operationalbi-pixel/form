@@ -1509,6 +1509,14 @@ function baObjectKey(rowId) {
 }
 __name(baObjectKey, "baObjectKey");
 
+function baReusableObjectKey(value) {
+  const objectKey = baNullableText(value, 500);
+  if (!objectKey) return null;
+  if (!/^berita-acara\/submissions\/[a-zA-Z0-9._-]+\.json$/.test(objectKey)) throw new Error("INVALID_BA_OBJECT_KEY");
+  return objectKey;
+}
+__name(baReusableObjectKey, "baReusableObjectKey");
+
 async function baStorePayloadInR2(env, rowId, dataJson) {
   if (!env.FILES) throw new Error("R2_FILES_BINDING_NOT_AVAILABLE");
   if (dataJson === null || dataJson === void 0 || dataJson === "") return null;
@@ -1604,7 +1612,9 @@ async function migrateBeritaAcaraSubmissions(request, env, requestId) {
     for (const raw of rows) {
       const row = raw || {};
       const rowId = baRequiredText(row.row_id ?? row.rowId, "row_id", 200);
-      const objectKey = await baStorePayloadInR2(env, rowId, row.data_json);
+      const objectKey = row.data_json !== null && row.data_json !== void 0 && row.data_json !== ""
+        ? await baStorePayloadInR2(env, rowId, row.data_json)
+        : baReusableObjectKey(row.data_object_key ?? row.dataObjectKey);
       statements2.push(baInsertStatement(env.OPERATIONS_DB, row, objectKey));
     }
     const written = await runStatementBatches(env.OPERATIONS_DB, statements2);
@@ -1739,8 +1749,16 @@ async function getBeritaAcaraSubmission(url, env, requestId) {
   const submissionId = cleanText(url.searchParams.get("submission_id"), 160);
   if (!submissionId) return apiError(400, "INVALID_SUBMISSION_ID", "submission_id wajib diisi.", requestId);
 
+  const metadataOnly = cleanText(url.searchParams.get("metadata_only"), 5) === "1";
+  const selectedColumns = metadataOnly
+    ? `row_id, submission_id, timestamp, outlet, name, nik, ba_type, info, data_object_key,
+       am_approved_date, am_approved_by, am_rejected_date, am_rejected_by, am_reject_reason,
+       fnb_approved_date, fnb_approved_by, fnb_rejected_date, fnb_rejected_by, fnb_reject_reason,
+       migrated_from, created_at`
+    : "*";
+
   const row = await env.OPERATIONS_DB.prepare(
-    `SELECT * FROM ba_submissions
+    `SELECT ${selectedColumns} FROM ba_submissions
       WHERE submission_id = ?
       ORDER BY timestamp DESC, row_id DESC
       LIMIT 1`
@@ -1749,9 +1767,9 @@ async function getBeritaAcaraSubmission(url, env, requestId) {
   if (!row) return responseJson({ ok: true, data: null, requestId });
 
   let dataJson = row.data_json || null;
-  if (!dataJson && row.data_object_key) dataJson = await baReadPayloadFromR2(env, row.data_object_key);
+  if (!metadataOnly && !dataJson && row.data_object_key) dataJson = await baReadPayloadFromR2(env, row.data_object_key);
 
-  return responseJson({ ok: true, data: { ...row, data_json: dataJson }, requestId });
+  return responseJson({ ok: true, data: { ...row, data_json: metadataOnly ? null : dataJson }, metadataOnly, requestId });
 }
 __name(getBeritaAcaraSubmission, "getBeritaAcaraSubmission");
 
@@ -2441,6 +2459,7 @@ var index_default = {
   }
 };
 export {
+  baReusableObjectKey,
   buildCurrentShowcaseSummary,
   buildShowcaseSummary,
   index_default as default,

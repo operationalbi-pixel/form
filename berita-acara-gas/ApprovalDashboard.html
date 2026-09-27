@@ -970,6 +970,12 @@
         }, 3000);
     }
 
+    function sendCommittedNotification(submissionId, kind) {
+        google.script.run
+            .withFailureHandler(error => console.warn('Notifikasi BA ditunda:', error && error.message ? error.message : error))
+            .notifyCommittedBaEvent(submissionId, kind, window.userData);
+    }
+
     function toggleProcessing(isProcessing, action, skipReload = false) {
         const btnApprove = document.getElementById('modalApproveBtn');
         const btnReject = document.getElementById('modalRejectBtn');
@@ -1016,10 +1022,14 @@
                 updateLocalData(item.Submission_ID, 'Approved');
                 toggleProcessing(false, 'approve', true); 
                 showToast(`Dokumen ${item.Submission_ID} berhasil disetujui.`);
+                sendCommittedNotification(item.Submission_ID, 'APPROVED');
             } else {
                 showToast(res.message, 'error');
                 toggleProcessing(false, 'approve'); 
             }
+        }).withFailureHandler(error => {
+            showToast(error && error.message ? error.message : 'Persetujuan gagal diproses.', 'error');
+            toggleProcessing(false, 'approve');
         }).approveBa(item.sheetName, item.rowNumber, window.userData.NAME, window.userData.POSITION, window.userData);
     }
     
@@ -1073,10 +1083,14 @@
                 updateLocalData(item.Submission_ID, 'Rejected', reason);
                 toggleProcessing(false, 'reject', true);
                 showToast(`Dokumen ${item.Submission_ID} ditolak.`, 'error');
+                sendCommittedNotification(item.Submission_ID, 'REJECTED');
             } else {
                 showToast(res.message, 'error');
                 toggleProcessing(false, 'reject');
             }
+        }).withFailureHandler(error => {
+            showToast(error && error.message ? error.message : 'Penolakan gagal diproses.', 'error');
+            toggleProcessing(false, 'reject');
         }).rejectBa(item.sheetName, item.rowNumber, window.userData.NAME, window.userData.POSITION, reason, window.userData);
     }
 
@@ -1124,10 +1138,6 @@
         const btnContainer = document.getElementById('modalActions');
         btnContainer.innerHTML = '<span class="text-blue-600 font-bold animate-pulse text-xs">Sedang memproses...</span>';
 
-        const run = status === 'Approved' 
-            ? google.script.run.withSuccessHandler(done).approveBa(id, 0, userName, userPos, window.userData)
-            : google.script.run.withSuccessHandler(done).rejectBa(id, 0, userName, userPos, reason, window.userData);
-
         function done(res) {
             if(res.success) {
                 // Update Local Data (Optimistic)
@@ -1139,6 +1149,7 @@
                 
                 // CHANGE: Use showToast instead of alert
                 showToast(status === 'Approved' ? "Dokumen berhasil disetujui!" : "Dokumen berhasil ditolak.");
+                sendCommittedNotification(id, status === 'Approved' ? 'APPROVED' : 'REJECTED');
                 
                 if(status === 'Rejected') closeRejectModal();
                 closeModal();
@@ -1151,6 +1162,15 @@
                 closeModal(); // Force close to reset state
             }
         }
+
+        const runner = google.script.run
+            .withSuccessHandler(done)
+            .withFailureHandler(error => {
+                showToast(error && error.message ? error.message : 'Keputusan gagal diproses.', 'error');
+                closeModal();
+            });
+        if(status === 'Approved') runner.approveBa(id, 0, userName, userPos, window.userData);
+        else runner.rejectBa(id, 0, userName, userPos, reason, window.userData);
     }
 
     function openRejectModal() { document.getElementById('rejectModal').classList.remove('hidden'); }
