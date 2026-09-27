@@ -43,6 +43,25 @@
         
         /* Table Styling */
         .table-head-fixed { position: sticky; top: 0; z-index: 10; background-color: #f8fafc; }
+
+        @media (min-width: 901px) {
+            .ba-approval-table { width: 100%; table-layout: fixed; }
+            .ba-approval-table th,
+            .ba-approval-table td { padding: .8rem .75rem; overflow-wrap: anywhere; }
+            .ba-approval-table th { white-space: nowrap; }
+            .ba-approval-table th:nth-child(1) { width: 10%; }
+            .ba-approval-table th:nth-child(2) { width: 17%; }
+            .ba-approval-table th:nth-child(3) { width: 16%; }
+            .ba-approval-table th:nth-child(4) { width: 8%; }
+            .ba-approval-table th:nth-child(5) { width: 13%; }
+            .ba-approval-table th:nth-child(6) { width: 13%; }
+            .ba-approval-table th:nth-child(7) { width: 9%; }
+            .ba-approval-table th:nth-child(8) { width: 14%; }
+            .ba-approval-table td:nth-child(4),
+            .ba-approval-table td:nth-child(7),
+            .ba-approval-table td:nth-child(7) button,
+            .ba-approval-table td:nth-child(8) > * { white-space: nowrap; }
+        }
         
         /* Input Focus Ring Custom */
         .focus-ring { transition: box-shadow 0.2s; }
@@ -658,11 +677,11 @@
                 <!-- NEW COLUMN: INFO -->
                 <td data-mobile-label="Info" class="px-6 py-4 text-xs text-slate-600 font-medium break-words max-w-[200px] bg-slate-50/50 border-x border-slate-50">${row.info || '-'}</td>
 
-                <td data-mobile-label="Outlet" class="px-6 py-4 text-slate-600 font-bold text-xs">${row.Outlet}</td>
+                <td data-mobile-label="Outlet" class="px-6 py-4 text-slate-600 font-bold text-xs whitespace-nowrap">${row.Outlet}</td>
                 <td data-mobile-label="Pembuat" class="px-6 py-4 text-slate-500 text-xs">${row.NAME}</td>
                 <td data-mobile-label="Tanggal" class="px-6 py-4 text-slate-400 text-xs font-mono">${formatBaTimestamp(row.Timestamp)}</td>
                 <td data-mobile-label="Detail" class="px-6 py-4 text-center">
-                    <button onclick="showAppDetail(${absoluteIndex})" class="text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
+                    <button onclick="showAppDetail(${absoluteIndex})" class="ba-detail-button whitespace-nowrap text-blue-600 hover:text-blue-800 font-bold text-xs bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Detail</button>
                 </td>
                 <td data-mobile-label="Status" class="ba-approval-status px-6 py-4 text-center min-w-[10rem]">${statusBadge}</td>
             </tr>

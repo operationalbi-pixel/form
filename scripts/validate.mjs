@@ -896,6 +896,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!approvalDashboard.includes('ba-mode-label-mobile">USER MODE')) failures.push('Switch to User Mode belum jelas pada layar mobile');
   if (!outletDashboard.includes('ba-mode-label-mobile">APPROVAL')) failures.push('Switch to Approval Mode belum jelas pada layar mobile');
   if (!approvalDashboard.includes('ba-approval-table-wrap')) failures.push('Approval Dashboard belum memiliki pembungkus tabel khusus mobile');
+  if (!approvalDashboard.includes('.ba-approval-table th:nth-child(4) { width: 8%; }') || !approvalDashboard.includes('ba-detail-button whitespace-nowrap')) failures.push('Kolom Outlet dan tombol Detail Approval Mode masih dapat turun baris pada desktop');
   if (!approvalDashboard.includes('ba-approve-button')) failures.push('Tombol Approve belum dilindungi dari pemenggalan teks');
   if (!approvalDashboard.includes('function sendCommittedNotification(') || !approvalDashboard.includes("sendCommittedNotification(item.Submission_ID, 'APPROVED')") || !approvalDashboard.includes('.withFailureHandler(error =>')) failures.push('Approval Dashboard belum merespons cepat dan menangani kegagalan server');
   if (!approvalDashboard.includes('openApprovalSettings()') || !approvalDashboard.includes('Pemetaan Approval')) failures.push('Approval Dashboard belum memiliki pengaturan pemetaan approval');
