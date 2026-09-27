@@ -4,6 +4,8 @@ import { baReusableObjectKey } from '../cloudflare/inventory-api/src/index.js';
 
 const backend = await readFile('berita-acara-gas/Code.gs', 'utf8');
 const dashboard = await readFile('berita-acara-gas/ApprovalDashboard.html', 'utf8');
+const outletDashboard = await readFile('berita-acara-gas/OutletDashboard.html', 'utf8');
+const pdfGenerator = await readFile('berita-acara-gas/PDFGenerator.html', 'utf8');
 const worker = await readFile('cloudflare/inventory-api/src/index.js', 'utf8');
 
 assert.equal(
@@ -25,5 +27,10 @@ assert.doesNotMatch(
 assert.match(dashboard, /function sendCommittedNotification\(/);
 assert.match(dashboard, /sendCommittedNotification\(item\.Submission_ID, 'APPROVED'\)/);
 assert.match(dashboard, /\.withFailureHandler\(error =>/);
+assert.match(dashboard, /function parseBaTimestamp\(/);
+assert.match(outletDashboard, /function parseBaTimestamp\(/);
+assert.match(pdfGenerator, /Math\.abs\(numeric\) < 1e12 \? numeric \* 1000 : numeric/);
+assert.doesNotMatch(dashboard, /new Date\((?:row|item)\.Timestamp\)/);
+assert.doesNotMatch(outletDashboard, /new Date\((?:row|item)\.Timestamp\)/);
 
-console.log('OK: approval uses metadata-only D1/R2 references and defers verified notification delivery.');
+console.log('OK: approval is optimized and BA submit timestamps are normalized from Unix seconds.');
