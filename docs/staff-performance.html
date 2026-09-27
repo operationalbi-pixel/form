@@ -495,7 +495,7 @@
   <div id="login-page">
     <div class="login-box">
       <div class="brand-logo">TEAMS PERFORMANCE</div>
-      <p style="color:var(--text-muted); font-size:14px; margin-bottom:24px;">Menyiapkan data performa dari Cloudflare…</p>
+      <p style="color:var(--text-muted); font-size:14px; margin-bottom:24px;">Menyiapkan staff, indikator, dan data performa…</p>
       <div class="spinner" aria-label="Memuat"></div>
       <div id="login-msg" style="margin-top:16px; color:var(--danger); font-size:13px; font-weight:500;"></div>
     </div>
@@ -612,6 +612,7 @@
         <div class="card" style="background:linear-gradient(135deg,#fff7ed,#fff); border-color:#fed7aa;">
           <h4 style="margin-bottom:8px; color:var(--primary);">Master Data MPP</h4>
           <p style="color:var(--text-muted); line-height:1.6;">Daftar staff disinkronkan otomatis dari sheet <b>EMP_LIST</b>. Penambahan, perubahan posisi, rotasi outlet, dan status resign dilakukan melalui menu MPP.</p>
+          <p style="color:var(--text-muted); line-height:1.6; margin-top:8px;">Konfigurasi indikator dibaca langsung dari sheet <b>Config_Indicators</b>. Hasil penilaian disimpan di database operasional Cloudflare.</p>
         </div>
 
         <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
@@ -842,6 +843,23 @@
        if(parts.length === 1) return parts[0];
        // Return First Name + 1st char of 2nd name + ...
        return parts[0] + ' ' + parts[1].charAt(0).toUpperCase() + '...';
+    }
+
+    function indicatorWeightForPosition(indicator, position) {
+       const raw = indicator && indicator.Bobot;
+       let parsed = raw;
+       if (typeof raw === 'string') {
+          const value = raw.trim();
+          if (value && (value.charAt(0) === '{' || value.charAt(0) === '[')) {
+             try { parsed = JSON.parse(value); } catch (error) { parsed = value; }
+          }
+       }
+       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const wanted = String(position || '').trim().toLowerCase();
+          const key = Object.keys(parsed).find(k => String(k || '').trim().toLowerCase() === wanted);
+          return key === undefined ? 0 : (parseFloat(parsed[key]) || 0);
+       }
+       return parseFloat(parsed) || 0;
     }
     
     function showToast() {
@@ -1324,8 +1342,8 @@
 
        STATE.indicators.forEach(i=>{
           const iOut=(i.Outlet||'').trim(); const tOut=(fOut||'').trim(); if(iOut!=='' && iOut!==tOut) return;
-          const dis=i.Status==='Disabled'; let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){wObj={}}
-          let cells=''; STATE.positions.forEach(p=>{ let v=0; if(typeof wObj==='object'&&wObj!==null)v=parseFloat(wObj[p])||0; else v=parseFloat(i.Bobot)||0; if(!dis)tots[p]+=v; cells+=`<td class="matrix-cell" style="color:${v>0?'var(--text-main)':'#cbd5e1'}; text-align:center;">${v}%</td>`; });
+          const dis=String(i.Status||'').trim().toLowerCase()==='disabled';
+          let cells=''; STATE.positions.forEach(p=>{ const v=indicatorWeightForPosition(i,p); if(!dis)tots[p]+=v; cells+=`<td class="matrix-cell" style="color:${v>0?'var(--text-main)':'#cbd5e1'}; text-align:center;">${v}%</td>`; });
           const row=`<tr><td><span class="badge" style="background:${dis?'#fee2e2':'#d1fae5'}">${dis?'Disabled':'Active'}</span></td><td>${i.Outlet||'Global'}</td><td>${i.Kategori}</td><td>${i.Nama_Indikator}</td><td>${i.Target||'-'}</td>${cells}</tr>`;
           if(dis) tbD.innerHTML+=row; else tbA.innerHTML+=row;
        });
@@ -1412,17 +1430,15 @@
        const tOut=(s.Outlet||'').trim(); const pos=s.Posisi;
        
        const rel=STATE.indicators.filter(i=>{
-          if(i.Status==='Disabled')return false; if(i.Outlet && i.Outlet!==tOut)return false;
-          let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){}
-          let w=0; if(typeof wObj==='object'&&wObj!==null)w=parseFloat(wObj[pos])||0; else w=parseFloat(i.Bobot)||0;
-          return w>0;
+          if(String(i.Status||'').trim().toLowerCase()==='disabled')return false;
+          if(i.Outlet && String(i.Outlet).trim().toUpperCase()!==tOut.toUpperCase())return false;
+          return indicatorWeightForPosition(i,pos)>0;
        });
        if(rel.length===0){ tb.innerHTML='<tr><td colspan="7" style="text-align:center; padding:20px;">Tidak ada indikator untuk posisi ini.</td></tr>'; return; }
        
        let tot=0;
        rel.forEach(i=>{
-          let wObj={}; try{wObj=JSON.parse(i.Bobot)}catch(e){}
-          let w=0; if(typeof wObj==='object'&&wObj!==null)w=parseFloat(wObj[pos])||0; else w=parseFloat(i.Bobot)||0;
+          const w=indicatorWeightForPosition(i,pos);
           const ex=STATE.currentDailyData.find(d=>String(d.ID_Indikator)===String(i.ID_Indikator));
           const val=ex?ex.Pencapaian:''; const sc=ex?parseFloat(ex.Skor_Final)||0:0; const nt=ex?ex.Note||'':''; tot+=sc;
           const pA=i.Batas_A||0; const pB=i.Batas_B||0; const pC=i.Batas_C||0; const pD=i.Batas_D||0;
