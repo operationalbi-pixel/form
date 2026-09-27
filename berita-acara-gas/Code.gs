@@ -17,38 +17,6 @@
 const BA_CLOUDFLARE_DEFAULT_URL =
   'https://bakerzin-inventory-api.operational-bi.workers.dev';
 
-const BA_MPP_SPREADSHEET_ID =
-  '1PktH42uGDx64B4ZU4_UMYPnZWomNlXu5WYoIfpndrDw';
-
-const BA_MPP_EMP_LIST_SHEET =
-  'EMP_LIST';
-
-const BA_FORM_TYPES = [
-  'Komplain Customer',
-  'Konsumsi General Cleaning',
-  'Refund Customer',
-  'Customer Entertain',
-  'Minute of Meeting',
-  'Test Food',
-  'Discount Karyawan',
-  'Cancel Online',
-  'Quotation',
-  'Invoice',
-  'Void',
-  'Waste Pcs To Pcs',
-  'Revisi Stock Opname',
-  'Penjualan & Dispose Asset',
-  'KOL Foodies',
-  'Purchasing Non Supplier'
-];
-
-const BA_FNB_FIRST_TYPES = [
-  'Waste Pcs To Pcs',
-  'Purchasing Non Supplier',
-  'Test Food',
-  'Revisi Stock Opname'
-];
-
 // --- BI-SPACE SINGLE SIGN-ON ---
 const BI_SPACE_API_URL =
   'https://script.google.com/macros/s/AKfycbw2_tBBWOn9Ld6QcCJBorJyZ06Lh1ZB_gEnIEqc76N7D2WWOv3trlGVqtIAqYml060_/exec';
@@ -78,8 +46,6 @@ function doGet(e) {
     }
 
     user.BA_SESSION = baSession;
-    user.CAN_BA_APPROVE =
-      baUserCanApprove_(user);
 
     const template =
       HtmlService.createTemplateFromFile('Index');
@@ -327,14 +293,69 @@ function escapeHtml_(value) {
 // NOTIFICATION
 // ==========================================
 function baNotificationState_(row) {
-  const state =
-    baResolveApprovalState_(row);
+  row =
+    row ||
+    {};
+
+  const fnbFlow = [
+    'Waste Pcs To Pcs',
+    'Purchasing Non Supplier',
+    'Test Food',
+    'Revisi Stock Opname'
+  ].some(
+    function (type) {
+      return String(
+        row.ba_type ||
+        ''
+      ).trim().indexOf(type) >= 0;
+    }
+  );
+
+  if (
+    row.am_rejected_date ||
+    row.fnb_rejected_date
+  ) {
+    return {
+      status: 'Ditolak',
+      nextApproval: ''
+    };
+  }
+
+  if (
+    row.am_approved_date
+  ) {
+    return {
+      status: 'Disetujui',
+      nextApproval: ''
+    };
+  }
+
+  if (
+    fnbFlow &&
+    row.fnb_approved_date
+  ) {
+    return {
+      status:
+        'Menunggu Approval Area Manager',
+      nextApproval:
+        'AREA MANAGER'
+    };
+  }
+
+  if (fnbFlow) {
+    return {
+      status:
+        'Menunggu Approval FNB',
+      nextApproval:
+        'FNB'
+    };
+  }
 
   return {
-    status: state.currentStatus === 'Approved'
-      ? 'Disetujui'
-      : (state.currentStatus === 'Rejected' ? 'Ditolak' : state.currentStatus),
-    nextApproval: state.currentApprovalPosition
+    status:
+      'Menunggu Approval Area Manager',
+    nextApproval:
+      'AREA MANAGER'
   };
 }
 
@@ -471,34 +492,19 @@ function notifyCommittedBaEvent(
       .trim()
       .toUpperCase();
 
-  const approvalState =
-    baResolveApprovalState_(row);
-  const candidates = [
-    {
-      position: approvalState.approval1Position,
-      by: kind === 'APPROVED' ? row.fnb_approved_by : row.fnb_rejected_by,
-      at: kind === 'APPROVED' ? row.fnb_approved_date : row.fnb_rejected_date
-    },
-    {
-      position: approvalState.approval2Position,
-      by: kind === 'APPROVED' ? row.am_approved_by : row.am_rejected_by,
-      at: kind === 'APPROVED' ? row.am_approved_date : row.am_rejected_date
-    }
-  ].filter(
-    function (entry) {
-      return entry.position === position &&
-        String(entry.by || '').trim().toUpperCase() === actor;
-    }
-  ).sort(
-    function (a, b) {
-      return String(b.at || '').localeCompare(String(a.at || ''));
-    }
-  );
-  const committed = candidates[0] || {};
-  const committedAt = committed.at;
+  const committedBy =
+    position === 'FNB'
+      ? (kind === 'APPROVED' ? row.fnb_approved_by : row.fnb_rejected_by)
+      : (kind === 'APPROVED' ? row.am_approved_by : row.am_rejected_by);
+
+  const committedAt =
+    position === 'FNB'
+      ? (kind === 'APPROVED' ? row.fnb_approved_date : row.fnb_rejected_date)
+      : (kind === 'APPROVED' ? row.am_approved_date : row.am_rejected_date);
 
   if (
-    !committedAt
+    (position !== 'FNB' && position !== 'AREA MANAGER') ||
+    String(committedBy || '').trim().toUpperCase() !== actor
   ) {
     throw new Error('Notifikasi ditolak karena keputusan belum terverifikasi.');
   }
@@ -683,377 +689,6 @@ function baCloudflareRequest_(
   }
 
   return body;
-}
-
-function baDefaultApprovalConfig_() {
-  return BA_FORM_TYPES.map(
-    function (baType) {
-      const fnbFirst =
-        BA_FNB_FIRST_TYPES.indexOf(baType) >= 0;
-
-      return {
-        baType: baType,
-        approval1:
-          fnbFirst
-            ? 'FNB'
-            : 'AREA MANAGER',
-        approval2:
-          fnbFirst
-            ? 'AREA MANAGER'
-            : ''
-      };
-    }
-  );
-}
-
-function baApprovalConfigRows_(forceRefresh) {
-  const cache =
-    CacheService.getScriptCache();
-  const cacheKey =
-    'ba-approval-config-v1';
-
-  if (!forceRefresh) {
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      try {
-        return JSON.parse(cached);
-      } catch (ignore) {}
-    }
-  }
-
-  const defaults =
-    baDefaultApprovalConfig_();
-  const byType = {};
-
-  defaults.forEach(
-    function (row) {
-      byType[row.baType] = row;
-    }
-  );
-
-  const result =
-    baCloudflareRequest_(
-      'get',
-      '/v1/ba/approval-config'
-    );
-
-  (result.data || []).forEach(
-    function (row) {
-      const baType =
-        String(row.ba_type || '').trim();
-
-      if (!baType) return;
-
-      byType[baType] = {
-        baType: baType,
-        approval1:
-          String(row.approval_1_position || '')
-            .trim()
-            .toUpperCase(),
-        approval2:
-          String(row.approval_2_position || '')
-            .trim()
-            .toUpperCase()
-      };
-    }
-  );
-
-  const rows =
-    BA_FORM_TYPES.map(
-      function (baType) {
-        return byType[baType];
-      }
-    );
-
-  cache.put(
-    cacheKey,
-    JSON.stringify(rows),
-    600
-  );
-
-  return rows;
-}
-
-function baApprovalConfigMap_() {
-  const map = {};
-
-  baApprovalConfigRows_(false).forEach(
-    function (row) {
-      map[row.baType] = row;
-    }
-  );
-
-  return map;
-}
-
-function baApprovalPositions_() {
-  const cache =
-    CacheService.getScriptCache();
-  const cacheKey =
-    'ba-approval-positions-v1';
-  const cached = cache.get(cacheKey);
-
-  if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch (ignore) {}
-  }
-
-  const sheet =
-    SpreadsheetApp
-      .openById(BA_MPP_SPREADSHEET_ID)
-      .getSheetByName(BA_MPP_EMP_LIST_SHEET);
-
-  if (!sheet) {
-    throw new Error(
-      'Sheet EMP_LIST Master Data MPP tidak ditemukan.'
-    );
-  }
-
-  const lastRow = sheet.getLastRow();
-  const values =
-    lastRow > 1
-      ? sheet.getRange(2, 5, lastRow - 1, 1).getDisplayValues()
-      : [];
-  const seen = {};
-
-  values.forEach(
-    function (row) {
-      const position =
-        String(row[0] || '')
-          .trim()
-          .toUpperCase();
-
-      if (position) seen[position] = true;
-    }
-  );
-
-  const positions =
-    Object.keys(seen).sort();
-
-  cache.put(
-    cacheKey,
-    JSON.stringify(positions),
-    600
-  );
-
-  return positions;
-}
-
-function baCanEditApprovalConfig_(user) {
-  return String(user && user.POSITION || '')
-    .trim()
-    .toUpperCase() === 'AREA MANAGER';
-}
-
-function baUserCanApprove_(user) {
-  if (baCanEditApprovalConfig_(user)) {
-    return true;
-  }
-
-  const position =
-    String(user && user.POSITION || '')
-      .trim()
-      .toUpperCase();
-
-  return baApprovalConfigRows_(false).some(
-    function (row) {
-      return row.approval1 === position ||
-        row.approval2 === position;
-    }
-  );
-}
-
-function getBaApprovalSettings(userData) {
-  const user =
-    requireBaSession_(
-      userData && userData.BA_SESSION
-    );
-  const rows =
-    baApprovalConfigRows_(false);
-
-  return {
-    rows: rows,
-    positions: baApprovalPositions_(),
-    canEdit: baCanEditApprovalConfig_(user),
-    canApprove: baUserCanApprove_(user)
-  };
-}
-
-function getBaApprovalAccess(userData) {
-  const settings =
-    getBaApprovalSettings(userData);
-
-  return {
-    canApprove: settings.canApprove,
-    canEdit: settings.canEdit
-  };
-}
-
-function saveBaApprovalSettings(rows, userData) {
-  const user =
-    requireBaSession_(
-      userData && userData.BA_SESSION
-    );
-
-  if (!baCanEditApprovalConfig_(user)) {
-    throw new Error(
-      'Hanya Area Manager yang dapat mengubah pemetaan approval.'
-    );
-  }
-
-  const allowedPositions = {};
-  baApprovalPositions_().forEach(
-    function (position) {
-      allowedPositions[position] = true;
-    }
-  );
-
-  const submitted = {};
-  (rows || []).forEach(
-    function (row) {
-      submitted[String(row.baType || '').trim()] = row;
-    }
-  );
-
-  const cleanRows =
-    BA_FORM_TYPES.map(
-      function (baType) {
-        const row = submitted[baType] || {};
-        const approval1 =
-          String(row.approval1 || '')
-            .trim()
-            .toUpperCase();
-        const approval2 =
-          String(row.approval2 || '')
-            .trim()
-            .toUpperCase();
-
-        if (
-          (approval1 && !allowedPositions[approval1]) ||
-          (approval2 && !allowedPositions[approval2])
-        ) {
-          throw new Error(
-            'Posisi approval harus berasal dari EMP_LIST kolom E.'
-          );
-        }
-
-        return {
-          baType: baType,
-          approval1: approval1,
-          approval2: approval2
-        };
-      }
-    );
-
-  baCloudflareRequest_(
-    'post',
-    '/v1/ba/approval-config',
-    {
-      rows: cleanRows,
-      updatedBy: user.NAME
-    }
-  );
-
-  CacheService
-    .getScriptCache()
-    .remove('ba-approval-config-v1');
-
-  return {
-    success: true,
-    rows: baApprovalConfigRows_(true)
-  };
-}
-
-function baResolveApprovalState_(row, configMap) {
-  row = row || {};
-  configMap = configMap || baApprovalConfigMap_();
-
-  const baType =
-    String(row.ba_type || row.type || '').trim();
-  const config =
-    configMap[baType] || {
-      approval1: '',
-      approval2: ''
-    };
-  const approval1 =
-    String(config.approval1 || '').trim().toUpperCase();
-  const approval2 =
-    String(config.approval2 || '').trim().toUpperCase();
-  const useLegacyAmAsApproval1 =
-    approval1 === 'AREA MANAGER' &&
-    !approval2 &&
-    !row.fnb_approved_date &&
-    !row.fnb_rejected_date;
-  const approval1ApprovedDate =
-    row.fnb_approved_date ||
-    (useLegacyAmAsApproval1 ? row.am_approved_date : null);
-  const approval1RejectedDate =
-    row.fnb_rejected_date ||
-    (useLegacyAmAsApproval1 ? row.am_rejected_date : null);
-  const approval1ApprovedBy =
-    row.fnb_approved_by ||
-    (useLegacyAmAsApproval1 ? row.am_approved_by : null);
-  const approval1RejectedBy =
-    row.fnb_rejected_by ||
-    (useLegacyAmAsApproval1 ? row.am_rejected_by : null);
-  const rejected1 = !!approval1RejectedDate;
-  const rejected2 = !!row.am_rejected_date;
-  const approved1 = !approval1 || !!approval1ApprovedDate;
-  const approved2 = !approval2 || !!row.am_approved_date;
-  let currentStatus = 'Approved';
-  let currentPosition = '';
-  let currentStep = 0;
-
-  if (rejected1 || rejected2) {
-    currentStatus = 'Rejected';
-  } else if (!approved1) {
-    currentStatus = 'Menunggu Approval ' + approval1;
-    currentPosition = approval1;
-    currentStep = 1;
-  } else if (!approved2) {
-    currentStatus = 'Menunggu Approval ' + approval2;
-    currentPosition = approval2;
-    currentStep = 2;
-  }
-
-  return {
-    currentStatus: currentStatus,
-    currentApprovalPosition: currentPosition,
-    currentApprovalStep: currentStep,
-    approval1Position: approval1,
-    approval2Position: approval2,
-    timeline: [
-      {
-        step: 0,
-        label: 'Dibuat',
-        status: 'COMPLETED',
-        name: row.name || '-',
-        position: '',
-        at: row.timestamp || null
-      },
-      {
-        step: 1,
-        label: approval1 ? 'Persetujuan 1' : 'Skipped',
-        status: !approval1
-          ? 'SKIPPED'
-          : (rejected1 ? 'REJECTED' : (approval1ApprovedDate ? 'APPROVED' : 'PENDING')),
-        name: approval1ApprovedBy || approval1RejectedBy || approval1 || '-',
-        position: approval1,
-        at: approval1ApprovedDate || approval1RejectedDate || null
-      },
-      {
-        step: 2,
-        label: approval2 ? 'Persetujuan 2' : 'Skipped',
-        status: !approval2
-          ? 'SKIPPED'
-          : (rejected2 ? 'REJECTED' : (row.am_approved_date ? 'APPROVED' : 'PENDING')),
-        name: row.am_approved_by || row.am_rejected_by || approval2 || '-',
-        position: approval2,
-        at: row.am_approved_date || row.am_rejected_date || null
-      }
-    ]
-  };
 }
 
 function createAssetMidtransPayment(
@@ -1984,6 +1619,41 @@ function rekamData(
     const newId =
       plannedSubmissionId;
 
+    const creatorPosition =
+      String(
+        userData.POSITION ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+
+    const requiresFnb =
+      [
+        'Waste Pcs To Pcs',
+        'Purchasing Non Supplier',
+        'Test Food',
+        'Revisi Stock Opname'
+      ].includes(
+        baType
+      );
+
+    const autoFnbApproved =
+      requiresFnb &&
+      (
+        creatorPosition ===
+          'FNB' ||
+        creatorPosition ===
+          'AREA MANAGER'
+      );
+
+    const autoAmApproved =
+      creatorPosition ===
+      'AREA MANAGER';
+
+    const approvalTime =
+      new Date()
+        .toISOString();
+
     const rowData = {
       submission_id:
         newId,
@@ -2012,10 +1682,14 @@ function rekamData(
         infoStr,
 
       am_approved_date:
-        null,
+        autoAmApproved
+          ? approvalTime
+          : null,
 
       am_approved_by:
-        null,
+        autoAmApproved
+          ? userData.NAME
+          : null,
 
       am_rejected_date:
         null,
@@ -2027,10 +1701,14 @@ function rekamData(
         null,
 
       fnb_approved_date:
-        null,
+        autoFnbApproved
+          ? approvalTime
+          : null,
 
       fnb_approved_by:
-        null,
+        autoFnbApproved
+          ? userData.NAME
+          : null,
 
       fnb_rejected_date:
         null,
@@ -2137,18 +1815,62 @@ function getAllSubmissions(
       result.data ||
       [];
 
-    const configMap =
-      baApprovalConfigMap_();
-
     return rows.map(
       function (r) {
+        let status =
+          '';
+
+        const listFnbFlow = [
+          'Waste Pcs To Pcs',
+          'Purchasing Non Supplier',
+          'Test Food',
+          'Revisi Stock Opname'
+        ];
+
         const cleanType =
           (
             r.ba_type ||
             ''
           ).trim();
-        const state =
-          baResolveApprovalState_(r, configMap);
+
+        const isFnbFlow =
+          listFnbFlow.some(
+            function (f) {
+              return cleanType
+                .includes(f);
+            }
+          );
+
+        if (
+          r.am_rejected_date ||
+          r.fnb_rejected_date
+        ) {
+          status =
+            'Rejected';
+
+        } else if (
+          r.am_approved_date
+        ) {
+          status =
+            'Approved';
+
+        } else if (
+          isFnbFlow &&
+          r.fnb_approved_date
+        ) {
+          status =
+            'Menunggu Approval AM';
+
+        } else if (
+          isFnbFlow
+        ) {
+          status =
+            'Under FNB Review';
+
+        } else {
+          status =
+            'Menunggu Approval AM';
+        }
 
         return {
           sheetName:
@@ -2161,7 +1883,6 @@ function getAllSubmissions(
             r.submission_id,
 
           Timestamp:
-            r.submitted_at ||
             r.timestamp,
 
           Outlet:
@@ -2193,19 +1914,7 @@ function getAllSubmissions(
             r.fnb_rejected_date,
 
           currentStatus:
-            state.currentStatus,
-
-          Current_Approval_Position:
-            state.currentApprovalPosition,
-
-          Current_Approval_Step:
-            state.currentApprovalStep,
-
-          Approval_1_Position:
-            state.approval1Position,
-
-          Approval_2_Position:
-            state.approval2Position
+            status
         };
       }
     );
@@ -2238,20 +1947,66 @@ function getSubmissionDetail(
       return null;
     }
 
+    let status =
+      '';
+
+    const listFnbFlow = [
+      'Waste Pcs To Pcs',
+      'Purchasing Non Supplier',
+      'Test Food',
+      'Revisi Stock Opname'
+    ];
+
     const cleanType =
       (
         r.ba_type ||
         ''
       ).trim();
-    const state =
-      baResolveApprovalState_(r);
+
+    const isFnbFlow =
+      listFnbFlow.some(
+        function (f) {
+          return cleanType
+            .includes(f);
+        }
+      );
+
+    if (
+      r.am_rejected_date ||
+      r.fnb_rejected_date
+    ) {
+      status =
+        'Rejected';
+
+    } else if (
+      r.am_approved_date
+    ) {
+      status =
+        'Approved';
+
+    } else if (
+      isFnbFlow &&
+      r.fnb_approved_date
+    ) {
+      status =
+        'Menunggu Approval AM';
+
+    } else if (
+      isFnbFlow
+    ) {
+      status =
+        'Under FNB Review';
+
+    } else {
+      status =
+        'Menunggu Approval AM';
+    }
 
     return {
       Submission_ID:
         r.submission_id,
 
       Timestamp:
-        r.submitted_at ||
         r.timestamp,
 
       Outlet:
@@ -2303,22 +2058,7 @@ function getSubmissionDetail(
         r.fnb_reject_reason,
 
       currentStatus:
-        state.currentStatus,
-
-      Current_Approval_Position:
-        state.currentApprovalPosition,
-
-      Current_Approval_Step:
-        state.currentApprovalStep,
-
-      Approval_1_Position:
-        state.approval1Position,
-
-      Approval_2_Position:
-        state.approval2Position,
-
-      Approval_Timeline:
-        state.timeline,
+        status,
 
       sheetName:
         r.submission_id,
@@ -2376,26 +2116,26 @@ function approveBa(
     };
   }
 
-  const approvalState =
-    baResolveApprovalState_(oldRow);
-  const trustedPosition =
-    String(approverPosition || '')
-      .trim()
-      .toUpperCase();
+  const listFnbFlow = [
+    'Waste Pcs To Pcs',
+    'Purchasing Non Supplier',
+    'Test Food',
+    'Revisi Stock Opname'
+  ];
 
-  if (
-    !approvalState.currentApprovalStep ||
-    approvalState.currentApprovalPosition !== trustedPosition
-  ) {
-    return {
-      success: false,
-      message:
-        approvalState.currentStatus === 'Approved'
-          ? 'Dokumen sudah selesai disetujui.'
-          : 'Dokumen sedang menunggu persetujuan posisi ' +
-            (approvalState.currentApprovalPosition || '-') + '.'
-    };
-  }
+  const cleanType =
+    (
+      oldRow.ba_type ||
+      ''
+    ).trim();
+
+  const isFnbFlow =
+    listFnbFlow.some(
+      function (f) {
+        return cleanType
+          .includes(f);
+      }
+    );
 
   const newRow =
     Object.assign(
@@ -2416,7 +2156,18 @@ function approveBa(
   newRow.migrated_from =
     'CLOUDFLARE_APP';
 
-  if (approvalState.currentApprovalStep === 1) {
+  if (
+    approverPosition ===
+    'FNB'
+  ) {
+    if (!isFnbFlow) {
+      return {
+        success: false,
+        message:
+          'Dokumen ini tidak butuh FNB.'
+      };
+    }
+
     newRow.fnb_approved_date =
       new Date()
         .toISOString();
@@ -2433,7 +2184,21 @@ function approveBa(
     newRow.fnb_reject_reason =
       null;
 
-  } else if (approvalState.currentApprovalStep === 2) {
+  } else if (
+    approverPosition ===
+    'AREA MANAGER'
+  ) {
+    if (
+      isFnbFlow &&
+      !oldRow.fnb_approved_date
+    ) {
+      return {
+        success: false,
+        message:
+          'Harus disetujui FNB terlebih dahulu.'
+      };
+    }
+
     newRow.am_approved_date =
       new Date()
         .toISOString();
@@ -2450,6 +2215,12 @@ function approveBa(
     newRow.am_reject_reason =
       null;
 
+  } else {
+    return {
+      success: false,
+      message:
+        'Posisi tidak valid.'
+    };
   }
 
   try {
@@ -2514,27 +2285,6 @@ function rejectBa(
     };
   }
 
-  const approvalState =
-    baResolveApprovalState_(oldRow);
-  const trustedPosition =
-    String(approverPosition || '')
-      .trim()
-      .toUpperCase();
-
-  if (
-    !approvalState.currentApprovalStep ||
-    approvalState.currentApprovalPosition !== trustedPosition
-  ) {
-    return {
-      success: false,
-      message:
-        approvalState.currentStatus === 'Approved'
-          ? 'Dokumen sudah selesai disetujui.'
-          : 'Dokumen sedang menunggu persetujuan posisi ' +
-            (approvalState.currentApprovalPosition || '-') + '.'
-    };
-  }
-
   const newRow =
     Object.assign(
       {},
@@ -2554,7 +2304,10 @@ function rejectBa(
   newRow.migrated_from =
     'CLOUDFLARE_APP';
 
-  if (approvalState.currentApprovalStep === 1) {
+  if (
+    approverPosition ===
+    'FNB'
+  ) {
     newRow.fnb_rejected_date =
       new Date()
         .toISOString();
@@ -2571,7 +2324,10 @@ function rejectBa(
     newRow.fnb_approved_by =
       null;
 
-  } else if (approvalState.currentApprovalStep === 2) {
+  } else if (
+    approverPosition ===
+    'AREA MANAGER'
+  ) {
     newRow.am_rejected_date =
       new Date()
         .toISOString();
@@ -2588,6 +2344,12 @@ function rejectBa(
     newRow.am_approved_by =
       null;
 
+  } else {
+    return {
+      success: false,
+      message:
+        'Posisi tidak valid.'
+    };
   }
 
   try {

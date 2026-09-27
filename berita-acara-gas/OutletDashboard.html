@@ -383,15 +383,10 @@
         document.getElementById('outletNameDisplay').textContent = user.OUTLET;
         document.getElementById('userNameDisplay').textContent = user.NAME;
         const switchButton = document.getElementById('switchApprovalMode');
-        google.script.run
-            .withSuccessHandler(access => {
-                if (switchButton && access && access.canApprove) {
-                    switchButton.classList.remove('hidden');
-                    switchButton.classList.add('inline-flex');
-                }
-            })
-            .withFailureHandler(error => console.warn('Akses Approval Mode tidak dapat diperiksa:', error))
-            .getBaApprovalAccess(window.userData);
+        if (switchButton && (user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB')) {
+            switchButton.classList.remove('hidden');
+            switchButton.classList.add('inline-flex');
+        }
         setupCategoryToggles(); 
         reloadTable();
         overrideNativeAlert(); 
@@ -720,34 +715,6 @@
         }).getSubmissionDetail(itemLite.Submission_ID);
     }
 
-    function escapeBaHtml(value) {
-        return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-    }
-
-    function renderApprovalTimeline(item) {
-        const timeline = Array.isArray(item.Approval_Timeline) ? item.Approval_Timeline : [];
-        if (!timeline.length) return '';
-        return `<div class="overflow-x-auto rounded-xl border border-gray-200 bg-white p-5">
-            <div class="grid min-w-[620px] grid-cols-3">
-                ${timeline.map((entry, index) => {
-                    const done = entry.status === 'COMPLETED' || entry.status === 'APPROVED';
-                    const rejected = entry.status === 'REJECTED';
-                    const skipped = entry.status === 'SKIPPED';
-                    const dotClass = done ? 'bg-emerald-500 text-white' : (rejected ? 'bg-red-500 text-white' : (skipped ? 'bg-gray-300 text-white' : 'border-2 border-amber-400 bg-white text-amber-500'));
-                    const icon = done ? '<i class="fas fa-check"></i>' : (rejected ? '<i class="fas fa-times"></i>' : (skipped ? '<i class="fas fa-forward-step"></i>' : '<span class="h-2 w-2 rounded-full bg-amber-400"></span>'));
-                    const title = entry.status === 'APPROVED' ? 'Disetujui' : (entry.status === 'REJECTED' ? 'Ditolak' : (entry.status === 'PENDING' ? 'Menunggu Persetujuan' : entry.label));
-                    return `<div class="relative px-3 text-center">
-                        ${index ? `<div class="absolute right-1/2 top-4 h-0.5 w-full ${done || rejected ? 'bg-emerald-300' : 'bg-gray-200'}"></div>` : ''}
-                        <div class="relative z-10 mx-auto flex h-9 w-9 items-center justify-center rounded-full ${dotClass}">${icon}</div>
-                        <div class="mt-3 text-xs font-extrabold text-gray-700">${escapeBaHtml(title)}</div>
-                        <div class="mt-1 text-xs font-semibold text-gray-600">${escapeBaHtml(entry.name || entry.position || '-')}</div>
-                        <div class="mt-1 text-[10px] text-gray-400">${entry.at ? formatBaTimestamp(entry.at, true) : (skipped ? 'Tidak diperlukan' : 'Belum diproses')}</div>
-                    </div>`;
-                }).join('')}
-            </div>
-        </div>`;
-    }
-
     function renderDetailContent(item, container, actionContainer) {
         let jsonData = {};
         try { jsonData = JSON.parse(item.Data_JSON); } catch(e) {}
@@ -773,8 +740,6 @@
                         <div class="text-gray-400 text-xs">${formatBaTimestamp(item.Timestamp, true)}</div>
                     </div>
                 </div>
-
-                ${renderApprovalTimeline(item)}
 
                 <!-- Status Box -->
                 <div class="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-100">
