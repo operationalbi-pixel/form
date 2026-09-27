@@ -3,6 +3,28 @@
 
   var CHAT_ASSET_VERSION = '20260911-group-panel-state1';
 
+  function installBakerzinTypography() {
+    if (!document.getElementById('bakerzinTypographyFont')) {
+      var font = document.createElement('link');
+      font.id = 'bakerzinTypographyFont';
+      font.rel = 'stylesheet';
+      font.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
+      document.head.appendChild(font);
+    }
+    if (!document.getElementById('bakerzinTypographyStyle')) {
+      var style = document.createElement('style');
+      style.id = 'bakerzinTypographyStyle';
+      style.textContent = ':root{--bakerzin-ui-font:"Plus Jakarta Sans","Segoe UI",Arial,sans-serif}' +
+        'html,body,button,input,select,textarea,.font-sans,' +
+        'body *:not(.material-symbols-rounded):not([class^="fa"]):not([class*=" fa-"]){font-family:var(--bakerzin-ui-font)!important}' +
+        'body{text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}' +
+        'h1,h2,h3,h4{letter-spacing:-.018em}';
+      document.head.appendChild(style);
+    }
+  }
+
+  installBakerzinTypography();
+
   function apiUrl() {
     var value = global.BAKERZIN_CONFIG && global.BAKERZIN_CONFIG.API_URL || '';
     if (!value || value.indexOf('PASTE_') === 0) {
