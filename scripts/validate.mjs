@@ -1095,6 +1095,7 @@ if (!staffPerformanceHtml.includes('function indicatorWeightForPosition(') || !s
 if (staffPerformanceHtml.includes("nav('member'") || staffPerformanceHtml.includes('id="page-member"')) failures.push('Halaman Teams Staff Performance belum dihapus setelah fungsi staff dipindahkan ke MPP');
 if (!staffPerformanceHtml.includes('function openIndicatorEditor(') || !staffPerformanceHtml.includes("staffApiCall('staffPerformanceSaveIndicator'") || !backend.includes('function saveStaffPerformanceIndicator(') || !backend.includes('Hanya pengguna BIHQ')) failures.push('Editor Config_Indicators khusus BIHQ belum lengkap');
 if (!staffPerformanceHtml.includes('@media (max-width: 820px)') || !staffPerformanceHtml.includes('data-label="Pencapaian"') || !staffPerformanceHtml.includes('table-layout:fixed')) failures.push('Input Penilaian belum memiliki layout desktop dan mobile yang aman dari tumpang tindih');
+if (staffPerformanceHtml.includes('min-width:1120px') || !staffPerformanceHtml.includes('overflow-x:hidden') || !staffPerformanceHtml.includes('@media (max-width: 1100px) and (min-width: 821px)')) failures.push('Input Penilaian masih dapat memaksa scrollbar horizontal pada zoom 100% atau layar tablet');
 let staffPerformanceInlineIndex = 0;
 for (const match of staffPerformanceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   staffPerformanceInlineIndex += 1;
