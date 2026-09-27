@@ -168,6 +168,7 @@ function apiActions_() {
     staffPerformanceData: getStaffPerformanceData,
     staffPerformanceSaveStaff: saveStaffPerformanceStaff,
     staffPerformanceDeleteStaff: deleteStaffPerformanceStaff,
+    staffPerformanceSaveIndicator: saveStaffPerformanceIndicator,
     staffPerformanceSubmitScore: submitStaffPerformanceScore,
     socializationBootstrap: getSocializationBootstrap,
     socializationMaterials: getSocializationMaterials,
@@ -6480,6 +6481,108 @@ function staffPerformanceIndicatorRows_(requestedOutlet) {
     };
   }).filter(function (row) {
     return row.ID_Indikator && row.Nama_Indikator && (!outlet || !row.Outlet || row.Outlet === outlet);
+  });
+}
+
+function saveStaffPerformanceIndicator(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = staffPerformanceContext_(token, payload.outlet);
+    if (!context.isBihq) throw new Error('Hanya pengguna BIHQ yang dapat mengubah konfigurasi indikator.');
+
+    const spreadsheetId = String(
+      PropertiesService.getScriptProperties().getProperty('STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID') ||
+      CONFIG.STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID
+    ).trim();
+    const sheetName = CONFIG.STAFF_PERFORMANCE_INDICATOR_SHEET;
+    let sheet;
+    try {
+      sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(sheetName);
+    } catch (error) {
+      throw new Error('Spreadsheet konfigurasi indikator tidak dapat diakses oleh pemilik deployment. Detail: ' + String(error && error.message || error));
+    }
+    if (!sheet) throw new Error('Sheet ' + sheetName + ' tidak ditemukan.');
+
+    const category = String(payload.category || '').trim();
+    const name = String(payload.name || '').trim();
+    const outlet = String(payload.outlet || '').trim().toUpperCase();
+    const status = String(payload.status || 'Active').trim().toLowerCase() === 'disabled' ? 'Disabled' : 'Active';
+    if (!category || !name) throw new Error('Kategori dan nama indikator wajib diisi.');
+    if (category.length > 100 || name.length > 250 || outlet.length > 30) throw new Error('Data konfigurasi indikator terlalu panjang.');
+
+    const weights = {};
+    Object.keys(payload.weights || {}).forEach(function (position) {
+      const cleanPosition = String(position || '').trim();
+      const value = Number(payload.weights[position]);
+      if (!cleanPosition || !isFinite(value) || value < 0 || value > 100) throw new Error('Bobot posisi harus berada di antara 0 dan 100.');
+      if (value > 0) weights[cleanPosition] = value;
+    });
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      const lastColumn = Math.max(11, sheet.getLastColumn());
+      const headerValues = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
+      const headers = headerValues.map(function (value) {
+        return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+      });
+      function columnIndex_(aliases, legacyIndex) {
+        for (let i = 0; i < aliases.length; i++) {
+          const index = headers.indexOf(aliases[i]);
+          if (index >= 0) return index;
+        }
+        return legacyIndex;
+      }
+      const columns = {
+        id: columnIndex_(['ID_INDIKATOR', 'INDICATOR_ID', 'ID'], 0),
+        outlet: columnIndex_(['OUTLET', 'OUTLET_CODE', 'KODE_OUTLET'], 1),
+        category: columnIndex_(['KATEGORI', 'CATEGORY'], 2),
+        name: columnIndex_(['NAMA_INDIKATOR', 'INDIKATOR', 'INDICATOR_NAME'], 3),
+        weight: columnIndex_(['BOBOT', 'WEIGHT', 'WEIGHT_JSON'], 4),
+        target: columnIndex_(['TARGET'], 5),
+        thresholdA: columnIndex_(['BATAS_A', 'THRESHOLD_A'], 6),
+        thresholdB: columnIndex_(['BATAS_B', 'THRESHOLD_B'], 7),
+        thresholdC: columnIndex_(['BATAS_C', 'THRESHOLD_C'], 8),
+        thresholdD: columnIndex_(['BATAS_D', 'THRESHOLD_D'], 9),
+        status: columnIndex_(['STATUS'], 10)
+      };
+
+      const requestedId = String(payload.id || '').trim();
+      const existingIds = sheet.getLastRow() >= 2
+        ? sheet.getRange(2, columns.id + 1, sheet.getLastRow() - 1, 1).getDisplayValues().map(function (row) { return String(row[0] || '').trim(); })
+        : [];
+      let targetRow;
+      let indicatorId = requestedId;
+      if (requestedId) {
+        const existingIndex = existingIds.indexOf(requestedId);
+        if (existingIndex < 0) throw new Error('Indikator yang akan diedit tidak ditemukan. Muat ulang halaman lalu coba lagi.');
+        targetRow = existingIndex + 2;
+      } else {
+        indicatorId = 'IND-' + Utilities.getUuid().replace(/-/g, '').substring(0, 12).toUpperCase();
+        targetRow = Math.max(2, sheet.getLastRow() + 1);
+      }
+
+      const values = {
+        id: indicatorId,
+        outlet: outlet,
+        category: category,
+        name: name,
+        weight: JSON.stringify(weights),
+        target: String(payload.target || '').trim(),
+        thresholdA: String(payload.thresholdA || '').trim(),
+        thresholdB: String(payload.thresholdB || '').trim(),
+        thresholdC: String(payload.thresholdC || '').trim(),
+        thresholdD: String(payload.thresholdD || '').trim(),
+        status: status
+      };
+      Object.keys(values).forEach(function (field) {
+        sheet.getRange(targetRow, columns[field] + 1).setValue(values[field]);
+      });
+      SpreadsheetApp.flush();
+      return { success: true, id: indicatorId, source: 'GOOGLE_SHEETS_CONFIG_INDICATORS' };
+    } finally {
+      lock.releaseLock();
+    }
   });
 }
 
