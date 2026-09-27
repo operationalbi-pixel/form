@@ -1718,11 +1718,7 @@ async function listBeritaAcaraSubmissions(url, env, requestId) {
   if (!Number.isFinite(before)) return apiError(400, "INVALID_CURSOR", "Cursor BA tidak valid.", requestId);
 
   let sql = `
-    SELECT row_id, submission_id, timestamp,
-           (SELECT MIN(first_row.timestamp)
-              FROM ba_submissions first_row
-             WHERE first_row.submission_id = v_ba_latest_submissions.submission_id) AS submitted_at,
-           outlet, name, nik, ba_type, info,
+    SELECT row_id, submission_id, timestamp, outlet, name, nik, ba_type, info,
            data_object_key,
            am_approved_date, am_approved_by, am_rejected_date, am_rejected_by, am_reject_reason,
            fnb_approved_date, fnb_approved_by, fnb_rejected_date, fnb_rejected_by, fnb_reject_reason,
@@ -1762,13 +1758,9 @@ async function getBeritaAcaraSubmission(url, env, requestId) {
     : "*";
 
   const row = await env.OPERATIONS_DB.prepare(
-    `SELECT ${selectedColumns},
-            (SELECT MIN(first_row.timestamp)
-               FROM ba_submissions first_row
-              WHERE first_row.submission_id = current_row.submission_id) AS submitted_at
-       FROM ba_submissions current_row
-      WHERE current_row.submission_id = ?
-      ORDER BY current_row.timestamp DESC, current_row.row_id DESC
+    `SELECT ${selectedColumns} FROM ba_submissions
+      WHERE submission_id = ?
+      ORDER BY timestamp DESC, row_id DESC
       LIMIT 1`
   ).bind(submissionId).first();
 
@@ -1780,60 +1772,6 @@ async function getBeritaAcaraSubmission(url, env, requestId) {
   return responseJson({ ok: true, data: { ...row, data_json: metadataOnly ? null : dataJson }, metadataOnly, requestId });
 }
 __name(getBeritaAcaraSubmission, "getBeritaAcaraSubmission");
-
-async function ensureBaApprovalConfigSchema(env) {
-  await env.OPERATIONS_DB.prepare(
-    `CREATE TABLE IF NOT EXISTS ba_approval_config (
-       ba_type TEXT PRIMARY KEY,
-       approval_1_position TEXT,
-       approval_2_position TEXT,
-       updated_by TEXT,
-       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-     )`
-  ).run();
-}
-__name(ensureBaApprovalConfigSchema, "ensureBaApprovalConfigSchema");
-
-async function getBaApprovalConfig(env, requestId) {
-  await ensureBaApprovalConfigSchema(env);
-  const result = await env.OPERATIONS_DB.prepare(
-    `SELECT ba_type, approval_1_position, approval_2_position, updated_by, updated_at
-       FROM ba_approval_config
-      ORDER BY ba_type`
-  ).all();
-  return responseJson({ ok: true, data: result.results || [], requestId });
-}
-__name(getBaApprovalConfig, "getBaApprovalConfig");
-
-async function saveBaApprovalConfig(request, env, requestId) {
-  try {
-    const payload = await readJsonWithLimit(request, 128 * 1024);
-    const rows = limitedArray(payload?.rows || [], "rows", 100);
-    const updatedBy = baNullableText(payload?.updatedBy, 180);
-    const statements = rows.map((raw) => {
-      const baType = baRequiredText(raw?.baType ?? raw?.ba_type, "ba_type", 180);
-      const approval1 = baNullableText(String(raw?.approval1 ?? raw?.approval_1_position ?? "").trim().toUpperCase(), 180);
-      const approval2 = baNullableText(String(raw?.approval2 ?? raw?.approval_2_position ?? "").trim().toUpperCase(), 180);
-      return env.OPERATIONS_DB.prepare(
-        `INSERT INTO ba_approval_config (
-           ba_type, approval_1_position, approval_2_position, updated_by, updated_at
-         ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(ba_type) DO UPDATE SET
-           approval_1_position = excluded.approval_1_position,
-           approval_2_position = excluded.approval_2_position,
-           updated_by = excluded.updated_by,
-           updated_at = CURRENT_TIMESTAMP`
-      ).bind(baType, approval1, approval2, updatedBy);
-    });
-    await ensureBaApprovalConfigSchema(env);
-    const written = await runStatementBatches(env.OPERATIONS_DB, statements);
-    return responseJson({ ok: true, data: { success: true, written }, requestId });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return apiError(400, "INVALID_BA_APPROVAL_CONFIG", message, requestId);
-  }
-}
-__name(saveBaApprovalConfig, "saveBaApprovalConfig");
 
 var MAX_MIDTRANS_PAYLOAD_BYTES = 64 * 1024;
 
@@ -2473,7 +2411,6 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/migrate/stock-movements") return migrateStockMovements(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/migrate/submissions") return migrateBeritaAcaraSubmissions(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/submission") return migrateBeritaAcaraSubmissions(request, env, requestId);
-  if (request.method === "POST" && url.pathname === "/v1/ba/approval-config") return saveBaApprovalConfig(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/offload-existing") return offloadExistingBeritaAcaraPayloads(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/migrate/status") return beritaAcaraMigrationStatus(env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/submissions") return listBeritaAcaraSubmissions(url, env, requestId);
@@ -2496,7 +2433,6 @@ async function route(request, env) {
   if (url.pathname === "/v1/staff-performance/leaderboard") return staffPerformanceLeaderboard(url, env, requestId);
   if (url.pathname === "/v1/staff-performance/daily-stats") return staffPerformanceDailyStats(url, env, requestId);
   if (url.pathname === "/v1/staff-performance/data") return staffPerformanceData(url, env, requestId);
-  if (url.pathname === "/v1/ba/approval-config") return getBaApprovalConfig(env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
   if (url.pathname === "/v1/stock-card") return listStockCard(url, env, requestId);

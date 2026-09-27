@@ -203,7 +203,7 @@
         function openBiSpaceDashboard(user, requestedMode) {
             window.userData = user;
             let page = 'OutletDashboard';
-            const approver = user.CAN_BA_APPROVE === true;
+            const approver = user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB';
             if (approver && requestedMode !== 'user') page = 'ApprovalDashboard';
             google.script.run
                 .withSuccessHandler(html => {
@@ -227,7 +227,8 @@
 
         function switchBaMode(mode) {
             const user = window.userData || initialBiSpaceUser;
-            if (mode === 'approval' && user.CAN_BA_APPROVE !== true) return;
+            const approver = user.POSITION === 'AREA MANAGER' || user.POSITION === 'FNB';
+            if (!approver) return;
             const nextMode = mode === 'approval' ? 'approval' : 'user';
             window.top.postMessage({ biSpaceBeritaAcara: true, mode: nextMode }, '*');
         }
