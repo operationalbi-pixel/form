@@ -861,6 +861,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!/creatorPosition\s*===\s*['"]AREA MANAGER['"]/.test(baBackend)) failures.push('Dokumen buatan AREA MANAGER belum auto approve');
   if (!/creatorPosition\s*===\s*['"]FNB['"]/.test(baBackend)) failures.push('Dokumen buatan FNB belum melewati tahap approval FNB otomatis');
   if (!baBackend.includes('function notifyBiSpaceBaEvent_(')) failures.push('Backend Berita Acara belum mengirim aktivitas ke push BI-Space');
+  if (!baBackend.includes('function notifyCommittedBaEvent(') || !baBackend.includes("getRawLatestRow(\n      submissionId,\n      true")) failures.push('Approval Berita Acara belum memakai metadata-only dan notifikasi terverifikasi setelah commit');
   for (const kind of ['NEW', 'UPDATED', 'APPROVED', 'REJECTED']) {
     if (!new RegExp("kind\\s*:\\s*['\\\"]" + kind + "['\\\"]").test(baBackend)) failures.push(`Notifikasi Berita Acara belum mencakup ${kind}`);
   }
@@ -894,6 +895,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!outletDashboard.includes('ba-mode-label-mobile">APPROVAL')) failures.push('Switch to Approval Mode belum jelas pada layar mobile');
   if (!approvalDashboard.includes('ba-approval-table-wrap')) failures.push('Approval Dashboard belum memiliki pembungkus tabel khusus mobile');
   if (!approvalDashboard.includes('ba-approve-button')) failures.push('Tombol Approve belum dilindungi dari pemenggalan teks');
+  if (!approvalDashboard.includes('function sendCommittedNotification(') || !approvalDashboard.includes("sendCommittedNotification(item.Submission_ID, 'APPROVED')") || !approvalDashboard.includes('.withFailureHandler(error =>')) failures.push('Approval Dashboard belum merespons cepat dan menangani kegagalan server');
   if (!baResponsive.includes('.ba-approval-toolbar')) failures.push('Filter Approval belum memiliki tata letak mobile khusus');
   if (!baResponsive.includes('white-space: nowrap !important')) failures.push('Teks aksi Approval masih dapat melipat');
   if (!baResponsive.includes('#appContainer .ba-mode-switch')) failures.push('Tombol pergantian mode belum memiliki layout mobile khusus');
