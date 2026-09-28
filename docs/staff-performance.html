@@ -927,6 +927,24 @@
        }
        return parseFloat(parsed) || 0;
     }
+
+    function indicatorAppliesToOutlet(indicator, outlet) {
+       if (String(indicator && indicator.Status || '').trim().toLowerCase() === 'disabled') return false;
+       const indicatorOutlet = String(indicator && indicator.Outlet || '').trim().toUpperCase();
+       const selectedOutlet = String(outlet || '').trim().toUpperCase();
+       return !selectedOutlet || !indicatorOutlet || indicatorOutlet === selectedOutlet;
+    }
+
+    function positionTotalWeight(position, outlet) {
+       return STATE.indicators.reduce((total, indicator) => {
+          if (!indicatorAppliesToOutlet(indicator, outlet)) return total;
+          return total + indicatorWeightForPosition(indicator, position);
+       }, 0);
+    }
+
+    function scoredPositionsForOutlet(outlet) {
+       return STATE.positions.filter(position => positionTotalWeight(position, outlet) > 0);
+    }
     
     function showToast(title, message) {
        const t = document.getElementById('successToast');
@@ -1075,6 +1093,7 @@
               STATE.staffList.forEach(st=>{
                  if(isGlobal && out && st.Outlet!==out) return;
                  if(!isGlobal && st.Outlet!==STATE.user.outlet) return;
+                 if(positionTotalWeight(st.Posisi, st.Outlet)<=0) return;
                  
                  const normNik = String(st.NIK).trim().toUpperCase();
                  staffMap[normNik] = { ...st, totalScore:0, count:0 };
@@ -1107,7 +1126,7 @@
           }
           
           // Initial Render - Tabs & Table
-          renderDashboardTabs();
+          renderDashboardTabs(out);
           filterAndRenderDashboardTable();
           
        }).catch(error => {
@@ -1133,7 +1152,7 @@
         }
 
         // Identify unique positions (for legend & stacking)
-        const positions = STATE.positions.length > 0 ? STATE.positions.sort() : ['SERVER','CAPTAIN','CASHIER','GREETER','BARISTA'];
+        const positions = scoredPositionsForOutlet(selectedOutlet).sort();
         
         // Structure data: date -> position -> count
         const processed = {};
@@ -1154,6 +1173,7 @@
                 // Filter Outlet Logic
                 if (isGlobal && selectedOutlet && staff.Outlet !== selectedOutlet) return;
                 if (!isGlobal && staff.Outlet !== STATE.user.outlet) return;
+                if (positionTotalWeight(staff.Posisi, staff.Outlet) <= 0) return;
                 
                 // If passed filter, increment count
                 if (processed[rowDate]) {
@@ -1209,12 +1229,12 @@
         });
     }
 
-    function renderDashboardTabs() {
+    function renderDashboardTabs(selectedOutlet) {
         const container = document.getElementById('dashPositionTabs');
         container.innerHTML = '';
         
         // Ensure "SERVER" is first, then alphabetical
-        let sortedPos = [...STATE.positions].sort();
+        let sortedPos = scoredPositionsForOutlet(selectedOutlet).sort();
         const serverIdx = sortedPos.indexOf('SERVER');
         if(serverIdx > -1) {
             sortedPos.splice(serverIdx, 1);
@@ -1226,13 +1246,19 @@
             STATE.activeDashPosition = sortedPos[0];
         }
 
+        if (sortedPos.length === 0) {
+            STATE.activeDashPosition = '';
+            container.innerHTML = '<span style="color:var(--text-muted);font-size:12px;padding:8px 4px;">Tidak ada posisi dengan bobot penilaian aktif.</span>';
+            return;
+        }
+
         sortedPos.forEach(p => {
             const btn = document.createElement('div');
             btn.className = `dash-tab-btn ${p === STATE.activeDashPosition ? 'active' : ''}`;
             btn.innerText = p;
             btn.onclick = () => {
                 STATE.activeDashPosition = p;
-                renderDashboardTabs(); // Update active class
+                renderDashboardTabs(selectedOutlet); // Update active class
                 filterAndRenderDashboardTable(); // Update table
             };
             container.appendChild(btn);
@@ -1474,10 +1500,11 @@
        
        let tOut=STATE.user.outlet; if(STATE.user.role==='All' || STATE.user.outlet==='BIHQ'){ const s=document.getElementById('selFillOutlet'); if(s) tOut=s.value; }
        
-       const stfs=STATE.staffList.filter(s=>s.Status==='Active' && (!tOut || s.Outlet===tOut));
+       const scoredPositions=scoredPositionsForOutlet(tOut);
+       const stfs=STATE.staffList.filter(s=>s.Status==='Active' && (!tOut || s.Outlet===tOut) && scoredPositions.includes(s.Posisi));
        if(stfs.length===0){ 
            document.getElementById('fillTableBody').innerHTML=''; 
-           document.getElementById('staffTabs').innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center; width:100%;">Tidak ada staff aktif di outlet ini.</div>';
+           document.getElementById('staffTabs').innerHTML = '<div style="padding:20px; color:var(--text-muted); text-align:center; width:100%;">Tidak ada staff pada posisi dengan bobot penilaian aktif.</div>';
            return; 
        }
        

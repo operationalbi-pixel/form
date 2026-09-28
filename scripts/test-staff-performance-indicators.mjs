@@ -122,6 +122,21 @@ new vm.Script(html.slice(weightStart, weightEnd)).runInContext(uiContext);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"waiter":40}' }, ' Waiter '), 40);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '25' }, 'Server'), 25);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"Server":60}' }, 'Waiter'), 0);
+uiContext.STATE = {
+  positions: ['SERVER', 'QA', 'CASHIER', 'COOK 1'],
+  indicators: [
+    { Outlet: '', Status: 'Active', Bobot: '{"SERVER":100,"QA":0}' },
+    { Outlet: 'BILK', Status: 'Active', Bobot: '{"CASHIER":100}' },
+    { Outlet: '', Status: 'Disabled', Bobot: '{"COOK 1":100}' }
+  ]
+};
+assert.deepEqual(Array.from(uiContext.scoredPositionsForOutlet('BILK')), ['SERVER', 'CASHIER']);
+assert.deepEqual(Array.from(uiContext.scoredPositionsForOutlet('BICP')), ['SERVER']);
+assert.equal(uiContext.positionTotalWeight('QA', 'BILK'), 0);
+assert.match(html, /const stfs=STATE\.staffList\.filter\([^\n]+scoredPositions\.includes\(s\.Posisi\)\)/);
+assert.match(html, /const positions = scoredPositionsForOutlet\(selectedOutlet\)\.sort\(\)/);
+assert.match(html, /positionTotalWeight\(st\.Posisi, st\.Outlet\)<=0/);
+assert.match(html, /positionTotalWeight\(staff\.Posisi, staff\.Outlet\) <= 0/);
 
 const worker = await readFile('cloudflare/inventory-api/src/index.js', 'utf8');
 assert.match(worker, /UPPER\(TRIM\(position\)\) AS Posisi/);
