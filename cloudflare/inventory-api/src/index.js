@@ -2151,7 +2151,7 @@ async function migrateStaffPerformanceMaster(request, env, requestId) {
          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
            outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
-      ).bind(requiredText(row.nik, "nik", 80), requiredText(row.name, "name", 180), requiredText(row.position, "position", 120), requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), cleanText(row.status || "Active", 40)));
+      ).bind(requiredText(row.nik, "nik", 80), requiredText(row.name, "name", 180), requiredText(row.position, "position", 120).replace(/\s+/g, " ").toUpperCase(), requiredText(row.outletCode, "outlet_code", 40).toUpperCase(), cleanText(row.status || "Active", 40)));
     }
     for (const row of indicators) {
       statements.push(env.OPERATIONS_DB.prepare(
@@ -2269,10 +2269,10 @@ __name(staffPerformanceMigrationStatus, "staffPerformanceMigrationStatus");
 async function staffPerformanceBootstrap(url, env, requestId) {
   const { outlet } = staffPerformanceScope(url);
   const staffQuery = outlet
-    ? env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, position AS Posisi, outlet_code AS Outlet, status AS Status
-       FROM staff_performance_staff WHERE outlet_code = ? ORDER BY name`).bind(outlet)
-    : env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, position AS Posisi, outlet_code AS Outlet, status AS Status
-       FROM staff_performance_staff ORDER BY outlet_code, name`);
+    ? env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, UPPER(TRIM(position)) AS Posisi, outlet_code AS Outlet, status AS Status
+       FROM staff_performance_staff WHERE outlet_code = ? AND UPPER(TRIM(status)) = 'ACTIVE' ORDER BY name`).bind(outlet)
+    : env.OPERATIONS_DB.prepare(`SELECT nik AS NIK, name AS Nama, UPPER(TRIM(position)) AS Posisi, outlet_code AS Outlet, status AS Status
+       FROM staff_performance_staff WHERE UPPER(TRIM(status)) = 'ACTIVE' ORDER BY outlet_code, name`);
   const indicatorQuery = outlet
     ? env.OPERATIONS_DB.prepare(`SELECT indicator_id AS ID_Indikator, outlet_code AS Outlet, category AS Kategori,
        indicator_name AS Nama_Indikator, weight_json, target AS Target, threshold_a AS Batas_A,
@@ -2304,7 +2304,7 @@ async function staffPerformanceLeaderboard(url, env, requestId) {
   const query = env.OPERATIONS_DB.prepare(
     `SELECT s.score_date AS Tanggal, s.nik AS NIK, SUM(s.final_score) AS Score
      FROM staff_performance_scores s JOIN staff_performance_staff st ON st.nik = s.nik
-     WHERE s.score_date BETWEEN ? AND ?${whereOutlet}
+     WHERE s.score_date BETWEEN ? AND ? AND UPPER(TRIM(st.status)) = 'ACTIVE'${whereOutlet}
      GROUP BY s.score_date, s.nik ORDER BY s.score_date, s.nik`
   );
   const result = scope.outlet ? await query.bind(scope.from, scope.to, scope.outlet).all() : await query.bind(scope.from, scope.to).all();
@@ -2319,7 +2319,7 @@ async function staffPerformanceDailyStats(url, env, requestId) {
   const query = env.OPERATIONS_DB.prepare(
     `SELECT DISTINCT s.score_date AS Tanggal, s.nik AS NIK
      FROM staff_performance_scores s JOIN staff_performance_staff st ON st.nik = s.nik
-     WHERE s.score_date BETWEEN ? AND ?${whereOutlet} ORDER BY s.score_date, s.nik`
+     WHERE s.score_date BETWEEN ? AND ? AND UPPER(TRIM(st.status)) = 'ACTIVE'${whereOutlet} ORDER BY s.score_date, s.nik`
   );
   const result = scope.outlet ? await query.bind(scope.from, scope.to, scope.outlet).all() : await query.bind(scope.from, scope.to).all();
   return responseJson({ ok: true, data: result.results || [], requestId });
@@ -2329,7 +2329,7 @@ __name(staffPerformanceDailyStats, "staffPerformanceDailyStats");
 async function staffPerformanceData(url, env, requestId) {
   const scope = staffPerformanceScope(url);
   if (!scope.from || !scope.to) return apiError(400, "INVALID_DATE_RANGE", "Periode tidak valid.", requestId);
-  const conditions = ["s.score_date BETWEEN ? AND ?"], values = [scope.from, scope.to];
+  const conditions = ["s.score_date BETWEEN ? AND ?", "UPPER(TRIM(st.status)) = 'ACTIVE'"], values = [scope.from, scope.to];
   if (scope.outlet) { conditions.push("st.outlet_code = ?"); values.push(scope.outlet); }
   if (scope.nik) { conditions.push("s.nik = ?"); values.push(scope.nik); }
   const result = await env.OPERATIONS_DB.prepare(
@@ -2356,7 +2356,7 @@ async function saveStaffPerformanceStaff(request, env, requestId) {
        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
          outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
-    ).bind(nik, requiredText(payload.name, "name", 180), requiredText(payload.position, "position", 120), requiredText(payload.outletCode, "outlet_code", 40).toUpperCase(), cleanText(payload.status || "Active", 40)).run();
+    ).bind(nik, requiredText(payload.name, "name", 180), requiredText(payload.position, "position", 120).replace(/\s+/g, " ").toUpperCase(), requiredText(payload.outletCode, "outlet_code", 40).toUpperCase(), cleanText(payload.status || "Active", 40)).run();
     return responseJson({ ok: true, data: { success: true }, requestId });
   } catch (error) {
     return apiError(400, error instanceof Error ? error.message : "INVALID_STAFF", "Data staff tidak valid.", requestId);
@@ -2383,7 +2383,7 @@ async function syncStaffPerformanceStaff(request, env, requestId) {
          ON CONFLICT(nik) DO UPDATE SET name = excluded.name, position = excluded.position,
            outlet_code = excluded.outlet_code, status = excluded.status, updated_at = CURRENT_TIMESTAMP`
       ).bind(
-        nik, requiredText(row.name, "name", 180), cleanText(row.position || "-", 120),
+        nik, requiredText(row.name, "name", 180), cleanText(row.position || "-", 120).replace(/\s+/g, " ").toUpperCase(),
         outletCode, cleanText(row.status || "Active", 40)
       ));
     }

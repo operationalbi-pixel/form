@@ -6413,7 +6413,11 @@ function staffPerformanceMppStaffRows_() {
   const sheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getSheetByName(CONFIG.EMP_SHEET);
   if (!sheet) throw new Error('Master Data MPP EMP_LIST tidak ditemukan.');
   if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().map(function (row) {
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(9, sheet.getLastColumn())).getDisplayValues().filter(function (row) {
+    const section = String(row[6] || '').trim().toUpperCase();
+    const status = String(row[8] || '').trim().toUpperCase();
+    return section === 'SERVICE' && status !== 'RESIGN';
+  }).map(function (row) {
     const status = String(row[8] || 'Active').trim().toLowerCase();
     return {
       nik: normalizeNik_(row[0]), name: String(row[1] || '').trim(),
@@ -6587,7 +6591,7 @@ function saveStaffPerformanceIndicator(token, payload) {
 }
 
 function syncStaffPerformanceStaffFromMpp_(force) {
-  const cache = CacheService.getScriptCache(), cacheKey = 'staff-performance-mpp-sync-v1';
+  const cache = CacheService.getScriptCache(), cacheKey = 'staff-performance-mpp-sync-v2-service-only';
   if (!force && cache.get(cacheKey)) return { success: true, cached: true, source: 'MPP_EMP_LIST' };
   const result = staffPerformanceCloudflareData_('POST', '/v1/staff-performance/staff/sync', {
     rows: staffPerformanceMppStaffRows_()
@@ -6598,7 +6602,7 @@ function syncStaffPerformanceStaffFromMpp_(force) {
 
 function refreshStaffPerformanceStaffAfterMppWrite_() {
   try {
-    CacheService.getScriptCache().remove('staff-performance-mpp-sync-v1');
+    CacheService.getScriptCache().remove('staff-performance-mpp-sync-v2-service-only');
     syncStaffPerformanceStaffFromMpp_(true);
   } catch (error) {
     console.warn('Sinkronisasi Staff Performance ditunda: ' + String(error && error.message || error));

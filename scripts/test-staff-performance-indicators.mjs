@@ -3,6 +3,31 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const backend = await readFile('docs/Code.gs', 'utf8');
+const staffStart = backend.indexOf('function staffPerformanceMppStaffRows_(');
+const staffEnd = backend.indexOf('\nfunction staffPerformanceIndicatorRows_(', staffStart);
+assert.ok(staffStart >= 0 && staffEnd > staffStart, 'MPP staff reader must exist');
+const employeeRows = [
+  ['1', 'Service Active', 'BILK', '', 'Server', '', ' Service ', '', 'Active'],
+  ['2', 'Office Active', 'BILK', '', 'FINANCE', '', 'Office', '', 'Active'],
+  ['3', 'Service Resign', 'BILK', '', 'server', '', 'SERVICE', '', 'Resign'],
+  ['4', 'Service Blank Status', 'BILK', '', ' server  ', '', 'SERVICE', '', '']
+];
+const staffContext = {
+  CONFIG: { SPREADSHEET_ID: 'mpp', EMP_SHEET: 'EMP_LIST' },
+  SpreadsheetApp: { openById: () => ({ getSheetByName: () => ({
+    getLastRow: () => employeeRows.length + 1,
+    getLastColumn: () => 9,
+    getRange: () => ({ getDisplayValues: () => employeeRows.map(row => row.slice()) })
+  }) }) },
+  normalizeNik_: value => String(value || '').trim(),
+  normalizeEmployeePosition_: value => String(value || '').trim().replace(/\s+/g, ' ').toUpperCase()
+};
+vm.createContext(staffContext);
+new vm.Script(backend.slice(staffStart, staffEnd)).runInContext(staffContext);
+const filteredStaff = staffContext.staffPerformanceMppStaffRows_();
+assert.deepEqual(Array.from(filteredStaff, row => row.nik), ['1', '4']);
+assert.deepEqual(Array.from(filteredStaff, row => row.position), ['SERVER', 'SERVER']);
+
 const functionStart = backend.indexOf('function staffPerformanceIndicatorRows_(');
 const functionEnd = backend.indexOf('\nfunction syncStaffPerformanceStaffFromMpp_(', functionStart);
 assert.ok(functionStart >= 0 && functionEnd > functionStart, 'Google Sheets indicator reader must exist');
@@ -86,6 +111,8 @@ saveContext.staffPerformanceContext_ = () => ({ isBihq: false });
 assert.throws(() => saveContext.saveStaffPerformanceIndicator('token', { category: 'X', name: 'Y' }), /Hanya pengguna BIHQ/);
 
 const html = await readFile('docs/staff-performance.html', 'utf8');
+assert.match(html, /activeDashPosition:\s*'SERVER'/);
+assert.match(html, /new Set\(STATE\.staffList\.map\(staff => staff\.Posisi\)/);
 const weightStart = html.indexOf('function indicatorWeightForPosition(');
 const weightEnd = html.indexOf('\n    function showToast(', weightStart);
 assert.ok(weightStart >= 0 && weightEnd > weightStart, 'Position weight helper must exist');
@@ -96,4 +123,9 @@ assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"waiter":40}' }, ' 
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '25' }, 'Server'), 25);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"Server":60}' }, 'Waiter'), 0);
 
-console.log('OK: Staff Performance reads and BIHQ securely edits Config_Indicators, with safe position weights.');
+const worker = await readFile('cloudflare/inventory-api/src/index.js', 'utf8');
+assert.match(worker, /UPPER\(TRIM\(position\)\) AS Posisi/);
+assert.match(worker, /UPPER\(TRIM\(status\)\) = 'ACTIVE'/);
+assert.match(worker, /row\.position \|\| "-", 120\)\.replace\(\/\\s\+\/g, " "\)\.toUpperCase\(\)/);
+
+console.log('OK: Staff Performance filters Service staff, excludes resignations, normalizes positions, and securely edits Config_Indicators.');

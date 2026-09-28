@@ -869,7 +869,7 @@
         activeStaffNik:null, 
         currentDailyData:[],
         processedDashData: [], // Stores aggregated leaderboard data
-        activeDashPosition: 'Server' // Default position for Dashboard
+        activeDashPosition: 'SERVER' // Default position for Dashboard
     };
     let chartInstance = null;
     let dailyStatsChartInstance = null; // New Instance for Daily Stats
@@ -997,7 +997,10 @@
     }
 
     function applyInitialData(res) {
-         STATE.staffList=res.staff||[]; STATE.indicators=res.indicators||[]; STATE.outlets=res.outlets||[]; STATE.positions=res.positions||[];
+         const normalizePosition = value => String(value || '-').trim().replace(/\s+/g, ' ').toUpperCase();
+         STATE.staffList=(res.staff||[]).map(staff => ({ ...staff, Posisi: normalizePosition(staff.Posisi) }));
+         STATE.indicators=res.indicators||[]; STATE.outlets=res.outlets||[];
+         STATE.positions=[...new Set(STATE.staffList.map(staff => staff.Posisi).filter(Boolean))].sort();
          const opts = STATE.outlets.map(o=>`<option value="${o}">${o}</option>`).join('');
          
          const stfOutSelect = document.querySelector('select#stfOutlet'); 
@@ -1130,7 +1133,7 @@
         }
 
         // Identify unique positions (for legend & stacking)
-        const positions = STATE.positions.length > 0 ? STATE.positions.sort() : ['Server','Captain','Cashier','Greeter','Barista'];
+        const positions = STATE.positions.length > 0 ? STATE.positions.sort() : ['SERVER','CAPTAIN','CASHIER','GREETER','BARISTA'];
         
         // Structure data: date -> position -> count
         const processed = {};
@@ -1210,12 +1213,12 @@
         const container = document.getElementById('dashPositionTabs');
         container.innerHTML = '';
         
-        // Ensure "Server" is first, then alphabetical
+        // Ensure "SERVER" is first, then alphabetical
         let sortedPos = [...STATE.positions].sort();
-        const serverIdx = sortedPos.indexOf('Server');
+        const serverIdx = sortedPos.indexOf('SERVER');
         if(serverIdx > -1) {
             sortedPos.splice(serverIdx, 1);
-            sortedPos.unshift('Server');
+            sortedPos.unshift('SERVER');
         }
         
         // If current Active Pos is not in list (e.g. data changed), reset to first

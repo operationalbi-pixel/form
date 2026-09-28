@@ -154,11 +154,13 @@ function migrateStaffPerformanceMaster_(state) {
   const indicatorSheet = source.getSheetByName('Config_Indicators');
   if (!staffSheet || !indicatorSheet) throw new Error('Sheet EMP_LIST Master Data MPP atau Config_Indicators tidak ditemukan.');
 
-  const staff = staffPerformanceRows_(staffSheet).map(function (row) {
+  const staff = staffPerformanceRows_(staffSheet).filter(function (row) {
+    return text_(row[6]).toUpperCase() === 'SERVICE' && text_(row[8]).toUpperCase() !== 'RESIGN';
+  }).map(function (row) {
     const status = text_(row[8]).toLowerCase();
     return {
       nik: text_(row[0]), name: text_(row[1]), outletCode: text_(row[2]).toUpperCase(),
-      position: text_(row[4]) || '-', status: status === 'resign' || status === 'inactive' ? 'Inactive' : 'Active'
+      position: text_(row[4]).replace(/\s+/g, ' ').toUpperCase() || '-', status: status === 'inactive' ? 'Inactive' : 'Active'
     };
   }).filter(function (row) { return row.nik && row.name && row.position && row.outletCode; });
 
