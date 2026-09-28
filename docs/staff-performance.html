@@ -945,6 +945,16 @@
     function scoredPositionsForOutlet(outlet) {
        return STATE.positions.filter(position => positionTotalWeight(position, outlet) > 0);
     }
+
+    function staffedScoredPositionsForOutlet(outlet) {
+       const selectedOutlet = String(outlet || '').trim().toUpperCase();
+       const scored = new Set(scoredPositionsForOutlet(selectedOutlet));
+       return [...new Set(STATE.staffList.filter(staff => {
+          const staffOutlet = String(staff.Outlet || '').trim().toUpperCase();
+          const isActive = String(staff.Status || '').trim().toLowerCase() === 'active';
+          return isActive && (!selectedOutlet || staffOutlet === selectedOutlet) && scored.has(staff.Posisi);
+       }).map(staff => staff.Posisi))].sort();
+    }
     
     function showToast(title, message) {
        const t = document.getElementById('successToast');
@@ -1152,7 +1162,7 @@
         }
 
         // Identify unique positions (for legend & stacking)
-        const positions = scoredPositionsForOutlet(selectedOutlet).sort();
+        const positions = staffedScoredPositionsForOutlet(selectedOutlet);
         
         // Structure data: date -> position -> count
         const processed = {};
@@ -1234,7 +1244,7 @@
         container.innerHTML = '';
         
         // Ensure "SERVER" is first, then alphabetical
-        let sortedPos = scoredPositionsForOutlet(selectedOutlet).sort();
+        let sortedPos = staffedScoredPositionsForOutlet(selectedOutlet);
         const serverIdx = sortedPos.indexOf('SERVER');
         if(serverIdx > -1) {
             sortedPos.splice(serverIdx, 1);
@@ -1500,7 +1510,7 @@
        
        let tOut=STATE.user.outlet; if(STATE.user.role==='All' || STATE.user.outlet==='BIHQ'){ const s=document.getElementById('selFillOutlet'); if(s) tOut=s.value; }
        
-       const scoredPositions=scoredPositionsForOutlet(tOut);
+       const scoredPositions=staffedScoredPositionsForOutlet(tOut);
        const stfs=STATE.staffList.filter(s=>s.Status==='Active' && (!tOut || s.Outlet===tOut) && scoredPositions.includes(s.Posisi));
        if(stfs.length===0){ 
            document.getElementById('fillTableBody').innerHTML=''; 
