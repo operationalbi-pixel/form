@@ -122,6 +122,30 @@ new vm.Script(html.slice(weightStart, weightEnd)).runInContext(uiContext);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"waiter":40}' }, ' Waiter '), 40);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '25' }, 'Server'), 25);
 assert.equal(uiContext.indicatorWeightForPosition({ Bobot: '{"Server":60}' }, 'Waiter'), 0);
+uiContext.STATE = {
+  positions: ['SERVER', 'QA', 'CASHIER', 'CAPTAIN', 'COOK 1'],
+  staffList: [
+    { Posisi: 'SERVER', Outlet: 'BILK', Status: 'Active' },
+    { Posisi: 'CASHIER', Outlet: 'BILK', Status: 'Active' },
+    { Posisi: 'CAPTAIN', Outlet: 'BICP', Status: 'Active' },
+    { Posisi: 'QA', Outlet: 'BILK', Status: 'Active' },
+    { Posisi: 'COOK 1', Outlet: 'BILK', Status: 'Inactive' }
+  ],
+  indicators: [
+    { Outlet: '', Status: 'Active', Bobot: '{"SERVER":100,"QA":0,"CAPTAIN":100}' },
+    { Outlet: 'BILK', Status: 'Active', Bobot: '{"CASHIER":100}' },
+    { Outlet: '', Status: 'Disabled', Bobot: '{"COOK 1":100}' }
+  ]
+};
+assert.deepEqual(Array.from(uiContext.scoredPositionsForOutlet('BILK')), ['SERVER', 'CASHIER', 'CAPTAIN']);
+assert.deepEqual(Array.from(uiContext.scoredPositionsForOutlet('BICP')), ['SERVER', 'CAPTAIN']);
+assert.deepEqual(Array.from(uiContext.staffedScoredPositionsForOutlet('BILK')), ['CASHIER', 'SERVER']);
+assert.deepEqual(Array.from(uiContext.staffedScoredPositionsForOutlet('BICP')), ['CAPTAIN']);
+assert.equal(uiContext.positionTotalWeight('QA', 'BILK'), 0);
+assert.match(html, /const stfs=STATE\.staffList\.filter\([^\n]+scoredPositions\.includes\(s\.Posisi\)\)/);
+assert.match(html, /const positions = staffedScoredPositionsForOutlet\(selectedOutlet\)/);
+assert.match(html, /positionTotalWeight\(st\.Posisi, st\.Outlet\)<=0/);
+assert.match(html, /positionTotalWeight\(staff\.Posisi, staff\.Outlet\) <= 0/);
 
 const worker = await readFile('cloudflare/inventory-api/src/index.js', 'utf8');
 assert.match(worker, /UPPER\(TRIM\(position\)\) AS Posisi/);
