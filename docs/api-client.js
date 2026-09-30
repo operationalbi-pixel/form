@@ -2,7 +2,7 @@
   'use strict';
 
   var CHAT_ASSET_VERSION = '20260930-unified-chat1';
-  var SOPI_ASSET_VERSION = '20260930-sopi3';
+  var SOPI_ASSET_VERSION = '20261001-sopi4';
 
   function installBakerzinTypography() {
     if (!document.getElementById('bakerzinTypographyFont')) {
@@ -116,7 +116,7 @@
   global.BAKERZIN_API = Object.freeze({ call: call });
 
   function installChatWidget() {
-    if (/\/(?:chat|sopi(?:-admin)?)\.html$/i.test(global.location.pathname)) return;
+    if (/\/(?:chat|sopi(?:-(?:admin|source))?)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
     if (!token || document.getElementById('biChatFloat')) return;
@@ -157,7 +157,7 @@
   }
 
   function installSopiWidget() {
-    if (/\/(?:chat|sopi(?:-admin)?)\.html$/i.test(global.location.pathname)) return;
+    if (/\/(?:chat|sopi(?:-(?:admin|source))?)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
     if (!token || document.getElementById('biSopiFloat')) return;

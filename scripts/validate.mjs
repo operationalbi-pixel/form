@@ -40,6 +40,7 @@ const staffPerformanceHtml = await text('docs/staff-performance.html');
 const staffPerformanceMigration = await text('gas/StaffPerformanceCloudflareMigration.gs');
 const sopiHtml = await text('docs/sopi.html');
 const sopiAdminHtml = await text('docs/sopi-admin.html');
+const sopiSourceHtml = await text('docs/sopi-source.html');
 const sopiSeed = JSON.parse(await text('cloudflare/inventory-api/data/sopi-seed.json'));
 const sopiWrangler = await text('cloudflare/inventory-api/wrangler.jsonc');
 const sopiKnowledgeMigration = await text('cloudflare/migrations/0007_sopi_knowledge_center.sql');
@@ -49,11 +50,11 @@ if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.htm
 if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
   failures.push('Gateway GAS SOPi belum tersedia');
 }
-for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'downloadSopiAttachment']) {
+for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'getSopiDocument', 'downloadSopiAttachment']) {
   const contractPattern = new RegExp(`function ${functionName}\\([^)]*\\) \\{\\s*return safe_\\(function \\(\\) \\{`);
   if (!contractPattern.test(chatBackend)) failures.push(`Gateway SOPi '${functionName}' belum mengembalikan kontrak {ok,data}`);
 }
-for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiDownload']) {
+for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiDocument', 'sopiDownload']) {
   if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
 }
 if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('function uploadSopiKnowledge(')) {
@@ -67,6 +68,12 @@ if (!apiClient.includes("dock.id = 'biAssistantDock'") || !apiClient.includes('b
 }
 if (!inventoryWorker.includes('async function sopiChat(') || !inventoryWorker.includes('SUMBER SOP TERVERIFIKASI')) {
   failures.push('Cloudflare Worker SOPi belum menerapkan jawaban berbasis sumber');
+}
+if (!inventoryWorker.includes('async function sopiRunAi(') || !inventoryWorker.includes('sopiConversationFallback') || !inventoryWorker.includes('mode: hasDocuments ? "knowledge" : "conversation"')) {
+  failures.push('SOPi belum memakai AI untuk percakapan ringan dengan pemisahan mode pengetahuan');
+}
+if (!inventoryWorker.includes('async function sopiDocument(') || !inventoryWorker.includes('url.pathname === "/v1/sopi/document"')) {
+  failures.push('Worker belum menyediakan dokumen SOP terstruktur untuk viewer');
 }
 if (!inventoryWorker.includes('env.AI.toMarkdown') || !inventoryWorker.includes('env.FILES.put') || !inventoryWorker.includes('async function sopiFile(')) {
   failures.push('Worker SOPi belum mengonversi lampiran, menyimpan file privat, dan menyediakan unduhan aman');
@@ -94,6 +101,18 @@ for (const match of sopiAdminHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*
 }
 if (!sopiAdminHtml.includes('Pertanyaan Belum Terjawab') || !sopiAdminHtml.includes('Upload Informasi') || !sopiAdminHtml.includes('accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp"')) {
   failures.push('UI Knowledge Center SOPi belum menyediakan dua tab dan format lampiran yang diminta');
+}
+let sopiSourceInlineIndex = 0;
+for (const match of sopiSourceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  sopiSourceInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/sopi-source.html#inline-${sopiSourceInlineIndex}` }); }
+  catch (error) { failures.push(`docs/sopi-source.html inline script ${sopiSourceInlineIndex}: ${error.message}`); }
+}
+if (!sopiHtml.includes('sopi-source.html?id=') || sopiHtml.includes('source.url')) {
+  failures.push('Sumber SOP masih dapat membuka JSON mentah atau belum diarahkan ke viewer');
+}
+if (!sopiSourceHtml.includes("call('sopiDocument'") || !sopiSourceHtml.includes('Bahan & Takaran') || !sopiSourceHtml.includes('Metode Pembuatan')) {
+  failures.push('Viewer SOP belum menampilkan dokumen terstruktur');
 }
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
