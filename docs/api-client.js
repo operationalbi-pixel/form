@@ -2,7 +2,7 @@
   'use strict';
 
   var CHAT_ASSET_VERSION = '20260930-unified-chat1';
-  var SOPI_ASSET_VERSION = '20261001-sopi4';
+  var SOPI_ASSET_VERSION = '20261001-sopi5';
 
   function installBakerzinTypography() {
     if (!document.getElementById('bakerzinTypographyFont')) {
@@ -165,13 +165,14 @@
     style.id = 'biSopiWidgetStyle';
     style.textContent = '#biSopiFloat{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(88px,calc(env(safe-area-inset-bottom) + 84px));z-index:2147482100;width:54px;height:54px;padding:0;border:2px solid #fff;border-radius:50%;overflow:hidden;background:linear-gradient(145deg,#fff6e9,#f1c9a8);box-shadow:0 12px 30px rgba(92,24,38,.25);cursor:pointer;transition:.18s transform,.18s box-shadow}#biSopiFloat:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(92,24,38,.34)}#biSopiFloat svg{width:100%;height:100%;display:block}#biSopiFloat:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #fff;border-radius:50%;background:#20b879}#biSopiPanel{position:fixed;z-index:2147482200;right:max(18px,env(safe-area-inset-right));bottom:max(154px,calc(env(safe-area-inset-bottom) + 150px));width:min(390px,calc(100vw - 24px));height:min(590px,calc(100dvh - 176px));display:none;overflow:hidden;border:1px solid #eadfe2;border-radius:23px;background:#fff;box-shadow:0 24px 70px rgba(56,24,34,.28);transform-origin:bottom right}#biSopiPanel.open{display:block;animation:biSopiIn .2s ease-out}#biSopiFrame{width:100%;height:100%;border:0;background:#fff}#biSopiClose{position:absolute;z-index:3;top:10px;right:10px;width:32px;height:32px;border:1px solid rgba(255,255,255,.28);border-radius:11px;color:#fff;background:rgba(61,2,15,.24);font:500 20px/1 Arial;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(4px)}#biSopiAdminFloat{position:fixed;z-index:2147482150;right:max(57px,calc(env(safe-area-inset-right) + 39px));bottom:max(125px,calc(env(safe-area-inset-bottom) + 121px));width:31px;height:31px;padding:0;display:grid;place-items:center;border:2px solid #fff;border-radius:50%;color:#6d4600;background:linear-gradient(145deg,#fff7b8,#ffc928);box-shadow:0 5px 16px rgba(134,86,0,.32);cursor:pointer;animation:biSopiLamp 1.8s ease-in-out infinite}#biSopiAdminFloat svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8}#biSopiAdminBadge{position:absolute;right:-6px;top:-7px;min-width:18px;height:18px;padding:0 4px;display:none;place-items:center;border:2px solid #fff;border-radius:10px;color:#fff;background:#a40d28;font:800 9px/1 Arial}#biSopiAdminLayer{position:fixed;inset:0;z-index:2147483200;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(39,18,24,.56);backdrop-filter:blur(4px)}#biSopiAdminLayer.open{display:flex}#biSopiAdminFrame{width:min(980px,100%);height:min(760px,calc(100dvh - 36px));border:0;border-radius:24px;background:#f7f5f6;box-shadow:0 28px 90px rgba(35,8,16,.4)}#biSopiAdminClose{position:absolute;top:max(28px,calc(env(safe-area-inset-top) + 16px));right:max(28px,calc(env(safe-area-inset-right) + 16px));width:40px;height:40px;display:grid;place-items:center;border:1px solid #eadfe2;border-radius:13px;color:#34282c;background:#fff;font:500 22px/1 Arial;cursor:pointer;box-shadow:0 5px 18px rgba(35,8,16,.1)}@keyframes biSopiIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@keyframes biSopiLamp{0%,100%{box-shadow:0 5px 16px rgba(134,86,0,.28),0 0 0 0 rgba(255,201,40,.3)}50%{box-shadow:0 7px 20px rgba(134,86,0,.38),0 0 0 7px rgba(255,201,40,0)}}@media(max-width:700px){#biSopiFloat{width:50px;height:50px;right:14px;bottom:max(78px,calc(env(safe-area-inset-bottom) + 74px))}#biSopiPanel{right:10px;bottom:max(140px,calc(env(safe-area-inset-bottom) + 136px));width:calc(100vw - 20px);height:min(610px,calc(100dvh - 156px));border-radius:21px}#biSopiAdminFloat{right:50px;bottom:max(112px,calc(env(safe-area-inset-bottom) + 108px));width:29px;height:29px}#biSopiAdminLayer{padding:0}#biSopiAdminFrame{width:100%;height:100%;border-radius:0}#biSopiAdminClose{top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));width:34px;height:34px;border-radius:10px}}@media(prefers-reduced-motion:reduce){#biSopiPanel.open{animation:none}#biSopiAdminFloat{animation:none}}';
     style.textContent += '#biAssistantDock{position:fixed;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));z-index:2147482150;display:flex;flex-direction:column;gap:9px;padding:7px;border:1px solid rgba(231,216,220,.9);border-radius:25px;background:rgba(255,255,255,.9);box-shadow:0 16px 38px rgba(67,28,39,.2);backdrop-filter:blur(12px)}#biAssistantDock #biChatFloat,#biAssistantDock #biSopiFloat{position:relative!important;right:auto!important;bottom:auto!important;width:52px;height:52px;border-radius:17px;box-shadow:0 7px 18px rgba(73,28,40,.18)}#biAssistantDock #biSopiFloat{order:1}#biAssistantDock #biChatFloat{order:2}#biAssistantDock #biSopiFloat svg{animation:biSopiAssistantFloat 3s ease-in-out infinite}#biAssistantDock #biSopiAdminFloat{position:absolute;z-index:4;top:-7px;right:-7px;bottom:auto;width:29px;height:29px}#biSopiPanel{left:50%;top:50%;right:auto;bottom:auto;width:min(440px,calc(100vw - 24px));height:min(720px,calc(100dvh - 24px));border-radius:24px;transform:translate(-50%,-50%);transform-origin:center;box-shadow:0 28px 80px rgba(34,13,19,.34),0 0 0 100vmax rgba(34,13,19,.48);backdrop-filter:blur(3px)}#biSopiPanel.open{animation:biSopiModalIn .2s ease-out}@keyframes biSopiAssistantFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}@keyframes biSopiModalIn{from{opacity:0;transform:translate(-50%,calc(-50% + 12px)) scale(.98)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}@media(max-width:700px){#biAssistantDock{right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));gap:7px;padding:6px;border-radius:22px}#biAssistantDock #biChatFloat,#biAssistantDock #biSopiFloat{width:48px;height:48px;border-radius:15px}#biSopiPanel{inset:0;width:100%;height:100%;border:0;border-radius:0;transform:none;box-shadow:none}#biSopiPanel.open{animation:none}}@media(prefers-reduced-motion:reduce){#biAssistantDock #biSopiFloat svg{animation:none}}';
+    style.textContent += '#biSopiDock{position:fixed;left:max(10px,env(safe-area-inset-left));bottom:max(8px,env(safe-area-inset-bottom));z-index:2147482150;display:grid;place-items:end start;pointer-events:none}#biSopiDock #biSopiFloat{position:relative!important;left:auto!important;right:auto!important;bottom:auto!important;width:94px;height:118px;padding:0;border:0;border-radius:0;overflow:visible;background:transparent;box-shadow:none;pointer-events:auto;filter:drop-shadow(0 10px 14px rgba(72,24,37,.25));animation:biSopiAssistantFloat 3s ease-in-out infinite}#biSopiDock #biSopiFloat:hover{transform:translateY(-3px) scale(1.025);box-shadow:none}#biSopiFloat img{width:100%;height:100%;display:block;object-fit:contain;object-position:center bottom}#biSopiDock #biSopiFloat:after{right:14px;bottom:12px;width:9px;height:9px}#biSopiPanel #biSopiAdminFloat{position:absolute;z-index:5;top:10px;left:10px;right:auto;bottom:auto;width:32px;height:32px}#biSopiPanel{left:50%;top:50%;right:auto;bottom:auto;width:min(440px,calc(100vw - 24px));height:min(720px,calc(100dvh - 24px));border-radius:24px;transform:translate(-50%,-50%);transform-origin:center;box-shadow:0 28px 80px rgba(34,13,19,.34),0 0 0 100vmax rgba(34,13,19,.48);backdrop-filter:blur(3px)}@media(max-width:700px){#biSopiDock{left:max(7px,env(safe-area-inset-left));bottom:max(4px,env(safe-area-inset-bottom))}#biSopiDock #biSopiFloat{width:82px;height:104px}#biSopiPanel{top:var(--bi-sopi-visual-top,0px);left:var(--bi-sopi-visual-left,0px);right:auto;bottom:auto;width:var(--bi-sopi-visual-width,100vw);height:var(--bi-sopi-visual-height,100dvh);border:0;border-radius:0;transform:none;box-shadow:none}#biSopiClose{top:max(10px,calc(env(safe-area-inset-top) + 6px));right:max(10px,env(safe-area-inset-right))}#biSopiPanel #biSopiAdminFloat{top:max(10px,calc(env(safe-area-inset-top) + 6px));left:max(10px,env(safe-area-inset-left));right:auto;width:30px;height:30px}#biSopiPanel.open{animation:none}}@media(prefers-reduced-motion:reduce){#biSopiDock #biSopiFloat{animation:none}}';
     document.head.appendChild(style);
     var button = document.createElement('button');
     button.id = 'biSopiFloat';
     button.type = 'button';
     button.setAttribute('aria-label', 'Buka SOPi, asisten SOP Bakerzin');
     button.title = 'Tanya SOPi';
-    button.innerHTML = '<svg viewBox="0 0 64 64" role="img" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#fff4e5"/><path d="M17 57c2-13 8-20 15-20s14 7 16 20" fill="#8f1029"/><circle cx="32" cy="25" r="13" fill="#efbc91"/><path d="M19 24C20 11 27 6 35 7c10 1 15 9 12 19-3-5-7-9-12-13-4 6-9 10-16 11z" fill="#33252a"/><path d="M21 20c3-9 10-14 18-11 5 1 9 5 10 10-9-4-18-3-28 1z" fill="#fff"/><circle cx="27" cy="26" r="1.2" fill="#33252a"/><circle cx="37" cy="26" r="1.2" fill="#33252a"/><path d="M28 32c3 2 6 2 9 0" fill="none" stroke="#9b4f4c" stroke-width="1.5" stroke-linecap="round"/><path d="M23 43h18v14H23z" fill="#b91c39"/><text x="32" y="53" fill="#fff" text-anchor="middle" font-size="8" font-weight="800" font-family="Arial">SOPi</text></svg>';
+    button.innerHTML = '<img src="assets/sopi-assistant-v2.png?v=' + encodeURIComponent(SOPI_ASSET_VERSION) + '" alt="" aria-hidden="true">';
     var panel = document.createElement('div');
     panel.id = 'biSopiPanel';
     panel.setAttribute('role', 'dialog');
@@ -186,11 +187,9 @@
     frame.title = 'SOPi · Asisten SOP Bakerzin';
     panel.appendChild(frame);
     panel.appendChild(closeButton);
-    var dock = document.getElementById('biAssistantDock');
-    if (!dock) { dock = document.createElement('div'); dock.id = 'biAssistantDock'; dock.setAttribute('aria-label', 'Pusat komunikasi Bakerzin'); document.body.appendChild(dock); }
-    var chatButton = document.getElementById('biChatFloat');
-    if (chatButton) dock.appendChild(chatButton);
-    dock.insertBefore(button, dock.firstChild);
+    var dock = document.getElementById('biSopiDock');
+    if (!dock) { dock = document.createElement('div'); dock.id = 'biSopiDock'; dock.setAttribute('aria-label', 'Asisten SOPi Bakerzin'); document.body.appendChild(dock); }
+    dock.appendChild(button);
     document.body.appendChild(panel);
     var adminButton = null, adminLayer = null, adminFrame = null;
     function installAdminKnowledge(user) {
@@ -216,7 +215,7 @@
       adminClose.textContent = '×';
       adminLayer.appendChild(adminFrame);
       adminLayer.appendChild(adminClose);
-      dock.appendChild(adminButton);
+      panel.appendChild(adminButton);
       document.body.appendChild(adminLayer);
       function closeAdmin() { adminLayer.classList.remove('open'); document.documentElement.style.overflow = ''; }
       function refreshAdminBadge() { call('sopiAdminBootstrap', [token]).then(function (response) { var badge = document.getElementById('biSopiAdminBadge'); if (!badge || !response || !response.ok) return; var count = Number(response.data && response.data.openCount || 0); badge.textContent = count > 99 ? '99+' : String(count); badge.style.display = count ? 'grid' : 'none'; }).catch(function () {}); }
@@ -235,13 +234,26 @@
       panel.classList.remove('open');
       button.setAttribute('aria-expanded', 'false');
     }
+    function syncSopiViewport() {
+      var viewport = global.visualViewport;
+      panel.style.setProperty('--bi-sopi-visual-top', (viewport ? Math.max(0, Number(viewport.offsetTop || 0)) : 0) + 'px');
+      panel.style.setProperty('--bi-sopi-visual-left', (viewport ? Math.max(0, Number(viewport.offsetLeft || 0)) : 0) + 'px');
+      panel.style.setProperty('--bi-sopi-visual-width', Math.max(240, viewport ? Number(viewport.width || global.innerWidth) : global.innerWidth) + 'px');
+      panel.style.setProperty('--bi-sopi-visual-height', Math.max(240, viewport ? Number(viewport.height || global.innerHeight) : global.innerHeight) + 'px');
+    }
     function open() {
       if (!frame.src) frame.src = 'sopi.html?v=' + encodeURIComponent(SOPI_ASSET_VERSION);
       var chatLayer = document.getElementById('biChatLayer');
       if (chatLayer) chatLayer.classList.remove('open');
       document.documentElement.style.overflow = '';
+      syncSopiViewport();
       panel.classList.add('open');
       button.setAttribute('aria-expanded', 'true');
+    }
+    global.addEventListener('resize', syncSopiViewport);
+    if (global.visualViewport) {
+      global.visualViewport.addEventListener('resize', syncSopiViewport);
+      global.visualViewport.addEventListener('scroll', syncSopiViewport);
     }
     button.setAttribute('aria-expanded', 'false');
     button.addEventListener('click', function () {
