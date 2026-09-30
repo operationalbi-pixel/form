@@ -38,6 +38,30 @@ const stockCardHtml = await text('docs/stock-card.html');
 const frontendShowcase = await text('docs/showcaselog.html');
 const staffPerformanceHtml = await text('docs/staff-performance.html');
 const staffPerformanceMigration = await text('gas/StaffPerformanceCloudflareMigration.gs');
+const sopiHtml = await text('docs/sopi.html');
+const sopiSeed = JSON.parse(await text('cloudflare/inventory-api/data/sopi-seed.json'));
+const sopiWrangler = await text('cloudflare/inventory-api/wrangler.jsonc');
+if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.html?v=')) {
+  failures.push('Widget SOPi belum dipasang di atas chat global');
+}
+if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
+  failures.push('Gateway GAS SOPi belum tersedia');
+}
+if (!inventoryWorker.includes('async function sopiChat(') || !inventoryWorker.includes('SUMBER SOP TERVERIFIKASI')) {
+  failures.push('Cloudflare Worker SOPi belum menerapkan jawaban berbasis sumber');
+}
+if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('gemma-sea-lion')) {
+  failures.push('Workers AI binding atau model Bahasa Indonesia SOPi belum dikonfigurasi');
+}
+if (!Array.isArray(sopiSeed.documents) || sopiSeed.documents.length !== 100) {
+  failures.push('Seed SOPi harus berisi 100 dokumen JSON terverifikasi');
+}
+let sopiInlineIndex = 0;
+for (const match of sopiHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  sopiInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/sopi.html#inline-${sopiInlineIndex}` }); }
+  catch (error) { failures.push(`docs/sopi.html inline script ${sopiInlineIndex}: ${error.message}`); }
+}
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
 }

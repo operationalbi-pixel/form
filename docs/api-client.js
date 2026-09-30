@@ -2,6 +2,7 @@
   'use strict';
 
   var CHAT_ASSET_VERSION = '20260911-group-panel-state1';
+  var SOPI_ASSET_VERSION = '20260930-sopi1';
 
   function installBakerzinTypography() {
     if (!document.getElementById('bakerzinTypographyFont')) {
@@ -115,7 +116,7 @@
   global.BAKERZIN_API = Object.freeze({ call: call });
 
   function installChatWidget() {
-    if (/\/chat\.html$/i.test(global.location.pathname)) return;
+    if (/\/(?:chat|sopi)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
     if (!token || document.getElementById('biChatFloat')) return;
@@ -142,7 +143,7 @@
     }
     function close() { layer.classList.remove('open'); document.documentElement.style.overflow = ''; }
     closeButton.addEventListener('click', close);
-    button.addEventListener('click', function () { if (!frame.src) frame.src = 'chat.html?v=' + encodeURIComponent(CHAT_ASSET_VERSION); syncChatLayerViewport(); layer.classList.add('open'); document.documentElement.style.overflow = 'hidden'; global.setTimeout(syncChatLayerViewport, 40); });
+    button.addEventListener('click', function () { var sopiPanel = document.getElementById('biSopiPanel'); if (sopiPanel) sopiPanel.classList.remove('open'); if (!frame.src) frame.src = 'chat.html?v=' + encodeURIComponent(CHAT_ASSET_VERSION); syncChatLayerViewport(); layer.classList.add('open'); document.documentElement.style.overflow = 'hidden'; global.setTimeout(syncChatLayerViewport, 40); });
     global.addEventListener('resize', syncChatLayerViewport);
     if (global.visualViewport) {
       global.visualViewport.addEventListener('resize', syncChatLayerViewport);
@@ -155,8 +156,69 @@
     refreshBadge(); global.setInterval(refreshBadge, 30000);
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installChatWidget);
-  else installChatWidget();
+  function installSopiWidget() {
+    if (/\/(?:chat|sopi)\.html$/i.test(global.location.pathname)) return;
+    var token = '';
+    try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
+    if (!token || document.getElementById('biSopiFloat')) return;
+    var style = document.createElement('style');
+    style.id = 'biSopiWidgetStyle';
+    style.textContent = '#biSopiFloat{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(88px,calc(env(safe-area-inset-bottom) + 84px));z-index:2147482100;width:54px;height:54px;padding:0;border:2px solid #fff;border-radius:50%;overflow:hidden;background:linear-gradient(145deg,#fff6e9,#f1c9a8);box-shadow:0 12px 30px rgba(92,24,38,.25);cursor:pointer;transition:.18s transform,.18s box-shadow}#biSopiFloat:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(92,24,38,.34)}#biSopiFloat svg{width:100%;height:100%;display:block}#biSopiFloat:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #fff;border-radius:50%;background:#20b879}#biSopiPanel{position:fixed;z-index:2147482200;right:max(18px,env(safe-area-inset-right));bottom:max(154px,calc(env(safe-area-inset-bottom) + 150px));width:min(390px,calc(100vw - 24px));height:min(590px,calc(100dvh - 176px));display:none;overflow:hidden;border:1px solid #eadfe2;border-radius:23px;background:#fff;box-shadow:0 24px 70px rgba(56,24,34,.28);transform-origin:bottom right}#biSopiPanel.open{display:block;animation:biSopiIn .2s ease-out}#biSopiFrame{width:100%;height:100%;border:0;background:#fff}#biSopiClose{position:absolute;z-index:3;top:10px;right:10px;width:32px;height:32px;border:1px solid rgba(255,255,255,.28);border-radius:11px;color:#fff;background:rgba(61,2,15,.24);font:500 20px/1 Arial;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(4px)}@keyframes biSopiIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@media(max-width:700px){#biSopiFloat{width:50px;height:50px;right:14px;bottom:max(78px,calc(env(safe-area-inset-bottom) + 74px))}#biSopiPanel{right:10px;bottom:max(140px,calc(env(safe-area-inset-bottom) + 136px));width:calc(100vw - 20px);height:min(610px,calc(100dvh - 156px));border-radius:21px}}@media(prefers-reduced-motion:reduce){#biSopiPanel.open{animation:none}}';
+    document.head.appendChild(style);
+    var button = document.createElement('button');
+    button.id = 'biSopiFloat';
+    button.type = 'button';
+    button.setAttribute('aria-label', 'Buka SOPi, asisten SOP Bakerzin');
+    button.title = 'Tanya SOPi';
+    button.innerHTML = '<svg viewBox="0 0 64 64" role="img" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#fff4e5"/><path d="M17 57c2-13 8-20 15-20s14 7 16 20" fill="#8f1029"/><circle cx="32" cy="25" r="13" fill="#efbc91"/><path d="M19 24C20 11 27 6 35 7c10 1 15 9 12 19-3-5-7-9-12-13-4 6-9 10-16 11z" fill="#33252a"/><path d="M21 20c3-9 10-14 18-11 5 1 9 5 10 10-9-4-18-3-28 1z" fill="#fff"/><circle cx="27" cy="26" r="1.2" fill="#33252a"/><circle cx="37" cy="26" r="1.2" fill="#33252a"/><path d="M28 32c3 2 6 2 9 0" fill="none" stroke="#9b4f4c" stroke-width="1.5" stroke-linecap="round"/><path d="M23 43h18v14H23z" fill="#b91c39"/><text x="32" y="53" fill="#fff" text-anchor="middle" font-size="8" font-weight="800" font-family="Arial">SOPi</text></svg>';
+    var panel = document.createElement('div');
+    panel.id = 'biSopiPanel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Chat SOPi');
+    var closeButton = document.createElement('button');
+    closeButton.id = 'biSopiClose';
+    closeButton.type = 'button';
+    closeButton.setAttribute('aria-label', 'Tutup SOPi');
+    closeButton.textContent = '×';
+    var frame = document.createElement('iframe');
+    frame.id = 'biSopiFrame';
+    frame.title = 'SOPi · Asisten SOP Bakerzin';
+    panel.appendChild(frame);
+    panel.appendChild(closeButton);
+    document.body.appendChild(button);
+    document.body.appendChild(panel);
+    function close() {
+      panel.classList.remove('open');
+      button.setAttribute('aria-expanded', 'false');
+    }
+    function open() {
+      if (!frame.src) frame.src = 'sopi.html?v=' + encodeURIComponent(SOPI_ASSET_VERSION);
+      var chatLayer = document.getElementById('biChatLayer');
+      if (chatLayer) chatLayer.classList.remove('open');
+      document.documentElement.style.overflow = '';
+      panel.classList.add('open');
+      button.setAttribute('aria-expanded', 'true');
+    }
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', function () {
+      if (panel.classList.contains('open')) close(); else open();
+    });
+    closeButton.addEventListener('click', close);
+    global.addEventListener('message', function (event) {
+      if (event.source === frame.contentWindow && event.data && event.data.biSopiClose) close();
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && panel.classList.contains('open')) close();
+    });
+  }
+
+  function installFloatingWidgets() {
+    installChatWidget();
+    installSopiWidget();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installFloatingWidgets);
+  else installFloatingWidgets();
 }(window));
 
 // Dashboard quick menu grid

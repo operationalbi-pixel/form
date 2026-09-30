@@ -133,6 +133,7 @@ function apiActions_() {
     chatRoomDetails: getChatRoomDetails,
     chatUpdateRoom: updateChatRoomDescription,
     chatAttachment: getChatAttachment,
+    sopiChat: askSopi,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
     adminAddNews: adminAddNews,
@@ -6387,6 +6388,24 @@ function cloudflareQueryString_(params) {
   }).map(function (key) {
     return encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
   }).join('&');
+}
+
+function askSopi(token, payload) {
+  requireSession_(token);
+  const question = String(payload && payload.question || '').trim();
+  if (!question) throw new Error('Tuliskan pertanyaan untuk SOPi.');
+  if (question.length > 1200) throw new Error('Pertanyaan terlalu panjang. Maksimal 1.200 karakter.');
+  const history = Array.isArray(payload && payload.history) ? payload.history.slice(-6).map(function (message) {
+    return {
+      role: String(message && message.role || '') === 'assistant' ? 'assistant' : 'user',
+      content: String(message && message.content || '').trim().slice(0, 1000)
+    };
+  }).filter(function (message) { return message.content; }) : [];
+  const response = cloudflareInventoryRequest_('POST', '/v1/sopi/chat', {
+    question: question,
+    history: history
+  });
+  return response.data || { answer: 'SOPi belum dapat menjawab saat ini.', sources: [], grounded: false };
 }
 
 // ---------- Daily Staff Performance (Cloudflare D1 only) ----------

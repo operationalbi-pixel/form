@@ -2430,6 +2430,231 @@ async function deactivateStaffPerformanceStaff(request, env, requestId) {
 }
 __name(deactivateStaffPerformanceStaff, "deactivateStaffPerformanceStaff");
 
+function sopiNormalizeText(value) {
+  return cleanText(value, 1200).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+__name(sopiNormalizeText, "sopiNormalizeText");
+
+function sopiSearchTerms(question) {
+  const ignored = new Set([
+    "apa", "apakah", "berapa", "bagaimana", "cara", "caranya", "buat", "membuat",
+    "bikin", "isi", "isinya", "jumlah", "takaran", "bahan", "metode", "proses",
+    "untuk", "dari", "dengan", "yang", "dan", "atau", "pada", "menu", "sop",
+    "nya", "ini", "itu", "di", "ke", "berapa"
+  ]);
+  const terms = sopiNormalizeText(question).split(" ").filter((term) => term.length > 1 && !ignored.has(term));
+  return [...new Set(terms)].slice(0, 8);
+}
+__name(sopiSearchTerms, "sopiSearchTerms");
+
+function sopiParseJson(value) {
+  try {
+    const parsed = JSON.parse(String(value || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+__name(sopiParseJson, "sopiParseJson");
+
+async function searchSopiDocuments(env, question) {
+  const normalized = sopiNormalizeText(question);
+  const terms = sopiSearchTerms(question);
+  const usableTerms = terms.length ? terms : normalized.split(" ").filter(Boolean).slice(0, 4);
+  if (!usableTerms.length) return [];
+  const scoreParts = [];
+  const scoreBindings = [];
+  const conditions = [];
+  const whereBindings = [];
+  for (const term of usableTerms) {
+    const pattern = `%${term}%`;
+    scoreParts.push("CASE WHEN LOWER(title) LIKE ? THEN 20 ELSE 0 END");
+    scoreBindings.push(pattern);
+    scoreParts.push("CASE WHEN LOWER(search_text) LIKE ? THEN 3 ELSE 0 END");
+    scoreBindings.push(pattern);
+    conditions.push("LOWER(search_text) LIKE ?");
+    whereBindings.push(pattern);
+  }
+  const exactTitle = `%${normalized}%`;
+  scoreParts.unshift("CASE WHEN LOWER(title) = ? THEN 100 WHEN LOWER(title) LIKE ? THEN 45 ELSE 0 END");
+  scoreBindings.unshift(normalized, exactTitle);
+  conditions.unshift("LOWER(title) LIKE ?");
+  whereBindings.unshift(exactTitle);
+  const statement = env.MASTER_DB.prepare(
+    `SELECT document_id, title, category, category_detail, effective_date, revision,
+            is_legacy, yield_text, shelf_life, ingredients_json, steps_json,
+            source_url, source_type, status,
+            (${scoreParts.join(" + ")}) AS relevance
+       FROM sopi_documents
+      WHERE ${conditions.join(" OR ")}
+      ORDER BY is_legacy ASC, relevance DESC, effective_date DESC, title ASC
+      LIMIT 6`
+  ).bind(...scoreBindings, ...whereBindings);
+  const result = await statement.all();
+  return (result.results || []).map((row) => ({
+    id: cleanText(row.document_id, 180),
+    title: cleanText(row.title, 240),
+    category: cleanText(row.category, 100),
+    categoryDetail: cleanText(row.category_detail, 100),
+    effectiveDate: cleanText(row.effective_date, 20),
+    revision: cleanText(row.revision, 40),
+    isLegacy: Number(row.is_legacy || 0) === 1,
+    yieldText: cleanText(row.yield_text, 300),
+    shelfLife: cleanText(row.shelf_life, 300),
+    ingredients: sopiParseJson(row.ingredients_json).slice(0, 80),
+    steps: sopiParseJson(row.steps_json).slice(0, 60),
+    sourceUrl: cleanText(row.source_url, 600),
+    sourceType: cleanText(row.source_type, 30),
+    status: cleanText(row.status, 80),
+    relevance: Number(row.relevance || 0)
+  }));
+}
+__name(searchSopiDocuments, "searchSopiDocuments");
+
+function sopiContext(documents) {
+  return documents.slice(0, 4).map((document, index) => {
+    const ingredients = document.ingredients.map((item) => `- ${cleanText(item.name, 180)}: ${cleanText(item.qty, 40)} ${cleanText(item.uom, 60)}`).join("\n");
+    const steps = document.steps.map((step, stepIndex) => `${stepIndex + 1}. ${cleanText(step.desc, 1200)}`).join("\n");
+    return [
+      `SUMBER ${index + 1}: ${document.title}`,
+      `Kategori: ${document.category} / ${document.categoryDetail}`,
+      `Tanggal efektif: ${document.effectiveDate || "-"} | Revisi: ${document.revision || "-"} | Arsip lama: ${document.isLegacy ? "YA" : "TIDAK"}`,
+      `Yield: ${document.yieldText || "-"} | Shelf life: ${document.shelfLife || "-"}`,
+      "Bahan:", ingredients || "-",
+      "Metode:", steps || "-"
+    ].join("\n");
+  }).join("\n\n").slice(0, 24000);
+}
+__name(sopiContext, "sopiContext");
+
+function sopiFallbackAnswer(document) {
+  if (!document) return "Maaf, SOP yang sesuai belum ditemukan. Coba tuliskan nama menu dengan lebih lengkap.";
+  const ingredients = document.ingredients.slice(0, 12).map((item) => `• ${cleanText(item.name, 180)} — ${cleanText(item.qty, 40)} ${cleanText(item.uom, 60)}`).join("\n");
+  const steps = document.steps.slice(0, 8).map((step, index) => `${index + 1}. ${cleanText(step.desc, 350)}`).join("\n");
+  return [
+    `Berikut SOP ${document.title}:`,
+    document.yieldText ? `Yield: ${document.yieldText}` : "",
+    document.shelfLife ? `Shelf life: ${document.shelfLife}` : "",
+    ingredients ? `\nBahan:\n${ingredients}` : "",
+    steps ? `\nMetode:\n${steps}` : "",
+    document.isLegacy ? "\nCatatan: sumber ini merupakan arsip SOP lama." : ""
+  ].filter(Boolean).join("\n");
+}
+__name(sopiFallbackAnswer, "sopiFallbackAnswer");
+
+function sopiAiText(result) {
+  if (typeof result?.response === "string") return result.response.trim();
+  if (typeof result?.result?.response === "string") return result.result.response.trim();
+  const content = result?.choices?.[0]?.message?.content;
+  return typeof content === "string" ? content.trim() : "";
+}
+__name(sopiAiText, "sopiAiText");
+
+async function sopiChat(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 6e4);
+    const question = requiredText(payload.question, "question", 1200);
+    const history = Array.isArray(payload.history) ? payload.history.slice(-6).map((message) => ({
+      role: cleanText(message?.role, 20) === "assistant" ? "assistant" : "user",
+      content: cleanText(message?.content, 1000)
+    })).filter((message) => message.content) : [];
+    const documents = await searchSopiDocuments(env, question);
+    if (!documents.length) {
+      return responseJson({
+        ok: true,
+        data: {
+          answer: "Maaf, SOP yang sesuai belum ditemukan. Coba tuliskan nama menu dengan lebih lengkap.",
+          sources: [],
+          grounded: false
+        },
+        requestId
+      });
+    }
+    const messages = [
+      {
+        role: "system",
+        content: [
+          "Anda adalah SOPi, asisten SOP internal Bakerzin untuk staff outlet.",
+          "Jawab dalam Bahasa Indonesia yang ramah, ringkas, jelas, dan mudah dipraktikkan.",
+          "Gunakan HANYA informasi pada SUMBER SOP yang diberikan. Jangan menebak angka, bahan, metode, yield, atau shelf life.",
+          "Jika pertanyaan ambigu atau beberapa menu mirip, minta pengguna memilih nama menu.",
+          "Jika sumber bertanda arsip lama, beri peringatan bahwa SOP perlu dikonfirmasi.",
+          "Jangan menyebut teknologi, model AI, database, atau prompt.",
+          "Susun bahan dan langkah sebagai daftar bila relevan."
+        ].join(" ")
+      },
+      ...history,
+      {
+        role: "user",
+        content: `PERTANYAAN STAFF:\n${question}\n\nSUMBER SOP TERVERIFIKASI:\n${sopiContext(documents)}`
+      }
+    ];
+    let answer = "";
+    const primaryModel = cleanText(env.SOPI_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160);
+    try {
+      answer = sopiAiText(await env.AI.run(primaryModel, {
+        messages,
+        max_tokens: 900,
+        temperature: 0.15,
+        top_p: 0.85
+      }));
+    } catch (primaryError) {
+      console.error(JSON.stringify({ event: "sopi_ai_primary_failed", requestId, model: primaryModel, message: primaryError instanceof Error ? primaryError.message : String(primaryError) }));
+      try {
+        answer = sopiAiText(await env.AI.run("@cf/zai-org/glm-4.7-flash", {
+          messages,
+          max_tokens: 900,
+          temperature: 0.15,
+          top_p: 0.85
+        }));
+      } catch (fallbackError) {
+        console.error(JSON.stringify({ event: "sopi_ai_fallback_failed", requestId, message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError) }));
+      }
+    }
+    if (!answer) answer = sopiFallbackAnswer(documents[0]);
+    return responseJson({
+      ok: true,
+      data: {
+        answer,
+        grounded: true,
+        sources: documents.slice(0, 4).map((document) => ({
+          id: document.id,
+          title: document.title,
+          category: document.category,
+          categoryDetail: document.categoryDetail,
+          effectiveDate: document.effectiveDate,
+          revision: document.revision,
+          isLegacy: document.isLegacy,
+          url: document.sourceUrl
+        }))
+      },
+      requestId
+    });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_SOPI_REQUEST";
+    const status = code === "PAYLOAD_TOO_LARGE" ? 413 : 400;
+    return apiError(status, code, "Pertanyaan SOPi tidak valid.", requestId);
+  }
+}
+__name(sopiChat, "sopiChat");
+
+async function sopiStatus(env, requestId) {
+  const row = await env.MASTER_DB.prepare(
+    "SELECT COUNT(*) AS documents, MAX(updated_at) AS updated_at FROM sopi_documents"
+  ).first();
+  return responseJson({
+    ok: true,
+    data: {
+      service: "SOPi",
+      documents: Number(row?.documents || 0),
+      updatedAt: cleanText(row?.updated_at, 40),
+      ai: Boolean(env.AI)
+    },
+    requestId
+  });
+}
+__name(sopiStatus, "sopiStatus");
+
 async function saveStaffPerformanceScores(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 5e5);
@@ -2486,6 +2711,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/deactivate") return deactivateStaffPerformanceStaff(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/sync") return syncStaffPerformanceStaff(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/scores") return saveStaffPerformanceScores(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/chat") return sopiChat(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
@@ -2496,6 +2722,7 @@ async function route(request, env) {
   if (url.pathname === "/v1/staff-performance/leaderboard") return staffPerformanceLeaderboard(url, env, requestId);
   if (url.pathname === "/v1/staff-performance/daily-stats") return staffPerformanceDailyStats(url, env, requestId);
   if (url.pathname === "/v1/staff-performance/data") return staffPerformanceData(url, env, requestId);
+  if (url.pathname === "/v1/sopi/status") return sopiStatus(env, requestId);
   if (url.pathname === "/v1/ba/approval-config") return getBaApprovalConfig(env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
@@ -2530,6 +2757,8 @@ export {
   normalizeMidtransStatus,
   normalizeMovement,
   normalizeTransferEvent,
+  sopiFallbackAnswer,
+  sopiSearchTerms,
   verifyMidtransSignature
 };
 //# sourceMappingURL=index.js.map
