@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { sopiFallbackAnswer, sopiMarkdownText, sopiSafeFileName, sopiSearchTerms } from '../src/index.js';
+import { sopiConversationFallback, sopiFallbackAnswer, sopiMarkdownText, sopiSafeFileName, sopiSearchTerms } from '../src/index.js';
 
 const seed = JSON.parse(await readFile(new URL('../data/sopi-seed.json', import.meta.url), 'utf8'));
 
@@ -15,6 +15,8 @@ assert.deepEqual(
 );
 assert.equal(sopiSafeFileName('../SOP Oxtail Fried Rice (Final).pdf'), 'SOP Oxtail Fried Rice (Final).pdf');
 assert.equal(sopiMarkdownText({ results: [{ data: '# SOP\n\nIsi dokumen.' }] }), '# SOP\n\nIsi dokumen.');
+assert.match(sopiConversationFallback('hallo SOPi'), /Halo!/);
+assert.match(sopiConversationFallback('siapa kamu?'), /asisten pengetahuan Bakerzin/i);
 
 const migration = await readFile(new URL('../../migrations/0007_sopi_knowledge_center.sql', import.meta.url), 'utf8');
 assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_unanswered/);

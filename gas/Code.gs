@@ -137,6 +137,7 @@ function apiActions_() {
     sopiAdminBootstrap: getSopiAdminBootstrap,
     sopiAdminAnswer: saveSopiAdminAnswer,
     sopiAdminUpload: uploadSopiKnowledge,
+    sopiDocument: getSopiDocument,
     sopiDownload: downloadSopiAttachment,
     outletProgress: getOutletProgress,
     markTaskComplete: markTaskComplete,
@@ -6476,6 +6477,16 @@ function downloadSopiAttachment(token, attachmentId) {
     const id = String(attachmentId || '').trim();
     if (!id) throw new Error('Lampiran tidak valid.');
     const response = cloudflareInventoryRequest_('GET', '/v1/sopi/file?' + cloudflareQueryString_({ id: id }));
+    return response.data || {};
+  });
+}
+
+function getSopiDocument(token, documentId) {
+  return safe_(function () {
+    requireSession_(token);
+    const id = String(documentId || '').trim();
+    if (!id) throw new Error('Dokumen SOP tidak valid.');
+    const response = cloudflareInventoryRequest_('GET', '/v1/sopi/document?' + cloudflareQueryString_({ id: id }));
     return response.data || {};
   });
 }

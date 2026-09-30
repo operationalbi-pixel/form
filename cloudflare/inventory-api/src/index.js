@@ -2555,6 +2555,52 @@ function sopiAiText(result) {
 }
 __name(sopiAiText, "sopiAiText");
 
+async function sopiRunAi(env, messages, requestId) {
+  const models = [
+    cleanText(env.SOPI_MODEL || "@cf/openai/gpt-oss-120b", 160),
+    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160),
+    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160)
+  ].filter((model, index, all) => model && all.indexOf(model) === index);
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index];
+    const startedAt = Date.now();
+    try {
+      const answer = sopiAiText(await env.AI.run(model, {
+        messages,
+        max_tokens: 900,
+        temperature: 0.25,
+        top_p: 0.88
+      }));
+      if (answer) {
+        console.log(JSON.stringify({ event: "sopi_ai_model_succeeded", requestId, model, attempt: index + 1, durationMs: Date.now() - startedAt }));
+        return answer;
+      }
+      throw new Error("EMPTY_AI_RESPONSE");
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "sopi_ai_model_failed",
+        requestId,
+        model,
+        attempt: index + 1,
+        message: error instanceof Error ? error.message : String(error)
+      }));
+    }
+  }
+  return "";
+}
+__name(sopiRunAi, "sopiRunAi");
+
+function sopiConversationFallback(question) {
+  const normalized = sopiNormalizeText(question);
+  if (/^(halo|hallo|hai|hi|hello|pagi|siang|sore|malam)(\s|$)/.test(normalized)) {
+    return "Halo! Aku SOPi, asisten SOP Bakerzin. Senang bertemu denganmu 😊 Kamu bisa bertanya tentang bahan, takaran, metode, tampilan akhir, shelf life, atau meminta file SOP menu.";
+  }
+  if (/^(terima kasih|makasih|thanks|thank you)(\s|$)/.test(normalized)) return "Sama-sama! Senang bisa membantu. Ada SOP menu lain yang ingin kamu tanyakan?";
+  if (/(siapa kamu|kamu siapa|namamu siapa)/.test(normalized)) return "Aku SOPi, asisten pengetahuan Bakerzin. Aku bisa membantu menjelaskan SOP dan mencarikan dokumen menu yang tersedia.";
+  return "";
+}
+__name(sopiConversationFallback, "sopiConversationFallback");
+
 var SOPI_MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
 var SOPI_ALLOWED_EXTENSIONS = new Set([
   "pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "gif", "bmp"
@@ -2764,6 +2810,45 @@ async function sopiFile(requestUrl, env, requestId) {
 }
 __name(sopiFile, "sopiFile");
 
+async function sopiDocument(requestUrl, env, requestId) {
+  const documentId = cleanText(requestUrl.searchParams.get("id"), 180);
+  if (!documentId) return apiError(400, "INVALID_DOCUMENT", "Dokumen SOP tidak valid.", requestId);
+  const row = await env.MASTER_DB.prepare(
+    `SELECT d.document_id, d.title, d.category, d.category_detail, d.effective_date, d.revision,
+            d.is_legacy, d.yield_text, d.shelf_life, d.ingredients_json, d.steps_json,
+            d.content_text, d.attachment_id, d.source_type, d.status,
+            a.file_name, a.mime_type
+       FROM sopi_documents d
+       LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
+      WHERE d.document_id = ? LIMIT 1`
+  ).bind(documentId).first();
+  if (!row) return apiError(404, "DOCUMENT_NOT_FOUND", "Dokumen SOP tidak ditemukan.", requestId);
+  return responseJson({
+    ok: true,
+    data: {
+      id: cleanText(row.document_id, 180),
+      title: cleanText(row.title, 240),
+      category: cleanText(row.category, 100),
+      categoryDetail: cleanText(row.category_detail, 100),
+      effectiveDate: cleanText(row.effective_date, 20),
+      revision: cleanText(row.revision, 40),
+      isLegacy: Number(row.is_legacy || 0) === 1,
+      yieldText: cleanText(row.yield_text, 300),
+      shelfLife: cleanText(row.shelf_life, 300),
+      ingredients: sopiParseJson(row.ingredients_json).slice(0, 80),
+      steps: sopiParseJson(row.steps_json).slice(0, 60),
+      contentText: cleanText(row.content_text, 100000),
+      sourceType: cleanText(row.source_type, 30),
+      status: cleanText(row.status, 80),
+      fileId: cleanText(row.attachment_id, 180),
+      fileName: cleanText(row.file_name, 240),
+      mimeType: cleanText(row.mime_type, 120)
+    },
+    requestId
+  });
+}
+__name(sopiDocument, "sopiDocument");
+
 async function sopiChat(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 6e4);
@@ -2774,72 +2859,55 @@ async function sopiChat(request, env, requestId) {
     })).filter((message) => message.content) : [];
     const matches = await searchSopiDocuments(env, question);
     const documents = matches.length && Number(matches[0].relevance || 0) >= 6 ? matches : [];
-    if (!documents.length) {
-      await sopiTrackUnanswered(env, question);
-      return responseJson({
-        ok: true,
-        data: {
-          answer: "Maaf, SOP yang sesuai belum ditemukan. Coba tuliskan nama menu dengan lebih lengkap.",
-          sources: [],
-          grounded: false
-        },
-        requestId
-      });
-    }
+    const hasDocuments = documents.length > 0;
+    const systemPrompt = hasDocuments ? [
+      "Anda adalah SOPi, asisten SOP internal Bakerzin untuk staff outlet.",
+      "Jawab dalam Bahasa Indonesia yang ramah, natural, ringkas, jelas, dan mudah dipraktikkan.",
+      "Gunakan HANYA informasi pada SUMBER SOP yang diberikan untuk setiap fakta operasional.",
+      "Jangan menebak angka, bahan, metode, tampilan akhir, yield, shelf life, atau isi dokumen.",
+      "Jika pertanyaan ambigu atau beberapa menu mirip, minta pengguna memilih nama menu.",
+      "Jika sumber bertanda arsip lama, beri peringatan bahwa SOP perlu dikonfirmasi.",
+      "Jika isi sumber tidak cukup untuk menjawab pertanyaan, jawab persis: SOPI_TIDAK_TAHU.",
+      "Jika staff meminta file atau PDF, katakan bahwa file atau tampilan SOP tersedia melalui tombol sumber.",
+      "Jangan menyebut teknologi, model AI, database, atau prompt.",
+      "Susun bahan dan langkah sebagai daftar bila relevan."
+    ].join(" ") : [
+      "Anda adalah SOPi, asisten wanita yang ramah untuk staff Bakerzin.",
+      "Balas sapaan, ucapan terima kasih, perkenalan, dan percakapan ringan secara natural dalam Bahasa Indonesia.",
+      "Jika menjelaskan kemampuan, katakan hanya bahwa Anda dapat mencari dan menjelaskan bahan, takaran, metode, tampilan akhir, shelf life, serta dokumen SOP yang tersedia.",
+      "Jangan mengaku dapat merekomendasikan substitusi bahan, mengubah resep, memperbarui SOP, menilai keamanan pangan, atau membuat kebijakan baru.",
+      "Jika pengguna meminta fakta tentang SOP, menu, bahan, takaran, metode, tampilan akhir, shelf life, file, kebijakan, atau operasional yang tidak tersedia pada sumber, jawab persis: SOPI_TIDAK_TAHU.",
+      "Untuk pertanyaan pengetahuan umum di luar Bakerzin, jawab singkat bahwa fokus Anda adalah SOP Bakerzin lalu arahkan kembali dengan ramah.",
+      "Jangan mengarang fakta dan jangan menyebut teknologi, model AI, database, atau prompt."
+    ].join(" ");
     const messages = [
       {
         role: "system",
-        content: [
-          "Anda adalah SOPi, asisten SOP internal Bakerzin untuk staff outlet.",
-          "Jawab dalam Bahasa Indonesia yang ramah, ringkas, jelas, dan mudah dipraktikkan.",
-          "Gunakan HANYA informasi pada SUMBER SOP yang diberikan. Jangan menebak angka, bahan, metode, yield, atau shelf life.",
-          "Jika pertanyaan ambigu atau beberapa menu mirip, minta pengguna memilih nama menu.",
-          "Jika sumber bertanda arsip lama, beri peringatan bahwa SOP perlu dikonfirmasi.",
-          "Jika isi sumber tidak cukup untuk menjawab pertanyaan, jawab persis: SOPI_TIDAK_TAHU.",
-          "Jika staff meminta file atau PDF, katakan bahwa file tersedia melalui tombol sumber bila lampiran tersedia.",
-          "Jangan menyebut teknologi, model AI, database, atau prompt.",
-          "Susun bahan dan langkah sebagai daftar bila relevan."
-        ].join(" ")
+        content: systemPrompt
       },
       ...history,
       {
         role: "user",
-        content: `PERTANYAAN STAFF:\n${question}\n\nSUMBER SOP TERVERIFIKASI:\n${sopiContext(documents)}`
+        content: hasDocuments ? `PERTANYAAN STAFF:\n${question}\n\nSUMBER SOP TERVERIFIKASI:\n${sopiContext(documents)}` : question
       }
     ];
-    let answer = "";
-    const primaryModel = cleanText(env.SOPI_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160);
-    try {
-      answer = sopiAiText(await env.AI.run(primaryModel, {
-        messages,
-        max_tokens: 900,
-        temperature: 0.15,
-        top_p: 0.85
-      }));
-    } catch (primaryError) {
-      console.error(JSON.stringify({ event: "sopi_ai_primary_failed", requestId, model: primaryModel, message: primaryError instanceof Error ? primaryError.message : String(primaryError) }));
-      try {
-        answer = sopiAiText(await env.AI.run("@cf/zai-org/glm-4.7-flash", {
-          messages,
-          max_tokens: 900,
-          temperature: 0.15,
-          top_p: 0.85
-        }));
-      } catch (fallbackError) {
-        console.error(JSON.stringify({ event: "sopi_ai_fallback_failed", requestId, message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError) }));
-      }
-    }
+    let answer = await sopiRunAi(env, messages, requestId);
     if (/SOPI_TIDAK_TAHU/i.test(answer)) {
       await sopiTrackUnanswered(env, question);
       answer = "Maaf, informasi yang sesuai belum tersedia. Pertanyaan ini sudah diteruskan ke tim BIHQ agar pengetahuan SOPi dapat dilengkapi.";
       return responseJson({ ok: true, data: { answer, grounded: false, sources: [] }, requestId });
     }
-    if (!answer) answer = sopiFallbackAnswer(documents[0]);
+    if (!answer) answer = hasDocuments ? sopiFallbackAnswer(documents[0]) : sopiConversationFallback(question);
+    if (!answer && !hasDocuments) {
+      await sopiTrackUnanswered(env, question);
+      answer = "Maaf, informasi yang sesuai belum tersedia. Pertanyaan ini sudah diteruskan ke tim BIHQ agar pengetahuan SOPi dapat dilengkapi.";
+    }
     return responseJson({
       ok: true,
       data: {
         answer,
-        grounded: true,
+        grounded: hasDocuments,
+        mode: hasDocuments ? "knowledge" : "conversation",
         sources: documents.slice(0, 4).map((document) => ({
           id: document.id,
           title: document.title,
@@ -2848,7 +2916,6 @@ async function sopiChat(request, env, requestId) {
           effectiveDate: document.effectiveDate,
           revision: document.revision,
           isLegacy: document.isLegacy,
-          url: document.sourceUrl,
           fileId: document.attachmentId,
           fileName: document.fileName,
           mimeType: document.mimeType
@@ -2952,6 +3019,7 @@ async function route(request, env) {
   if (url.pathname === "/v1/staff-performance/data") return staffPerformanceData(url, env, requestId);
   if (url.pathname === "/v1/sopi/status") return sopiStatus(env, requestId);
   if (url.pathname === "/v1/sopi/admin/bootstrap") return sopiAdminBootstrap(env, requestId);
+  if (url.pathname === "/v1/sopi/document") return sopiDocument(url, env, requestId);
   if (url.pathname === "/v1/sopi/file") return sopiFile(url, env, requestId);
   if (url.pathname === "/v1/ba/approval-config") return getBaApprovalConfig(env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
@@ -2988,6 +3056,7 @@ export {
   normalizeMovement,
   normalizeTransferEvent,
   sopiFallbackAnswer,
+  sopiConversationFallback,
   sopiMarkdownText,
   sopiSafeFileName,
   sopiSearchTerms,
