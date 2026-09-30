@@ -2468,26 +2468,28 @@ async function searchSopiDocuments(env, question) {
   const whereBindings = [];
   for (const term of usableTerms) {
     const pattern = `%${term}%`;
-    scoreParts.push("CASE WHEN LOWER(title) LIKE ? THEN 20 ELSE 0 END");
+    scoreParts.push("CASE WHEN LOWER(d.title) LIKE ? THEN 20 ELSE 0 END");
     scoreBindings.push(pattern);
-    scoreParts.push("CASE WHEN LOWER(search_text) LIKE ? THEN 3 ELSE 0 END");
+    scoreParts.push("CASE WHEN LOWER(d.search_text) LIKE ? THEN 3 ELSE 0 END");
     scoreBindings.push(pattern);
-    conditions.push("LOWER(search_text) LIKE ?");
+    conditions.push("LOWER(d.search_text) LIKE ?");
     whereBindings.push(pattern);
   }
   const exactTitle = `%${normalized}%`;
-  scoreParts.unshift("CASE WHEN LOWER(title) = ? THEN 100 WHEN LOWER(title) LIKE ? THEN 45 ELSE 0 END");
+  scoreParts.unshift("CASE WHEN LOWER(d.title) = ? THEN 100 WHEN LOWER(d.title) LIKE ? THEN 45 ELSE 0 END");
   scoreBindings.unshift(normalized, exactTitle);
-  conditions.unshift("LOWER(title) LIKE ?");
+  conditions.unshift("LOWER(d.title) LIKE ?");
   whereBindings.unshift(exactTitle);
   const statement = env.MASTER_DB.prepare(
-    `SELECT document_id, title, category, category_detail, effective_date, revision,
-            is_legacy, yield_text, shelf_life, ingredients_json, steps_json,
-            source_url, source_type, status,
+    `SELECT d.document_id, d.title, d.category, d.category_detail, d.effective_date, d.revision,
+            d.is_legacy, d.yield_text, d.shelf_life, d.ingredients_json, d.steps_json,
+            d.content_text, d.attachment_id, d.source_url, d.source_type, d.status,
+            a.file_name, a.mime_type,
             (${scoreParts.join(" + ")}) AS relevance
-       FROM sopi_documents
+       FROM sopi_documents d
+       LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
       WHERE ${conditions.join(" OR ")}
-      ORDER BY is_legacy ASC, relevance DESC, effective_date DESC, title ASC
+      ORDER BY d.is_legacy ASC, relevance DESC, d.effective_date DESC, d.title ASC
       LIMIT 6`
   ).bind(...scoreBindings, ...whereBindings);
   const result = await statement.all();
@@ -2503,6 +2505,10 @@ async function searchSopiDocuments(env, question) {
     shelfLife: cleanText(row.shelf_life, 300),
     ingredients: sopiParseJson(row.ingredients_json).slice(0, 80),
     steps: sopiParseJson(row.steps_json).slice(0, 60),
+    contentText: cleanText(row.content_text, 12000),
+    attachmentId: cleanText(row.attachment_id, 180),
+    fileName: cleanText(row.file_name, 240),
+    mimeType: cleanText(row.mime_type, 120),
     sourceUrl: cleanText(row.source_url, 600),
     sourceType: cleanText(row.source_type, 30),
     status: cleanText(row.status, 80),
@@ -2521,7 +2527,8 @@ function sopiContext(documents) {
       `Tanggal efektif: ${document.effectiveDate || "-"} | Revisi: ${document.revision || "-"} | Arsip lama: ${document.isLegacy ? "YA" : "TIDAK"}`,
       `Yield: ${document.yieldText || "-"} | Shelf life: ${document.shelfLife || "-"}`,
       "Bahan:", ingredients || "-",
-      "Metode:", steps || "-"
+      "Metode:", steps || "-",
+      "Informasi tambahan:", document.contentText || "-"
     ].join("\n");
   }).join("\n\n").slice(0, 24000);
 }
@@ -2550,6 +2557,215 @@ function sopiAiText(result) {
 }
 __name(sopiAiText, "sopiAiText");
 
+var SOPI_MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+var SOPI_ALLOWED_EXTENSIONS = new Set([
+  "pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "gif", "bmp"
+]);
+
+function sopiSafeFileName(value) {
+  const name = cleanText(value, 240).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-").replace(/^[.\-\s]+/, "").replace(/\s+/g, " ").trim();
+  return name || "lampiran";
+}
+__name(sopiSafeFileName, "sopiSafeFileName");
+
+function sopiFileExtension(fileName) {
+  const match = sopiSafeFileName(fileName).toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : "";
+}
+__name(sopiFileExtension, "sopiFileExtension");
+
+function sopiDecodeBase64(value) {
+  const encoded = String(value || "").replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+  if (!encoded || encoded.length > Math.ceil(SOPI_MAX_UPLOAD_BYTES * 4 / 3) + 16) throw new Error("FILE_TOO_LARGE");
+  let binary = "";
+  try {
+    binary = atob(encoded);
+  } catch {
+    throw new Error("INVALID_FILE");
+  }
+  if (binary.length > SOPI_MAX_UPLOAD_BYTES) throw new Error("FILE_TOO_LARGE");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+__name(sopiDecodeBase64, "sopiDecodeBase64");
+
+function sopiEncodeBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 32768;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+__name(sopiEncodeBase64, "sopiEncodeBase64");
+
+function sopiMarkdownText(result) {
+  const rows = Array.isArray(result) ? result : Array.isArray(result?.results) ? result.results : [result];
+  const row = rows[0] || {};
+  return cleanText(row.data || row.text || row.markdown || row.content || row.result?.data || "", 100000);
+}
+__name(sopiMarkdownText, "sopiMarkdownText");
+
+async function sopiTrackUnanswered(env, question) {
+  const normalized = sopiNormalizeText(question);
+  if (!normalized) return;
+  await env.MASTER_DB.prepare(
+    `INSERT INTO sopi_unanswered(question_id, normalized_question, question, ask_count, status, first_asked_at, last_asked_at)
+     VALUES (?, ?, ?, 1, 'OPEN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT(normalized_question) DO UPDATE SET
+       question = excluded.question,
+       ask_count = sopi_unanswered.ask_count + 1,
+       status = CASE WHEN sopi_unanswered.status = 'ANSWERED' THEN 'ANSWERED' ELSE 'OPEN' END,
+       last_asked_at = CURRENT_TIMESTAMP`
+  ).bind(crypto.randomUUID(), normalized, cleanText(question, 1200)).run();
+}
+__name(sopiTrackUnanswered, "sopiTrackUnanswered");
+
+async function sopiAdminBootstrap(env, requestId) {
+  const [questions, knowledgeCount] = await Promise.all([
+    env.MASTER_DB.prepare(
+      `SELECT question_id, question, ask_count, first_asked_at, last_asked_at
+         FROM sopi_unanswered WHERE status = 'OPEN'
+        ORDER BY ask_count DESC, last_asked_at DESC LIMIT 100`
+    ).all(),
+    env.MASTER_DB.prepare("SELECT COUNT(*) AS total FROM sopi_documents WHERE source_type <> 'JSON'").first()
+  ]);
+  const rows = (questions.results || []).map((row) => ({
+    id: cleanText(row.question_id, 180),
+    question: cleanText(row.question, 1200),
+    askCount: Number(row.ask_count || 1),
+    firstAskedAt: cleanText(row.first_asked_at, 40),
+    lastAskedAt: cleanText(row.last_asked_at, 40)
+  }));
+  return responseJson({ ok: true, data: { openCount: rows.length, questions: rows, knowledgeCount: Number(knowledgeCount?.total || 0) }, requestId });
+}
+__name(sopiAdminBootstrap, "sopiAdminBootstrap");
+
+async function sopiAdminAnswer(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 1e5);
+    const questionId = requiredText(payload.questionId, "question_id", 180);
+    const answer = requiredText(payload.answer, "answer", 12000);
+    const answeredBy = cleanText(payload.answeredBy, 180);
+    const row = await env.MASTER_DB.prepare(
+      "SELECT question, normalized_question FROM sopi_unanswered WHERE question_id = ? AND status = 'OPEN' LIMIT 1"
+    ).bind(questionId).first();
+    if (!row) return apiError(404, "QUESTION_NOT_FOUND", "Pertanyaan tidak ditemukan atau sudah dijawab.", requestId);
+    const documentId = `answer:${questionId}`;
+    const question = cleanText(row.question, 1200);
+    const searchText = `${question} ${answer}`.replace(/\s+/g, " ").trim();
+    await env.MASTER_DB.batch([
+      env.MASTER_DB.prepare(
+        `INSERT INTO sopi_documents(
+           document_id, title, category, category_detail, effective_date, revision, is_legacy,
+           yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
+           source_type, status, content_text, attachment_id, updated_at
+         ) VALUES (?, ?, 'Jawaban BIHQ', 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, '', 'BIHQ_ANSWER', 'ACTIVE', ?, '', CURRENT_TIMESTAMP)
+         ON CONFLICT(document_id) DO UPDATE SET title = excluded.title, search_text = excluded.search_text,
+           content_text = excluded.content_text, status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP`
+      ).bind(documentId, question, searchText, answer),
+      env.MASTER_DB.prepare(
+        `UPDATE sopi_unanswered SET status = 'ANSWERED', answer = ?, answered_by = ?, answered_at = CURRENT_TIMESTAMP
+          WHERE question_id = ?`
+      ).bind(answer, answeredBy, questionId)
+    ]);
+    return responseJson({ ok: true, data: { success: true, documentId }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_ANSWER", "Jawaban tidak dapat disimpan.", requestId);
+  }
+}
+__name(sopiAdminAnswer, "sopiAdminAnswer");
+
+async function sopiAdminKnowledge(request, env, requestId) {
+  let uploadedKey = "";
+  try {
+    const payload = await readJsonWithLimit(request, 6e6);
+    const title = requiredText(payload.title, "title", 240);
+    const category = requiredText(payload.category, "category", 100);
+    const body = cleanText(payload.content, 30000);
+    const uploadedBy = cleanText(payload.uploadedBy, 180);
+    const file = payload.file && typeof payload.file === "object" ? payload.file : null;
+    if (!body && !file) throw new Error("EMPTY_KNOWLEDGE");
+
+    const documentId = `knowledge:${crypto.randomUUID()}`;
+    let attachmentId = "";
+    let fileName = "";
+    let mimeType = "";
+    let converted = "";
+    let bytes = null;
+    if (file) {
+      fileName = sopiSafeFileName(file.name);
+      mimeType = cleanText(file.mimeType || "application/octet-stream", 120).toLowerCase();
+      const extension = sopiFileExtension(fileName);
+      if (!SOPI_ALLOWED_EXTENSIONS.has(extension)) throw new Error("UNSUPPORTED_FILE");
+      bytes = sopiDecodeBase64(file.base64);
+      const conversion = await env.AI.toMarkdown([
+        { name: fileName, blob: new Blob([bytes], { type: mimeType }) }
+      ], { conversionOptions: { output: { format: "text" } } });
+      converted = sopiMarkdownText(conversion);
+      if (!converted) throw new Error("FILE_CONVERSION_FAILED");
+      attachmentId = crypto.randomUUID();
+      uploadedKey = `sopi/${documentId}/${fileName}`;
+      await env.FILES.put(uploadedKey, bytes, { httpMetadata: { contentType: mimeType } });
+    }
+
+    const contentText = [body, converted].filter(Boolean).join("\n\n").slice(0, 100000);
+    const searchText = [title, category, contentText, fileName].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    const statements = [env.MASTER_DB.prepare(
+      `INSERT INTO sopi_documents(
+         document_id, title, category, category_detail, effective_date, revision, is_legacy,
+         yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
+         source_type, status, content_text, attachment_id, updated_at
+       ) VALUES (?, ?, ?, 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, '', 'BIHQ_UPLOAD', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)`
+    ).bind(documentId, title, category, searchText, contentText, attachmentId)];
+    if (attachmentId) {
+      statements.push(env.MASTER_DB.prepare(
+        `INSERT INTO sopi_attachments(attachment_id, document_id, file_name, mime_type, size_bytes, r2_key, uploaded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+      ).bind(attachmentId, documentId, fileName, mimeType, bytes.byteLength, uploadedKey, uploadedBy));
+    }
+    await env.MASTER_DB.batch(statements);
+    return responseJson({ ok: true, data: { success: true, documentId, attachmentId, extractedCharacters: converted.length }, requestId });
+  } catch (error) {
+    if (uploadedKey) {
+      try { await env.FILES.delete(uploadedKey); } catch {}
+    }
+    const code = error instanceof Error ? error.message : "INVALID_KNOWLEDGE";
+    const messages = {
+      FILE_TOO_LARGE: "Ukuran lampiran maksimal 4 MB.",
+      UNSUPPORTED_FILE: "Format file belum didukung. Gunakan PDF, Word, Excel, CSV, atau gambar.",
+      FILE_CONVERSION_FAILED: "Isi file tidak berhasil dibaca.",
+      EMPTY_KNOWLEDGE: "Isi informasi atau lampiran wajib diisi."
+    };
+    return apiError(code === "FILE_TOO_LARGE" ? 413 : 400, code, messages[code] || "Informasi tidak dapat disimpan.", requestId);
+  }
+}
+__name(sopiAdminKnowledge, "sopiAdminKnowledge");
+
+async function sopiFile(requestUrl, env, requestId) {
+  const attachmentId = cleanText(requestUrl.searchParams.get("id"), 180);
+  if (!attachmentId) return apiError(400, "INVALID_ATTACHMENT", "Lampiran tidak valid.", requestId);
+  const row = await env.MASTER_DB.prepare(
+    "SELECT file_name, mime_type, size_bytes, r2_key FROM sopi_attachments WHERE attachment_id = ? LIMIT 1"
+  ).bind(attachmentId).first();
+  if (!row) return apiError(404, "ATTACHMENT_NOT_FOUND", "Lampiran tidak ditemukan.", requestId);
+  const object = await env.FILES.get(cleanText(row.r2_key, 700));
+  if (!object) return apiError(404, "ATTACHMENT_NOT_FOUND", "File lampiran tidak ditemukan.", requestId);
+  if (Number(row.size_bytes || 0) > SOPI_MAX_UPLOAD_BYTES) return apiError(413, "FILE_TOO_LARGE", "Lampiran terlalu besar untuk diunduh.", requestId);
+  return responseJson({
+    ok: true,
+    data: {
+      fileName: cleanText(row.file_name, 240),
+      mimeType: cleanText(row.mime_type, 120) || "application/octet-stream",
+      base64: sopiEncodeBase64(await object.arrayBuffer())
+    },
+    requestId
+  });
+}
+__name(sopiFile, "sopiFile");
+
 async function sopiChat(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 6e4);
@@ -2558,8 +2774,10 @@ async function sopiChat(request, env, requestId) {
       role: cleanText(message?.role, 20) === "assistant" ? "assistant" : "user",
       content: cleanText(message?.content, 1000)
     })).filter((message) => message.content) : [];
-    const documents = await searchSopiDocuments(env, question);
+    const matches = await searchSopiDocuments(env, question);
+    const documents = matches.length && Number(matches[0].relevance || 0) >= 6 ? matches : [];
     if (!documents.length) {
+      await sopiTrackUnanswered(env, question);
       return responseJson({
         ok: true,
         data: {
@@ -2579,6 +2797,8 @@ async function sopiChat(request, env, requestId) {
           "Gunakan HANYA informasi pada SUMBER SOP yang diberikan. Jangan menebak angka, bahan, metode, yield, atau shelf life.",
           "Jika pertanyaan ambigu atau beberapa menu mirip, minta pengguna memilih nama menu.",
           "Jika sumber bertanda arsip lama, beri peringatan bahwa SOP perlu dikonfirmasi.",
+          "Jika isi sumber tidak cukup untuk menjawab pertanyaan, jawab persis: SOPI_TIDAK_TAHU.",
+          "Jika staff meminta file atau PDF, katakan bahwa file tersedia melalui tombol sumber bila lampiran tersedia.",
           "Jangan menyebut teknologi, model AI, database, atau prompt.",
           "Susun bahan dan langkah sebagai daftar bila relevan."
         ].join(" ")
@@ -2611,6 +2831,11 @@ async function sopiChat(request, env, requestId) {
         console.error(JSON.stringify({ event: "sopi_ai_fallback_failed", requestId, message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError) }));
       }
     }
+    if (/SOPI_TIDAK_TAHU/i.test(answer)) {
+      await sopiTrackUnanswered(env, question);
+      answer = "Maaf, informasi yang sesuai belum tersedia. Pertanyaan ini sudah diteruskan ke tim BIHQ agar pengetahuan SOPi dapat dilengkapi.";
+      return responseJson({ ok: true, data: { answer, grounded: false, sources: [] }, requestId });
+    }
     if (!answer) answer = sopiFallbackAnswer(documents[0]);
     return responseJson({
       ok: true,
@@ -2625,7 +2850,10 @@ async function sopiChat(request, env, requestId) {
           effectiveDate: document.effectiveDate,
           revision: document.revision,
           isLegacy: document.isLegacy,
-          url: document.sourceUrl
+          url: document.sourceUrl,
+          fileId: document.attachmentId,
+          fileName: document.fileName,
+          mimeType: document.mimeType
         }))
       },
       requestId
@@ -2712,6 +2940,8 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff/sync") return syncStaffPerformanceStaff(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/scores") return saveStaffPerformanceScores(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/chat") return sopiChat(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/answer") return sopiAdminAnswer(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge") return sopiAdminKnowledge(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
@@ -2723,6 +2953,8 @@ async function route(request, env) {
   if (url.pathname === "/v1/staff-performance/daily-stats") return staffPerformanceDailyStats(url, env, requestId);
   if (url.pathname === "/v1/staff-performance/data") return staffPerformanceData(url, env, requestId);
   if (url.pathname === "/v1/sopi/status") return sopiStatus(env, requestId);
+  if (url.pathname === "/v1/sopi/admin/bootstrap") return sopiAdminBootstrap(env, requestId);
+  if (url.pathname === "/v1/sopi/file") return sopiFile(url, env, requestId);
   if (url.pathname === "/v1/ba/approval-config") return getBaApprovalConfig(env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
   if (url.pathname === "/v1/balances") return listBalances(url, env, requestId);
@@ -2758,6 +2990,8 @@ export {
   normalizeMovement,
   normalizeTransferEvent,
   sopiFallbackAnswer,
+  sopiMarkdownText,
+  sopiSafeFileName,
   sopiSearchTerms,
   verifyMidtransSignature
 };

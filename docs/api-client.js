@@ -2,7 +2,7 @@
   'use strict';
 
   var CHAT_ASSET_VERSION = '20260911-group-panel-state1';
-  var SOPI_ASSET_VERSION = '20260930-sopi1';
+  var SOPI_ASSET_VERSION = '20260930-sopi2';
 
   function installBakerzinTypography() {
     if (!document.getElementById('bakerzinTypographyFont')) {
@@ -116,7 +116,7 @@
   global.BAKERZIN_API = Object.freeze({ call: call });
 
   function installChatWidget() {
-    if (/\/(?:chat|sopi)\.html$/i.test(global.location.pathname)) return;
+    if (/\/(?:chat|sopi(?:-admin)?)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
     if (!token || document.getElementById('biChatFloat')) return;
@@ -157,13 +157,13 @@
   }
 
   function installSopiWidget() {
-    if (/\/(?:chat|sopi)\.html$/i.test(global.location.pathname)) return;
+    if (/\/(?:chat|sopi(?:-admin)?)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
     if (!token || document.getElementById('biSopiFloat')) return;
     var style = document.createElement('style');
     style.id = 'biSopiWidgetStyle';
-    style.textContent = '#biSopiFloat{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(88px,calc(env(safe-area-inset-bottom) + 84px));z-index:2147482100;width:54px;height:54px;padding:0;border:2px solid #fff;border-radius:50%;overflow:hidden;background:linear-gradient(145deg,#fff6e9,#f1c9a8);box-shadow:0 12px 30px rgba(92,24,38,.25);cursor:pointer;transition:.18s transform,.18s box-shadow}#biSopiFloat:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(92,24,38,.34)}#biSopiFloat svg{width:100%;height:100%;display:block}#biSopiFloat:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #fff;border-radius:50%;background:#20b879}#biSopiPanel{position:fixed;z-index:2147482200;right:max(18px,env(safe-area-inset-right));bottom:max(154px,calc(env(safe-area-inset-bottom) + 150px));width:min(390px,calc(100vw - 24px));height:min(590px,calc(100dvh - 176px));display:none;overflow:hidden;border:1px solid #eadfe2;border-radius:23px;background:#fff;box-shadow:0 24px 70px rgba(56,24,34,.28);transform-origin:bottom right}#biSopiPanel.open{display:block;animation:biSopiIn .2s ease-out}#biSopiFrame{width:100%;height:100%;border:0;background:#fff}#biSopiClose{position:absolute;z-index:3;top:10px;right:10px;width:32px;height:32px;border:1px solid rgba(255,255,255,.28);border-radius:11px;color:#fff;background:rgba(61,2,15,.24);font:500 20px/1 Arial;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(4px)}@keyframes biSopiIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@media(max-width:700px){#biSopiFloat{width:50px;height:50px;right:14px;bottom:max(78px,calc(env(safe-area-inset-bottom) + 74px))}#biSopiPanel{right:10px;bottom:max(140px,calc(env(safe-area-inset-bottom) + 136px));width:calc(100vw - 20px);height:min(610px,calc(100dvh - 156px));border-radius:21px}}@media(prefers-reduced-motion:reduce){#biSopiPanel.open{animation:none}}';
+    style.textContent = '#biSopiFloat{position:fixed;right:max(18px,env(safe-area-inset-right));bottom:max(88px,calc(env(safe-area-inset-bottom) + 84px));z-index:2147482100;width:54px;height:54px;padding:0;border:2px solid #fff;border-radius:50%;overflow:hidden;background:linear-gradient(145deg,#fff6e9,#f1c9a8);box-shadow:0 12px 30px rgba(92,24,38,.25);cursor:pointer;transition:.18s transform,.18s box-shadow}#biSopiFloat:hover{transform:translateY(-2px) scale(1.03);box-shadow:0 16px 34px rgba(92,24,38,.34)}#biSopiFloat svg{width:100%;height:100%;display:block}#biSopiFloat:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #fff;border-radius:50%;background:#20b879}#biSopiPanel{position:fixed;z-index:2147482200;right:max(18px,env(safe-area-inset-right));bottom:max(154px,calc(env(safe-area-inset-bottom) + 150px));width:min(390px,calc(100vw - 24px));height:min(590px,calc(100dvh - 176px));display:none;overflow:hidden;border:1px solid #eadfe2;border-radius:23px;background:#fff;box-shadow:0 24px 70px rgba(56,24,34,.28);transform-origin:bottom right}#biSopiPanel.open{display:block;animation:biSopiIn .2s ease-out}#biSopiFrame{width:100%;height:100%;border:0;background:#fff}#biSopiClose{position:absolute;z-index:3;top:10px;right:10px;width:32px;height:32px;border:1px solid rgba(255,255,255,.28);border-radius:11px;color:#fff;background:rgba(61,2,15,.24);font:500 20px/1 Arial;display:grid;place-items:center;cursor:pointer;backdrop-filter:blur(4px)}#biSopiAdminFloat{position:fixed;z-index:2147482150;right:max(57px,calc(env(safe-area-inset-right) + 39px));bottom:max(125px,calc(env(safe-area-inset-bottom) + 121px));width:31px;height:31px;padding:0;display:grid;place-items:center;border:2px solid #fff;border-radius:50%;color:#6d4600;background:linear-gradient(145deg,#fff7b8,#ffc928);box-shadow:0 5px 16px rgba(134,86,0,.32);cursor:pointer;animation:biSopiLamp 1.8s ease-in-out infinite}#biSopiAdminFloat svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8}#biSopiAdminBadge{position:absolute;right:-6px;top:-7px;min-width:18px;height:18px;padding:0 4px;display:none;place-items:center;border:2px solid #fff;border-radius:10px;color:#fff;background:#a40d28;font:800 9px/1 Arial}#biSopiAdminLayer{position:fixed;inset:0;z-index:2147483200;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(39,18,24,.56);backdrop-filter:blur(4px)}#biSopiAdminLayer.open{display:flex}#biSopiAdminFrame{width:min(980px,100%);height:min(760px,calc(100dvh - 36px));border:0;border-radius:24px;background:#f7f5f6;box-shadow:0 28px 90px rgba(35,8,16,.4)}#biSopiAdminClose{position:absolute;top:max(28px,calc(env(safe-area-inset-top) + 16px));right:max(28px,calc(env(safe-area-inset-right) + 16px));width:40px;height:40px;display:grid;place-items:center;border:1px solid #eadfe2;border-radius:13px;color:#34282c;background:#fff;font:500 22px/1 Arial;cursor:pointer;box-shadow:0 5px 18px rgba(35,8,16,.1)}@keyframes biSopiIn{from{opacity:0;transform:translateY(10px) scale(.97)}to{opacity:1;transform:none}}@keyframes biSopiLamp{0%,100%{box-shadow:0 5px 16px rgba(134,86,0,.28),0 0 0 0 rgba(255,201,40,.3)}50%{box-shadow:0 7px 20px rgba(134,86,0,.38),0 0 0 7px rgba(255,201,40,0)}}@media(max-width:700px){#biSopiFloat{width:50px;height:50px;right:14px;bottom:max(78px,calc(env(safe-area-inset-bottom) + 74px))}#biSopiPanel{right:10px;bottom:max(140px,calc(env(safe-area-inset-bottom) + 136px));width:calc(100vw - 20px);height:min(610px,calc(100dvh - 156px));border-radius:21px}#biSopiAdminFloat{right:50px;bottom:max(112px,calc(env(safe-area-inset-bottom) + 108px));width:29px;height:29px}#biSopiAdminLayer{padding:0}#biSopiAdminFrame{width:100%;height:100%;border-radius:0}#biSopiAdminClose{top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));width:34px;height:34px;border-radius:10px}}@media(prefers-reduced-motion:reduce){#biSopiPanel.open{animation:none}#biSopiAdminFloat{animation:none}}';
     document.head.appendChild(style);
     var button = document.createElement('button');
     button.id = 'biSopiFloat';
@@ -187,6 +187,45 @@
     panel.appendChild(closeButton);
     document.body.appendChild(button);
     document.body.appendChild(panel);
+    var adminButton = null, adminLayer = null, adminFrame = null;
+    function installAdminKnowledge(user) {
+      var isBihq = Boolean(user && (user.isAdmin === true || String(user.outlet || '').toUpperCase() === 'BIHQ'));
+      if (!isBihq || adminButton) return;
+      adminButton = document.createElement('button');
+      adminButton.id = 'biSopiAdminFloat';
+      adminButton.type = 'button';
+      adminButton.title = 'SOPi Knowledge Center';
+      adminButton.setAttribute('aria-label', 'Buka SOPi Knowledge Center');
+      adminButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.2 14.5A7 7 0 1 1 15.8 14.5C14.7 15.3 14 16.6 14 18h-4c0-1.4-.7-2.7-1.8-3.5Z"/><path d="M12 2V0M4.9 4.9 3.5 3.5M19.1 4.9l1.4-1.4"/></svg><span id="biSopiAdminBadge"></span>';
+      adminLayer = document.createElement('div');
+      adminLayer.id = 'biSopiAdminLayer';
+      adminLayer.setAttribute('role', 'dialog');
+      adminLayer.setAttribute('aria-label', 'SOPi Knowledge Center');
+      adminFrame = document.createElement('iframe');
+      adminFrame.id = 'biSopiAdminFrame';
+      adminFrame.title = 'SOPi Knowledge Center';
+      var adminClose = document.createElement('button');
+      adminClose.id = 'biSopiAdminClose';
+      adminClose.type = 'button';
+      adminClose.setAttribute('aria-label', 'Tutup Knowledge Center');
+      adminClose.textContent = '×';
+      adminLayer.appendChild(adminFrame);
+      adminLayer.appendChild(adminClose);
+      document.body.appendChild(adminButton);
+      document.body.appendChild(adminLayer);
+      function closeAdmin() { adminLayer.classList.remove('open'); document.documentElement.style.overflow = ''; }
+      function refreshAdminBadge() { call('sopiAdminBootstrap', [token]).then(function (response) { var badge = document.getElementById('biSopiAdminBadge'); if (!badge || !response || !response.ok) return; var count = Number(response.data && response.data.openCount || 0); badge.textContent = count > 99 ? '99+' : String(count); badge.style.display = count ? 'grid' : 'none'; }).catch(function () {}); }
+      adminButton.addEventListener('click', function () { if (!adminFrame.src) adminFrame.src = 'sopi-admin.html?v=' + encodeURIComponent(SOPI_ASSET_VERSION); close(); var chatLayer = document.getElementById('biChatLayer'); if (chatLayer) chatLayer.classList.remove('open'); adminLayer.classList.add('open'); document.documentElement.style.overflow = 'hidden'; });
+      adminClose.addEventListener('click', closeAdmin);
+      adminLayer.addEventListener('click', function (event) { if (event.target === adminLayer) closeAdmin(); });
+      refreshAdminBadge();
+      global.setInterval(refreshAdminBadge, 60000);
+      global.addEventListener('message', function (event) { if (event.source !== adminFrame.contentWindow || !event.data) return; if (event.data.biSopiAdminClose) closeAdmin(); if (event.data.biSopiKnowledgeChanged) refreshAdminBadge(); });
+    }
+    var cachedUser = null;
+    try { var cachedData = JSON.parse(global.localStorage.getItem('bakerzin_app_cache') || 'null'); cachedUser = cachedData && cachedData.user; } catch (error) {}
+    installAdminKnowledge(cachedUser);
+    global.addEventListener('bakerzin:user-ready', function (event) { installAdminKnowledge(event && event.detail); });
     function close() {
       panel.classList.remove('open');
       button.setAttribute('aria-expanded', 'false');
@@ -209,6 +248,7 @@
     });
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && panel.classList.contains('open')) close();
+      if (event.key === 'Escape' && adminLayer && adminLayer.classList.contains('open')) { adminLayer.classList.remove('open'); document.documentElement.style.overflow = ''; }
     });
   }
 

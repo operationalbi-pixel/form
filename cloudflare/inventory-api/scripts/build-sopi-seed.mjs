@@ -25,7 +25,8 @@ function searchable(document) {
 
 // Wrangler's remote D1 importer batches statements itself and rejects explicit
 // BEGIN/COMMIT statements. Keep the seed idempotent with a scoped table reset.
-const statements = ['DELETE FROM sopi_documents;'];
+// Preserve knowledge injected by BIHQ; only replace the Drive JSON snapshot.
+const statements = ["DELETE FROM sopi_documents WHERE source_type = 'JSON';"];
 
 for (const document of payload.documents || []) {
   statements.push(`INSERT INTO sopi_documents (

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { sopiFallbackAnswer, sopiSearchTerms } from '../src/index.js';
+import { sopiFallbackAnswer, sopiMarkdownText, sopiSafeFileName, sopiSearchTerms } from '../src/index.js';
 
 const seed = JSON.parse(await readFile(new URL('../data/sopi-seed.json', import.meta.url), 'utf8'));
 
@@ -13,6 +13,12 @@ assert.deepEqual(
   sopiSearchTerms('Berapa takaran Nasi Goreng Roa?'),
   ['nasi', 'goreng', 'roa']
 );
+assert.equal(sopiSafeFileName('../SOP Oxtail Fried Rice (Final).pdf'), 'SOP Oxtail Fried Rice (Final).pdf');
+assert.equal(sopiMarkdownText({ results: [{ data: '# SOP\n\nIsi dokumen.' }] }), '# SOP\n\nIsi dokumen.');
+
+const migration = await readFile(new URL('../../migrations/0007_sopi_knowledge_center.sql', import.meta.url), 'utf8');
+assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_unanswered/);
+assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_attachments/);
 
 const answer = sopiFallbackAnswer({
   title: 'Menu Test',
