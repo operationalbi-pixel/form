@@ -2462,38 +2462,35 @@ async function searchSopiDocuments(env, question) {
   const terms = sopiSearchTerms(question);
   const usableTerms = terms.length ? terms : normalized.split(" ").filter(Boolean).slice(0, 4);
   if (!usableTerms.length) return [];
-  const scoreParts = [];
-  const scoreBindings = [];
   const conditions = [];
   const whereBindings = [];
   for (const term of usableTerms) {
-    const pattern = `%${term}%`;
-    scoreParts.push("CASE WHEN LOWER(d.title) LIKE ? THEN 20 ELSE 0 END");
-    scoreBindings.push(pattern);
-    scoreParts.push("CASE WHEN LOWER(d.search_text) LIKE ? THEN 3 ELSE 0 END");
-    scoreBindings.push(pattern);
-    conditions.push("LOWER(d.search_text) LIKE ?");
-    whereBindings.push(pattern);
+    conditions.push("INSTR(LOWER(d.search_text), ?) > 0");
+    whereBindings.push(term);
   }
-  const exactTitle = `%${normalized}%`;
-  scoreParts.unshift("CASE WHEN LOWER(d.title) = ? THEN 100 WHEN LOWER(d.title) LIKE ? THEN 45 ELSE 0 END");
-  scoreBindings.unshift(normalized, exactTitle);
-  conditions.unshift("LOWER(d.title) LIKE ?");
-  whereBindings.unshift(exactTitle);
+  conditions.unshift("INSTR(LOWER(d.title), ?) > 0");
+  whereBindings.unshift(normalized);
   const statement = env.MASTER_DB.prepare(
     `SELECT d.document_id, d.title, d.category, d.category_detail, d.effective_date, d.revision,
             d.is_legacy, d.yield_text, d.shelf_life, d.ingredients_json, d.steps_json,
             d.content_text, d.attachment_id, d.source_url, d.source_type, d.status,
-            a.file_name, a.mime_type,
-            (${scoreParts.join(" + ")}) AS relevance
+            d.search_text, a.file_name, a.mime_type
        FROM sopi_documents d
        LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
       WHERE ${conditions.join(" OR ")}
-      ORDER BY d.is_legacy ASC, relevance DESC, d.effective_date DESC, d.title ASC
-      LIMIT 6`
-  ).bind(...scoreBindings, ...whereBindings);
+      ORDER BY d.is_legacy ASC, d.effective_date DESC, d.title ASC
+      LIMIT 40`
+  ).bind(...whereBindings);
   const result = await statement.all();
-  return (result.results || []).map((row) => ({
+  return (result.results || []).map((row) => {
+    const titleNormalized = sopiNormalizeText(row.title);
+    const searchNormalized = sopiNormalizeText(row.search_text);
+    let relevance = titleNormalized === normalized ? 100 : titleNormalized.includes(normalized) ? 45 : 0;
+    for (const term of usableTerms) {
+      if (titleNormalized.includes(term)) relevance += 20;
+      if (searchNormalized.includes(term)) relevance += 3;
+    }
+    return {
     id: cleanText(row.document_id, 180),
     title: cleanText(row.title, 240),
     category: cleanText(row.category, 100),
@@ -2512,8 +2509,9 @@ async function searchSopiDocuments(env, question) {
     sourceUrl: cleanText(row.source_url, 600),
     sourceType: cleanText(row.source_type, 30),
     status: cleanText(row.status, 80),
-    relevance: Number(row.relevance || 0)
-  }));
+      relevance
+    };
+  }).sort((left, right) => Number(left.isLegacy) - Number(right.isLegacy) || right.relevance - left.relevance || left.title.localeCompare(right.title)).slice(0, 6);
 }
 __name(searchSopiDocuments, "searchSopiDocuments");
 
