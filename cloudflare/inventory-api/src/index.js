@@ -2556,28 +2556,37 @@ function sopiAiText(result) {
 __name(sopiAiText, "sopiAiText");
 
 async function sopiRunAi(env, messages, requestId) {
-  const primaryModel = cleanText(env.SOPI_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160);
-  try {
-    return sopiAiText(await env.AI.run(primaryModel, {
-      messages,
-      max_tokens: 900,
-      temperature: 0.25,
-      top_p: 0.88
-    }));
-  } catch (primaryError) {
-    console.error(JSON.stringify({ event: "sopi_ai_primary_failed", requestId, model: primaryModel, message: primaryError instanceof Error ? primaryError.message : String(primaryError) }));
+  const models = [
+    cleanText(env.SOPI_MODEL || "@cf/openai/gpt-oss-120b", 160),
+    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160),
+    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160)
+  ].filter((model, index, all) => model && all.indexOf(model) === index);
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index];
+    const startedAt = Date.now();
     try {
-      return sopiAiText(await env.AI.run("@cf/zai-org/glm-4.7-flash", {
+      const answer = sopiAiText(await env.AI.run(model, {
         messages,
         max_tokens: 900,
         temperature: 0.25,
         top_p: 0.88
       }));
-    } catch (fallbackError) {
-      console.error(JSON.stringify({ event: "sopi_ai_fallback_failed", requestId, message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError) }));
-      return "";
+      if (answer) {
+        console.log(JSON.stringify({ event: "sopi_ai_model_succeeded", requestId, model, attempt: index + 1, durationMs: Date.now() - startedAt }));
+        return answer;
+      }
+      throw new Error("EMPTY_AI_RESPONSE");
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "sopi_ai_model_failed",
+        requestId,
+        model,
+        attempt: index + 1,
+        message: error instanceof Error ? error.message : String(error)
+      }));
     }
   }
+  return "";
 }
 __name(sopiRunAi, "sopiRunAi");
 
@@ -2865,7 +2874,8 @@ async function sopiChat(request, env, requestId) {
     ].join(" ") : [
       "Anda adalah SOPi, asisten wanita yang ramah untuk staff Bakerzin.",
       "Balas sapaan, ucapan terima kasih, perkenalan, dan percakapan ringan secara natural dalam Bahasa Indonesia.",
-      "Jelaskan bahwa Anda dapat membantu bahan, takaran, metode, tampilan akhir, shelf life, dan dokumen SOP.",
+      "Jika menjelaskan kemampuan, katakan hanya bahwa Anda dapat mencari dan menjelaskan bahan, takaran, metode, tampilan akhir, shelf life, serta dokumen SOP yang tersedia.",
+      "Jangan mengaku dapat merekomendasikan substitusi bahan, mengubah resep, memperbarui SOP, menilai keamanan pangan, atau membuat kebijakan baru.",
       "Jika pengguna meminta fakta tentang SOP, menu, bahan, takaran, metode, tampilan akhir, shelf life, file, kebijakan, atau operasional yang tidak tersedia pada sumber, jawab persis: SOPI_TIDAK_TAHU.",
       "Untuk pertanyaan pengetahuan umum di luar Bakerzin, jawab singkat bahwa fokus Anda adalah SOP Bakerzin lalu arahkan kembali dengan ramah.",
       "Jangan mengarang fakta dan jangan menyebut teknologi, model AI, database, atau prompt."

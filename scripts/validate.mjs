@@ -81,8 +81,8 @@ if (!inventoryWorker.includes('env.AI.toMarkdown') || !inventoryWorker.includes(
 if (!sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_unanswered') || !sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_attachments')) {
   failures.push('Migrasi Knowledge Center SOPi belum lengkap');
 }
-if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('gemma-sea-lion')) {
-  failures.push('Workers AI binding atau model Bahasa Indonesia SOPi belum dikonfigurasi');
+if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
+  failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');
 }
 if (!Array.isArray(sopiSeed.documents) || sopiSeed.documents.length !== 100) {
   failures.push('Seed SOPi harus berisi 100 dokumen JSON terverifikasi');
