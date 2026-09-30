@@ -49,6 +49,10 @@ if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.htm
 if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
   failures.push('Gateway GAS SOPi belum tersedia');
 }
+for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'downloadSopiAttachment']) {
+  const contractPattern = new RegExp(`function ${functionName}\\([^)]*\\) \\{\\s*return safe_\\(function \\(\\) \\{`);
+  if (!contractPattern.test(chatBackend)) failures.push(`Gateway SOPi '${functionName}' belum mengembalikan kontrak {ok,data}`);
+}
 for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiDownload']) {
   if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
 }
@@ -57,6 +61,9 @@ if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('func
 }
 if (!apiClient.includes("adminButton.id = 'biSopiAdminFloat'") || !apiClient.includes("String(user.outlet || '').toUpperCase() === 'BIHQ'")) {
   failures.push('Lampu Knowledge Center belum tersedia khusus akun BIHQ');
+}
+if (!apiClient.includes("dock.id = 'biAssistantDock'") || !apiClient.includes('biSopiAssistantFloat') || !apiClient.includes('biSopiModalIn')) {
+  failures.push('Dock Chat dan SOPi belum memiliki susunan, frame, dan animasi yang senada');
 }
 if (!inventoryWorker.includes('async function sopiChat(') || !inventoryWorker.includes('SUMBER SOP TERVERIFIKASI')) {
   failures.push('Cloudflare Worker SOPi belum menerapkan jawaban berbasis sumber');

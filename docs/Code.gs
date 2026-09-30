@@ -6395,79 +6395,89 @@ function cloudflareQueryString_(params) {
 }
 
 function askSopi(token, payload) {
-  requireSession_(token);
-  const question = String(payload && payload.question || '').trim();
-  if (!question) throw new Error('Tuliskan pertanyaan untuk SOPi.');
-  if (question.length > 1200) throw new Error('Pertanyaan terlalu panjang. Maksimal 1.200 karakter.');
-  const history = Array.isArray(payload && payload.history) ? payload.history.slice(-6).map(function (message) {
-    return {
-      role: String(message && message.role || '') === 'assistant' ? 'assistant' : 'user',
-      content: String(message && message.content || '').trim().slice(0, 1000)
-    };
-  }).filter(function (message) { return message.content; }) : [];
-  const response = cloudflareInventoryRequest_('POST', '/v1/sopi/chat', {
-    question: question,
-    history: history
+  return safe_(function () {
+    requireSession_(token);
+    const question = String(payload && payload.question || '').trim();
+    if (!question) throw new Error('Tuliskan pertanyaan untuk SOPi.');
+    if (question.length > 1200) throw new Error('Pertanyaan terlalu panjang. Maksimal 1.200 karakter.');
+    const history = Array.isArray(payload && payload.history) ? payload.history.slice(-6).map(function (message) {
+      return {
+        role: String(message && message.role || '') === 'assistant' ? 'assistant' : 'user',
+        content: String(message && message.content || '').trim().slice(0, 1000)
+      };
+    }).filter(function (message) { return message.content; }) : [];
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/chat', {
+      question: question,
+      history: history
+    });
+    return response.data || { answer: 'SOPi belum dapat menjawab saat ini.', sources: [], grounded: false };
   });
-  return response.data || { answer: 'SOPi belum dapat menjawab saat ini.', sources: [], grounded: false };
 }
 
 function getSopiAdminBootstrap(token) {
-  requireAdmin_(token);
-  const response = cloudflareInventoryRequest_('GET', '/v1/sopi/admin/bootstrap');
-  return response.data || { openCount: 0, questions: [], knowledgeCount: 0 };
+  return safe_(function () {
+    requireAdmin_(token);
+    const response = cloudflareInventoryRequest_('GET', '/v1/sopi/admin/bootstrap');
+    return response.data || { openCount: 0, questions: [], knowledgeCount: 0 };
+  });
 }
 
 function saveSopiAdminAnswer(token, payload) {
-  const employee = requireAdmin_(token);
-  payload = payload || {};
-  const questionId = String(payload.questionId || '').trim();
-  const answer = String(payload.answer || '').trim();
-  if (!questionId || !answer) throw new Error('Pertanyaan dan jawaban wajib diisi.');
-  if (answer.length > 12000) throw new Error('Jawaban maksimal 12.000 karakter.');
-  const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/answer', {
-    questionId: questionId,
-    answer: answer,
-    answeredBy: employee.name || employee.nik
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const questionId = String(payload.questionId || '').trim();
+    const answer = String(payload.answer || '').trim();
+    if (!questionId || !answer) throw new Error('Pertanyaan dan jawaban wajib diisi.');
+    if (answer.length > 12000) throw new Error('Jawaban maksimal 12.000 karakter.');
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/answer', {
+      questionId: questionId,
+      answer: answer,
+      answeredBy: employee.name || employee.nik
+    });
+    return response.data || { success: true };
   });
-  return response.data || { success: true };
 }
 
 function uploadSopiKnowledge(token, payload) {
-  const employee = requireAdmin_(token);
-  payload = payload || {};
-  const title = String(payload.title || '').trim();
-  const category = String(payload.category || '').trim();
-  const content = String(payload.content || '').trim();
-  const file = payload.file && typeof payload.file === 'object' ? payload.file : null;
-  if (!title || !category) throw new Error('Judul dan kategori informasi wajib diisi.');
-  if (!content && !file) throw new Error('Isi informasi atau lampiran wajib diisi.');
-  if (title.length > 240 || category.length > 100 || content.length > 30000) throw new Error('Informasi terlalu panjang.');
-  let preparedFile = null;
-  if (file) {
-    const fileName = String(file.name || '').trim();
-    const mimeType = String(file.mimeType || 'application/octet-stream').trim();
-    const base64 = String(file.base64 || '').replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
-    if (!fileName || !base64) throw new Error('Lampiran tidak valid.');
-    if (base64.length > 5592424) throw new Error('Ukuran lampiran maksimal 4 MB.');
-    preparedFile = { name: fileName, mimeType: mimeType, base64: base64 };
-  }
-  const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge', {
-    title: title,
-    category: category,
-    content: content,
-    file: preparedFile,
-    uploadedBy: employee.name || employee.nik
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const title = String(payload.title || '').trim();
+    const category = String(payload.category || '').trim();
+    const content = String(payload.content || '').trim();
+    const file = payload.file && typeof payload.file === 'object' ? payload.file : null;
+    if (!title || !category) throw new Error('Judul dan kategori informasi wajib diisi.');
+    if (!content && !file) throw new Error('Isi informasi atau lampiran wajib diisi.');
+    if (title.length > 240 || category.length > 100 || content.length > 30000) throw new Error('Informasi terlalu panjang.');
+    let preparedFile = null;
+    if (file) {
+      const fileName = String(file.name || '').trim();
+      const mimeType = String(file.mimeType || 'application/octet-stream').trim();
+      const base64 = String(file.base64 || '').replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+      if (!fileName || !base64) throw new Error('Lampiran tidak valid.');
+      if (base64.length > 5592424) throw new Error('Ukuran lampiran maksimal 4 MB.');
+      preparedFile = { name: fileName, mimeType: mimeType, base64: base64 };
+    }
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge', {
+      title: title,
+      category: category,
+      content: content,
+      file: preparedFile,
+      uploadedBy: employee.name || employee.nik
+    });
+    return response.data || { success: true };
   });
-  return response.data || { success: true };
 }
 
 function downloadSopiAttachment(token, attachmentId) {
-  requireSession_(token);
-  const id = String(attachmentId || '').trim();
-  if (!id) throw new Error('Lampiran tidak valid.');
-  const response = cloudflareInventoryRequest_('GET', '/v1/sopi/file?' + cloudflareQueryString_({ id: id }));
-  return response.data || {};
+  return safe_(function () {
+    requireSession_(token);
+    const id = String(attachmentId || '').trim();
+    if (!id) throw new Error('Lampiran tidak valid.');
+    const response = cloudflareInventoryRequest_('GET', '/v1/sopi/file?' + cloudflareQueryString_({ id: id }));
+    return response.data || {};
+  });
 }
 
 // ---------- Daily Staff Performance (Cloudflare D1 only) ----------
