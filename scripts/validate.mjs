@@ -38,6 +38,56 @@ const stockCardHtml = await text('docs/stock-card.html');
 const frontendShowcase = await text('docs/showcaselog.html');
 const staffPerformanceHtml = await text('docs/staff-performance.html');
 const staffPerformanceMigration = await text('gas/StaffPerformanceCloudflareMigration.gs');
+const sopiHtml = await text('docs/sopi.html');
+const sopiAdminHtml = await text('docs/sopi-admin.html');
+const sopiSeed = JSON.parse(await text('cloudflare/inventory-api/data/sopi-seed.json'));
+const sopiWrangler = await text('cloudflare/inventory-api/wrangler.jsonc');
+const sopiKnowledgeMigration = await text('cloudflare/migrations/0007_sopi_knowledge_center.sql');
+if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.html?v=')) {
+  failures.push('Widget SOPi belum dipasang di atas chat global');
+}
+if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
+  failures.push('Gateway GAS SOPi belum tersedia');
+}
+for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiDownload']) {
+  if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
+}
+if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('function uploadSopiKnowledge(')) {
+  failures.push('Knowledge Center SOPi belum dibatasi untuk akun BIHQ');
+}
+if (!apiClient.includes("adminButton.id = 'biSopiAdminFloat'") || !apiClient.includes("String(user.outlet || '').toUpperCase() === 'BIHQ'")) {
+  failures.push('Lampu Knowledge Center belum tersedia khusus akun BIHQ');
+}
+if (!inventoryWorker.includes('async function sopiChat(') || !inventoryWorker.includes('SUMBER SOP TERVERIFIKASI')) {
+  failures.push('Cloudflare Worker SOPi belum menerapkan jawaban berbasis sumber');
+}
+if (!inventoryWorker.includes('env.AI.toMarkdown') || !inventoryWorker.includes('env.FILES.put') || !inventoryWorker.includes('async function sopiFile(')) {
+  failures.push('Worker SOPi belum mengonversi lampiran, menyimpan file privat, dan menyediakan unduhan aman');
+}
+if (!sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_unanswered') || !sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_attachments')) {
+  failures.push('Migrasi Knowledge Center SOPi belum lengkap');
+}
+if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('gemma-sea-lion')) {
+  failures.push('Workers AI binding atau model Bahasa Indonesia SOPi belum dikonfigurasi');
+}
+if (!Array.isArray(sopiSeed.documents) || sopiSeed.documents.length !== 100) {
+  failures.push('Seed SOPi harus berisi 100 dokumen JSON terverifikasi');
+}
+let sopiInlineIndex = 0;
+for (const match of sopiHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  sopiInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/sopi.html#inline-${sopiInlineIndex}` }); }
+  catch (error) { failures.push(`docs/sopi.html inline script ${sopiInlineIndex}: ${error.message}`); }
+}
+let sopiAdminInlineIndex = 0;
+for (const match of sopiAdminHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  sopiAdminInlineIndex += 1;
+  try { new vm.Script(match[1], { filename: `docs/sopi-admin.html#inline-${sopiAdminInlineIndex}` }); }
+  catch (error) { failures.push(`docs/sopi-admin.html inline script ${sopiAdminInlineIndex}: ${error.message}`); }
+}
+if (!sopiAdminHtml.includes('Pertanyaan Belum Terjawab') || !sopiAdminHtml.includes('Upload Informasi') || !sopiAdminHtml.includes('accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp"')) {
+  failures.push('UI Knowledge Center SOPi belum menyediakan dua tab dan format lampiran yang diminta');
+}
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {
   failures.push('Stock History belum menggunakan Cloudflare D1 dan pembacaan per halaman');
 }

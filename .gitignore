@@ -6,3 +6,6 @@
 
 node_modules/
 *.log
+
+# Generated from the compact SOPi JSON source before a D1 import.
+cloudflare/inventory-api/data/sopi-seed.sql

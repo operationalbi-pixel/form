@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "check": "wrangler deploy --dry-run",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "sopi:build-seed": "node scripts/build-sopi-seed.mjs",
+    "sopi:migrate": "wrangler d1 execute bakerzin-inventory-master --remote --file ../migrations/0006_sopi_knowledge.sql",
+    "sopi:seed": "node scripts/build-sopi-seed.mjs && wrangler d1 execute bakerzin-inventory-master --remote --file data/sopi-seed.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
