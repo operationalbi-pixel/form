@@ -50,11 +50,11 @@ if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.htm
 if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
   failures.push('Gateway GAS SOPi belum tersedia');
 }
-for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'getSopiDocument', 'downloadSopiAttachment']) {
+for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'syncSopiDriveKnowledge', 'getSopiDocument', 'downloadSopiAttachment']) {
   const contractPattern = new RegExp(`function ${functionName}\\([^)]*\\) \\{\\s*return safe_\\(function \\(\\) \\{`);
   if (!contractPattern.test(chatBackend)) failures.push(`Gateway SOPi '${functionName}' belum mengembalikan kontrak {ok,data}`);
 }
-for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiAdminSyncImages', 'sopiDocument', 'sopiDownload']) {
+for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiAdminSyncImages', 'sopiAdminSyncDrive', 'sopiDocument', 'sopiDownload']) {
   if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
 }
 if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('function uploadSopiKnowledge(')) {
@@ -71,6 +71,9 @@ if (!apiClient.includes('panel.appendChild(adminButton)') || !apiClient.includes
 }
 if (!sopiHtml.includes('Kamu bisa tanya apapun tentang Operasional Bakerzin') || sopiHtml.includes('Sumber SOP terhubung') || !sopiHtml.includes("send.addEventListener('pointerdown'") || !sopiHtml.includes("document.activeElement===input)input.blur()")) {
   failures.push('Header dan perilaku keyboard mobile SOPi belum mengikuti desain terbaru');
+}
+if (!sopiHtml.includes('sopi-assistant-closeup-v3.png') || !sopiAdminHtml.includes('Sinkronkan Folder Drive') || !inventoryWorker.includes('/v1/sopi/admin/drive-document')) {
+  failures.push('Karakter close-up atau sinkronisasi rekursif Google Drive SOPi belum lengkap');
 }
 if (!chatBackend.includes('userName: String(employee') || !inventoryWorker.includes('Nama staff yang sedang berbicara') || !sopiHtml.includes('biSopiUser')) {
   failures.push('SOPi belum mengenali nama pengguna dari sesi login tervalidasi');

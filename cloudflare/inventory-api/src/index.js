@@ -2609,6 +2609,7 @@ function sopiConversationFallback(question, userName = "") {
 __name(sopiConversationFallback, "sopiConversationFallback");
 
 var SOPI_MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+var SOPI_MAX_DRIVE_BYTES = 8 * 1024 * 1024;
 var SOPI_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var SOPI_ALLOWED_EXTENSIONS = new Set([
   "pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "gif", "bmp"
@@ -2626,16 +2627,16 @@ function sopiFileExtension(fileName) {
 }
 __name(sopiFileExtension, "sopiFileExtension");
 
-function sopiDecodeBase64(value) {
+function sopiDecodeBase64(value, maximumBytes = SOPI_MAX_UPLOAD_BYTES) {
   const encoded = String(value || "").replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
-  if (!encoded || encoded.length > Math.ceil(SOPI_MAX_UPLOAD_BYTES * 4 / 3) + 16) throw new Error("FILE_TOO_LARGE");
+  if (!encoded || encoded.length > Math.ceil(maximumBytes * 4 / 3) + 16) throw new Error("FILE_TOO_LARGE");
   let binary = "";
   try {
     binary = atob(encoded);
   } catch {
     throw new Error("INVALID_FILE");
   }
-  if (binary.length > SOPI_MAX_UPLOAD_BYTES) throw new Error("FILE_TOO_LARGE");
+  if (binary.length > maximumBytes) throw new Error("FILE_TOO_LARGE");
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
   return bytes;
@@ -2833,6 +2834,77 @@ async function sopiAdminKnowledge(request, env, requestId) {
 }
 __name(sopiAdminKnowledge, "sopiAdminKnowledge");
 
+function sopiDriveTitle(fileName) {
+  return sopiSafeFileName(fileName)
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/^\s*\d+\s*[._-]\s*/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+__name(sopiDriveTitle, "sopiDriveTitle");
+
+async function sopiAdminDriveDocument(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 12 * 1024 * 1024);
+    const driveFileId = requiredText(payload.driveFileId, "drive_file_id", 180);
+    const fileName = sopiSafeFileName(requiredText(payload.fileName, "file_name", 240));
+    const mimeType = cleanText(payload.mimeType || "application/octet-stream", 120).toLowerCase();
+    const extension = sopiFileExtension(fileName);
+    if (!SOPI_ALLOWED_EXTENSIONS.has(extension)) throw new Error("UNSUPPORTED_FILE");
+    const bytes = sopiDecodeBase64(payload.base64, SOPI_MAX_DRIVE_BYTES);
+    const conversion = await env.AI.toMarkdown([
+      { name: fileName, blob: new Blob([bytes], { type: mimeType }) }
+    ], { conversionOptions: { output: { format: "text" } } });
+    const converted = sopiMarkdownText(conversion);
+    if (!converted) throw new Error("FILE_CONVERSION_FAILED");
+
+    const documentId = `drive:${driveFileId}`;
+    const attachmentId = `drive:${driveFileId}`;
+    const uploadedKey = `sopi/drive/${driveFileId}/${fileName}`;
+    const title = sopiDriveTitle(payload.title || fileName) || fileName;
+    const sourcePath = cleanText(payload.sourcePath, 500);
+    const sourceUrl = cleanText(payload.sourceUrl, 600);
+    const uploadedBy = cleanText(payload.uploadedBy, 180);
+    const searchText = [title, fileName, sourcePath, converted].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+
+    await env.FILES.put(uploadedKey, bytes, { httpMetadata: { contentType: mimeType } });
+    await env.MASTER_DB.batch([
+      env.MASTER_DB.prepare(
+        `INSERT INTO sopi_documents(
+           document_id, title, category, category_detail, effective_date, revision, is_legacy,
+           yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
+           source_type, status, content_text, attachment_id, updated_at
+         ) VALUES (?, ?, 'Drive SOP', ?, '', '', 0, '', '', '[]', '[]', ?, ?, 'DRIVE', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(document_id) DO UPDATE SET
+           title = excluded.title, category = excluded.category, category_detail = excluded.category_detail,
+           search_text = excluded.search_text, source_url = excluded.source_url, source_type = 'DRIVE',
+           status = 'ACTIVE', content_text = excluded.content_text, attachment_id = excluded.attachment_id,
+           updated_at = CURRENT_TIMESTAMP`
+      ).bind(documentId, title, sourcePath, searchText, sourceUrl, converted, attachmentId),
+      env.MASTER_DB.prepare(
+        `INSERT INTO sopi_attachments(attachment_id, document_id, file_name, mime_type, size_bytes, r2_key, uploaded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(attachment_id) DO UPDATE SET
+           document_id = excluded.document_id, file_name = excluded.file_name, mime_type = excluded.mime_type,
+           size_bytes = excluded.size_bytes, r2_key = excluded.r2_key, uploaded_by = excluded.uploaded_by,
+           created_at = CURRENT_TIMESTAMP`
+      ).bind(attachmentId, documentId, fileName, mimeType, bytes.byteLength, uploadedKey, uploadedBy)
+    ]);
+    return responseJson({ ok: true, data: { success: true, documentId, attachmentId, extractedCharacters: converted.length }, requestId });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_DRIVE_DOCUMENT";
+    const messages = {
+      FILE_TOO_LARGE: "File Drive melebihi batas 8 MB.",
+      UNSUPPORTED_FILE: "Format file Drive belum didukung.",
+      FILE_CONVERSION_FAILED: "Isi file Drive tidak berhasil dibaca."
+    };
+    return apiError(code === "FILE_TOO_LARGE" || code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, messages[code] || "Dokumen Drive tidak dapat disinkronkan.", requestId);
+  }
+}
+__name(sopiAdminDriveDocument, "sopiAdminDriveDocument");
+
 async function sopiFile(requestUrl, env, requestId) {
   const attachmentId = cleanText(requestUrl.searchParams.get("id"), 180);
   if (!attachmentId) return apiError(400, "INVALID_ATTACHMENT", "Lampiran tidak valid.", requestId);
@@ -2842,7 +2914,7 @@ async function sopiFile(requestUrl, env, requestId) {
   if (!row) return apiError(404, "ATTACHMENT_NOT_FOUND", "Lampiran tidak ditemukan.", requestId);
   const object = await env.FILES.get(cleanText(row.r2_key, 700));
   if (!object) return apiError(404, "ATTACHMENT_NOT_FOUND", "File lampiran tidak ditemukan.", requestId);
-  if (Number(row.size_bytes || 0) > SOPI_MAX_UPLOAD_BYTES) return apiError(413, "FILE_TOO_LARGE", "Lampiran terlalu besar untuk diunduh.", requestId);
+  if (Number(row.size_bytes || 0) > SOPI_MAX_DRIVE_BYTES) return apiError(413, "FILE_TOO_LARGE", "Lampiran terlalu besar untuk diunduh.", requestId);
   return responseJson({
     ok: true,
     data: {
@@ -3128,6 +3200,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/sopi/chat") return sopiChat(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/answer") return sopiAdminAnswer(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge") return sopiAdminKnowledge(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/drive-document") return sopiAdminDriveDocument(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/image") return sopiAdminImage(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
@@ -3179,6 +3252,7 @@ export {
   normalizeTransferEvent,
   sopiFallbackAnswer,
   sopiConversationFallback,
+  sopiDriveTitle,
   sopiMarkdownText,
   sopiSafeFileName,
   sopiSearchTerms,
