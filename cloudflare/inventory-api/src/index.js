@@ -2681,6 +2681,19 @@ async function sopiImageUrl(requestUrl, env, imageId) {
 }
 __name(sopiImageUrl, "sopiImageUrl");
 
+async function sopiFileSignature(env, attachmentId, expires) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(env.API_KEY || "")), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return sopiHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${attachmentId}|file|${expires}`)));
+}
+__name(sopiFileSignature, "sopiFileSignature");
+
+function sopiContentDisposition(fileName, inline = false) {
+  const safeName = sopiSafeFileName(fileName);
+  const asciiName = safeName.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  return `${inline ? "inline" : "attachment"}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+}
+__name(sopiContentDisposition, "sopiContentDisposition");
+
 function sopiEncodeBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   const chunkSize = 32768;
@@ -3082,6 +3095,77 @@ async function sopiFile(requestUrl, env, requestId) {
 }
 __name(sopiFile, "sopiFile");
 
+async function sopiFileLink(requestUrl, env, requestId) {
+  const attachmentId = cleanText(requestUrl.searchParams.get("id"), 180);
+  if (!attachmentId) return apiError(400, "INVALID_ATTACHMENT", "Lampiran tidak valid.", requestId);
+  const row = await env.MASTER_DB.prepare(
+    "SELECT file_name, mime_type, size_bytes FROM sopi_attachments WHERE attachment_id = ? LIMIT 1"
+  ).bind(attachmentId).first();
+  if (!row) return apiError(404, "ATTACHMENT_NOT_FOUND", "Lampiran tidak ditemukan.", requestId);
+  if (Number(row.size_bytes || 0) > SOPI_MAX_DRIVE_BYTES) return apiError(413, "FILE_TOO_LARGE", "Lampiran terlalu besar untuk dibuka.", requestId);
+  const expires = Math.floor(Date.now() / 1e3) + 1800;
+  const signature = await sopiFileSignature(env, attachmentId, expires);
+  return responseJson({
+    ok: true,
+    data: {
+      fileName: cleanText(row.file_name, 240),
+      mimeType: cleanText(row.mime_type, 120) || "application/octet-stream",
+      sizeBytes: Number(row.size_bytes || 0),
+      url: `${requestUrl.origin}/v1/sopi/file-content?id=${encodeURIComponent(attachmentId)}&expires=${expires}&sig=${signature}`,
+      expiresAt: new Date(expires * 1000).toISOString()
+    },
+    requestId
+  });
+}
+__name(sopiFileLink, "sopiFileLink");
+
+async function sopiFileContent(request, requestUrl, env, requestId) {
+  const attachmentId = cleanText(requestUrl.searchParams.get("id"), 180);
+  const expires = Number.parseInt(cleanText(requestUrl.searchParams.get("expires"), 20), 10);
+  const signature = cleanText(requestUrl.searchParams.get("sig"), 128).toLowerCase();
+  const now = Math.floor(Date.now() / 1e3);
+  if (!attachmentId || !Number.isFinite(expires) || expires < now || expires > now + 1800 || !signature) {
+    return apiError(403, "FILE_LINK_EXPIRED", "Tautan file sudah berakhir.", requestId);
+  }
+  const expected = await sopiFileSignature(env, attachmentId, expires);
+  if (!await secureEqual(signature, expected)) return apiError(403, "INVALID_FILE_LINK", "Tautan file tidak valid.", requestId);
+  const row = await env.MASTER_DB.prepare(
+    "SELECT file_name, mime_type, size_bytes, r2_key FROM sopi_attachments WHERE attachment_id = ? LIMIT 1"
+  ).bind(attachmentId).first();
+  if (!row) return apiError(404, "ATTACHMENT_NOT_FOUND", "Lampiran tidak ditemukan.", requestId);
+  const r2Key = cleanText(row.r2_key, 700);
+  const object = request.method === "HEAD" ? await env.FILES.head(r2Key) : await env.FILES.get(r2Key, { range: request.headers });
+  if (!object) return apiError(404, "ATTACHMENT_NOT_FOUND", "File lampiran tidak ditemukan.", requestId);
+  const mimeType = cleanText(row.mime_type, 120) || object.httpMetadata?.contentType || "application/octet-stream";
+  const headers = new Headers({
+    "content-type": mimeType,
+    "content-disposition": sopiContentDisposition(row.file_name, mimeType === "application/pdf" || mimeType.startsWith("image/")),
+    "cache-control": "private, max-age=300",
+    "accept-ranges": "bytes",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer"
+  });
+  if (object.httpEtag) headers.set("etag", object.httpEtag);
+  if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+  let status = 200;
+  if (object.range) {
+    const totalSize = Number(object.size || row.size_bytes || 0);
+    let offset = Number(object.range.offset);
+    let length = Number(object.range.length);
+    if (!Number.isFinite(offset) && Number.isFinite(Number(object.range.suffix))) {
+      length = Math.min(Number(object.range.suffix), totalSize);
+      offset = Math.max(0, totalSize - length);
+    }
+    if (Number.isFinite(offset) && !Number.isFinite(length)) length = Math.max(0, totalSize - offset);
+    if (Number.isFinite(offset) && Number.isFinite(length) && length > 0 && totalSize > 0) {
+      headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${totalSize}`);
+      status = 206;
+    }
+  }
+  return new Response(object.body, { status, headers });
+}
+__name(sopiFileContent, "sopiFileContent");
+
 async function sopiAdminImage(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 12 * 1024 * 1024);
@@ -3331,6 +3415,7 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/health") return health(env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/webhook") return midtransWebhook(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/sopi/image") return sopiImage(url, env, requestId);
+  if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
@@ -3378,6 +3463,7 @@ async function route(request, env) {
   if (url.pathname === "/v1/sopi/status") return sopiStatus(env, requestId);
   if (url.pathname === "/v1/sopi/admin/bootstrap") return sopiAdminBootstrap(env, requestId);
   if (url.pathname === "/v1/sopi/document") return sopiDocument(url, env, requestId);
+  if (url.pathname === "/v1/sopi/file-link") return sopiFileLink(url, env, requestId);
   if (url.pathname === "/v1/sopi/file") return sopiFile(url, env, requestId);
   if (url.pathname === "/v1/ba/approval-config") return getBaApprovalConfig(env, requestId);
   if (url.pathname === "/v1/stock-items") return listStockItems(url, env, requestId);
@@ -3414,6 +3500,7 @@ export {
   normalizeMovement,
   normalizeTransferEvent,
   sopiFallbackAnswer,
+  sopiContentDisposition,
   sopiConversationFallback,
   sopiDriveTitle,
   sopiMarkdownText,

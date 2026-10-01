@@ -6950,7 +6950,7 @@ function downloadSopiAttachment(token, attachmentId) {
     requireSession_(token);
     const id = String(attachmentId || '').trim();
     if (!id) throw new Error('Lampiran tidak valid.');
-    const response = cloudflareInventoryRequest_('GET', '/v1/sopi/file?' + cloudflareQueryString_({ id: id }));
+    const response = cloudflareInventoryRequest_('GET', '/v1/sopi/file-link?' + cloudflareQueryString_({ id: id }));
     return response.data || {};
   });
 }
