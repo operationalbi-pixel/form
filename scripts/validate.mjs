@@ -45,6 +45,7 @@ const sopiSeed = JSON.parse(await text('cloudflare/inventory-api/data/sopi-seed.
 const sopiWrangler = await text('cloudflare/inventory-api/wrangler.jsonc');
 const sopiKnowledgeMigration = await text('cloudflare/migrations/0007_sopi_knowledge_center.sql');
 const sopiManagementMigration = await text('cloudflare/migrations/0009_sopi_knowledge_management.sql');
+const sopiLinkSourceMigration = await text('cloudflare/migrations/0010_sopi_link_sources.sql');
 if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.html?v=')) {
   failures.push('Widget SOPi belum dipasang di atas chat global');
 }
@@ -97,6 +98,9 @@ if (!sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_unanswered
 if (!sopiManagementMigration.includes('ADD COLUMN admin_content') || !inventoryWorker.includes('/v1/sopi/admin/json-document')) {
   failures.push('Migrasi pengelolaan pengetahuan atau sinkronisasi dokumen JSON SOPi belum lengkap');
 }
+if (!sopiLinkSourceMigration.includes('ADD COLUMN source_content') || !inventoryWorker.includes('sopiConvertSourceFile') || !chatBackend.includes('sopiSourceFilePayload_') || !sopiAdminHtml.includes('id="sourceUrl"')) {
+  failures.push('Sumber link pada Knowledge Center SOPi belum lengkap');
+}
 if (!chatBackend.includes('function runSopiAutoSync()') || !chatBackend.includes('everyMinutes(5)') || !chatBackend.includes('/v1/sopi/admin/source-status') || !sopiAdminHtml.includes('Otomatis aktif')) {
   failures.push('Sinkronisasi otomatis folder Drive SOPi setiap lima menit belum lengkap');
 }
@@ -109,11 +113,17 @@ if (!inventoryWorker.includes('Standar Operasional Prosedur, IK, Instruksi Kerja
 if (!chatBackend.includes("'/v1/sopi/file-link?'") || !inventoryWorker.includes('async function sopiFileContent') || !inventoryWorker.includes('/v1/sopi/file-content') || !inventoryWorker.includes('range: request.headers')) {
   failures.push('Streaming file SOPi langsung dari R2 dengan dukungan Range belum lengkap');
 }
-if (!sopiHtml.includes("window.open('','_blank')") || !sopiHtml.includes('fileWindow.location.replace(url)') || sopiHtml.includes("atob(String(data.base64")) {
-  failures.push('Alur buka file SOPi mobile masih mem-buffer base64 atau belum membuka tab saat gesture pengguna');
+if (!sopiHtml.includes('id="sourceViewer"') || !sopiHtml.includes('function openViewer(') || !sopiHtml.includes('biSopiSourceClose') || sopiHtml.includes("window.open('','_blank')") || sopiHtml.includes('fileWindow.location.replace(url)') || sopiHtml.includes("atob(String(data.base64")) {
+  failures.push('Viewer SOPi belum membuka PDF/dokumen di dalam chat tanpa about:blank');
 }
-if (!apiClient.includes("SOPI_ASSET_VERSION = '20261001-sopi10'")) {
-  failures.push('Cache aset SOPi belum diperbarui untuk streaming file mobile');
+if (!sopiSourceHtml.includes('id="closeDocument"') || !sopiSourceHtml.includes('biSopiSourceClose')) {
+  failures.push('Tampilan SOP terstruktur belum menyediakan tombol kembali ke chat');
+}
+if (!inventoryWorker.includes('sopiIsUsableAiAnswer') || !inventoryWorker.includes('rejectIfBusy: true') || !inventoryWorker.includes('Math.min(models.length, 2)')) {
+  failures.push('Fallback cepat dan penyaring jawaban AI SOPi belum lengkap');
+}
+if (!apiClient.includes("SOPI_ASSET_VERSION = '20261001-sopi12'")) {
+  failures.push('Cache aset SOPi belum diperbarui untuk viewer internal');
 }
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
   failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');
@@ -972,6 +982,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!/consumeBeritaAcaraHandoff/.test(baBackend)) failures.push('Backend Berita Acara belum memvalidasi handoff melalui EMP_LIST BI-Space');
   if (!baBackend.includes('function requireBaSession_(')) failures.push('Operasi Berita Acara belum dilindungi sesi server-side');
   if (!baBackend.includes('function baResolveApprovalState_(') || !baBackend.includes('Current_Approval_Position')) failures.push('Alur approval Berita Acara belum memakai pemetaan dinamis');
+  if (!baBackend.includes('at: row.submitted_at || row.timestamp || null')) failures.push('Timeline Berita Acara masih dapat memakai waktu approval sebagai waktu dibuat');
   if (!baBackend.includes("BA_MPP_EMP_LIST_SHEET =\n  'EMP_LIST'") || !baBackend.includes('getRange(2, 5, lastRow - 1, 1)')) failures.push('Dropdown posisi approval belum berasal dari EMP_LIST kolom E');
   if (!baBackend.includes('function authorizeBeritaAcaraServices()')) failures.push('Backend Berita Acara belum memiliki fungsi otorisasi satu kali untuk scope Spreadsheet');
   if (!baBackend.includes('function notifyBiSpaceBaEvent_(')) failures.push('Backend Berita Acara belum mengirim aktivitas ke push BI-Space');

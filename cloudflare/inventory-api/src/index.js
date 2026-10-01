@@ -2441,12 +2441,50 @@ function sopiSearchTerms(question) {
     "bikin", "isi", "isinya", "jumlah", "takaran", "bahan", "metode", "proses",
     "untuk", "dari", "dengan", "yang", "dan", "atau", "pada", "menu", "sop",
     "standar", "standard", "operasional", "prosedur", "ik", "instruksi", "intruksi",
-    "kerja", "internal", "memo", "im", "nya", "ini", "itu", "di", "ke", "berapa"
+    "kerja", "internal", "memo", "im", "nya", "ini", "itu", "di", "ke", "berapa",
+    "tolong", "maaf", "typo", "the", "on", "of", "ber", "gram", "gr", "ml", "pcs", "pc", "sal"
   ]);
-  const terms = sopiNormalizeText(question).split(" ").filter((term) => term.length > 1 && !ignored.has(term));
+  const aliases = new Map([["salomon", "salmon"], ["sallmon", "salmon"], ["sammon", "salmon"]]);
+  const terms = sopiNormalizeText(question).split(" ").map((term) => {
+    let normalized = aliases.get(term) || term;
+    if (normalized.length > 5 && normalized.endsWith("nya")) normalized = normalized.slice(0, -3);
+    return aliases.get(normalized) || normalized;
+  }).filter((term) => term.length > 1 && !ignored.has(term));
   return [...new Set(terms)].slice(0, 8);
 }
 __name(sopiSearchTerms, "sopiSearchTerms");
+
+function sopiAcronyms(value) {
+  const groups = [];
+  let current = "";
+  for (const token of sopiNormalizeText(value).split(" ")) {
+    if (token.length === 1) current += token;
+    else if (current) {
+      if (current.length >= 3) groups.push(current);
+      current = "";
+    }
+  }
+  if (current.length >= 3) groups.push(current);
+  return groups;
+}
+__name(sopiAcronyms, "sopiAcronyms");
+
+function sopiEditDistance(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let indexA = 1; indexA <= a.length; indexA += 1) {
+    let previous = row[0];
+    row[0] = indexA;
+    for (let indexB = 1; indexB <= b.length; indexB += 1) {
+      const saved = row[indexB];
+      row[indexB] = Math.min(row[indexB] + 1, row[indexB - 1] + 1, previous + (a[indexA - 1] === b[indexB - 1] ? 0 : 1));
+      previous = saved;
+    }
+  }
+  return row[b.length];
+}
+__name(sopiEditDistance, "sopiEditDistance");
 
 function sopiParseJson(value) {
   try {
@@ -2460,6 +2498,7 @@ __name(sopiParseJson, "sopiParseJson");
 
 async function searchSopiDocuments(env, question) {
   const normalized = sopiNormalizeText(question);
+  const questionAcronyms = sopiAcronyms(normalized);
   const terms = sopiSearchTerms(question);
   const usableTerms = terms.length ? terms : normalized.split(" ").filter(Boolean).slice(0, 4);
   if (!usableTerms.length) return [];
@@ -2490,6 +2529,11 @@ async function searchSopiDocuments(env, question) {
     for (const term of usableTerms) {
       if (titleNormalized.includes(term)) relevance += 20;
       if (searchNormalized.includes(term)) relevance += 3;
+    }
+    const titleAcronyms = sopiAcronyms(titleNormalized);
+    if (questionAcronyms.some((queryAcronym) => titleAcronyms.some((titleAcronym) =>
+      queryAcronym === titleAcronym || (queryAcronym.length === titleAcronym.length && sopiEditDistance(queryAcronym, titleAcronym) <= 1)))) {
+      relevance += 34;
     }
     return {
     id: cleanText(row.document_id, 180),
@@ -2556,27 +2600,44 @@ function sopiAiText(result) {
 }
 __name(sopiAiText, "sopiAiText");
 
+function sopiIsUsableAiAnswer(value) {
+  const answer = cleanText(value, 7000).trim();
+  if (!answer || /SOPI_TIDAK_TAHU/i.test(answer)) return Boolean(answer);
+  if (/probably answer|i(?:'|’)m not sure|pertanyaan staff\s*:|sumber sop terverifikasi\s*:|system prompt|assistant analysis/i.test(answer)) return false;
+  const lines = answer.split(/\n+/).map((line) => line.trim().toLowerCase()).filter(Boolean);
+  const distinctLines = new Set(lines);
+  if (lines.length >= 4 && distinctLines.size / lines.length < 0.6) return false;
+  const words = answer.toLowerCase().split(/\s+/).filter(Boolean);
+  let repeatedRun = 1;
+  for (let index = 1; index < words.length; index += 1) {
+    repeatedRun = words[index] === words[index - 1] ? repeatedRun + 1 : 1;
+    if (repeatedRun >= 5) return false;
+  }
+  return true;
+}
+__name(sopiIsUsableAiAnswer, "sopiIsUsableAiAnswer");
+
 async function sopiRunAi(env, messages, requestId) {
   const models = [
     cleanText(env.SOPI_MODEL || "@cf/openai/gpt-oss-120b", 160),
-    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160),
-    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160)
+    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160),
+    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160)
   ].filter((model, index, all) => model && all.indexOf(model) === index);
-  for (let index = 0; index < models.length; index += 1) {
+  for (let index = 0; index < Math.min(models.length, 2); index += 1) {
     const model = models[index];
     const startedAt = Date.now();
     try {
       const answer = sopiAiText(await env.AI.run(model, {
         messages,
-        max_tokens: 900,
-        temperature: 0.25,
-        top_p: 0.88
-      }));
-      if (answer) {
+        max_tokens: 550,
+        temperature: 0.18,
+        top_p: 0.82
+      }, { rejectIfBusy: true }));
+      if (sopiIsUsableAiAnswer(answer)) {
         console.log(JSON.stringify({ event: "sopi_ai_model_succeeded", requestId, model, attempt: index + 1, durationMs: Date.now() - startedAt }));
         return answer;
       }
-      throw new Error("EMPTY_AI_RESPONSE");
+      throw new Error(answer ? "UNUSABLE_AI_RESPONSE" : "EMPTY_AI_RESPONSE");
     } catch (error) {
       console.error(JSON.stringify({
         event: "sopi_ai_model_failed",
@@ -2614,6 +2675,9 @@ var SOPI_MAX_DRIVE_BYTES = 8 * 1024 * 1024;
 var SOPI_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var SOPI_ALLOWED_EXTENSIONS = new Set([
   "pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "gif", "bmp"
+]);
+var SOPI_ALLOWED_SOURCE_EXTENSIONS = new Set([
+  ...SOPI_ALLOWED_EXTENSIONS, "html", "htm", "xml", "ods", "odt", "svg", "json", "txt", "md"
 ]);
 
 function sopiSafeFileName(value) {
@@ -2712,6 +2776,28 @@ function sopiMarkdownText(result) {
 }
 __name(sopiMarkdownText, "sopiMarkdownText");
 
+async function sopiConvertSourceFile(env, file, maximumBytes = SOPI_MAX_UPLOAD_BYTES) {
+  if (!file || typeof file !== "object") return "";
+  const fileName = sopiSafeFileName(file.name);
+  const extension = sopiFileExtension(fileName);
+  const mimeType = cleanText(file.mimeType || "application/octet-stream", 120).toLowerCase();
+  if (!SOPI_ALLOWED_SOURCE_EXTENSIONS.has(extension)) throw new Error("UNSUPPORTED_SOURCE_FILE");
+  const bytes = sopiDecodeBase64(file.base64, maximumBytes);
+  if (["json", "txt", "md"].includes(extension) || /^(?:text\/plain|text\/markdown|application\/(?:json|ld\+json))/.test(mimeType)) {
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trim();
+    if (!text) throw new Error("SOURCE_CONVERSION_FAILED");
+    return text.slice(0, 100000);
+  }
+  const conversion = await env.AI.toMarkdown(
+    [{ name: fileName, blob: new Blob([bytes], { type: mimeType }) }],
+    { conversionOptions: { output: { format: "text" } } }
+  );
+  const converted = sopiMarkdownText(conversion);
+  if (!converted) throw new Error("SOURCE_CONVERSION_FAILED");
+  return converted.slice(0, 100000);
+}
+__name(sopiConvertSourceFile, "sopiConvertSourceFile");
+
 async function sopiTrackUnanswered(env, question) {
   const normalized = sopiNormalizeText(question);
   if (!normalized) return;
@@ -2736,7 +2822,7 @@ async function sopiAdminBootstrap(env, requestId) {
     ).all(),
     env.MASTER_DB.prepare("SELECT COUNT(*) AS total FROM sopi_documents WHERE source_type <> 'JSON'").first(),
     env.MASTER_DB.prepare(
-      `SELECT d.document_id, d.title, d.category, d.admin_content, d.updated_at,
+      `SELECT d.document_id, d.title, d.category, d.admin_content, d.source_url, d.updated_at,
               a.file_name, a.mime_type
          FROM sopi_documents d
          LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
@@ -2756,6 +2842,7 @@ async function sopiAdminBootstrap(env, requestId) {
     title: cleanText(row.title, 240),
     category: cleanText(row.category, 100),
     content: cleanText(row.admin_content, 30000),
+    sourceUrl: cleanText(row.source_url, 600),
     fileName: cleanText(row.file_name, 240),
     mimeType: cleanText(row.mime_type, 120),
     updatedAt: cleanText(row.updated_at, 40)
@@ -2823,15 +2910,18 @@ async function sopiAdminKnowledge(request, env, requestId) {
     const title = requiredText(payload.title, "title", 240);
     const category = requiredText(payload.category, "category", 100);
     const body = cleanText(payload.content, 30000);
+    const sourceUrl = cleanText(payload.sourceUrl, 600);
     const uploadedBy = cleanText(payload.uploadedBy, 180);
     const file = payload.file && typeof payload.file === "object" ? payload.file : null;
-    if (!body && !file) throw new Error("EMPTY_KNOWLEDGE");
+    const sourceFile = payload.sourceFile && typeof payload.sourceFile === "object" ? payload.sourceFile : null;
+    if (!body && !file && !sourceUrl) throw new Error("EMPTY_KNOWLEDGE");
 
     const documentId = `knowledge:${crypto.randomUUID()}`;
     let attachmentId = "";
     let fileName = "";
     let mimeType = "";
     let converted = "";
+    let sourceContent = "";
     let bytes = null;
     if (file) {
       fileName = sopiSafeFileName(file.name);
@@ -2849,15 +2939,17 @@ async function sopiAdminKnowledge(request, env, requestId) {
       await env.FILES.put(uploadedKey, bytes, { httpMetadata: { contentType: mimeType } });
     }
 
-    const contentText = [body, converted].filter(Boolean).join("\n\n").slice(0, 100000);
-    const searchText = [title, category, contentText, fileName].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    if (sourceFile) sourceContent = await sopiConvertSourceFile(env, sourceFile);
+
+    const contentText = [body, converted, sourceContent].filter(Boolean).join("\n\n").slice(0, 100000);
+    const searchText = [title, category, contentText, fileName, sourceUrl].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     const statements = [env.MASTER_DB.prepare(
       `INSERT INTO sopi_documents(
          document_id, title, category, category_detail, effective_date, revision, is_legacy,
          yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
-         admin_content, source_type, status, content_text, attachment_id, updated_at
-       ) VALUES (?, ?, ?, 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, '', ?, 'BIHQ_UPLOAD', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)`
-    ).bind(documentId, title, category, searchText, body, contentText, attachmentId)];
+         admin_content, source_content, source_type, status, content_text, attachment_id, updated_at
+       ) VALUES (?, ?, ?, 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, ?, ?, ?, 'BIHQ_UPLOAD', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)`
+    ).bind(documentId, title, category, searchText, sourceUrl, body, sourceContent, contentText, attachmentId)];
     if (attachmentId) {
       statements.push(env.MASTER_DB.prepare(
         `INSERT INTO sopi_attachments(attachment_id, document_id, file_name, mime_type, size_bytes, r2_key, uploaded_by, created_at)
@@ -2875,6 +2967,8 @@ async function sopiAdminKnowledge(request, env, requestId) {
       FILE_TOO_LARGE: "Ukuran lampiran maksimal 4 MB.",
       UNSUPPORTED_FILE: "Format file belum didukung. Gunakan PDF, Word, Excel, CSV, atau gambar.",
       FILE_CONVERSION_FAILED: "Isi file tidak berhasil dibaca.",
+      UNSUPPORTED_SOURCE_FILE: "Format dari link belum didukung.",
+      SOURCE_CONVERSION_FAILED: "Isi dari link tidak berhasil dibaca.",
       EMPTY_KNOWLEDGE: "Isi informasi atau lampiran wajib diisi."
     };
     return apiError(code === "FILE_TOO_LARGE" ? 413 : 400, code, messages[code] || "Informasi tidak dapat disimpan.", requestId);
@@ -2889,22 +2983,27 @@ async function sopiAdminUpdateKnowledge(request, env, requestId) {
     const title = requiredText(payload.title, "title", 240);
     const category = requiredText(payload.category, "category", 100);
     const body = cleanText(payload.content, 30000);
+    const sourceUrl = cleanText(payload.sourceUrl, 600);
+    const sourceFile = payload.sourceFile && typeof payload.sourceFile === "object" ? payload.sourceFile : null;
     const row = await env.MASTER_DB.prepare(
-      `SELECT d.content_text, d.admin_content, a.file_name
+      `SELECT d.content_text, d.admin_content, d.source_content, a.file_name
          FROM sopi_documents d LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
         WHERE d.document_id = ? AND d.source_type = 'BIHQ_UPLOAD' LIMIT 1`
     ).bind(documentId).first();
     if (!row) return apiError(404, "KNOWLEDGE_NOT_FOUND", "Informasi tidak ditemukan.", requestId);
     const oldBody = cleanText(row.admin_content, 30000);
+    const oldSourceContent = cleanText(row.source_content, 100000);
     const oldContent = cleanText(row.content_text, 100000);
-    const extracted = oldBody && oldContent.startsWith(oldBody) ? oldContent.slice(oldBody.length).trim() : oldContent;
-    const contentText = [body, extracted].filter(Boolean).join("\n\n").slice(0, 100000);
-    const searchText = [title, category, contentText, cleanText(row.file_name, 240)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    let extracted = oldBody && oldContent.startsWith(oldBody) ? oldContent.slice(oldBody.length).trim() : oldContent;
+    if (oldSourceContent && extracted.endsWith(oldSourceContent)) extracted = extracted.slice(0, extracted.length - oldSourceContent.length).trim();
+    const sourceContent = sourceFile ? await sopiConvertSourceFile(env, sourceFile) : "";
+    const contentText = [body, extracted, sourceContent].filter(Boolean).join("\n\n").slice(0, 100000);
+    const searchText = [title, category, contentText, cleanText(row.file_name, 240), sourceUrl].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     await env.MASTER_DB.prepare(
       `UPDATE sopi_documents
-          SET title = ?, category = ?, admin_content = ?, content_text = ?, search_text = ?, updated_at = CURRENT_TIMESTAMP
+          SET title = ?, category = ?, admin_content = ?, source_url = ?, source_content = ?, content_text = ?, search_text = ?, updated_at = CURRENT_TIMESTAMP
         WHERE document_id = ? AND source_type = 'BIHQ_UPLOAD'`
-    ).bind(title, category, body, contentText, searchText, documentId).run();
+    ).bind(title, category, body, sourceUrl, sourceContent, contentText, searchText, documentId).run();
     return responseJson({ ok: true, data: { success: true }, requestId });
   } catch (error) {
     return apiError(400, error instanceof Error ? error.message : "INVALID_KNOWLEDGE", "Informasi tidak dapat diperbarui.", requestId);
@@ -3499,10 +3598,13 @@ export {
   normalizeMidtransStatus,
   normalizeMovement,
   normalizeTransferEvent,
+  sopiAcronyms,
+  sopiEditDistance,
   sopiFallbackAnswer,
   sopiContentDisposition,
   sopiConversationFallback,
   sopiDriveTitle,
+  sopiIsUsableAiAnswer,
   sopiMarkdownText,
   sopiSafeFileName,
   sopiSearchTerms,
