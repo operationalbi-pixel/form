@@ -2440,7 +2440,8 @@ function sopiSearchTerms(question) {
     "apa", "apakah", "berapa", "bagaimana", "cara", "caranya", "buat", "membuat",
     "bikin", "isi", "isinya", "jumlah", "takaran", "bahan", "metode", "proses",
     "untuk", "dari", "dengan", "yang", "dan", "atau", "pada", "menu", "sop",
-    "nya", "ini", "itu", "di", "ke", "berapa"
+    "standar", "standard", "operasional", "prosedur", "ik", "instruksi", "intruksi",
+    "kerja", "internal", "memo", "im", "nya", "ini", "itu", "di", "ke", "berapa"
   ]);
   const terms = sopiNormalizeText(question).split(" ").filter((term) => term.length > 1 && !ignored.has(term));
   return [...new Set(terms)].slice(0, 8);
@@ -3206,6 +3207,7 @@ async function sopiChat(request, env, requestId) {
     const hasDocuments = documents.length > 0;
     const systemPrompt = hasDocuments ? [
       "Anda adalah SOPi, asisten SOP internal Bakerzin untuk staff outlet.",
+      "Perlakukan SOP, Standar, Standar Operasional, Standar Operasional Prosedur, IK, Instruksi Kerja, ejaan umum Intruksi Kerja, Internal Memo, IM, dan Memo sebagai istilah yang setara untuk dokumen atau ketentuan operasional internal.",
       "Jawab dalam Bahasa Indonesia yang ramah, natural, ringkas, jelas, dan mudah dipraktikkan.",
       "Gunakan HANYA informasi pada SUMBER SOP yang diberikan untuk setiap fakta operasional.",
       "Jangan menebak angka, bahan, metode, tampilan akhir, yield, shelf life, atau isi dokumen.",
@@ -3218,6 +3220,7 @@ async function sopiChat(request, env, requestId) {
       userContext
     ].join(" ") : [
       "Anda adalah SOPi, asisten wanita yang ramah untuk staff Bakerzin.",
+      "Perlakukan SOP, Standar, Standar Operasional, Standar Operasional Prosedur, IK, Instruksi Kerja, ejaan umum Intruksi Kerja, Internal Memo, IM, dan Memo sebagai istilah yang setara untuk dokumen atau ketentuan operasional internal.",
       "Balas sapaan, ucapan terima kasih, perkenalan, dan percakapan ringan secara natural dalam Bahasa Indonesia.",
       "Jika menjelaskan kemampuan, katakan hanya bahwa Anda dapat mencari dan menjelaskan bahan, takaran, metode, tampilan akhir, shelf life, serta dokumen SOP yang tersedia.",
       "Jangan mengaku dapat merekomendasikan substitusi bahan, mengubah resep, memperbarui SOP, menilai keamanan pangan, atau membuat kebijakan baru.",
