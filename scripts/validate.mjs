@@ -54,7 +54,7 @@ for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAn
   const contractPattern = new RegExp(`function ${functionName}\\([^)]*\\) \\{\\s*return safe_\\(function \\(\\) \\{`);
   if (!contractPattern.test(chatBackend)) failures.push(`Gateway SOPi '${functionName}' belum mengembalikan kontrak {ok,data}`);
 }
-for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiDocument', 'sopiDownload']) {
+for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiAdminSyncImages', 'sopiDocument', 'sopiDownload']) {
   if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
 }
 if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('function uploadSopiKnowledge(')) {
@@ -66,7 +66,7 @@ if (!apiClient.includes("adminButton.id = 'biSopiAdminFloat'") || !apiClient.inc
 if (!apiClient.includes("dock.id = 'biSopiDock'") || !apiClient.includes('biSopiAssistantFloat') || !apiClient.includes('assets/sopi-assistant-v2.png')) {
   failures.push('SOPi belum memiliki dock kiri dan karakter referensi yang baru');
 }
-if (!apiClient.includes('panel.appendChild(adminButton)') || !apiClient.includes('--bi-sopi-visual-top') || !sopiHtml.includes('env(safe-area-inset-top)')) {
+if (!apiClient.includes('panel.appendChild(adminButton)') || !apiClient.includes('--bi-sopi-visual-top') || !sopiHtml.includes('max(env(safe-area-inset-top),28px)')) {
   failures.push('Lampu BIHQ atau perlindungan safe-area mobile SOPi belum lengkap');
 }
 if (!sopiHtml.includes('Kamu bisa tanya apapun tentang Operasional Bakerzin') || sopiHtml.includes('Sumber SOP terhubung') || !sopiHtml.includes("send.addEventListener('pointerdown'") || !sopiHtml.includes("document.activeElement===input)input.blur()")) {
@@ -120,7 +120,7 @@ for (const match of sopiSourceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]
 if (!sopiHtml.includes('sopi-source.html?id=') || sopiHtml.includes('source.url')) {
   failures.push('Sumber SOP masih dapat membuka JSON mentah atau belum diarahkan ke viewer');
 }
-if (!sopiSourceHtml.includes("call('sopiDocument'") || !sopiSourceHtml.includes('Bahan & Takaran') || !sopiSourceHtml.includes('Metode Pembuatan')) {
+if (!sopiSourceHtml.includes("call('sopiDocument'") || !sopiSourceHtml.includes('Bahan & Takaran') || !sopiSourceHtml.includes('Metode Pembuatan') || !sopiSourceHtml.includes('finalImageUrl') || !sopiSourceHtml.includes('sopi-assistant-v2.png')) {
   failures.push('Viewer SOP belum menampilkan dokumen terstruktur');
 }
 if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.includes('normalizeStockHistoryPageDays_(payload.pageDays)')) {

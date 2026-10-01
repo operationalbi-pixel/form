@@ -137,6 +137,7 @@ function apiActions_() {
     sopiAdminBootstrap: getSopiAdminBootstrap,
     sopiAdminAnswer: saveSopiAdminAnswer,
     sopiAdminUpload: uploadSopiKnowledge,
+    sopiAdminSyncImages: syncSopiJsonImages,
     sopiDocument: getSopiDocument,
     sopiDownload: downloadSopiAttachment,
     outletProgress: getOutletProgress,
@@ -6469,6 +6470,79 @@ function uploadSopiKnowledge(token, payload) {
       uploadedBy: employee.name || employee.nik
     });
     return response.data || { success: true };
+  });
+}
+
+function syncSopiJsonImages(token, progress) {
+  return safe_(function () {
+    requireAdmin_(token);
+    progress = progress || {};
+    const folderId = String(PropertiesService.getScriptProperties().getProperty('SOPI_JSON_FOLDER_ID') || '1TL5uFfoHy2i0ctTNBsJvLYZA8MntV2xw').trim();
+    const iterator = DriveApp.getFolderById(folderId).getFiles();
+    const files = [];
+    while (iterator.hasNext()) {
+      const file = iterator.next();
+      if (/\.json$/i.test(file.getName())) files.push({ id: file.getId(), name: file.getName() });
+    }
+    files.sort(function (left, right) { return left.name.localeCompare(right.name); });
+    let fileIndex = Math.max(0, Number(progress.fileIndex || 0));
+    let imageIndex = Math.max(0, Number(progress.imageIndex || 0));
+    let uploaded = Number(progress.uploaded || 0);
+    let inspected = Number(progress.inspected || 0);
+    const batchLimit = 1;
+    let batchCount = 0;
+    let lastFile = '';
+    while (fileIndex < files.length && batchCount < batchLimit) {
+      const entry = files[fileIndex];
+      lastFile = entry.name;
+      let source;
+      try {
+        source = JSON.parse(DriveApp.getFileById(entry.id).getBlob().getDataAsString('UTF-8'));
+      } catch (error) {
+        fileIndex += 1;
+        imageIndex = 0;
+        inspected += 1;
+        continue;
+      }
+      const documentId = String(source && source.id || '').trim();
+      const images = [];
+      const finalImage = source && source.page1 && source.page1.finalImage;
+      if (/^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(String(finalImage || ''))) images.push({ kind: 'FINAL', stepIndex: -1, dataUrl: String(finalImage) });
+      (Array.isArray(source && source.steps) ? source.steps : []).forEach(function (step, index) {
+        if (step && /^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(String(step.img || ''))) images.push({ kind: 'STEP', stepIndex: index, dataUrl: String(step.img) });
+      });
+      if (!documentId || imageIndex >= images.length) {
+        fileIndex += 1;
+        imageIndex = 0;
+        inspected += 1;
+        continue;
+      }
+      const image = images[imageIndex];
+      cloudflareInventoryRequest_('POST', '/v1/sopi/admin/image', {
+        documentId: documentId,
+        kind: image.kind,
+        stepIndex: image.stepIndex,
+        dataUrl: image.dataUrl
+      });
+      uploaded += 1;
+      imageIndex += 1;
+      batchCount += 1;
+      if (imageIndex >= images.length) {
+        fileIndex += 1;
+        imageIndex = 0;
+        inspected += 1;
+      }
+    }
+    return {
+      done: fileIndex >= files.length,
+      fileIndex: fileIndex,
+      imageIndex: imageIndex,
+      uploaded: uploaded,
+      inspected: inspected,
+      totalFiles: files.length,
+      lastFile: lastFile,
+      progressPercent: files.length ? Math.min(100, Math.round(fileIndex * 10000 / files.length) / 100) : 100
+    };
   });
 }
 

@@ -22,6 +22,9 @@ assert.match(sopiConversationFallback('siapa kamu?'), /asisten pengetahuan Baker
 const migration = await readFile(new URL('../../migrations/0007_sopi_knowledge_center.sql', import.meta.url), 'utf8');
 assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_unanswered/);
 assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_attachments/);
+const imageMigration = await readFile(new URL('../../migrations/0008_sopi_images.sql', import.meta.url), 'utf8');
+assert.match(imageMigration, /CREATE TABLE IF NOT EXISTS sopi_images/);
+assert.match(imageMigration, /UNIQUE \(document_id, image_kind, step_index\)/);
 
 const answer = sopiFallbackAnswer({
   title: 'Menu Test',

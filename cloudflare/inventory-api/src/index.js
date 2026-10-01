@@ -2609,6 +2609,7 @@ function sopiConversationFallback(question, userName = "") {
 __name(sopiConversationFallback, "sopiConversationFallback");
 
 var SOPI_MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+var SOPI_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 var SOPI_ALLOWED_EXTENSIONS = new Set([
   "pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "gif", "bmp"
 ]);
@@ -2640,6 +2641,43 @@ function sopiDecodeBase64(value) {
   return bytes;
 }
 __name(sopiDecodeBase64, "sopiDecodeBase64");
+
+function sopiDecodeImageDataUrl(value) {
+  const input = String(value || "").trim();
+  const match = input.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
+  if (!match) throw new Error("INVALID_IMAGE");
+  const encoded = match[2].replace(/\s+/g, "");
+  if (!encoded || encoded.length > Math.ceil(SOPI_MAX_IMAGE_BYTES * 4 / 3) + 16) throw new Error("IMAGE_TOO_LARGE");
+  let binary = "";
+  try {
+    binary = atob(encoded);
+  } catch {
+    throw new Error("INVALID_IMAGE");
+  }
+  if (binary.length > SOPI_MAX_IMAGE_BYTES) throw new Error("IMAGE_TOO_LARGE");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return { bytes, mimeType: match[1].toLowerCase() === "image/jpg" ? "image/jpeg" : match[1].toLowerCase() };
+}
+__name(sopiDecodeImageDataUrl, "sopiDecodeImageDataUrl");
+
+function sopiHex(bytes) {
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+__name(sopiHex, "sopiHex");
+
+async function sopiImageSignature(env, imageId, expires) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(env.API_KEY || "")), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return sopiHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${imageId}|${expires}`)));
+}
+__name(sopiImageSignature, "sopiImageSignature");
+
+async function sopiImageUrl(requestUrl, env, imageId) {
+  const expires = Math.floor(Date.now() / 1e3) + 900;
+  const signature = await sopiImageSignature(env, imageId, expires);
+  return `${requestUrl.origin}/v1/sopi/image?id=${encodeURIComponent(imageId)}&expires=${expires}&sig=${signature}`;
+}
+__name(sopiImageUrl, "sopiImageUrl");
 
 function sopiEncodeBase64(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -2817,6 +2855,64 @@ async function sopiFile(requestUrl, env, requestId) {
 }
 __name(sopiFile, "sopiFile");
 
+async function sopiAdminImage(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 12 * 1024 * 1024);
+    const documentId = requiredText(payload.documentId, "document_id", 180);
+    const imageKind = cleanText(payload.kind, 20).toUpperCase();
+    const stepIndex = imageKind === "STEP" ? Number.parseInt(String(payload.stepIndex), 10) : -1;
+    if (!new Set(["FINAL", "STEP"]).has(imageKind) || (imageKind === "STEP" && (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex > 59))) {
+      throw new Error("INVALID_IMAGE_POSITION");
+    }
+    const document = await env.MASTER_DB.prepare("SELECT document_id FROM sopi_documents WHERE document_id = ? LIMIT 1").bind(documentId).first();
+    if (!document) return apiError(404, "DOCUMENT_NOT_FOUND", "Dokumen SOP tidak ditemukan.", requestId);
+    const decoded = sopiDecodeImageDataUrl(payload.dataUrl);
+    const extension = decoded.mimeType === "image/jpeg" ? "jpg" : decoded.mimeType.split("/")[1];
+    const imageId = `${documentId}:${imageKind}:${stepIndex}`;
+    const uploadedKey = `sopi/images/${encodeURIComponent(documentId)}/${imageKind.toLowerCase()}-${stepIndex}.${extension}`;
+    await env.FILES.put(uploadedKey, decoded.bytes, {
+      httpMetadata: { contentType: decoded.mimeType, cacheControl: "private, max-age=900" }
+    });
+    await env.MASTER_DB.prepare(
+      `INSERT INTO sopi_images(image_id, document_id, image_kind, step_index, mime_type, size_bytes, r2_key, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(document_id, image_kind, step_index) DO UPDATE SET
+         image_id = excluded.image_id, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes,
+         r2_key = excluded.r2_key, updated_at = CURRENT_TIMESTAMP`
+    ).bind(imageId, documentId, imageKind, stepIndex, decoded.mimeType, decoded.bytes.byteLength, uploadedKey).run();
+    return responseJson({ ok: true, data: { success: true, imageId, sizeBytes: decoded.bytes.byteLength }, requestId });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_IMAGE";
+    return apiError(code === "IMAGE_TOO_LARGE" || code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code,
+      code === "IMAGE_TOO_LARGE" || code === "PAYLOAD_TOO_LARGE" ? "Gambar maksimal 8 MB." : "Gambar SOP tidak valid.", requestId);
+  }
+}
+__name(sopiAdminImage, "sopiAdminImage");
+
+async function sopiImage(requestUrl, env, requestId) {
+  const imageId = cleanText(requestUrl.searchParams.get("id"), 240);
+  const expires = Number.parseInt(cleanText(requestUrl.searchParams.get("expires"), 20), 10);
+  const signature = cleanText(requestUrl.searchParams.get("sig"), 128).toLowerCase();
+  if (!imageId || !Number.isFinite(expires) || expires < Math.floor(Date.now() / 1e3) || expires > Math.floor(Date.now() / 1e3) + 1800 || !signature) {
+    return apiError(403, "IMAGE_LINK_EXPIRED", "Tautan gambar sudah berakhir.", requestId);
+  }
+  const expected = await sopiImageSignature(env, imageId, expires);
+  if (!await secureEqual(signature, expected)) return apiError(403, "INVALID_IMAGE_LINK", "Tautan gambar tidak valid.", requestId);
+  const row = await env.MASTER_DB.prepare("SELECT mime_type, r2_key FROM sopi_images WHERE image_id = ? LIMIT 1").bind(imageId).first();
+  if (!row) return apiError(404, "IMAGE_NOT_FOUND", "Gambar SOP tidak ditemukan.", requestId);
+  const object = await env.FILES.get(cleanText(row.r2_key, 700));
+  if (!object) return apiError(404, "IMAGE_NOT_FOUND", "Gambar SOP tidak ditemukan.", requestId);
+  const headers = new Headers({
+    "content-type": cleanText(row.mime_type, 120) || "application/octet-stream",
+    "cache-control": "private, max-age=900",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer"
+  });
+  if (object.httpEtag) headers.set("etag", object.httpEtag);
+  return new Response(object.body, { status: 200, headers });
+}
+__name(sopiImage, "sopiImage");
+
 async function sopiDocument(requestUrl, env, requestId) {
   const documentId = cleanText(requestUrl.searchParams.get("id"), 180);
   if (!documentId) return apiError(400, "INVALID_DOCUMENT", "Dokumen SOP tidak valid.", requestId);
@@ -2830,6 +2926,18 @@ async function sopiDocument(requestUrl, env, requestId) {
       WHERE d.document_id = ? LIMIT 1`
   ).bind(documentId).first();
   if (!row) return apiError(404, "DOCUMENT_NOT_FOUND", "Dokumen SOP tidak ditemukan.", requestId);
+  const imageRows = await env.MASTER_DB.prepare(
+    "SELECT image_id, image_kind, step_index FROM sopi_images WHERE document_id = ? ORDER BY image_kind, step_index"
+  ).bind(documentId).all();
+  const images = await Promise.all((imageRows.results || []).map(async (image) => ({
+    id: cleanText(image.image_id, 240),
+    kind: cleanText(image.image_kind, 20),
+    stepIndex: Number(image.step_index),
+    url: await sopiImageUrl(requestUrl, env, cleanText(image.image_id, 240))
+  })));
+  const finalImage = images.find((image) => image.kind === "FINAL");
+  const stepImages = new Map(images.filter((image) => image.kind === "STEP").map((image) => [image.stepIndex, image.url]));
+  const steps = sopiParseJson(row.steps_json).slice(0, 60).map((step, index) => ({ ...step, imageUrl: stepImages.get(index) || "" }));
   return responseJson({
     ok: true,
     data: {
@@ -2843,7 +2951,8 @@ async function sopiDocument(requestUrl, env, requestId) {
       yieldText: cleanText(row.yield_text, 300),
       shelfLife: cleanText(row.shelf_life, 300),
       ingredients: sopiParseJson(row.ingredients_json).slice(0, 80),
-      steps: sopiParseJson(row.steps_json).slice(0, 60),
+      steps,
+      finalImageUrl: finalImage?.url || "",
       contentText: cleanText(row.content_text, 100000),
       sourceType: cleanText(row.source_type, 30),
       status: cleanText(row.status, 80),
@@ -2991,6 +3100,7 @@ async function route(request, env) {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") return health(env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/webhook") return midtransWebhook(request, env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/sopi/image") return sopiImage(url, env, requestId);
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
@@ -3018,6 +3128,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/sopi/chat") return sopiChat(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/answer") return sopiAdminAnswer(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge") return sopiAdminKnowledge(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/image") return sopiAdminImage(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
