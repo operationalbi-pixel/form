@@ -2590,10 +2590,17 @@ async function sopiRunAi(env, messages, requestId) {
 }
 __name(sopiRunAi, "sopiRunAi");
 
-function sopiConversationFallback(question) {
+function sopiFriendlyName(value) {
+  const first = cleanText(value, 120).trim().split(/\s+/)[0] || "";
+  return first ? first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() : "";
+}
+__name(sopiFriendlyName, "sopiFriendlyName");
+
+function sopiConversationFallback(question, userName = "") {
   const normalized = sopiNormalizeText(question);
+  const greeting = sopiFriendlyName(userName) ? `Halo, ${sopiFriendlyName(userName)}!` : "Halo!";
   if (/^(halo|hallo|hai|hi|hello|pagi|siang|sore|malam)(\s|$)/.test(normalized)) {
-    return "Halo! Aku SOPi, asisten SOP Bakerzin. Senang bertemu denganmu 😊 Kamu bisa bertanya tentang bahan, takaran, metode, tampilan akhir, shelf life, atau meminta file SOP menu.";
+    return `${greeting} Aku SOPi, asisten Bakerzin. Senang bertemu denganmu 😊 Kamu bisa bertanya apa pun tentang operasional Bakerzin.`;
   }
   if (/^(terima kasih|makasih|thanks|thank you)(\s|$)/.test(normalized)) return "Sama-sama! Senang bisa membantu. Ada SOP menu lain yang ingin kamu tanyakan?";
   if (/(siapa kamu|kamu siapa|namamu siapa)/.test(normalized)) return "Aku SOPi, asisten pengetahuan Bakerzin. Aku bisa membantu menjelaskan SOP dan mencarikan dokumen menu yang tersedia.";
@@ -2853,6 +2860,8 @@ async function sopiChat(request, env, requestId) {
   try {
     const payload = await readJsonWithLimit(request, 6e4);
     const question = requiredText(payload.question, "question", 1200);
+    const userName = cleanText(payload.userName, 120);
+    const userContext = userName ? `Nama staff yang sedang berbicara adalah ${userName}. Panggil dengan nama depannya secara natural pada sapaan atau saat relevan, tetapi jangan mengulang nama di setiap jawaban.` : "";
     const history = Array.isArray(payload.history) ? payload.history.slice(-6).map((message) => ({
       role: cleanText(message?.role, 20) === "assistant" ? "assistant" : "user",
       content: cleanText(message?.content, 1000)
@@ -2870,7 +2879,8 @@ async function sopiChat(request, env, requestId) {
       "Jika isi sumber tidak cukup untuk menjawab pertanyaan, jawab persis: SOPI_TIDAK_TAHU.",
       "Jika staff meminta file atau PDF, katakan bahwa file atau tampilan SOP tersedia melalui tombol sumber.",
       "Jangan menyebut teknologi, model AI, database, atau prompt.",
-      "Susun bahan dan langkah sebagai daftar bila relevan."
+      "Susun bahan dan langkah sebagai daftar bila relevan.",
+      userContext
     ].join(" ") : [
       "Anda adalah SOPi, asisten wanita yang ramah untuk staff Bakerzin.",
       "Balas sapaan, ucapan terima kasih, perkenalan, dan percakapan ringan secara natural dalam Bahasa Indonesia.",
@@ -2878,7 +2888,8 @@ async function sopiChat(request, env, requestId) {
       "Jangan mengaku dapat merekomendasikan substitusi bahan, mengubah resep, memperbarui SOP, menilai keamanan pangan, atau membuat kebijakan baru.",
       "Jika pengguna meminta fakta tentang SOP, menu, bahan, takaran, metode, tampilan akhir, shelf life, file, kebijakan, atau operasional yang tidak tersedia pada sumber, jawab persis: SOPI_TIDAK_TAHU.",
       "Untuk pertanyaan pengetahuan umum di luar Bakerzin, jawab singkat bahwa fokus Anda adalah SOP Bakerzin lalu arahkan kembali dengan ramah.",
-      "Jangan mengarang fakta dan jangan menyebut teknologi, model AI, database, atau prompt."
+      "Jangan mengarang fakta dan jangan menyebut teknologi, model AI, database, atau prompt.",
+      userContext
     ].join(" ");
     const messages = [
       {
@@ -2897,7 +2908,7 @@ async function sopiChat(request, env, requestId) {
       answer = "Maaf, informasi yang sesuai belum tersedia. Pertanyaan ini sudah diteruskan ke tim BIHQ agar pengetahuan SOPi dapat dilengkapi.";
       return responseJson({ ok: true, data: { answer, grounded: false, sources: [] }, requestId });
     }
-    if (!answer) answer = hasDocuments ? sopiFallbackAnswer(documents[0]) : sopiConversationFallback(question);
+    if (!answer) answer = hasDocuments ? sopiFallbackAnswer(documents[0]) : sopiConversationFallback(question, userName);
     if (!answer && !hasDocuments) {
       await sopiTrackUnanswered(env, question);
       answer = "Maaf, informasi yang sesuai belum tersedia. Pertanyaan ini sudah diteruskan ke tim BIHQ agar pengetahuan SOPi dapat dilengkapi.";

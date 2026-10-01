@@ -6397,7 +6397,7 @@ function cloudflareQueryString_(params) {
 
 function askSopi(token, payload) {
   return safe_(function () {
-    requireSession_(token);
+    const employee = requireSession_(token);
     const question = String(payload && payload.question || '').trim();
     if (!question) throw new Error('Tuliskan pertanyaan untuk SOPi.');
     if (question.length > 1200) throw new Error('Pertanyaan terlalu panjang. Maksimal 1.200 karakter.');
@@ -6409,7 +6409,8 @@ function askSopi(token, payload) {
     }).filter(function (message) { return message.content; }) : [];
     const response = cloudflareInventoryRequest_('POST', '/v1/sopi/chat', {
       question: question,
-      history: history
+      history: history,
+      userName: String(employee && (employee.name || employee.nik) || '').trim().slice(0, 120)
     });
     return response.data || { answer: 'SOPi belum dapat menjawab saat ini.', sources: [], grounded: false };
   });
