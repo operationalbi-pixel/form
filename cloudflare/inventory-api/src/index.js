@@ -2441,12 +2441,50 @@ function sopiSearchTerms(question) {
     "bikin", "isi", "isinya", "jumlah", "takaran", "bahan", "metode", "proses",
     "untuk", "dari", "dengan", "yang", "dan", "atau", "pada", "menu", "sop",
     "standar", "standard", "operasional", "prosedur", "ik", "instruksi", "intruksi",
-    "kerja", "internal", "memo", "im", "nya", "ini", "itu", "di", "ke", "berapa"
+    "kerja", "internal", "memo", "im", "nya", "ini", "itu", "di", "ke", "berapa",
+    "tolong", "maaf", "typo", "the", "on", "of", "ber", "gram", "gr", "ml", "pcs", "pc", "sal"
   ]);
-  const terms = sopiNormalizeText(question).split(" ").filter((term) => term.length > 1 && !ignored.has(term));
+  const aliases = new Map([["salomon", "salmon"], ["sallmon", "salmon"], ["sammon", "salmon"]]);
+  const terms = sopiNormalizeText(question).split(" ").map((term) => {
+    let normalized = aliases.get(term) || term;
+    if (normalized.length > 5 && normalized.endsWith("nya")) normalized = normalized.slice(0, -3);
+    return aliases.get(normalized) || normalized;
+  }).filter((term) => term.length > 1 && !ignored.has(term));
   return [...new Set(terms)].slice(0, 8);
 }
 __name(sopiSearchTerms, "sopiSearchTerms");
+
+function sopiAcronyms(value) {
+  const groups = [];
+  let current = "";
+  for (const token of sopiNormalizeText(value).split(" ")) {
+    if (token.length === 1) current += token;
+    else if (current) {
+      if (current.length >= 3) groups.push(current);
+      current = "";
+    }
+  }
+  if (current.length >= 3) groups.push(current);
+  return groups;
+}
+__name(sopiAcronyms, "sopiAcronyms");
+
+function sopiEditDistance(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let indexA = 1; indexA <= a.length; indexA += 1) {
+    let previous = row[0];
+    row[0] = indexA;
+    for (let indexB = 1; indexB <= b.length; indexB += 1) {
+      const saved = row[indexB];
+      row[indexB] = Math.min(row[indexB] + 1, row[indexB - 1] + 1, previous + (a[indexA - 1] === b[indexB - 1] ? 0 : 1));
+      previous = saved;
+    }
+  }
+  return row[b.length];
+}
+__name(sopiEditDistance, "sopiEditDistance");
 
 function sopiParseJson(value) {
   try {
@@ -2460,6 +2498,7 @@ __name(sopiParseJson, "sopiParseJson");
 
 async function searchSopiDocuments(env, question) {
   const normalized = sopiNormalizeText(question);
+  const questionAcronyms = sopiAcronyms(normalized);
   const terms = sopiSearchTerms(question);
   const usableTerms = terms.length ? terms : normalized.split(" ").filter(Boolean).slice(0, 4);
   if (!usableTerms.length) return [];
@@ -2490,6 +2529,11 @@ async function searchSopiDocuments(env, question) {
     for (const term of usableTerms) {
       if (titleNormalized.includes(term)) relevance += 20;
       if (searchNormalized.includes(term)) relevance += 3;
+    }
+    const titleAcronyms = sopiAcronyms(titleNormalized);
+    if (questionAcronyms.some((queryAcronym) => titleAcronyms.some((titleAcronym) =>
+      queryAcronym === titleAcronym || (queryAcronym.length === titleAcronym.length && sopiEditDistance(queryAcronym, titleAcronym) <= 1)))) {
+      relevance += 34;
     }
     return {
     id: cleanText(row.document_id, 180),
@@ -2556,27 +2600,44 @@ function sopiAiText(result) {
 }
 __name(sopiAiText, "sopiAiText");
 
+function sopiIsUsableAiAnswer(value) {
+  const answer = cleanText(value, 7000).trim();
+  if (!answer || /SOPI_TIDAK_TAHU/i.test(answer)) return Boolean(answer);
+  if (/probably answer|i(?:'|’)m not sure|pertanyaan staff\s*:|sumber sop terverifikasi\s*:|system prompt|assistant analysis/i.test(answer)) return false;
+  const lines = answer.split(/\n+/).map((line) => line.trim().toLowerCase()).filter(Boolean);
+  const distinctLines = new Set(lines);
+  if (lines.length >= 4 && distinctLines.size / lines.length < 0.6) return false;
+  const words = answer.toLowerCase().split(/\s+/).filter(Boolean);
+  let repeatedRun = 1;
+  for (let index = 1; index < words.length; index += 1) {
+    repeatedRun = words[index] === words[index - 1] ? repeatedRun + 1 : 1;
+    if (repeatedRun >= 5) return false;
+  }
+  return true;
+}
+__name(sopiIsUsableAiAnswer, "sopiIsUsableAiAnswer");
+
 async function sopiRunAi(env, messages, requestId) {
   const models = [
     cleanText(env.SOPI_MODEL || "@cf/openai/gpt-oss-120b", 160),
-    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160),
-    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160)
+    cleanText(env.SOPI_LANGUAGE_MODEL || "@cf/aisingapore/gemma-sea-lion-v4-27b-it", 160),
+    cleanText(env.SOPI_FALLBACK_MODEL || "@cf/google/gemma-4-26b-a4b-it", 160)
   ].filter((model, index, all) => model && all.indexOf(model) === index);
-  for (let index = 0; index < models.length; index += 1) {
+  for (let index = 0; index < Math.min(models.length, 2); index += 1) {
     const model = models[index];
     const startedAt = Date.now();
     try {
       const answer = sopiAiText(await env.AI.run(model, {
         messages,
-        max_tokens: 900,
-        temperature: 0.25,
-        top_p: 0.88
-      }));
-      if (answer) {
+        max_tokens: 550,
+        temperature: 0.18,
+        top_p: 0.82
+      }, { rejectIfBusy: true }));
+      if (sopiIsUsableAiAnswer(answer)) {
         console.log(JSON.stringify({ event: "sopi_ai_model_succeeded", requestId, model, attempt: index + 1, durationMs: Date.now() - startedAt }));
         return answer;
       }
-      throw new Error("EMPTY_AI_RESPONSE");
+      throw new Error(answer ? "UNUSABLE_AI_RESPONSE" : "EMPTY_AI_RESPONSE");
     } catch (error) {
       console.error(JSON.stringify({
         event: "sopi_ai_model_failed",
@@ -3537,10 +3598,13 @@ export {
   normalizeMidtransStatus,
   normalizeMovement,
   normalizeTransferEvent,
+  sopiAcronyms,
+  sopiEditDistance,
   sopiFallbackAnswer,
   sopiContentDisposition,
   sopiConversationFallback,
   sopiDriveTitle,
+  sopiIsUsableAiAnswer,
   sopiMarkdownText,
   sopiSafeFileName,
   sopiSearchTerms,

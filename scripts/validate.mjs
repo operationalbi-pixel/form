@@ -113,11 +113,17 @@ if (!inventoryWorker.includes('Standar Operasional Prosedur, IK, Instruksi Kerja
 if (!chatBackend.includes("'/v1/sopi/file-link?'") || !inventoryWorker.includes('async function sopiFileContent') || !inventoryWorker.includes('/v1/sopi/file-content') || !inventoryWorker.includes('range: request.headers')) {
   failures.push('Streaming file SOPi langsung dari R2 dengan dukungan Range belum lengkap');
 }
-if (!sopiHtml.includes("window.open('','_blank')") || !sopiHtml.includes('fileWindow.location.replace(url)') || sopiHtml.includes("atob(String(data.base64")) {
-  failures.push('Alur buka file SOPi mobile masih mem-buffer base64 atau belum membuka tab saat gesture pengguna');
+if (!sopiHtml.includes('id="sourceViewer"') || !sopiHtml.includes('function openViewer(') || !sopiHtml.includes('biSopiSourceClose') || sopiHtml.includes("window.open('','_blank')") || sopiHtml.includes('fileWindow.location.replace(url)') || sopiHtml.includes("atob(String(data.base64")) {
+  failures.push('Viewer SOPi belum membuka PDF/dokumen di dalam chat tanpa about:blank');
 }
-if (!apiClient.includes("SOPI_ASSET_VERSION = '20261001-sopi11'")) {
-  failures.push('Cache aset SOPi belum diperbarui untuk sumber link');
+if (!sopiSourceHtml.includes('id="closeDocument"') || !sopiSourceHtml.includes('biSopiSourceClose')) {
+  failures.push('Tampilan SOP terstruktur belum menyediakan tombol kembali ke chat');
+}
+if (!inventoryWorker.includes('sopiIsUsableAiAnswer') || !inventoryWorker.includes('rejectIfBusy: true') || !inventoryWorker.includes('Math.min(models.length, 2)')) {
+  failures.push('Fallback cepat dan penyaring jawaban AI SOPi belum lengkap');
+}
+if (!apiClient.includes("SOPI_ASSET_VERSION = '20261001-sopi12'")) {
+  failures.push('Cache aset SOPi belum diperbarui untuk viewer internal');
 }
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
   failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');
