@@ -6461,6 +6461,84 @@ function deleteSopiAdminQuestion(token, questionId) {
   });
 }
 
+function sopiSourceUrl_(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  if (url.length > 600 || !/^https:\/\//i.test(url)) throw new Error('Link sumber harus menggunakan HTTPS.');
+  const hostMatch = /^https:\/\/([^\/:?#]+)/i.exec(url);
+  const host = String(hostMatch && hostMatch[1] || '').toLowerCase();
+  if (!host || host === 'localhost' || /\.(?:local|internal)$/.test(host) || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host) || /^\[?(?:fc|fd|fe80):/i.test(host)) {
+    throw new Error('Alamat link sumber tidak diizinkan.');
+  }
+  return url;
+}
+
+function sopiDriveLinkInfo_(url) {
+  const value = String(url || '');
+  let match = /drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([A-Za-z0-9_-]+)/i.exec(value) || /drive\.google\.com\/folders\/([A-Za-z0-9_-]+)/i.exec(value);
+  if (match) return { type: 'folder', id: match[1] };
+  match = /(?:drive\.google\.com\/file\/d|docs\.google\.com\/(?:document|spreadsheets|presentation)\/d)\/([A-Za-z0-9_-]+)/i.exec(value);
+  if (!match) match = /[?&]id=([A-Za-z0-9_-]+)/i.exec(value);
+  return match ? { type: 'file', id: match[1] } : null;
+}
+
+function sopiExtraDriveFolders_() {
+  let rows = [];
+  try { rows = JSON.parse(PropertiesService.getScriptProperties().getProperty('SOPI_EXTRA_DRIVE_FOLDERS') || '[]'); } catch (error) {}
+  return Array.isArray(rows) ? rows.filter(function (row) { return row && row.id; }) : [];
+}
+
+function sopiRegisterDriveFolder_(folderId, sourceUrl) {
+  const folder = DriveApp.getFolderById(String(folderId || ''));
+  const rows = sopiExtraDriveFolders_();
+  if (!rows.some(function (row) { return String(row.id) === String(folderId); })) {
+    rows.push({ id: String(folderId), name: folder.getName(), url: String(sourceUrl || '') });
+    PropertiesService.getScriptProperties().setProperty('SOPI_EXTRA_DRIVE_FOLDERS', JSON.stringify(rows.slice(-20)));
+  }
+  return { id: String(folderId), name: folder.getName(), url: String(sourceUrl || '') };
+}
+
+function sopiDriveRootEntries_() {
+  const properties = PropertiesService.getScriptProperties();
+  const primaryId = String(properties.getProperty('SOPI_DRIVE_ROOT_FOLDER_ID') || '1ia62T285Y0Q-q507izsENrPXKyFbnSkw').trim();
+  const rows = [{ id: primaryId, path: '' }].concat(sopiExtraDriveFolders_().map(function (row) {
+    return { id: String(row.id || ''), path: '' };
+  }));
+  const seen = {};
+  return rows.filter(function (row) { if (!row.id || seen[row.id]) return false; seen[row.id] = true; return true; });
+}
+
+function sopiSourceFilePayload_(sourceUrl) {
+  const url = sopiSourceUrl_(sourceUrl);
+  if (!url) return { sourceUrl: '', sourceFile: null, folder: null };
+  const drive = sopiDriveLinkInfo_(url);
+  if (drive && drive.type === 'folder') {
+    return { sourceUrl: url, sourceFile: null, folder: sopiRegisterDriveFolder_(drive.id, url) };
+  }
+  let blob;
+  if (drive && drive.type === 'file') {
+    const file = DriveApp.getFileById(drive.id);
+    blob = /^application\/vnd\.google-apps\./i.test(String(file.getMimeType() || ''))
+      ? file.getAs(MimeType.PDF).setName(file.getName().replace(/\.[^.]+$/, '') + '.pdf')
+      : file.getBlob().setName(file.getName());
+  } else {
+    const response = UrlFetchApp.fetch(url, { method: 'get', followRedirects: true, muteHttpExceptions: true });
+    const status = response.getResponseCode();
+    if (status < 200 || status >= 300) throw new Error('Link sumber tidak dapat dibaca (HTTP ' + status + ').');
+    blob = response.getBlob();
+    const mime = String(blob.getContentType() || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+    const extensions = { 'text/html': '.html', 'text/plain': '.txt', 'text/markdown': '.md', 'application/json': '.json', 'application/ld+json': '.json', 'application/pdf': '.pdf', 'text/csv': '.csv', 'application/xml': '.xml', 'text/xml': '.xml', 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif', 'image/bmp': '.bmp', 'image/svg+xml': '.svg' };
+    let pathName = '';
+    try { pathName = decodeURIComponent(url.split(/[?#]/)[0].split('/').pop() || ''); } catch (error) {}
+    if (!/\.(?:pdf|doc|docx|xls|xlsx|csv|png|jpe?g|webp|gif|bmp|html?|xml|ods|odt|svg|json|txt|md)$/i.test(pathName)) pathName = 'sumber-link' + (extensions[mime] || '.html');
+    blob.setName(pathName);
+  }
+  const bytes = blob.getBytes();
+  if (!bytes.length) throw new Error('Link sumber tidak memiliki isi yang dapat dibaca.');
+  if (bytes.length > 4 * 1024 * 1024) throw new Error('Isi link maksimal 4 MB.');
+  return { sourceUrl: url, folder: null, sourceFile: { name: blob.getName(), mimeType: blob.getContentType() || 'application/octet-stream', base64: Utilities.base64Encode(bytes) } };
+}
+
 function uploadSopiKnowledge(token, payload) {
   return safe_(function () {
     const employee = requireAdmin_(token);
@@ -6468,9 +6546,10 @@ function uploadSopiKnowledge(token, payload) {
     const title = String(payload.title || '').trim();
     const category = String(payload.category || '').trim();
     const content = String(payload.content || '').trim();
+    const source = sopiSourceFilePayload_(payload.sourceUrl);
     const file = payload.file && typeof payload.file === 'object' ? payload.file : null;
     if (!title || !category) throw new Error('Judul dan kategori informasi wajib diisi.');
-    if (!content && !file) throw new Error('Isi informasi atau lampiran wajib diisi.');
+    if (!content && !file && !source.sourceUrl) throw new Error('Isi informasi, lampiran, atau link sumber wajib diisi.');
     if (title.length > 240 || category.length > 100 || content.length > 30000) throw new Error('Informasi terlalu panjang.');
     let preparedFile = null;
     if (file) {
@@ -6481,11 +6560,16 @@ function uploadSopiKnowledge(token, payload) {
       if (base64.length > 5592424) throw new Error('Ukuran lampiran maksimal 4 MB.');
       preparedFile = { name: fileName, mimeType: mimeType, base64: base64 };
     }
+    if (source.folder && !content && !preparedFile) {
+      return { success: true, folderRegistered: true, folderName: source.folder.name, sourceUrl: source.sourceUrl };
+    }
     const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge', {
       title: title,
       category: category,
       content: content,
       file: preparedFile,
+      sourceUrl: source.sourceUrl,
+      sourceFile: source.sourceFile,
       uploadedBy: employee.name || employee.nik
     });
     return response.data || { success: true };
@@ -6500,6 +6584,7 @@ function updateSopiKnowledge(token, payload) {
     const title = String(payload.title || '').trim();
     const category = String(payload.category || '').trim();
     const content = String(payload.content || '').trim();
+    const source = sopiSourceFilePayload_(payload.sourceUrl);
     if (!documentId || !title || !category) throw new Error('Dokumen, judul, dan kategori wajib diisi.');
     if (title.length > 240 || category.length > 100 || content.length > 30000) throw new Error('Informasi terlalu panjang.');
     const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge/update', {
@@ -6507,6 +6592,8 @@ function updateSopiKnowledge(token, payload) {
       title: title,
       category: category,
       content: content,
+      sourceUrl: source.sourceUrl,
+      sourceFile: source.sourceFile,
       updatedBy: employee.name || employee.nik
     });
     return response.data || { success: true };
@@ -6667,8 +6754,13 @@ function runSopiAutoSync() {
   try {
     const supported = /\.(pdf|doc|docx|xls|xlsx|csv|png|jpe?g|webp|gif|bmp)$/i;
     const maxFileBytes = 8 * 1024 * 1024;
-    const driveRootId = String(properties.getProperty('SOPI_DRIVE_ROOT_FOLDER_ID') || '1ia62T285Y0Q-q507izsENrPXKyFbnSkw').trim();
-    const driveFiles = sopiCollectFolderFiles_(driveRootId, function (name) { return supported.test(name); }, deadlineMs);
+    const driveFiles = [];
+    const driveSeen = {};
+    sopiDriveRootEntries_().forEach(function (root) {
+      sopiCollectFolderFiles_(root.id, function (name) { return supported.test(name); }, deadlineMs).forEach(function (file) {
+        if (!driveSeen[file.getId()]) { driveSeen[file.getId()] = true; driveFiles.push(file); }
+      });
+    });
     const jsonRootId = String(properties.getProperty('SOPI_JSON_FOLDER_ID') || '1TL5uFfoHy2i0ctTNBsJvLYZA8MntV2xw').trim();
     const jsonFiles = sopiCollectFolderFiles_(jsonRootId, function (name) { return /\.json$/i.test(name); }, deadlineMs);
     const remoteIds = sopiExistingDocumentIds_(driveFiles.map(function (file) { return 'drive:' + file.getId(); }).concat(jsonFiles.map(function (file) {
@@ -6860,8 +6952,7 @@ function syncSopiDriveKnowledge(token, progress) {
   return safe_(function () {
     const employee = requireAdmin_(token);
     progress = progress && typeof progress === 'object' ? progress : {};
-    const rootFolderId = String(PropertiesService.getScriptProperties().getProperty('SOPI_DRIVE_ROOT_FOLDER_ID') || '1ia62T285Y0Q-q507izsENrPXKyFbnSkw').trim();
-    let pendingFolders = Array.isArray(progress.pendingFolders) ? progress.pendingFolders.slice() : [{ id: rootFolderId, path: '' }];
+    let pendingFolders = Array.isArray(progress.pendingFolders) ? progress.pendingFolders.slice() : sopiDriveRootEntries_();
     let pendingFiles = Array.isArray(progress.pendingFiles) ? progress.pendingFiles.slice() : [];
     let scannedFolders = Math.max(0, Number(progress.scannedFolders || 0));
     let discoveredFiles = Math.max(0, Number(progress.discoveredFiles || 0));

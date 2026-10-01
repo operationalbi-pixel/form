@@ -35,6 +35,10 @@ let state = context.baResolveApprovalState_(base, config);
 assert.equal(state.currentApprovalStep, 1);
 assert.equal(state.currentApprovalPosition, 'FNB');
 
+state = context.baResolveApprovalState_({ ...base, submitted_at: '2026-10-01T08:00:00Z', timestamp: 1_799_999_999, fnb_approved_date: '2026-10-01T09:30:00Z' }, config);
+assert.equal(state.timeline[0].at, '2026-10-01T08:00:00Z');
+assert.equal(state.timeline[1].at, '2026-10-01T09:30:00Z');
+
 state = context.baResolveApprovalState_({ ...base, fnb_approved_date: '2026-09-27T10:00:00Z', fnb_approved_by: 'FNB User' }, config);
 assert.equal(state.currentApprovalStep, 2);
 assert.equal(state.currentApprovalPosition, 'AREA MANAGER');

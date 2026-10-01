@@ -33,6 +33,8 @@ assert.match(imageMigration, /CREATE TABLE IF NOT EXISTS sopi_images/);
 assert.match(imageMigration, /UNIQUE \(document_id, image_kind, step_index\)/);
 const managementMigration = await readFile(new URL('../../migrations/0009_sopi_knowledge_management.sql', import.meta.url), 'utf8');
 assert.match(managementMigration, /ADD COLUMN admin_content/);
+const linkSourceMigration = await readFile(new URL('../../migrations/0010_sopi_link_sources.sql', import.meta.url), 'utf8');
+assert.match(linkSourceMigration, /ADD COLUMN source_content/);
 
 const answer = sopiFallbackAnswer({
   title: 'Menu Test',

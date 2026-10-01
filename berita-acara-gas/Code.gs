@@ -1103,7 +1103,7 @@ function baResolveApprovalState_(row, configMap) {
         status: 'COMPLETED',
         name: row.name || '-',
         position: '',
-        at: row.timestamp || null
+        at: row.submitted_at || row.timestamp || null
       },
       {
         step: 1,
