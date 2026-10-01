@@ -138,6 +138,7 @@ function apiActions_() {
     sopiAdminAnswer: saveSopiAdminAnswer,
     sopiAdminUpload: uploadSopiKnowledge,
     sopiAdminSyncImages: syncSopiJsonImages,
+    sopiAdminSyncDrive: syncSopiDriveKnowledge,
     sopiDocument: getSopiDocument,
     sopiDownload: downloadSopiAttachment,
     outletProgress: getOutletProgress,
@@ -6398,7 +6399,9 @@ function cloudflareQueryString_(params) {
 
 function askSopi(token, payload) {
   return safe_(function () {
-    const employee = requireSession_(token);
+    const session = requireSession_(token);
+    const employee = findEmployee_(session.nik);
+    assertEmployeeActive_(employee);
     const question = String(payload && payload.question || '').trim();
     if (!question) throw new Error('Tuliskan pertanyaan untuk SOPi.');
     if (question.length > 1200) throw new Error('Pertanyaan terlalu panjang. Maksimal 1.200 karakter.');
@@ -6542,6 +6545,95 @@ function syncSopiJsonImages(token, progress) {
       totalFiles: files.length,
       lastFile: lastFile,
       progressPercent: files.length ? Math.min(100, Math.round(fileIndex * 10000 / files.length) / 100) : 100
+    };
+  });
+}
+
+function syncSopiDriveKnowledge(token, progress) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    progress = progress && typeof progress === 'object' ? progress : {};
+    const rootFolderId = String(PropertiesService.getScriptProperties().getProperty('SOPI_DRIVE_ROOT_FOLDER_ID') || '1ia62T285Y0Q-q507izsENrPXKyFbnSkw').trim();
+    let pendingFolders = Array.isArray(progress.pendingFolders) ? progress.pendingFolders.slice() : [{ id: rootFolderId, path: '' }];
+    let pendingFiles = Array.isArray(progress.pendingFiles) ? progress.pendingFiles.slice() : [];
+    let scannedFolders = Math.max(0, Number(progress.scannedFolders || 0));
+    let discoveredFiles = Math.max(0, Number(progress.discoveredFiles || 0));
+    let importedFiles = Math.max(0, Number(progress.importedFiles || 0));
+    let skippedFiles = Math.max(0, Number(progress.skippedFiles || 0));
+    let failedFiles = Math.max(0, Number(progress.failedFiles || 0));
+    let lastItem = '';
+    const supported = /\.(pdf|doc|docx|xls|xlsx|csv|png|jpe?g|webp|gif|bmp)$/i;
+    const maxFileBytes = 8 * 1024 * 1024;
+    let workUnits = 0;
+
+    while (workUnits < 2 && (pendingFiles.length || pendingFolders.length)) {
+      if (pendingFiles.length) {
+        const entry = pendingFiles.shift();
+        lastItem = entry.path || entry.name || '';
+        try {
+          const file = DriveApp.getFileById(String(entry.id || ''));
+          const size = Number(file.getSize() || 0);
+          if (!supported.test(file.getName()) || !size || size > maxFileBytes) {
+            skippedFiles += 1;
+          } else {
+            const blob = file.getBlob();
+            cloudflareInventoryRequest_('POST', '/v1/sopi/admin/drive-document', {
+              driveFileId: file.getId(),
+              title: file.getName(),
+              fileName: file.getName(),
+              mimeType: blob.getContentType() || file.getMimeType() || 'application/octet-stream',
+              base64: Utilities.base64Encode(blob.getBytes()),
+              sourceUrl: 'https://drive.google.com/file/d/' + encodeURIComponent(file.getId()) + '/view',
+              sourcePath: String(entry.path || '').slice(0, 500),
+              modifiedAt: file.getLastUpdated().toISOString(),
+              uploadedBy: employee.name || employee.nik
+            });
+            importedFiles += 1;
+          }
+        } catch (error) {
+          failedFiles += 1;
+        }
+        workUnits += 1;
+        continue;
+      }
+
+      const folderEntry = pendingFolders.shift();
+      try {
+        const folder = DriveApp.getFolderById(String(folderEntry.id || ''));
+        const folderName = folder.getName();
+        const folderPath = [String(folderEntry.path || ''), folderName].filter(Boolean).join(' / ');
+        lastItem = folderPath;
+        const folders = folder.getFolders();
+        while (folders.hasNext()) {
+          const childFolder = folders.next();
+          pendingFolders.push({ id: childFolder.getId(), path: folderPath });
+        }
+        const files = folder.getFiles();
+        while (files.hasNext()) {
+          const childFile = files.next();
+          if (supported.test(childFile.getName())) {
+            pendingFiles.push({ id: childFile.getId(), name: childFile.getName(), path: folderPath + ' / ' + childFile.getName() });
+            discoveredFiles += 1;
+          }
+        }
+        scannedFolders += 1;
+      } catch (error) {
+        failedFiles += 1;
+      }
+      workUnits += 1;
+    }
+
+    return {
+      done: pendingFolders.length === 0 && pendingFiles.length === 0,
+      pendingFolders: pendingFolders,
+      pendingFiles: pendingFiles,
+      scannedFolders: scannedFolders,
+      discoveredFiles: discoveredFiles,
+      importedFiles: importedFiles,
+      skippedFiles: skippedFiles,
+      failedFiles: failedFiles,
+      remainingItems: pendingFolders.length + pendingFiles.length,
+      lastItem: lastItem
     };
   });
 }

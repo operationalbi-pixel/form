@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { sopiConversationFallback, sopiFallbackAnswer, sopiMarkdownText, sopiSafeFileName, sopiSearchTerms } from '../src/index.js';
+import { sopiConversationFallback, sopiDriveTitle, sopiFallbackAnswer, sopiMarkdownText, sopiSafeFileName, sopiSearchTerms } from '../src/index.js';
 
 const seed = JSON.parse(await readFile(new URL('../data/sopi-seed.json', import.meta.url), 'utf8'));
 
@@ -14,6 +14,7 @@ assert.deepEqual(
   ['nasi', 'goreng', 'roa']
 );
 assert.equal(sopiSafeFileName('../SOP Oxtail Fried Rice (Final).pdf'), 'SOP Oxtail Fried Rice (Final).pdf');
+assert.equal(sopiDriveTitle('6. Hot Fiery Ribs.pdf'), 'Hot Fiery Ribs');
 assert.equal(sopiMarkdownText({ results: [{ data: '# SOP\n\nIsi dokumen.' }] }), '# SOP\n\nIsi dokumen.');
 assert.match(sopiConversationFallback('hallo SOPi'), /Halo!/);
 assert.match(sopiConversationFallback('hallo SOPi', 'DARA ZAINAL ANWAR'), /Halo, Dara!/);

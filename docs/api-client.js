@@ -2,7 +2,7 @@
   'use strict';
 
   var CHAT_ASSET_VERSION = '20260930-unified-chat1';
-  var SOPI_ASSET_VERSION = '20261001-sopi7';
+  var SOPI_ASSET_VERSION = '20261001-sopi8';
 
   function installBakerzinTypography() {
     if (!document.getElementById('bakerzinTypographyFont')) {
