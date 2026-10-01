@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="config.js"></script>
-  <script src="api-client.js?v=20261001-sopi9"></script>
+  <script src="api-client.js?v=20261001-sopi10"></script>
   <style>
     :root{--wine:#a40d28;--wine-dark:#71091b;--cream:#fff8f2;--ink:#2e2528;--muted:#83787c;--line:#eadfe2;--soft:#f8f3f4;--green:#16835c}
     *{box-sizing:border-box}html,body{position:fixed;inset:0;width:100%;height:100%;margin:0;overflow:hidden;overscroll-behavior:none;background:#fff;color:var(--ink);font-family:"Plus Jakarta Sans","Segoe UI",sans-serif}
@@ -38,7 +38,7 @@
         <h1 id="sopiTitle">Halo, aku SOPi</h1>
         <p>Kamu bisa tanya apapun tentang Operasional Bakerzin</p>
       </div>
-      <img class="character" src="assets/sopi-assistant-closeup-v3.png?v=20261001-sopi9" alt="SOPi, asisten SOP Bakerzin">
+      <img class="character" src="assets/sopi-assistant-closeup-v3.png?v=20261001-sopi10" alt="SOPi, asisten SOP Bakerzin">
     </header>
     <section class="messages" id="messages" aria-live="polite">
       <div class="day">SOPi hanya menjawab berdasarkan sumber SOP Bakerzin</div>
@@ -75,7 +75,7 @@
       send.addEventListener('click',function(event){if(event.detail===0)ask(input.value.trim())});
       document.getElementById('suggestions').addEventListener('click',function(event){var button=event.target.closest('button');if(button)ask(button.textContent.trim())});
       messages.addEventListener('pointerdown',function(event){if(!event.target.closest('.source-view,.source-download')&&document.activeElement===input)input.blur()});
-      messages.addEventListener('click',function(event){var viewButton=event.target.closest('.source-view');if(viewButton){window.open('sopi-source.html?id='+encodeURIComponent(viewButton.dataset.documentId),'_blank','noopener');return}var button=event.target.closest('.source-download');if(!button||button.disabled)return;button.disabled=true;var original=button.innerHTML;button.innerHTML='<strong>Menyiapkan file...</strong>';window.BAKERZIN_API.call('sopiDownload',[token,button.dataset.fileId]).then(function(response){if(!response||!response.ok)throw new Error(response&&response.error||'File tidak dapat diunduh.');var data=response.data||{},binary=atob(String(data.base64||'')),bytes=new Uint8Array(binary.length);for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);var url=URL.createObjectURL(new Blob([bytes],{type:data.mimeType||'application/octet-stream'})),link=document.createElement('a');link.href=url;link.download=data.fileName||'lampiran';document.body.appendChild(link);link.click();link.remove();setTimeout(function(){URL.revokeObjectURL(url)},1500)}).catch(function(error){add(error.message||'File tidak dapat diunduh.',false,[],true)}).finally(function(){button.disabled=false;button.innerHTML=original})});
+      messages.addEventListener('click',function(event){var viewButton=event.target.closest('.source-view');if(viewButton){window.open('sopi-source.html?id='+encodeURIComponent(viewButton.dataset.documentId),'_blank','noopener');return}var button=event.target.closest('.source-download');if(!button||button.disabled)return;var fileWindow=null;try{fileWindow=window.open('','_blank');if(fileWindow){fileWindow.document.title='Menyiapkan file SOPi';fileWindow.document.body.innerHTML='<p style="font:600 15px system-ui;padding:24px;color:#6b1225">Menyiapkan file SOPi...</p>'}}catch(e){}button.disabled=true;var original=button.innerHTML;button.innerHTML='<strong>Membuka file...</strong>';window.BAKERZIN_API.call('sopiDownload',[token,button.dataset.fileId]).then(function(response){if(!response||!response.ok)throw new Error(response&&response.error||'File tidak dapat dibuka.');var data=response.data||{},url=String(data.url||'');if(!/^https:\/\//i.test(url))throw new Error('Tautan file tidak valid.');if(fileWindow&&!fileWindow.closed)fileWindow.location.replace(url);else window.location.href=url}).catch(function(error){if(fileWindow&&!fileWindow.closed)fileWindow.close();add(error.message||'File tidak dapat dibuka.',false,[],true)}).finally(function(){button.disabled=false;button.innerHTML=original})});
     }());
   </script>
 </body>
