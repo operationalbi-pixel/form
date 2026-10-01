@@ -136,7 +136,10 @@ function apiActions_() {
     sopiChat: askSopi,
     sopiAdminBootstrap: getSopiAdminBootstrap,
     sopiAdminAnswer: saveSopiAdminAnswer,
+    sopiAdminDeleteQuestion: deleteSopiAdminQuestion,
     sopiAdminUpload: uploadSopiKnowledge,
+    sopiAdminUpdateKnowledge: updateSopiKnowledge,
+    sopiAdminDeleteKnowledge: deleteSopiKnowledge,
     sopiAdminSyncImages: syncSopiJsonImages,
     sopiAdminSyncDrive: syncSopiDriveKnowledge,
     sopiDocument: getSopiDocument,
@@ -6445,6 +6448,16 @@ function saveSopiAdminAnswer(token, payload) {
   });
 }
 
+function deleteSopiAdminQuestion(token, questionId) {
+  return safe_(function () {
+    requireAdmin_(token);
+    const id = String(questionId || '').trim();
+    if (!id) throw new Error('Pertanyaan tidak valid.');
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/question/delete', { questionId: id });
+    return response.data || { success: true };
+  });
+}
+
 function uploadSopiKnowledge(token, payload) {
   return safe_(function () {
     const employee = requireAdmin_(token);
@@ -6472,6 +6485,37 @@ function uploadSopiKnowledge(token, payload) {
       file: preparedFile,
       uploadedBy: employee.name || employee.nik
     });
+    return response.data || { success: true };
+  });
+}
+
+function updateSopiKnowledge(token, payload) {
+  return safe_(function () {
+    const employee = requireAdmin_(token);
+    payload = payload || {};
+    const documentId = String(payload.documentId || '').trim();
+    const title = String(payload.title || '').trim();
+    const category = String(payload.category || '').trim();
+    const content = String(payload.content || '').trim();
+    if (!documentId || !title || !category) throw new Error('Dokumen, judul, dan kategori wajib diisi.');
+    if (title.length > 240 || category.length > 100 || content.length > 30000) throw new Error('Informasi terlalu panjang.');
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge/update', {
+      documentId: documentId,
+      title: title,
+      category: category,
+      content: content,
+      updatedBy: employee.name || employee.nik
+    });
+    return response.data || { success: true };
+  });
+}
+
+function deleteSopiKnowledge(token, documentId) {
+  return safe_(function () {
+    requireAdmin_(token);
+    const id = String(documentId || '').trim();
+    if (!id) throw new Error('Dokumen tidak valid.');
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge/delete', { documentId: id });
     return response.data || { success: true };
   });
 }
@@ -6514,6 +6558,29 @@ function syncSopiJsonImages(token, progress) {
       (Array.isArray(source && source.steps) ? source.steps : []).forEach(function (step, index) {
         if (step && /^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(String(step.img || ''))) images.push({ kind: 'STEP', stepIndex: index, dataUrl: String(step.img) });
       });
+      if (documentId && imageIndex === 0) {
+        const header = source && source.header || {};
+        const page1 = source && source.page1 || {};
+        cloudflareInventoryRequest_('POST', '/v1/sopi/admin/json-document', {
+          documentId: documentId,
+          title: String(header.judul || entry.name.replace(/_[a-f0-9-]+\.json$/i, '').replace(/\.json$/i, '')).trim(),
+          category: String(header.kategori || '').trim(),
+          categoryDetail: String(header.catDetail || '').trim(),
+          effectiveDate: String(header.tglEfektif || '').trim(),
+          revision: String(header.noRevisi || '').trim(),
+          isLegacy: Boolean(header.isLegacy),
+          yieldText: String(page1.yield || '').trim(),
+          shelfLife: String(page1.shelfLife || '').trim(),
+          ingredients: (Array.isArray(source.ingredients) ? source.ingredients : []).map(function (item) {
+            return { name: String(item && item.name || '').trim(), qty: String(item && item.qty || '').trim(), uom: String(item && item.uom || '').trim() };
+          }),
+          steps: (Array.isArray(source.steps) ? source.steps : []).map(function (step, index) {
+            return { no: index + 1, desc: String(step && step.desc || '').trim() };
+          }),
+          sourceUrl: 'https://drive.google.com/file/d/' + encodeURIComponent(entry.id) + '/view',
+          status: String(source && source.status || '').trim()
+        });
+      }
       if (!documentId || imageIndex >= images.length) {
         fileIndex += 1;
         imageIndex = 0;

@@ -44,17 +44,18 @@ const sopiSourceHtml = await text('docs/sopi-source.html');
 const sopiSeed = JSON.parse(await text('cloudflare/inventory-api/data/sopi-seed.json'));
 const sopiWrangler = await text('cloudflare/inventory-api/wrangler.jsonc');
 const sopiKnowledgeMigration = await text('cloudflare/migrations/0007_sopi_knowledge_center.sql');
+const sopiManagementMigration = await text('cloudflare/migrations/0009_sopi_knowledge_management.sql');
 if (!apiClient.includes('id = \'biSopiFloat\'') || !apiClient.includes('sopi.html?v=')) {
   failures.push('Widget SOPi belum dipasang di atas chat global');
 }
 if (!chatBackend.includes('sopiChat: askSopi') || !chatBackend.includes("'/v1/sopi/chat'")) {
   failures.push('Gateway GAS SOPi belum tersedia');
 }
-for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'uploadSopiKnowledge', 'syncSopiDriveKnowledge', 'getSopiDocument', 'downloadSopiAttachment']) {
+for (const functionName of ['askSopi', 'getSopiAdminBootstrap', 'saveSopiAdminAnswer', 'deleteSopiAdminQuestion', 'uploadSopiKnowledge', 'updateSopiKnowledge', 'deleteSopiKnowledge', 'syncSopiDriveKnowledge', 'getSopiDocument', 'downloadSopiAttachment']) {
   const contractPattern = new RegExp(`function ${functionName}\\([^)]*\\) \\{\\s*return safe_\\(function \\(\\) \\{`);
   if (!contractPattern.test(chatBackend)) failures.push(`Gateway SOPi '${functionName}' belum mengembalikan kontrak {ok,data}`);
 }
-for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminUpload', 'sopiAdminSyncImages', 'sopiAdminSyncDrive', 'sopiDocument', 'sopiDownload']) {
+for (const action of ['sopiAdminBootstrap', 'sopiAdminAnswer', 'sopiAdminDeleteQuestion', 'sopiAdminUpload', 'sopiAdminUpdateKnowledge', 'sopiAdminDeleteKnowledge', 'sopiAdminSyncImages', 'sopiAdminSyncDrive', 'sopiDocument', 'sopiDownload']) {
   if (!chatBackend.includes(`${action}:`)) failures.push(`Gateway GAS SOPi belum menyediakan aksi '${action}'`);
 }
 if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('function uploadSopiKnowledge(')) {
@@ -93,6 +94,9 @@ if (!inventoryWorker.includes('env.AI.toMarkdown') || !inventoryWorker.includes(
 if (!sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_unanswered') || !sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_attachments')) {
   failures.push('Migrasi Knowledge Center SOPi belum lengkap');
 }
+if (!sopiManagementMigration.includes('ADD COLUMN admin_content') || !inventoryWorker.includes('/v1/sopi/admin/json-document')) {
+  failures.push('Migrasi pengelolaan pengetahuan atau sinkronisasi dokumen JSON SOPi belum lengkap');
+}
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
   failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');
 }
@@ -113,6 +117,9 @@ for (const match of sopiAdminHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*
 }
 if (!sopiAdminHtml.includes('Pertanyaan Belum Terjawab') || !sopiAdminHtml.includes('Upload Informasi') || !sopiAdminHtml.includes('accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif,.bmp"')) {
   failures.push('UI Knowledge Center SOPi belum menyediakan dua tab dan format lampiran yang diminta');
+}
+if (!sopiAdminHtml.includes('Informasi Tersimpan') || !sopiAdminHtml.includes('delete-question') || !sopiAdminHtml.includes('save-knowledge') || !sopiAdminHtml.includes('delete-knowledge')) {
+  failures.push('UI Knowledge Center SOPi belum menyediakan edit/hapus informasi dan pembersihan pertanyaan spam');
 }
 let sopiSourceInlineIndex = 0;
 for (const match of sopiSourceHtml.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {

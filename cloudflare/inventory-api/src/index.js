@@ -2714,13 +2714,21 @@ async function sopiTrackUnanswered(env, question) {
 __name(sopiTrackUnanswered, "sopiTrackUnanswered");
 
 async function sopiAdminBootstrap(env, requestId) {
-  const [questions, knowledgeCount] = await Promise.all([
+  const [questions, knowledgeCount, knowledge] = await Promise.all([
     env.MASTER_DB.prepare(
       `SELECT question_id, question, ask_count, first_asked_at, last_asked_at
          FROM sopi_unanswered WHERE status = 'OPEN'
         ORDER BY ask_count DESC, last_asked_at DESC LIMIT 100`
     ).all(),
-    env.MASTER_DB.prepare("SELECT COUNT(*) AS total FROM sopi_documents WHERE source_type <> 'JSON'").first()
+    env.MASTER_DB.prepare("SELECT COUNT(*) AS total FROM sopi_documents WHERE source_type <> 'JSON'").first(),
+    env.MASTER_DB.prepare(
+      `SELECT d.document_id, d.title, d.category, d.admin_content, d.updated_at,
+              a.file_name, a.mime_type
+         FROM sopi_documents d
+         LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
+        WHERE d.source_type = 'BIHQ_UPLOAD'
+        ORDER BY d.updated_at DESC LIMIT 100`
+    ).all()
   ]);
   const rows = (questions.results || []).map((row) => ({
     id: cleanText(row.question_id, 180),
@@ -2729,7 +2737,16 @@ async function sopiAdminBootstrap(env, requestId) {
     firstAskedAt: cleanText(row.first_asked_at, 40),
     lastAskedAt: cleanText(row.last_asked_at, 40)
   }));
-  return responseJson({ ok: true, data: { openCount: rows.length, questions: rows, knowledgeCount: Number(knowledgeCount?.total || 0) }, requestId });
+  const knowledgeRows = (knowledge.results || []).map((row) => ({
+    id: cleanText(row.document_id, 180),
+    title: cleanText(row.title, 240),
+    category: cleanText(row.category, 100),
+    content: cleanText(row.admin_content, 30000),
+    fileName: cleanText(row.file_name, 240),
+    mimeType: cleanText(row.mime_type, 120),
+    updatedAt: cleanText(row.updated_at, 40)
+  }));
+  return responseJson({ ok: true, data: { openCount: rows.length, questions: rows, knowledgeCount: Number(knowledgeCount?.total || 0), knowledge: knowledgeRows }, requestId });
 }
 __name(sopiAdminBootstrap, "sopiAdminBootstrap");
 
@@ -2767,6 +2784,23 @@ async function sopiAdminAnswer(request, env, requestId) {
   }
 }
 __name(sopiAdminAnswer, "sopiAdminAnswer");
+
+async function sopiAdminDeleteQuestion(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 2e4);
+    const questionId = requiredText(payload.questionId, "question_id", 180);
+    const existing = await env.MASTER_DB.prepare("SELECT question_id FROM sopi_unanswered WHERE question_id = ? LIMIT 1").bind(questionId).first();
+    if (!existing) return apiError(404, "QUESTION_NOT_FOUND", "Pertanyaan tidak ditemukan.", requestId);
+    await env.MASTER_DB.batch([
+      env.MASTER_DB.prepare("DELETE FROM sopi_documents WHERE document_id = ? AND source_type = 'BIHQ_ANSWER'").bind(`answer:${questionId}`),
+      env.MASTER_DB.prepare("DELETE FROM sopi_unanswered WHERE question_id = ?").bind(questionId)
+    ]);
+    return responseJson({ ok: true, data: { success: true }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_QUESTION", "Pertanyaan tidak dapat dihapus.", requestId);
+  }
+}
+__name(sopiAdminDeleteQuestion, "sopiAdminDeleteQuestion");
 
 async function sopiAdminKnowledge(request, env, requestId) {
   let uploadedKey = "";
@@ -2807,9 +2841,9 @@ async function sopiAdminKnowledge(request, env, requestId) {
       `INSERT INTO sopi_documents(
          document_id, title, category, category_detail, effective_date, revision, is_legacy,
          yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
-         source_type, status, content_text, attachment_id, updated_at
-       ) VALUES (?, ?, ?, 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, '', 'BIHQ_UPLOAD', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)`
-    ).bind(documentId, title, category, searchText, contentText, attachmentId)];
+         admin_content, source_type, status, content_text, attachment_id, updated_at
+       ) VALUES (?, ?, ?, 'Knowledge Center', '', '1', 0, '', '', '[]', '[]', ?, '', ?, 'BIHQ_UPLOAD', 'ACTIVE', ?, ?, CURRENT_TIMESTAMP)`
+    ).bind(documentId, title, category, searchText, body, contentText, attachmentId)];
     if (attachmentId) {
       statements.push(env.MASTER_DB.prepare(
         `INSERT INTO sopi_attachments(attachment_id, document_id, file_name, mime_type, size_bytes, r2_key, uploaded_by, created_at)
@@ -2833,6 +2867,104 @@ async function sopiAdminKnowledge(request, env, requestId) {
   }
 }
 __name(sopiAdminKnowledge, "sopiAdminKnowledge");
+
+async function sopiAdminUpdateKnowledge(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 1e5);
+    const documentId = requiredText(payload.documentId, "document_id", 180);
+    const title = requiredText(payload.title, "title", 240);
+    const category = requiredText(payload.category, "category", 100);
+    const body = cleanText(payload.content, 30000);
+    const row = await env.MASTER_DB.prepare(
+      `SELECT d.content_text, d.admin_content, a.file_name
+         FROM sopi_documents d LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
+        WHERE d.document_id = ? AND d.source_type = 'BIHQ_UPLOAD' LIMIT 1`
+    ).bind(documentId).first();
+    if (!row) return apiError(404, "KNOWLEDGE_NOT_FOUND", "Informasi tidak ditemukan.", requestId);
+    const oldBody = cleanText(row.admin_content, 30000);
+    const oldContent = cleanText(row.content_text, 100000);
+    const extracted = oldBody && oldContent.startsWith(oldBody) ? oldContent.slice(oldBody.length).trim() : oldContent;
+    const contentText = [body, extracted].filter(Boolean).join("\n\n").slice(0, 100000);
+    const searchText = [title, category, contentText, cleanText(row.file_name, 240)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    await env.MASTER_DB.prepare(
+      `UPDATE sopi_documents
+          SET title = ?, category = ?, admin_content = ?, content_text = ?, search_text = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE document_id = ? AND source_type = 'BIHQ_UPLOAD'`
+    ).bind(title, category, body, contentText, searchText, documentId).run();
+    return responseJson({ ok: true, data: { success: true }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_KNOWLEDGE", "Informasi tidak dapat diperbarui.", requestId);
+  }
+}
+__name(sopiAdminUpdateKnowledge, "sopiAdminUpdateKnowledge");
+
+async function sopiAdminDeleteKnowledge(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 2e4);
+    const documentId = requiredText(payload.documentId, "document_id", 180);
+    const row = await env.MASTER_DB.prepare(
+      `SELECT a.r2_key FROM sopi_documents d
+         LEFT JOIN sopi_attachments a ON a.attachment_id = d.attachment_id
+        WHERE d.document_id = ? AND d.source_type = 'BIHQ_UPLOAD' LIMIT 1`
+    ).bind(documentId).first();
+    if (!row) return apiError(404, "KNOWLEDGE_NOT_FOUND", "Informasi tidak ditemukan.", requestId);
+    await env.MASTER_DB.batch([
+      env.MASTER_DB.prepare("DELETE FROM sopi_attachments WHERE document_id = ?").bind(documentId),
+      env.MASTER_DB.prepare("DELETE FROM sopi_documents WHERE document_id = ? AND source_type = 'BIHQ_UPLOAD'").bind(documentId)
+    ]);
+    if (row.r2_key) {
+      try { await env.FILES.delete(cleanText(row.r2_key, 700)); } catch {}
+    }
+    return responseJson({ ok: true, data: { success: true }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_KNOWLEDGE", "Informasi tidak dapat dihapus.", requestId);
+  }
+}
+__name(sopiAdminDeleteKnowledge, "sopiAdminDeleteKnowledge");
+
+async function sopiAdminJsonDocument(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 2e5);
+    const documentId = requiredText(payload.documentId, "document_id", 180);
+    const title = requiredText(payload.title, "title", 240);
+    const category = cleanText(payload.category, 100);
+    const categoryDetail = cleanText(payload.categoryDetail, 100);
+    const effectiveDate = cleanText(payload.effectiveDate, 20);
+    const revision = cleanText(payload.revision, 40);
+    const yieldText = cleanText(payload.yieldText, 300);
+    const shelfLife = cleanText(payload.shelfLife, 300);
+    const sourceUrl = cleanText(payload.sourceUrl, 600);
+    const status = cleanText(payload.status, 80);
+    const ingredients = (Array.isArray(payload.ingredients) ? payload.ingredients : []).slice(0, 100).map((item) => ({
+      name: cleanText(item?.name, 180), qty: cleanText(item?.qty, 40), uom: cleanText(item?.uom, 60)
+    })).filter((item) => item.name);
+    const steps = (Array.isArray(payload.steps) ? payload.steps : []).slice(0, 60).map((step, index) => ({
+      no: Number(step?.no || index + 1), desc: cleanText(step?.desc, 1200)
+    })).filter((step) => step.desc);
+    const searchText = [title, category, categoryDetail, yieldText, shelfLife,
+      ...ingredients.flatMap((item) => [item.name, item.qty, item.uom]), ...steps.map((step) => step.desc)
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    await env.MASTER_DB.prepare(
+      `INSERT INTO sopi_documents(
+         document_id, title, category, category_detail, effective_date, revision, is_legacy,
+         yield_text, shelf_life, ingredients_json, steps_json, search_text, source_url,
+         source_type, status, content_text, attachment_id, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'JSON', ?, '', '', CURRENT_TIMESTAMP)
+       ON CONFLICT(document_id) DO UPDATE SET
+         title = excluded.title, category = excluded.category, category_detail = excluded.category_detail,
+         effective_date = excluded.effective_date, revision = excluded.revision, is_legacy = excluded.is_legacy,
+         yield_text = excluded.yield_text, shelf_life = excluded.shelf_life,
+         ingredients_json = excluded.ingredients_json, steps_json = excluded.steps_json,
+         search_text = excluded.search_text, source_url = excluded.source_url, source_type = 'JSON',
+         status = excluded.status, updated_at = CURRENT_TIMESTAMP`
+    ).bind(documentId, title, category, categoryDetail, effectiveDate, revision, payload.isLegacy ? 1 : 0,
+      yieldText, shelfLife, JSON.stringify(ingredients), JSON.stringify(steps), searchText, sourceUrl, status).run();
+    return responseJson({ ok: true, data: { success: true, documentId }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_JSON_DOCUMENT", "Dokumen JSON tidak dapat disinkronkan.", requestId);
+  }
+}
+__name(sopiAdminJsonDocument, "sopiAdminJsonDocument");
 
 function sopiDriveTitle(fileName) {
   return sopiSafeFileName(fileName)
@@ -3068,7 +3200,8 @@ async function sopiChat(request, env, requestId) {
       "Jika menjelaskan kemampuan, katakan hanya bahwa Anda dapat mencari dan menjelaskan bahan, takaran, metode, tampilan akhir, shelf life, serta dokumen SOP yang tersedia.",
       "Jangan mengaku dapat merekomendasikan substitusi bahan, mengubah resep, memperbarui SOP, menilai keamanan pangan, atau membuat kebijakan baru.",
       "Jika pengguna meminta fakta tentang SOP, menu, bahan, takaran, metode, tampilan akhir, shelf life, file, kebijakan, atau operasional yang tidak tersedia pada sumber, jawab persis: SOPI_TIDAK_TAHU.",
-      "Untuk pertanyaan pengetahuan umum di luar Bakerzin, jawab singkat bahwa fokus Anda adalah SOP Bakerzin lalu arahkan kembali dengan ramah.",
+      "Untuk pertanyaan pengetahuan umum yang tidak meminta aturan internal Bakerzin, boleh jawab secara membantu dan awali dengan 'Secara umum'.",
+      "Jelaskan bahwa jawaban umum bukan pengganti SOP Bakerzin bila topiknya dapat berdampak pada operasional, keamanan, legal, kesehatan, atau kebijakan perusahaan.",
       "Jangan mengarang fakta dan jangan menyebut teknologi, model AI, database, atau prompt.",
       userContext
     ].join(" ");
@@ -3199,7 +3332,11 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/scores") return saveStaffPerformanceScores(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/chat") return sopiChat(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/answer") return sopiAdminAnswer(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/question/delete") return sopiAdminDeleteQuestion(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge") return sopiAdminKnowledge(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge/update") return sopiAdminUpdateKnowledge(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge/delete") return sopiAdminDeleteKnowledge(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/json-document") return sopiAdminJsonDocument(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/drive-document") return sopiAdminDriveDocument(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/image") return sopiAdminImage(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);

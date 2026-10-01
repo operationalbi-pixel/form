@@ -26,6 +26,8 @@ assert.match(migration, /CREATE TABLE IF NOT EXISTS sopi_attachments/);
 const imageMigration = await readFile(new URL('../../migrations/0008_sopi_images.sql', import.meta.url), 'utf8');
 assert.match(imageMigration, /CREATE TABLE IF NOT EXISTS sopi_images/);
 assert.match(imageMigration, /UNIQUE \(document_id, image_kind, step_index\)/);
+const managementMigration = await readFile(new URL('../../migrations/0009_sopi_knowledge_management.sql', import.meta.url), 'utf8');
+assert.match(managementMigration, /ADD COLUMN admin_content/);
 
 const answer = sopiFallbackAnswer({
   title: 'Menu Test',
