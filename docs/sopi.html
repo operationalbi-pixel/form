@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="config.js"></script>
-  <script src="api-client.js?v=20261001-sopi6"></script>
+  <script src="api-client.js?v=20261001-sopi7"></script>
   <style>
     :root{--wine:#a40d28;--wine-dark:#71091b;--cream:#fff8f2;--ink:#2e2528;--muted:#83787c;--line:#eadfe2;--soft:#f8f3f4;--green:#16835c}
     *{box-sizing:border-box}html,body{position:fixed;inset:0;width:100%;height:100%;margin:0;overflow:hidden;overscroll-behavior:none;background:#fff;color:var(--ink);font-family:"Plus Jakarta Sans","Segoe UI",sans-serif}
@@ -26,7 +26,7 @@
     .composer{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) 43px;gap:8px;padding:10px 12px max(11px,env(safe-area-inset-bottom));border-top:1px solid var(--line);background:rgba(255,255,255,.97)}.composer input{width:100%;height:43px;border:1px solid #ded3d6;border-radius:14px;padding:0 13px;color:var(--ink);background:#fff;outline:none;font-size:10px}.composer input:focus{border-color:#c35268;box-shadow:0 0 0 3px rgba(164,13,40,.07)}.send{width:43px;height:43px;border:0;border-radius:14px;display:grid;place-items:center;color:#fff;background:linear-gradient(145deg,var(--wine-dark),var(--wine));cursor:pointer;box-shadow:0 7px 18px rgba(113,9,27,.22);touch-action:manipulation}.send:disabled{opacity:.5;cursor:wait}.send svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
     .notice{flex:0 0 auto;padding:7px 13px 0;color:#9b8e92;font-size:7.5px;text-align:center}.error .bubble{border-color:#efb7c1;background:#fff3f5;color:#8d1d33}
     @keyframes sopiFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}@keyframes typing{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-3px);opacity:1}}
-    @media(max-width:420px){.head{min-height:calc(122px + env(safe-area-inset-top));padding-top:calc(18px + env(safe-area-inset-top))}.head h1{font-size:23px}.character{height:106px;width:82px}.bubble{max-width:88%}}
+    @media(max-width:420px){.head{min-height:calc(122px + max(env(safe-area-inset-top),28px));padding-top:calc(18px + max(env(safe-area-inset-top),28px))}.head h1{font-size:23px}.character{height:106px;width:82px}.bubble{max-width:88%}}
     @media(prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto!important}}
   </style>
 </head>
@@ -38,7 +38,7 @@
         <h1 id="sopiTitle">Halo, aku SOPi</h1>
         <p>Kamu bisa tanya apapun tentang Operasional Bakerzin</p>
       </div>
-      <img class="character" src="assets/sopi-assistant-v2.png?v=20261001-sopi6" alt="SOPi, asisten SOP Bakerzin">
+      <img class="character" src="assets/sopi-assistant-v2.png?v=20261001-sopi7" alt="SOPi, asisten SOP Bakerzin">
     </header>
     <section class="messages" id="messages" aria-live="polite">
       <div class="day">SOPi hanya menjawab berdasarkan sumber SOP Bakerzin</div>
