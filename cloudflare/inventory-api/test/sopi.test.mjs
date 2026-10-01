@@ -16,6 +16,7 @@ assert.deepEqual(
 assert.equal(sopiSafeFileName('../SOP Oxtail Fried Rice (Final).pdf'), 'SOP Oxtail Fried Rice (Final).pdf');
 assert.equal(sopiMarkdownText({ results: [{ data: '# SOP\n\nIsi dokumen.' }] }), '# SOP\n\nIsi dokumen.');
 assert.match(sopiConversationFallback('hallo SOPi'), /Halo!/);
+assert.match(sopiConversationFallback('hallo SOPi', 'DARA ZAINAL ANWAR'), /Halo, Dara!/);
 assert.match(sopiConversationFallback('siapa kamu?'), /asisten pengetahuan Bakerzin/i);
 
 const migration = await readFile(new URL('../../migrations/0007_sopi_knowledge_center.sql', import.meta.url), 'utf8');

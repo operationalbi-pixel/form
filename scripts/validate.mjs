@@ -63,8 +63,17 @@ if (!chatBackend.includes('requireAdmin_(token)') || !chatBackend.includes('func
 if (!apiClient.includes("adminButton.id = 'biSopiAdminFloat'") || !apiClient.includes("String(user.outlet || '').toUpperCase() === 'BIHQ'")) {
   failures.push('Lampu Knowledge Center belum tersedia khusus akun BIHQ');
 }
-if (!apiClient.includes("dock.id = 'biAssistantDock'") || !apiClient.includes('biSopiAssistantFloat') || !apiClient.includes('biSopiModalIn')) {
-  failures.push('Dock Chat dan SOPi belum memiliki susunan, frame, dan animasi yang senada');
+if (!apiClient.includes("dock.id = 'biSopiDock'") || !apiClient.includes('biSopiAssistantFloat') || !apiClient.includes('assets/sopi-assistant-v2.png')) {
+  failures.push('SOPi belum memiliki dock kiri dan karakter referensi yang baru');
+}
+if (!apiClient.includes('panel.appendChild(adminButton)') || !apiClient.includes('--bi-sopi-visual-top') || !sopiHtml.includes('env(safe-area-inset-top)')) {
+  failures.push('Lampu BIHQ atau perlindungan safe-area mobile SOPi belum lengkap');
+}
+if (!sopiHtml.includes('Kamu bisa tanya apapun tentang Operasional Bakerzin') || sopiHtml.includes('Sumber SOP terhubung') || !sopiHtml.includes("send.addEventListener('pointerdown'") || !sopiHtml.includes("document.activeElement===input)input.blur()")) {
+  failures.push('Header dan perilaku keyboard mobile SOPi belum mengikuti desain terbaru');
+}
+if (!chatBackend.includes('userName: String(employee') || !inventoryWorker.includes('Nama staff yang sedang berbicara') || !sopiHtml.includes('biSopiUser')) {
+  failures.push('SOPi belum mengenali nama pengguna dari sesi login tervalidasi');
 }
 if (!inventoryWorker.includes('async function sopiChat(') || !inventoryWorker.includes('SUMBER SOP TERVERIFIKASI')) {
   failures.push('Cloudflare Worker SOPi belum menerapkan jawaban berbasis sumber');
