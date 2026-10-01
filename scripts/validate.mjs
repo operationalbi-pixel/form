@@ -73,7 +73,7 @@ if (!apiClient.includes('panel.appendChild(adminButton)') || !apiClient.includes
 if (!sopiHtml.includes('Kamu bisa tanya apapun tentang Operasional Bakerzin') || sopiHtml.includes('Sumber SOP terhubung') || !sopiHtml.includes("send.addEventListener('pointerdown'") || !sopiHtml.includes("document.activeElement===input)input.blur()")) {
   failures.push('Header dan perilaku keyboard mobile SOPi belum mengikuti desain terbaru');
 }
-if (!sopiHtml.includes('sopi-assistant-closeup-v3.png') || !sopiAdminHtml.includes('Sinkronkan Folder Drive') || !inventoryWorker.includes('/v1/sopi/admin/drive-document')) {
+if (!sopiHtml.includes('sopi-assistant-closeup-v3.png') || !sopiAdminHtml.includes('Sinkronkan Sekarang') || !inventoryWorker.includes('/v1/sopi/admin/drive-document')) {
   failures.push('Karakter close-up atau sinkronisasi rekursif Google Drive SOPi belum lengkap');
 }
 if (!chatBackend.includes('userName: String(employee') || !inventoryWorker.includes('Nama staff yang sedang berbicara') || !sopiHtml.includes('biSopiUser')) {
@@ -96,6 +96,12 @@ if (!sopiKnowledgeMigration.includes('CREATE TABLE IF NOT EXISTS sopi_unanswered
 }
 if (!sopiManagementMigration.includes('ADD COLUMN admin_content') || !inventoryWorker.includes('/v1/sopi/admin/json-document')) {
   failures.push('Migrasi pengelolaan pengetahuan atau sinkronisasi dokumen JSON SOPi belum lengkap');
+}
+if (!chatBackend.includes('function runSopiAutoSync()') || !chatBackend.includes('everyMinutes(5)') || !chatBackend.includes('/v1/sopi/admin/source-status') || !sopiAdminHtml.includes('Otomatis aktif')) {
+  failures.push('Sinkronisasi otomatis folder Drive SOPi setiap lima menit belum lengkap');
+}
+if (!inventoryWorker.includes('async function sopiAdminSourceStatus') || !inventoryWorker.includes('/v1/sopi/admin/source-status')) {
+  failures.push('Endpoint pemeriksaan sumber untuk sinkronisasi inkremental SOPi belum tersedia');
 }
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
   failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');

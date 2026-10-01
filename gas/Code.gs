@@ -6426,8 +6426,11 @@ function askSopi(token, payload) {
 function getSopiAdminBootstrap(token) {
   return safe_(function () {
     requireAdmin_(token);
+    const autoSync = ensureSopiAutoSyncTrigger_();
     const response = cloudflareInventoryRequest_('GET', '/v1/sopi/admin/bootstrap');
-    return response.data || { openCount: 0, questions: [], knowledgeCount: 0 };
+    const data = response.data || { openCount: 0, questions: [], knowledgeCount: 0 };
+    data.autoSync = autoSync;
+    return data;
   });
 }
 
@@ -6518,6 +6521,243 @@ function deleteSopiKnowledge(token, documentId) {
     const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/knowledge/delete', { documentId: id });
     return response.data || { success: true };
   });
+}
+
+function sopiAutoSyncPropertyKey_(prefix, fileId) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(fileId || ''), Utilities.Charset.UTF_8);
+  return prefix + Utilities.base64EncodeWebSafe(digest).replace(/=+$/g, '').slice(0, 32);
+}
+
+function sopiAutoSyncFingerprint_(file) {
+  return [file.getId(), file.getLastUpdated().getTime(), file.getSize()].join(':');
+}
+
+function sopiAutoSyncStatus_() {
+  const properties = PropertiesService.getScriptProperties();
+  const triggerActive = ScriptApp.getProjectTriggers().some(function (trigger) {
+    return trigger.getHandlerFunction() === 'runSopiAutoSync';
+  });
+  return {
+    active: triggerActive,
+    intervalMinutes: 5,
+    lastRunAt: String(properties.getProperty('SOPI_AUTO_SYNC_LAST_RUN_AT') || ''),
+    lastSuccessAt: String(properties.getProperty('SOPI_AUTO_SYNC_LAST_SUCCESS_AT') || ''),
+    lastError: String(properties.getProperty('SOPI_AUTO_SYNC_LAST_ERROR') || ''),
+    lastImportedFiles: Number(properties.getProperty('SOPI_AUTO_SYNC_LAST_IMPORTED') || 0),
+    lastUpdatedJson: Number(properties.getProperty('SOPI_AUTO_SYNC_LAST_JSON') || 0),
+    lastFailedFiles: Number(properties.getProperty('SOPI_AUTO_SYNC_LAST_FAILED') || 0)
+  };
+}
+
+function ensureSopiAutoSyncTrigger_() {
+  const properties = PropertiesService.getScriptProperties();
+  try {
+    const triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === 'runSopiAutoSync';
+    });
+    if (!triggers.length) ScriptApp.newTrigger('runSopiAutoSync').timeBased().everyMinutes(5).create();
+    if (triggers.length > 1) triggers.slice(1).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
+    properties.deleteProperty('SOPI_AUTO_SYNC_INSTALL_ERROR');
+  } catch (error) {
+    properties.setProperty('SOPI_AUTO_SYNC_INSTALL_ERROR', String(error && error.message || error).slice(0, 500));
+  }
+  const status = sopiAutoSyncStatus_();
+  const installError = String(properties.getProperty('SOPI_AUTO_SYNC_INSTALL_ERROR') || '');
+  if (installError && !status.lastError) status.lastError = installError;
+  return status;
+}
+
+function sopiCollectFolderFiles_(rootFolderId, matcher, deadlineMs) {
+  const pending = [String(rootFolderId || '')];
+  const files = [];
+  while (pending.length && Date.now() < deadlineMs) {
+    const folder = DriveApp.getFolderById(pending.shift());
+    const childFolders = folder.getFolders();
+    while (childFolders.hasNext()) pending.push(childFolders.next().getId());
+    const childFiles = folder.getFiles();
+    while (childFiles.hasNext()) {
+      const file = childFiles.next();
+      if (matcher(file.getName())) files.push(file);
+    }
+  }
+  files.sort(function (left, right) { return left.getName().localeCompare(right.getName()); });
+  return files;
+}
+
+function sopiDriveFilePayload_(file, sourcePath, uploadedBy) {
+  const blob = file.getBlob();
+  return {
+    driveFileId: file.getId(),
+    title: file.getName(),
+    fileName: file.getName(),
+    mimeType: blob.getContentType() || file.getMimeType() || 'application/octet-stream',
+    base64: Utilities.base64Encode(blob.getBytes()),
+    sourceUrl: 'https://drive.google.com/file/d/' + encodeURIComponent(file.getId()) + '/view',
+    sourcePath: String(sourcePath || '').slice(0, 500),
+    modifiedAt: file.getLastUpdated().toISOString(),
+    uploadedBy: String(uploadedBy || 'SOPi Auto Sync').slice(0, 180)
+  };
+}
+
+function sopiJsonDocumentPayload_(source, file) {
+  const header = source && source.header || {};
+  const page1 = source && source.page1 || {};
+  return {
+    documentId: String(source && source.id || '').trim(),
+    title: String(header.judul || file.getName().replace(/_[a-f0-9-]+\.json$/i, '').replace(/\.json$/i, '')).trim(),
+    category: String(header.kategori || '').trim(),
+    categoryDetail: String(header.catDetail || '').trim(),
+    effectiveDate: String(header.tglEfektif || '').trim(),
+    revision: String(header.noRevisi || '').trim(),
+    isLegacy: Boolean(header.isLegacy),
+    yieldText: String(page1.yield || '').trim(),
+    shelfLife: String(page1.shelfLife || '').trim(),
+    ingredients: (Array.isArray(source && source.ingredients) ? source.ingredients : []).map(function (item) {
+      return { name: String(item && item.name || '').trim(), qty: String(item && item.qty || '').trim(), uom: String(item && item.uom || '').trim() };
+    }),
+    steps: (Array.isArray(source && source.steps) ? source.steps : []).map(function (step, index) {
+      return { no: index + 1, desc: String(step && step.desc || '').trim() };
+    }),
+    sourceUrl: 'https://drive.google.com/file/d/' + encodeURIComponent(file.getId()) + '/view',
+    status: String(source && source.status || '').trim()
+  };
+}
+
+function sopiJsonImages_(source) {
+  const images = [];
+  const finalImage = source && source.page1 && source.page1.finalImage;
+  if (/^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(String(finalImage || ''))) images.push({ kind: 'FINAL', stepIndex: -1, dataUrl: String(finalImage) });
+  (Array.isArray(source && source.steps) ? source.steps : []).forEach(function (step, index) {
+    if (step && /^data:image\/(?:jpeg|png|webp|gif);base64,/i.test(String(step.img || ''))) images.push({ kind: 'STEP', stepIndex: index, dataUrl: String(step.img) });
+  });
+  return images;
+}
+
+function sopiJsonDocumentIdFromName_(name) {
+  const match = /_([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.json$/i.exec(String(name || ''));
+  return match ? match[1] : '';
+}
+
+function sopiExistingDocumentIds_(documentIds) {
+  const unique = [];
+  const seen = {};
+  (documentIds || []).forEach(function (value) {
+    const id = String(value || '').trim();
+    if (id && !seen[id]) { seen[id] = true; unique.push(id); }
+  });
+  const existing = {};
+  for (let offset = 0; offset < unique.length; offset += 400) {
+    const response = cloudflareInventoryRequest_('POST', '/v1/sopi/admin/source-status', { documentIds: unique.slice(offset, offset + 400) });
+    (response && response.data && response.data.existingDocumentIds || []).forEach(function (id) { existing[String(id)] = true; });
+  }
+  return existing;
+}
+
+function runSopiAutoSync() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  const properties = PropertiesService.getScriptProperties();
+  const startedAt = new Date();
+  const deadlineMs = Date.now() + 4 * 60 * 1000;
+  let importedFiles = 0;
+  let updatedJson = 0;
+  let failedFiles = 0;
+  const errors = [];
+  properties.setProperty('SOPI_AUTO_SYNC_LAST_RUN_AT', startedAt.toISOString());
+  try {
+    const supported = /\.(pdf|doc|docx|xls|xlsx|csv|png|jpe?g|webp|gif|bmp)$/i;
+    const maxFileBytes = 8 * 1024 * 1024;
+    const driveRootId = String(properties.getProperty('SOPI_DRIVE_ROOT_FOLDER_ID') || '1ia62T285Y0Q-q507izsENrPXKyFbnSkw').trim();
+    const driveFiles = sopiCollectFolderFiles_(driveRootId, function (name) { return supported.test(name); }, deadlineMs);
+    const jsonRootId = String(properties.getProperty('SOPI_JSON_FOLDER_ID') || '1TL5uFfoHy2i0ctTNBsJvLYZA8MntV2xw').trim();
+    const jsonFiles = sopiCollectFolderFiles_(jsonRootId, function (name) { return /\.json$/i.test(name); }, deadlineMs);
+    const remoteIds = sopiExistingDocumentIds_(driveFiles.map(function (file) { return 'drive:' + file.getId(); }).concat(jsonFiles.map(function (file) {
+      return sopiJsonDocumentIdFromName_(file.getName());
+    }).filter(Boolean)));
+    let attemptedDrive = 0;
+    for (let i = 0; i < driveFiles.length && importedFiles < 2 && attemptedDrive < 3 && Date.now() < deadlineMs; i += 1) {
+      const file = driveFiles[i];
+      const fingerprint = sopiAutoSyncFingerprint_(file);
+      const propertyKey = sopiAutoSyncPropertyKey_('SOPI_AUTO_DRIVE_', file.getId());
+      const savedFingerprint = properties.getProperty(propertyKey);
+      if (savedFingerprint === fingerprint) continue;
+      if (!savedFingerprint && remoteIds['drive:' + file.getId()]) {
+        properties.setProperty(propertyKey, fingerprint);
+        continue;
+      }
+      attemptedDrive += 1;
+      try {
+        const size = Number(file.getSize() || 0);
+        if (!size || size > maxFileBytes) {
+          properties.setProperty(propertyKey, fingerprint);
+          continue;
+        }
+        cloudflareInventoryRequest_('POST', '/v1/sopi/admin/drive-document', sopiDriveFilePayload_(file, file.getName(), 'SOPi Auto Sync'));
+        properties.setProperty(propertyKey, fingerprint);
+        importedFiles += 1;
+      } catch (error) {
+        failedFiles += 1;
+        errors.push(file.getName() + ': ' + String(error && error.message || error));
+      }
+    }
+
+    let attemptedJson = 0;
+    for (let i = 0; i < jsonFiles.length && updatedJson < 1 && attemptedJson < 1 && Date.now() < deadlineMs; i += 1) {
+      const file = jsonFiles[i];
+      const fingerprint = sopiAutoSyncFingerprint_(file);
+      const propertyKey = sopiAutoSyncPropertyKey_('SOPI_AUTO_JSON_', file.getId());
+      const savedFingerprint = properties.getProperty(propertyKey);
+      if (savedFingerprint === fingerprint) continue;
+      const namedDocumentId = sopiJsonDocumentIdFromName_(file.getName());
+      if (!savedFingerprint && namedDocumentId && remoteIds[namedDocumentId]) {
+        properties.setProperty(propertyKey, fingerprint);
+        continue;
+      }
+      attemptedJson += 1;
+      const progressKey = sopiAutoSyncPropertyKey_('SOPI_AUTO_JSON_PROGRESS_', file.getId());
+      try {
+        const source = JSON.parse(file.getBlob().getDataAsString('UTF-8'));
+        const documentPayload = sopiJsonDocumentPayload_(source, file);
+        if (!documentPayload.documentId) throw new Error('ID dokumen JSON kosong.');
+        cloudflareInventoryRequest_('POST', '/v1/sopi/admin/json-document', documentPayload);
+        const images = sopiJsonImages_(source);
+        const savedProgress = JSON.parse(properties.getProperty(progressKey) || '{}');
+        let imageIndex = savedProgress.fingerprint === fingerprint ? Math.max(0, Number(savedProgress.imageIndex || 0)) : 0;
+        if (imageIndex < images.length && Date.now() < deadlineMs) {
+          const image = images[imageIndex];
+          cloudflareInventoryRequest_('POST', '/v1/sopi/admin/image', {
+            documentId: documentPayload.documentId,
+            kind: image.kind,
+            stepIndex: image.stepIndex,
+            dataUrl: image.dataUrl
+          });
+          imageIndex += 1;
+        }
+        if (imageIndex >= images.length) {
+          properties.setProperty(propertyKey, fingerprint);
+          properties.deleteProperty(progressKey);
+          updatedJson += 1;
+        } else {
+          properties.setProperty(progressKey, JSON.stringify({ fingerprint: fingerprint, imageIndex: imageIndex }));
+        }
+      } catch (error) {
+        failedFiles += 1;
+        errors.push(file.getName() + ': ' + String(error && error.message || error));
+      }
+    }
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_IMPORTED', String(importedFiles));
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_JSON', String(updatedJson));
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_FAILED', String(failedFiles));
+    if (errors.length) properties.setProperty('SOPI_AUTO_SYNC_LAST_ERROR', errors.join(' | ').slice(0, 1500));
+    else properties.deleteProperty('SOPI_AUTO_SYNC_LAST_ERROR');
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_SUCCESS_AT', new Date().toISOString());
+  } catch (error) {
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_FAILED', String(failedFiles + 1));
+    properties.setProperty('SOPI_AUTO_SYNC_LAST_ERROR', String(error && error.message || error).slice(0, 1500));
+    console.error('SOPi auto sync gagal: ' + String(error && error.stack || error));
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function syncSopiJsonImages(token, progress) {

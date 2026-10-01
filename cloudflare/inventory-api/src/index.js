@@ -3037,6 +3037,28 @@ async function sopiAdminDriveDocument(request, env, requestId) {
 }
 __name(sopiAdminDriveDocument, "sopiAdminDriveDocument");
 
+async function sopiAdminSourceStatus(request, env, requestId) {
+  try {
+    const payload = await readJsonWithLimit(request, 1e5);
+    const documentIds = [...new Set((Array.isArray(payload.documentIds) ? payload.documentIds : [])
+      .slice(0, 400).map((value) => cleanText(value, 180)).filter(Boolean))];
+    if (!documentIds.length) return responseJson({ ok: true, data: { existingDocumentIds: [] }, requestId });
+    const existingDocumentIds = [];
+    for (let offset = 0; offset < documentIds.length; offset += 100) {
+      const chunk = documentIds.slice(offset, offset + 100);
+      const placeholders = chunk.map(() => "?").join(",");
+      const result = await env.MASTER_DB.prepare(
+        `SELECT document_id FROM sopi_documents WHERE document_id IN (${placeholders})`
+      ).bind(...chunk).all();
+      for (const row of result.results || []) existingDocumentIds.push(cleanText(row.document_id, 180));
+    }
+    return responseJson({ ok: true, data: { existingDocumentIds }, requestId });
+  } catch (error) {
+    return apiError(400, error instanceof Error ? error.message : "INVALID_SOURCE_STATUS", "Status sumber SOPi tidak dapat diperiksa.", requestId);
+  }
+}
+__name(sopiAdminSourceStatus, "sopiAdminSourceStatus");
+
 async function sopiFile(requestUrl, env, requestId) {
   const attachmentId = cleanText(requestUrl.searchParams.get("id"), 180);
   if (!attachmentId) return apiError(400, "INVALID_ATTACHMENT", "Lampiran tidak valid.", requestId);
@@ -3338,6 +3360,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/knowledge/delete") return sopiAdminDeleteKnowledge(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/json-document") return sopiAdminJsonDocument(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/drive-document") return sopiAdminDriveDocument(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sopi/admin/source-status") return sopiAdminSourceStatus(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/image") return sopiAdminImage(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
