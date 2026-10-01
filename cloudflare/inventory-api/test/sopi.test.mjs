@@ -13,6 +13,10 @@ assert.deepEqual(
   sopiSearchTerms('Berapa takaran Nasi Goreng Roa?'),
   ['nasi', 'goreng', 'roa']
 );
+assert.deepEqual(sopiSearchTerms('IK Hot Fiery Ribs'), ['hot', 'fiery', 'ribs']);
+assert.deepEqual(sopiSearchTerms('Internal Memo Hot Fiery Ribs'), ['hot', 'fiery', 'ribs']);
+assert.deepEqual(sopiSearchTerms('Standar Operasional Prosedur Hot Fiery Ribs'), ['hot', 'fiery', 'ribs']);
+assert.deepEqual(sopiSearchTerms('Intruksi Kerja Hot Fiery Ribs'), ['hot', 'fiery', 'ribs']);
 assert.equal(sopiSafeFileName('../SOP Oxtail Fried Rice (Final).pdf'), 'SOP Oxtail Fried Rice (Final).pdf');
 assert.equal(sopiDriveTitle('6. Hot Fiery Ribs.pdf'), 'Hot Fiery Ribs');
 assert.equal(sopiMarkdownText({ results: [{ data: '# SOP\n\nIsi dokumen.' }] }), '# SOP\n\nIsi dokumen.');

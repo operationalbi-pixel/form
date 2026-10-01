@@ -103,6 +103,9 @@ if (!chatBackend.includes('function runSopiAutoSync()') || !chatBackend.includes
 if (!inventoryWorker.includes('async function sopiAdminSourceStatus') || !inventoryWorker.includes('/v1/sopi/admin/source-status')) {
   failures.push('Endpoint pemeriksaan sumber untuk sinkronisasi inkremental SOPi belum tersedia');
 }
+if (!inventoryWorker.includes('Standar Operasional Prosedur, IK, Instruksi Kerja') || !inventoryWorker.includes('Internal Memo, IM, dan Memo')) {
+  failures.push('Kamus sinonim dokumen operasional SOPi belum dikonfigurasi');
+}
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
   failures.push('Workers AI binding atau susunan model cerdas SOPi belum dikonfigurasi');
 }
