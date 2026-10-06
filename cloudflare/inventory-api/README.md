@@ -122,9 +122,10 @@ Notification URL as:
 https://bakerzin-inventory-api.operational-bi.workers.dev/v1/ba/payments/doku/webhook
 ```
 
-The create-payment request also supplies this URL as DOKU Checkout's
-`override_notification_url`. The Worker accepts both DOKU notification formats
-used by Checkout channels: Non-SNAP (`Client-Id` / HMAC-SHA256) and SNAP
+The create-payment request intentionally follows DOKU Checkout's Basic Request
+format and relies on the Payment Notification URL configured per payment channel
+in DOKU Back Office. The Worker accepts both DOKU notification formats used by
+Checkout channels: Non-SNAP (`Client-Id` / HMAC-SHA256) and SNAP
 (`X-PARTNER-ID` / HMAC-SHA512). Both paths verify the signature, match the
 payment amount, and keep payment processing idempotent. The status endpoint also
 reconciles pending orders with DOKU's non-SNAP Check Status API after 60 seconds.
