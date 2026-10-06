@@ -13400,6 +13400,27 @@ function previewItemJournalUpload(token,payload){return safe_(function(){const s
 function uploadItemJournal(token,payload){return safe_(function(){const s=requireSession_(token),e=findEmployee_(s.nik);assertEmployeeActive_(e);const p=prepareItemJournalImport_(e,payload||{},false),now=new Date(),rows=p.rows.map(function(line){const id=Utilities.getUuid(),direction=line.qtyDefault<0?'OUT':'IN';return{insertId:id,json:{record_id:id,logical_id:Utilities.getUuid(),version:1,record_type:'MOVEMENT',outlet:line.outlet,location:'Store',item_code:line.item.code,category:line.item.category,item_name:line.item.name,unit:line.item.unit,direction:direction,qty:Math.abs(line.qtyDefault),movement_type:'Item Journal',info:cleanText_('Item Journal Number: '+line.journalNumber+' | Additional Information: '+(line.additionalInfo||'-'),500),expiry_date:null,event_date:line.transactionDate,created_at:now.getTime()/1000,created_by:e.nik,source_file:'ITEM_JOURNAL|'+p.fileName,source_hash:line.rowHash,source_row:line.sourceRow}};});const lock=acquireStockWriteLock_();try{insertStockCardRows_(rows);}finally{lock.releaseLock();}return{uploaded:true,itemCount:rows.length,duplicateRowsSkipped:p.duplicateRowsSkipped,unauthorizedRowsSkipped:p.unauthorizedRowsSkipped};});}
 
 
+function readMockRecallMovements_(params) {
+  const latest = {};
+  cloudflareReadAllPages_('/v1/movements', Object.assign({ record_type: 'MOVEMENT' }, params || {}), 1000, 100).forEach(function (row) {
+    const key = String(row.logical_id || row.record_id || '');
+    if (!key) return;
+    const previous = latest[key];
+    if (!previous || Number(row.version || 1) > Number(previous.version || 1) ||
+        (Number(row.version || 1) === Number(previous.version || 1) && String(row.created_at || '') >= String(previous.created_at || ''))) latest[key] = row;
+  });
+  return Object.keys(latest).map(function (key) {
+    const row = latest[key];
+    return Object.assign({}, row, {
+      outlet: String(row.outlet_code || ''), location: String(row.location_code || ''),
+      qty: Number(row.quantity || 0), source_arrival_date: String(row.arrival_date || '')
+    });
+  }).sort(function (a, b) {
+    return String(a.event_date || '').localeCompare(String(b.event_date || '')) ||
+      String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.record_id || '').localeCompare(String(b.record_id || ''));
+  });
+}
+
 function parseMockRecallSoldInfo_(info) {
   const match = /^Sold(?: Showcase \(tanpa potong stock\))? · (.*?) · Sales Number (.*)$/.exec(String(info || '').trim());
   return match ? { menu: String(match[1] || '').trim(), salesNumber: String(match[2] || '').trim() } : null;
@@ -13478,13 +13499,9 @@ function mockRecallWipSourceRows_(state, code) {
   code = String(code || '').toUpperCase();
   state.wipSourceCache = state.wipSourceCache || {};
   if (Object.prototype.hasOwnProperty.call(state.wipSourceCache, code)) return state.wipSourceCache[code];
-  const table = stockCardTable_();
-  const sql = 'WITH scoped AS (SELECT * FROM ' + table + ' WHERE record_type=\'MOVEMENT\' AND outlet=@outlet AND location=\'Store\' ' +
-    'AND item_code=@code AND direction=\'IN\' AND movement_type IN (\'Production\',\'Transfer In\')), ' +
-    'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id,\'\'),record_id) ' +
-    'ORDER BY COALESCE(version,1) DESC,created_at DESC)=1) ' +
-    'SELECT event_date,movement_type,production_date,expiry_date,source_arrival_date,source_file,transfer_id,created_at FROM latest ORDER BY event_date,created_at';
-  const rows = runNamedQuery_(sql, { outlet: state.outlet, code: code }, { useQueryCache: false });
+  const rows = readMockRecallMovements_({ outlet: state.outlet, location: 'Store', item_code: code, to: state.saleDate || '' }).filter(function (row) {
+    return row.direction === 'IN' && (row.movement_type === 'Production' || row.movement_type === 'Transfer In');
+  });
   state.wipSourceCache[code] = rows;
   return rows;
 }
@@ -13735,16 +13752,10 @@ function expandMockRecallWipUsageLots_(outlet, usageRows) {
 
   for (let offset = 0; offset < codes.length; offset += chunkSize) {
     const chunk = codes.slice(offset, offset + chunkSize);
-    const sql = 'WITH scoped AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type=\'MOVEMENT\' AND outlet=@outlet AND location=\'Store\' AND item_code IN UNNEST(@codes)), ' +
-      'latest AS (SELECT * FROM scoped QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id,\'\'),record_id) ORDER BY COALESCE(version,1) DESC,created_at DESC)=1), ' +
-      'ranked AS (SELECT *,ROW_NUMBER() OVER (PARTITION BY item_code ORDER BY event_date DESC,created_at DESC) AS item_rank FROM latest) ' +
-      'SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,COALESCE(version,1) AS version,item_code,item_name,event_date,direction,qty,movement_type,info,' +
-      'production_date,expiry_date,source_arrival_date,transfer_id,supplier,source_file,source_row,created_by,created_at FROM ranked WHERE item_rank<=500 ORDER BY item_code,event_date,created_at';
     const histories = {};
-    runNamedQuery_(sql, { outlet: outlet, codes: chunk }, { useQueryCache: false }).forEach(function (raw) {
-      const code = String(raw.item_code || '').trim().toUpperCase();
-      if (!histories[code]) histories[code] = [];
-      histories[code].push(salesHistoryRowFromQuery_(raw));
+    chunk.forEach(function (code) {
+      const dates = unresolved.filter(function (row) { return String(row.item_code || '').toUpperCase() === code; }).map(function (row) { return String(row.event_date || ''); }).filter(Boolean).sort();
+      histories[code] = readMockRecallMovements_({ outlet: outlet, location: 'Store', item_code: code, to: dates[dates.length - 1] || '' }).map(salesHistoryRowFromQuery_);
     });
     Object.keys(histories).forEach(function (code) {
       const history = histories[code];
@@ -13778,10 +13789,8 @@ function expandMockRecallWipUsageLots_(outlet, usageRows) {
 }
 
 function loadMockRecallHistoricalWipUsage_(outlet, code, soldGroup) {
-  const sql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
-    'production_date,expiry_date,source_arrival_date,transfer_id,event_date,created_at FROM latest WHERE outlet=@outlet AND location=\'Store\' ' +
-    'AND movement_type=\'Production\' AND item_code=@code ORDER BY event_date DESC,created_at DESC LIMIT 200';
-  const productions = runNamedQuery_(sql, { outlet: outlet, code: code }, { useQueryCache: false });
+  const dates = (soldGroup || []).map(function (row) { return String(row.event_date || ''); }).filter(Boolean).sort();
+  const productions = readMockRecallMovements_({ outlet: outlet, location: 'Store', movement_type: 'Production', item_code: code, to: dates[dates.length - 1] || '' }).reverse();
   if (!productions.length) return [];
 
   const soldLots = {};
@@ -13817,10 +13826,10 @@ function loadMockRecallHistoricalWipUsage_(outlet, code, soldGroup) {
 
   const transferIds = Object.keys(allocatedByTransfer);
   if (!transferIds.length) return [];
-  const usageSql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
-    'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,created_at FROM latest WHERE outlet=@outlet AND location=\'Store\' ' +
-    'AND movement_type=\'WIP Material Usage\' AND transfer_id IN UNNEST(@transferIds) ORDER BY event_date,created_at,item_name';
-  const usageRows = runNamedQuery_(usageSql, { outlet: outlet, transferIds: transferIds }, { useQueryCache: false });
+  const usageRows = [];
+  transferIds.forEach(function (transferId) {
+    usageRows.push.apply(usageRows, readMockRecallMovements_({ outlet: outlet, location: 'Store', movement_type: 'WIP Material Usage', transfer_id: transferId }));
+  });
   usageRows.forEach(function (row) {
     const transferId = String(row.transfer_id || ''), produced = Number(productionQtyByTransfer[transferId] || 0), used = Number(allocatedByTransfer[transferId] || 0);
     row._mockRecallScale = produced > 0.0000001 ? Math.min(1, used / produced) : 1;
@@ -13833,12 +13842,13 @@ function getMockRecallList(token, payload) {
     payload = payload || {};
     const s = requireSession_(token), e = findEmployee_(s.nik); assertEmployeeActive_(e);
     const date = normalizeDate_(payload.date, true), outlet = e.outlet === 'BIHQ' ? cleanText_(payload.outlet, 30).toUpperCase() : e.outlet;
-    let where = 'event_date=CAST(@date AS DATE) AND movement_type=\'Sold\' AND source_file LIKE \'SALES_COGS|%\'';
-    const params = { date: date };
-    if (outlet) { where += ' AND outlet=@outlet'; params.outlet = outlet; }
-    const sql = latestStockMovementCte_() + ' SELECT transfer_id,outlet,info,item_name,source_row,created_at FROM latest WHERE ' + where + ' ORDER BY outlet,source_row,created_at,item_name';
     const seen = {}, items = [];
-    runNamedQuery_(sql, params, { useQueryCache: false }).forEach(function (row) {
+    const rows = [];
+    (outlet ? [outlet] : readActiveOutlets_()).forEach(function (code) {
+      rows.push.apply(rows, readMockRecallMovements_({ outlet: code, from: date, to: date, movement_type: 'Sold' }));
+    });
+    rows.forEach(function (row) {
+      if (!/^SALES_COGS\|/.test(String(row.source_file || ''))) return;
       const parsed = parseMockRecallSoldInfo_(row.info);
       if (!parsed || !parsed.menu || !parsed.salesNumber) return;
       const key = [String(row.outlet || ''), parsed.salesNumber, normalizeStoreName_(parsed.menu)].join('|');
@@ -13862,11 +13872,11 @@ function getMockRecallDetail(token, payload) {
     if (!date || !menu || !salesNumber || !outlet) throw new Error('Identitas menu Mock Recall tidak lengkap.');
     if (e.outlet !== 'BIHQ' && requestedOutlet && requestedOutlet !== e.outlet) throw new Error('Anda tidak memiliki akses ke data outlet ini.');
 
-    const sql = latestStockMovementCte_() + ' SELECT record_id,COALESCE(NULLIF(logical_id,\'\'),record_id) AS logical_id,item_code,item_name,unit,qty,movement_type,info,' +
-      'source_arrival_date,production_date,expiry_date,transfer_id,outlet,source_row,source_file,source_hash,event_date,created_at FROM latest ' +
-      'WHERE event_date=CAST(@date AS DATE) AND outlet=@outlet AND source_file LIKE \'SALES_COGS|%\' ' +
-      'AND movement_type IN (\'Sold\',\'WIP Material Usage\',\'Production\') ORDER BY source_row,created_at,item_name';
-    const allRows = runNamedQuery_(sql, { date: date, outlet: outlet }, { useQueryCache: false });
+    const allRows = readMockRecallMovements_({ outlet: outlet, from: date, to: date }).filter(function (row) {
+      return /^SALES_COGS\|/.test(String(row.source_file || '')) && ['Sold', 'WIP Material Usage', 'Production'].indexOf(String(row.movement_type || '')) >= 0;
+    }).sort(function (a, b) {
+      return Number(a.source_row || 0) - Number(b.source_row || 0) || String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.item_name || '').localeCompare(String(b.item_name || ''));
+    });
     const soldRows = [], wipUsageRows = [], generatedProductions = [];
 
     allRows.forEach(function (row) {
