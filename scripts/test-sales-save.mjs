@@ -15,13 +15,15 @@ function between(source, start, end) {
 const headers = ['outlet_code','date','year','month','week','day_of_week','sales','analisa_harian','analisa_status','submitted_by','submitted_at','updated_at'];
 const rows = [headers];
 const events = [];
+const rowCache = new Map();
+let readCells=0;
 let onAcquire = () => {};
 const sheet = {
   getLastRow: () => rows.length,
   getLastColumn: () => headers.length,
   getRange(row, column, height, width) {
     return {
-      getValues: () => rows.slice(row - 1, row - 1 + height).map(value => value.slice(column - 1, column - 1 + width)),
+      getValues: () => {readCells+=height*width;return rows.slice(row - 1, row - 1 + height).map(value => value.slice(column - 1, column - 1 + width));},
       setValues(values) {
         events.push('write');
         values.forEach((value, index) => { rows[row - 1 + index] = value.slice(); });
@@ -32,6 +34,7 @@ const sheet = {
 const spreadsheet = { getSheetByName: () => sheet };
 const server = {
   Date, console, SHEET_ID: 'test-sheet',
+  CacheService: {getScriptCache:()=>({get:key=>rowCache.get(key),put:(key,value)=>rowCache.set(key,value),remove:key=>rowCache.delete(key)})},
   PropertiesService: { getScriptProperties: () => ({ getProperty: () => '' }) },
   SpreadsheetApp: { openById: () => spreadsheet, flush: () => events.push('flush') },
   LockService: { getScriptLock: () => ({ waitLock: () => { events.push('lock'); onAcquire(); }, releaseLock: () => events.push('release') }) },
@@ -47,7 +50,7 @@ const server = {
 vm.createContext(server);
 vm.runInContext(
   between(backend, 'const SALES_SHEET_TABS =', 'function bqFetchDailyRows_(') +
-  between(backend, 'function bqSyncDaily_(oc,key,', 'function bqSyncWeekly_(oc,periodKey,') +
+  between(backend, 'function salesSheetDailyRecord_(', 'function bqSyncWeekly_(oc,periodKey,') +
   between(backend, 'function saveDaily(token, payload)', 'function saveGlobalDailyAnalysis(token, payload)'), server
 );
 function sheetRecord() {
@@ -58,6 +61,7 @@ function existingRecord(sales, analysis) {
 }
 
 // Another execution inserts the day while this request is waiting for the lock.
+server.bqIsAvailable_();
 onAcquire = () => { rows[1] = existingRecord(900, 'Analysis from the other request'); onAcquire = () => {}; };
 const analysis = 'New daily analysis entered by the employee';
 let saved = server.saveDaily('session', { date:'2026-10-06', analisa:analysis });
@@ -65,7 +69,7 @@ assert.equal(saved.ok, true);
 assert.equal(rows.length, 2, 'a read before the lock must not create a duplicate day');
 assert.equal(saved.sales, 900, 'analysis-only saves preserve the latest sales');
 assert.equal(sheetRecord().analisa_harian, analysis);
-assert.deepEqual(events.slice(-5), ['write','flush','invalidate','release','invalidate'], 'flush and invalidate before releasing the writer lock');
+assert.deepEqual(events.slice(-4), ['write','flush','invalidate','release'], 'flush and invalidate before releasing the writer lock');
 
 saved = server.saveDaily('session', { date:'2026-10-06', sales:1200 });
 assert.equal(saved.ok, true);
@@ -80,6 +84,58 @@ assert.equal(saved.sales, 0, 'an explicit zero is saved');
 assert.equal(saved.analisa, '', 'an explicit empty analysis is saved');
 assert.equal(saved.status, 'pending');
 assert.equal(server.saveDaily('session', { date:'2026-10-06', sales:'invalid' }).ok, false);
+
+// Saving an existing date in a large table reads only headers and that row once warmed.
+for(let index=0;index<1000;index++) rows.push(headers.map(name=>({outlet_code:'OTHER',date:'2026-01-01',sales:index})[name]??''));
+server.saveDaily('session',{date:'2026-10-06',sales:1500});
+readCells=0;
+server.saveDaily('session',{date:'2026-10-06',analisa:analysis});
+assert.equal(readCells,headers.length*3,'warm save reads two header rows and the matching daily row, not the full table');
+const latestDuplicate=existingRecord(3000,'Newer duplicate');
+latestDuplicate[headers.indexOf('updated_at')]=new Date(Date.now()+1000);
+rows.push(latestDuplicate);
+saved=server.saveDaily('session',{date:'2026-10-06',analisa:analysis});
+assert.equal(saved.sales,3000,'an inserted row invalidates the cached row pointer and preserves the newest duplicate');
+assert.equal(rows.length,1003,'duplicate legacy data is updated without appending another row');
+
+const periodReads=[];
+const periodServer={Date,Number,
+  dateKey_:date=>date.toISOString().slice(0,10),
+  bqFetchDailyRows_:(outlets,start,end)=>{periodReads.push({outlets,start:start.toISOString().slice(0,10),end:end.toISOString().slice(0,10)});return [{sales:100},{sales:250}];},
+  bqGetTargetsMap_:()=>({BISS:1000})};
+vm.createContext(periodServer);
+vm.runInContext(between(backend,'function salesPeriodSummary_(','function saveWeekly('),periodServer);
+let summary=periodServer.salesPeriodSummary_('BISS',2026,10,1);
+assert.equal(summary.start,'2026-09-28');assert.equal(summary.end,'2026-10-04');
+assert.equal(summary.total,350,'weekly totals include days across the month boundary');
+summary=periodServer.salesPeriodSummary_('BISS',2026,10,5);
+assert.equal(summary.start,'2026-10-26');assert.equal(summary.end,'2026-11-01');
+summary=periodServer.salesPeriodSummary_('BISS',2026,10);
+assert.equal(summary.start,'2026-10-01');assert.equal(summary.end,'2026-10-31');
+assert.equal(summary.target,1000);assert.equal(summary.pct,35);
+assert.throws(()=>periodServer.salesPeriodSummary_('BISS',2026,10,6),/Minggu analisa tidak valid/);
+const periodWrites=[];
+Object.assign(periodServer,{
+  validateSession_:()=>({outlet_code:'BISS',role:'store'}),readConfig_:()=>({min_analysis_chars:20}),
+  pad2_:value=>String(value).padStart(2,'0'),
+  getMonthDashboard:()=>{throw new Error('Saving must not rebuild the dashboard');},
+  bqIsAvailable_:()=>{throw new Error('Saving must not scan the daily table twice');},
+  bqSyncWeekly_:(...args)=>periodWrites.push({scope:'week',args}),
+  bqSyncMonthly_:(...args)=>periodWrites.push({scope:'month',args}),
+  audit_(){},clearDashboardCache_(){},Logger:{log(){}}
+});
+vm.runInContext(between(backend,'function saveWeekly(token, payload)','/* ============================================================\r\n *  HELPERS'),periodServer);
+assert.equal(periodServer.saveWeekly('session',{year:2026,month:10,week:1,analisa:analysis}).ok,true);
+assert.equal(periodWrites[0].args[5],'2026-09-28');
+assert.equal(periodWrites[0].args[6],'2026-10-04');
+assert.equal(periodWrites[0].args[7],350);
+assert.equal(periodServer.saveMonthly('session',{year:2026,month:10,analisa:analysis}).ok,true);
+assert.equal(periodWrites[1].args[4],350);
+assert.equal(periodWrites[1].args[5],1000);
+assert.equal(periodWrites[1].args[6],35);
+periodServer.validateSession_=()=>({outlet_code:'BIHQ',role:'admin'});
+assert.equal(periodServer.saveWeekly('session',{year:2026,month:10,week:1,analisa:analysis}).ok,false);
+assert.equal(periodWrites.length,2,'HQ cannot submit an outlet analysis through the fast save path');
 
 function deferred() {
   let resolve, reject;
