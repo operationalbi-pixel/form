@@ -1835,211 +1835,234 @@ async function saveBaApprovalConfig(request, env, requestId) {
 }
 __name(saveBaApprovalConfig, "saveBaApprovalConfig");
 
-var MAX_MIDTRANS_PAYLOAD_BYTES = 64 * 1024;
+var MAX_DOKU_PAYLOAD_BYTES = 64 * 1024;
 
-function midtransConfig(env) {
-  const serverKey = cleanText(env.MIDTRANS_SERVER_KEY, 512);
-  const clientKey = cleanText(env.MIDTRANS_CLIENT_KEY, 512);
-  const environment = cleanText(env.MIDTRANS_ENVIRONMENT || "sandbox", 20).toLowerCase();
-  if (!serverKey || !clientKey) throw new Error("MIDTRANS_NOT_CONFIGURED");
-  if (environment !== "sandbox" && environment !== "production") throw new Error("INVALID_MIDTRANS_ENVIRONMENT");
+function dokuConfig(env) {
+  const clientId = cleanText(env.DOKU_CLIENT_ID, 256);
+  const secretKey = cleanText(env.DOKU_SECRET_KEY, 512);
+  const environment = cleanText(env.DOKU_ENVIRONMENT || "production", 20).toLowerCase();
+  if (!clientId || !secretKey) throw new Error("DOKU_NOT_CONFIGURED");
+  if (environment !== "sandbox" && environment !== "production") throw new Error("INVALID_DOKU_ENVIRONMENT");
   return {
-    serverKey,
-    clientKey,
+    clientId,
+    secretKey,
     environment,
-    apiBase: environment === "production" ? "https://api.midtrans.com" : "https://api.sandbox.midtrans.com",
-    snapBase: environment === "production" ? "https://app.midtrans.com" : "https://app.sandbox.midtrans.com"
+    apiBase: environment === "production" ? "https://api.doku.com" : "https://api-sandbox.doku.com"
   };
 }
-__name(midtransConfig, "midtransConfig");
+__name(dokuConfig, "dokuConfig");
 
-function midtransAuthorization(serverKey) {
-  return `Basic ${btoa(`${serverKey}:`)}`;
+function base64FromBytes(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
-__name(midtransAuthorization, "midtransAuthorization");
+__name(base64FromBytes, "base64FromBytes");
 
-async function fetchMidtransWithRetry(url, options) {
-  const maximumAttempts = 3;
-  let lastError = null;
-  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-    try {
-      const response = await fetch(url, options);
-      const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-      if (!retryable || attempt === maximumAttempts) return response;
-      if (response.body) await response.body.cancel();
-    } catch (error) {
-      lastError = error;
-      if (attempt === maximumAttempts) throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** (attempt - 1)));
+async function dokuDigest(rawBody) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rawBody || ""));
+  return base64FromBytes(new Uint8Array(digest));
+}
+__name(dokuDigest, "dokuDigest");
+
+async function dokuGenerateSignature(clientId, requestId, requestTimestamp, requestTarget, rawBody, secretKey) {
+  const components = [
+    `Client-Id:${clientId}`,
+    `Request-Id:${requestId}`,
+    `Request-Timestamp:${requestTimestamp}`,
+    `Request-Target:${requestTarget}`
+  ];
+  if (rawBody !== null && rawBody !== undefined) {
+    components.push(`Digest:${await dokuDigest(rawBody)}`);
   }
-  throw lastError || new Error("MIDTRANS_NETWORK_ERROR");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secretKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(components.join("\n")));
+  return "HMACSHA256=" + base64FromBytes(new Uint8Array(signature));
 }
-__name(fetchMidtransWithRetry, "fetchMidtransWithRetry");
+__name(dokuGenerateSignature, "dokuGenerateSignature");
 
-function normalizeMidtransStatus(transactionStatus, fraudStatus) {
-  const status = cleanText(transactionStatus, 40).toLowerCase();
-  const fraud = cleanText(fraudStatus, 40).toLowerCase();
-  if (status === "settlement" || status === "capture" && (!fraud || fraud === "accept")) return "PAID";
-  if (status === "deny" || status === "cancel" || status === "failure") return "FAILED";
-  if (status === "expire") return "EXPIRED";
-  if (status === "refund" || status === "partial_refund") return "REFUNDED";
-  return "PENDING";
+async function readTextWithLimit(request, maximumBytes) {
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > maximumBytes) throw new Error("PAYLOAD_TOO_LARGE");
+  return raw;
 }
-__name(normalizeMidtransStatus, "normalizeMidtransStatus");
+__name(readTextWithLimit, "readTextWithLimit");
 
-async function sha512Hex(value) {
-  const digest = await crypto.subtle.digest("SHA-512", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-__name(sha512Hex, "sha512Hex");
-
-async function verifyMidtransSignature(payload, serverKey) {
-  const orderId = cleanText(payload?.order_id, 100);
-  const statusCode = cleanText(payload?.status_code, 10);
-  const grossAmount = cleanText(payload?.gross_amount, 40);
-  const supplied = cleanText(payload?.signature_key, 256).toLowerCase();
-  if (!orderId || !statusCode || !grossAmount || !supplied) return false;
-  const expected = await sha512Hex(`${orderId}${statusCode}${grossAmount}${serverKey}`);
-  return secureEqual(supplied, expected);
-}
-__name(verifyMidtransSignature, "verifyMidtransSignature");
-
-async function fetchMidtransTransaction(orderId, config) {
-  const response = await fetchMidtransWithRetry(`${config.apiBase}/v2/${encodeURIComponent(orderId)}/status`, {
-    headers: { authorization: midtransAuthorization(config.serverKey), accept: "application/json" }
+async function dokuRequest(config, method, requestTarget, body) {
+  const requestId = crypto.randomUUID();
+  const requestTimestamp = new Date().toISOString();
+  const rawBody = body === undefined || body === null ? null : JSON.stringify(body);
+  const signature = await dokuGenerateSignature(
+    config.clientId,
+    requestId,
+    requestTimestamp,
+    requestTarget,
+    rawBody,
+    config.secretKey
+  );
+  const headers = {
+    "Client-Id": config.clientId,
+    "Request-Id": requestId,
+    "Request-Timestamp": requestTimestamp,
+    "Signature": signature,
+    "Accept": "application/json"
+  };
+  if (rawBody !== null) headers["Content-Type"] = "application/json";
+  const response = await fetch(config.apiBase + requestTarget, {
+    method,
+    headers,
+    body: rawBody
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(cleanText(payload?.status_message || `MIDTRANS_STATUS_${response.status}`, 300));
+  const raw = await response.text();
+  let payload = {};
+  try {
+    payload = JSON.parse(raw || "{}");
+  } catch {
+    throw new Error("DOKU_NON_JSON_RESPONSE");
+  }
+  if (!response.ok) {
+    const detail = Array.isArray(payload?.error_messages)
+      ? payload.error_messages.join("; ")
+      : cleanText(payload?.message || payload?.error?.message || `DOKU_HTTP_${response.status}`, 500);
+    throw new Error(detail || `DOKU_HTTP_${response.status}`);
+  }
   return payload;
 }
-__name(fetchMidtransTransaction, "fetchMidtransTransaction");
+__name(dokuRequest, "dokuRequest");
 
-async function persistMidtransStatus(env, existing, payload) {
-  const grossAmount = Math.round(Number(payload?.gross_amount || 0));
-  if (!Number.isFinite(grossAmount) || grossAmount !== Number(existing.amount)) throw new Error("MIDTRANS_AMOUNT_MISMATCH");
-  const status = normalizeMidtransStatus(payload?.transaction_status, payload?.fraud_status);
-  await env.OPERATIONS_DB.prepare(
-    `UPDATE ba_asset_payments
-        SET status = ?, transaction_status = ?, fraud_status = ?, payment_type = ?,
-            midtrans_transaction_id = ?, paid_at = CASE WHEN ? = 'PAID' THEN COALESCE(paid_at, CURRENT_TIMESTAMP) ELSE paid_at END,
-            updated_at = CURRENT_TIMESTAMP
-      WHERE order_id = ?`
-  ).bind(
-    status,
-    cleanText(payload?.transaction_status, 40) || null,
-    cleanText(payload?.fraud_status, 40) || null,
-    cleanText(payload?.payment_type, 60) || null,
-    cleanText(payload?.transaction_id, 120) || null,
-    status,
-    existing.order_id
-  ).run();
-  return status;
-}
-__name(persistMidtransStatus, "persistMidtransStatus");
-
-async function createMidtransAssetPayment(request, env, requestId) {
+async function createDokuAssetPayment(request, env, requestId) {
   let payload;
   try {
-    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
+    payload = await readJsonWithLimit(request, MAX_DOKU_PAYLOAD_BYTES);
   } catch (error) {
     const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
     return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Data pembayaran tidak valid.", requestId);
   }
+
   let config;
   try {
-    config = midtransConfig(env);
+    config = dokuConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "DOKU_NOT_CONFIGURED", "Layanan pembayaran DOKU belum dikonfigurasi.", requestId);
   }
+
   const amount = Math.round(Number(payload?.amount || 0));
   const customerName = cleanText(payload?.customerName, 120);
   const customerEmail = cleanText(payload?.customerEmail, 180).toLowerCase();
   const outlet = cleanText(payload?.outlet, 80).toUpperCase();
   const nik = cleanText(payload?.nik, 80);
-  if (!Number.isSafeInteger(amount) || amount < 1) return apiError(400, "INVALID_AMOUNT", "Nominal pembayaran harus lebih dari Rp 0.", requestId);
-  if (!customerName || !customerEmail || !/^\S+@\S+\.\S+$/.test(customerEmail)) {
-    return apiError(400, "INVALID_CUSTOMER", "Nama dan email pembayar wajib valid.", requestId);
+
+  if (!Number.isSafeInteger(amount) || amount < 1) {
+    return apiError(400, "INVALID_AMOUNT", "Nominal pembayaran harus lebih dari Rp 0.", requestId);
   }
-  const orderId = `BA-ASSET-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-  await env.OPERATIONS_DB.prepare(
-    `INSERT INTO ba_asset_payments(order_id, amount, currency, status, customer_name, customer_email, outlet, nik, environment)
-     VALUES (?, ?, 'IDR', 'PENDING', ?, ?, ?, ?, ?)`
-  ).bind(orderId, amount, customerName, customerEmail, outlet || null, nik || null, config.environment).run();
-  try {
-    const response = await fetchMidtransWithRetry(`${config.snapBase}/snap/v1/transactions`, {
-      method: "POST",
-      headers: {
-        authorization: midtransAuthorization(config.serverKey),
-        accept: "application/json",
-        "content-type": "application/json"
+  if (!customerEmail || !/^\S+@\S+\.\S+$/.test(customerEmail)) {
+    return apiError(400, "INVALID_CUSTOMER", "Email pembayar wajib valid.", requestId);
+  }
+
+  const reusable = await env.OPERATIONS_DB.prepare(
+    `SELECT order_id, amount, status, redirect_url
+       FROM ba_asset_payments
+      WHERE status = 'PENDING' AND amount = ? AND customer_email = ?
+        AND COALESCE(outlet, '') = ? AND COALESCE(nik, '') = ?
+        AND redirect_url IS NOT NULL
+        AND created_at >= datetime('now', '-55 minutes')
+      ORDER BY created_at DESC
+      LIMIT 1`
+  ).bind(amount, customerEmail, outlet, nik).first();
+
+  if (reusable?.redirect_url) {
+    return responseJson({
+      ok: true,
+      payment: {
+        orderId: reusable.order_id,
+        amount: Number(reusable.amount),
+        status: reusable.status,
+        paymentUrl: reusable.redirect_url,
+        environment: config.environment,
+        reused: true
       },
-      body: JSON.stringify({
-        transaction_details: { order_id: orderId, gross_amount: amount },
-        item_details: [{ id: "BA-ASSET", price: amount, quantity: 1, name: "Pembayaran Penjualan Asset" }],
-        customer_details: { first_name: customerName, email: customerEmail },
-        custom_field1: outlet,
-        custom_field2: nik
-      })
+      requestId
     });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.token) throw new Error(cleanText(result?.error_messages?.join("; ") || result?.status_message || `MIDTRANS_CREATE_${response.status}`, 500));
+  }
+
+  const orderId = `BAA${Date.now()}${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
+  await env.OPERATIONS_DB.prepare(
+    `INSERT INTO ba_asset_payments(
+       order_id, amount, currency, status, customer_name, customer_email, outlet, nik, environment,
+       transaction_status, payment_type)
+     VALUES (?, ?, 'IDR', 'PENDING', ?, ?, ?, ?, ?, 'PENDING', 'DOKU_CHECKOUT')`
+  ).bind(orderId, amount, customerName || "Customer", customerEmail, outlet || null, nik || null, config.environment).run();
+
+  try {
+    const notificationUrl = new URL(request.url).origin + "/v1/ba/payments/doku/webhook";
+    const dokuPayload = {
+      order: {
+        amount,
+        invoice_number: orderId
+      },
+      payment: {
+        payment_due_date: 60
+      },
+      additional_info: {
+        override_notification_url: notificationUrl
+      }
+    };
+    const result = await dokuRequest(config, "POST", "/checkout/v1/payment", dokuPayload);
+    const paymentUrl = cleanText(result?.response?.payment?.url, 1200);
+    if (!paymentUrl) throw new Error("DOKU_PAYMENT_URL_MISSING");
+
     await env.OPERATIONS_DB.prepare(
-      `UPDATE ba_asset_payments SET snap_token = ?, redirect_url = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?`
-    ).bind(cleanText(result.token, 512), cleanText(result.redirect_url, 1e3) || null, orderId).run();
+      `UPDATE ba_asset_payments
+          SET redirect_url = ?, transaction_status = 'PENDING', payment_type = 'DOKU_CHECKOUT',
+              updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = ?`
+    ).bind(paymentUrl, orderId).run();
+
     return responseJson({
       ok: true,
       payment: {
         orderId,
         amount,
         status: "PENDING",
-        token: result.token,
-        clientKey: config.clientKey,
-        snapJsUrl: `${config.snapBase}/snap/snap.js`,
-        environment: config.environment
+        paymentUrl,
+        environment: config.environment,
+        reused: false
       },
       requestId
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await env.OPERATIONS_DB.prepare(
-      "UPDATE ba_asset_payments SET status = 'FAILED', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?"
+      "UPDATE ba_asset_payments SET status = 'FAILED', transaction_status = 'CREATE_FAILED', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?"
     ).bind(cleanText(message, 500), orderId).run();
-    console.error(JSON.stringify({ event: "midtrans_create_failed", orderId, message, requestId }));
-    return apiError(502, "PAYMENT_CREATE_FAILED", "Checkout pembayaran gagal dibuat. Silakan coba kembali.", requestId);
+    console.error(JSON.stringify({ event: "doku_create_failed", orderId, message, requestId }));
+    return apiError(502, "PAYMENT_CREATE_FAILED", "Checkout DOKU gagal dibuat. Silakan coba kembali.", requestId);
   }
 }
-__name(createMidtransAssetPayment, "createMidtransAssetPayment");
+__name(createDokuAssetPayment, "createDokuAssetPayment");
 
-async function midtransAssetPaymentStatus(url, env, requestId) {
+async function dokuAssetPaymentStatus(url, env, requestId) {
   const orderId = cleanText(url.searchParams.get("order_id"), 100);
   if (!orderId) return apiError(400, "INVALID_ORDER_ID", "order_id wajib diisi.", requestId);
-  let payment = await env.OPERATIONS_DB.prepare(
+  const payment = await env.OPERATIONS_DB.prepare(
     `SELECT order_id, amount, currency, status, transaction_status, payment_type, paid_at, created_at, updated_at
        FROM ba_asset_payments WHERE order_id = ? LIMIT 1`
   ).bind(orderId).first();
   if (!payment) return apiError(404, "PAYMENT_NOT_FOUND", "Pembayaran tidak ditemukan.", requestId);
-  if (payment.status === "PENDING") {
-    try {
-      const config = midtransConfig(env);
-      const remote = await fetchMidtransTransaction(orderId, config);
-      await persistMidtransStatus(env, payment, remote);
-      payment = await env.OPERATIONS_DB.prepare(
-        `SELECT order_id, amount, currency, status, transaction_status, payment_type, paid_at, created_at, updated_at
-           FROM ba_asset_payments WHERE order_id = ? LIMIT 1`
-      ).bind(orderId).first();
-    } catch (error) {
-      console.log(JSON.stringify({ event: "midtrans_status_pending", orderId, message: error instanceof Error ? error.message : String(error), requestId }));
-    }
-  }
   return responseJson({ ok: true, payment, requestId });
 }
-__name(midtransAssetPaymentStatus, "midtransAssetPaymentStatus");
+__name(dokuAssetPaymentStatus, "dokuAssetPaymentStatus");
 
-async function claimMidtransAssetPayment(request, env, requestId) {
+async function claimDokuAssetPayment(request, env, requestId) {
   let payload;
   try {
-    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
+    payload = await readJsonWithLimit(request, MAX_DOKU_PAYLOAD_BYTES);
   } catch (error) {
     const code = error instanceof Error ? error.message : "INVALID_PAYLOAD";
     return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, code, "Data penggunaan pembayaran tidak valid.", requestId);
@@ -2067,41 +2090,89 @@ async function claimMidtransAssetPayment(request, env, requestId) {
   }
   return responseJson({ ok: true, payment: { orderId, amount, status: "PAID", submissionId }, requestId });
 }
-__name(claimMidtransAssetPayment, "claimMidtransAssetPayment");
+__name(claimDokuAssetPayment, "claimDokuAssetPayment");
 
-async function midtransWebhook(request, env, requestId) {
+async function dokuWebhook(request, env, requestId) {
+  let raw;
   let payload;
   try {
-    payload = await readJsonWithLimit(request, MAX_MIDTRANS_PAYLOAD_BYTES);
-  } catch {
-    return apiError(400, "INVALID_NOTIFICATION", "Notifikasi pembayaran tidak valid.", requestId);
+    raw = await readTextWithLimit(request, MAX_DOKU_PAYLOAD_BYTES);
+    payload = JSON.parse(raw || "{}");
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "INVALID_NOTIFICATION";
+    return apiError(code === "PAYLOAD_TOO_LARGE" ? 413 : 400, "INVALID_NOTIFICATION", "Notifikasi pembayaran tidak valid.", requestId);
   }
+
   let config;
   try {
-    config = midtransConfig(env);
+    config = dokuConfig(env);
   } catch (error) {
-    return apiError(503, error instanceof Error ? error.message : "PAYMENT_NOT_CONFIGURED", "Layanan pembayaran belum dikonfigurasi.", requestId);
+    return apiError(503, error instanceof Error ? error.message : "DOKU_NOT_CONFIGURED", "Layanan pembayaran DOKU belum dikonfigurasi.", requestId);
   }
-  if (!await verifyMidtransSignature(payload, config.serverKey)) {
-    return apiError(401, "INVALID_MIDTRANS_SIGNATURE", "Tanda tangan notifikasi tidak valid.", requestId);
+
+  const clientId = cleanText(request.headers.get("Client-Id"), 256);
+  const notificationRequestId = cleanText(request.headers.get("Request-Id"), 128);
+  const requestTimestamp = cleanText(request.headers.get("Request-Timestamp"), 64);
+  const suppliedSignature = cleanText(request.headers.get("Signature"), 512);
+  const requestTarget = new URL(request.url).pathname;
+
+  if (!clientId || !notificationRequestId || !requestTimestamp || !suppliedSignature || !await secureEqual(clientId, config.clientId)) {
+    return apiError(401, "INVALID_DOKU_NOTIFICATION", "Header notifikasi DOKU tidak valid.", requestId);
   }
-  const orderId = cleanText(payload?.order_id, 100);
+
+  const expectedSignature = await dokuGenerateSignature(
+    clientId,
+    notificationRequestId,
+    requestTimestamp,
+    requestTarget,
+    raw,
+    config.secretKey
+  );
+  if (!await secureEqual(suppliedSignature, expectedSignature)) {
+    return apiError(401, "INVALID_DOKU_SIGNATURE", "Tanda tangan notifikasi DOKU tidak valid.", requestId);
+  }
+
+  const orderId = cleanText(payload?.order?.invoice_number, 100);
+  const amount = Math.round(Number(payload?.order?.amount || 0));
+  const transactionStatus = cleanText(payload?.transaction?.status, 40).toUpperCase();
+  const transactionDate = cleanText(payload?.transaction?.date, 80);
+  const paymentType = cleanText(payload?.channel?.id || payload?.service?.id || "DOKU_CHECKOUT", 80);
+
+  if (!orderId || !Number.isSafeInteger(amount) || amount < 1) {
+    return apiError(400, "INVALID_DOKU_NOTIFICATION", "Order atau nominal notifikasi DOKU tidak valid.", requestId);
+  }
+
   const existing = await env.OPERATIONS_DB.prepare(
     "SELECT order_id, amount, status FROM ba_asset_payments WHERE order_id = ? LIMIT 1"
   ).bind(orderId).first();
   if (!existing) return apiError(404, "PAYMENT_NOT_FOUND", "Pembayaran tidak ditemukan.", requestId);
-  try {
-    const verified = await fetchMidtransTransaction(orderId, config);
-    const status = await persistMidtransStatus(env, existing, verified);
-    console.log(JSON.stringify({ event: "midtrans_webhook_processed", orderId, status, requestId }));
-    return responseJson({ ok: true, orderId, status, requestId });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({ event: "midtrans_webhook_failed", orderId, message, requestId }));
-    return apiError(400, "MIDTRANS_VERIFICATION_FAILED", "Verifikasi pembayaran gagal.", requestId);
+  if (Number(existing.amount) !== amount) {
+    console.error(JSON.stringify({ event: "doku_amount_mismatch", orderId, expected: Number(existing.amount), received: amount, requestId }));
+    return apiError(400, "DOKU_AMOUNT_MISMATCH", "Nominal notifikasi pembayaran tidak sesuai.", requestId);
   }
+
+  // DOKU Checkout may send FAILED while the customer is still allowed to retry
+  // another payment method. Only SUCCESS is terminal for our BA payment gate.
+  if (transactionStatus === "SUCCESS") {
+    await env.OPERATIONS_DB.prepare(
+      `UPDATE ba_asset_payments
+          SET status = 'PAID', transaction_status = 'SUCCESS', payment_type = ?,
+              paid_at = COALESCE(paid_at, ?), updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = ?`
+    ).bind(paymentType || "DOKU_CHECKOUT", transactionDate || new Date().toISOString(), orderId).run();
+  } else {
+    await env.OPERATIONS_DB.prepare(
+      `UPDATE ba_asset_payments
+          SET transaction_status = ?, payment_type = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE order_id = ? AND status <> 'PAID'`
+    ).bind(transactionStatus || "PENDING", paymentType || "DOKU_CHECKOUT", orderId).run();
+  }
+
+  const finalStatus = transactionStatus === "SUCCESS" ? "PAID" : existing.status;
+  console.log(JSON.stringify({ event: "doku_webhook_processed", orderId, transactionStatus, status: finalStatus, requestId }));
+  return responseJson({ ok: true, orderId, status: finalStatus, requestId });
 }
-__name(midtransWebhook, "midtransWebhook");
+__name(dokuWebhook, "dokuWebhook");
 
 /* ===================== STAFF PERFORMANCE (D1 ONLY) ===================== */
 
@@ -3512,7 +3583,7 @@ async function route(request, env) {
   const requestId = request.headers.get("cf-ray") || crypto.randomUUID();
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") return health(env, requestId);
-  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/webhook") return midtransWebhook(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/doku/webhook") return dokuWebhook(request, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/sopi/image") return sopiImage(url, env, requestId);
   if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   const auth = await authorize(request, env);
@@ -3531,8 +3602,8 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/v1/ba/migrate/status") return beritaAcaraMigrationStatus(env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/submissions") return listBeritaAcaraSubmissions(url, env, requestId);
   if (request.method === "GET" && url.pathname === "/v1/ba/submission") return getBeritaAcaraSubmission(url, env, requestId);
-  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/create") return createMidtransAssetPayment(request, env, requestId);
-  if (request.method === "POST" && url.pathname === "/v1/ba/payments/midtrans/claim") return claimMidtransAssetPayment(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/doku/create") return createDokuAssetPayment(request, env, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/ba/payments/doku/claim") return claimDokuAssetPayment(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/migrate/master") return migrateStaffPerformanceMaster(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/migrate/scores") return migrateStaffPerformanceScores(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/staff-performance/staff") return saveStaffPerformanceStaff(request, env, requestId);
@@ -3549,7 +3620,7 @@ async function route(request, env) {
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/drive-document") return sopiAdminDriveDocument(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/source-status") return sopiAdminSourceStatus(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sopi/admin/image") return sopiAdminImage(request, env, requestId);
-  if (request.method === "GET" && url.pathname === "/v1/ba/payments/midtrans/status") return midtransAssetPaymentStatus(url, env, requestId);
+  if (request.method === "GET" && url.pathname === "/v1/ba/payments/doku/status") return dokuAssetPaymentStatus(url, env, requestId);
   if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "Metode tidak diizinkan.", requestId);
   if (url.pathname === "/v1/meta/schema") return schemaMeta(env, requestId);
   if (url.pathname === "/v1/sync/status") return masterSyncStatus(env, requestId);
@@ -3595,7 +3666,8 @@ export {
   buildCurrentShowcaseSummary,
   buildShowcaseSummary,
   index_default as default,
-  normalizeMidtransStatus,
+  dokuDigest,
+  dokuGenerateSignature,
   normalizeMovement,
   normalizeTransferEvent,
   sopiAcronyms,
@@ -3607,7 +3679,6 @@ export {
   sopiIsUsableAiAnswer,
   sopiMarkdownText,
   sopiSafeFileName,
-  sopiSearchTerms,
-  verifyMidtransSignature
+  sopiSearchTerms
 };
 //# sourceMappingURL=index.js.map
