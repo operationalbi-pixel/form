@@ -116,6 +116,7 @@
   global.BAKERZIN_API = Object.freeze({ call: call });
 
   function installChatWidget() {
+    if (/\/berita-acara\.html$/i.test(global.location.pathname) && /(?:\?|&)prewarm=1(?:&|$)/.test(global.location.search)) return;
     if (/\/(?:chat|sopi(?:-(?:admin|source))?)\.html$/i.test(global.location.pathname)) return;
     var token = '';
     try { token = global.localStorage.getItem('bakerzin_session') || ''; } catch (error) {}
