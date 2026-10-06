@@ -3,37 +3,26 @@
 <!-- Update: Add Invoice Payment Details & Fix Loading/Image Issues -->
 
 <script>
-    // Flag global untuk status library
     window.pdfLibsLoaded = false;
-
-    // Fungsi helper untuk load script eksternal
-    function loadScript(url, callback) {
-        var script = document.createElement('script'); 
-        script.src = url; 
-        script.onload = callback; 
-        script.onerror = function() { console.error('Gagal memuat script:', url); };
-        document.head.appendChild(script);
-    }
-
-    // Memastikan jspdf dan autotable dimuat berurutan
-    function startLoadingPDFLibs() {
-        if (window.pdfLibsLoaded) return;
-        
-        console.log("Memulai proses download library PDF...");
-        
-        loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', function() {
-            if (window.jspdf && window.jspdf.jsPDF) window.jsPDF = window.jspdf.jsPDF;
-            console.log('jsPDF berhasil dimuat.');
-            
-            loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js', function() { 
-                window.pdfLibsLoaded = true; 
-                console.log('jsPDF AutoTable berhasil dimuat. PDF Generator SIAP.');
-            });
+    function loadScript(url) {
+        return new Promise((resolve,reject) => {
+            var script=document.createElement('script');
+            script.src=url;
+            script.onload=resolve;
+            script.onerror=()=>{script.remove();reject(new Error('Pustaka PDF gagal dimuat. Periksa koneksi lalu coba lagi.'))};
+            document.head.appendChild(script);
         });
     }
-
-    // Jalankan loader segera
-    startLoadingPDFLibs(); 
+    function startLoadingPDFLibs() {
+        if(window.pdfLibsLoaded && window.jsPDF) return Promise.resolve();
+        if(window.baPdfLoadPromise) return window.baPdfLoadPromise;
+        window.baPdfLoadPromise=loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+            .then(()=>{if(!window.jspdf || !window.jspdf.jsPDF)throw new Error('jsPDF tidak tersedia.');window.jsPDF=window.jspdf.jsPDF;return loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js')})
+            .then(()=>{window.pdfLibsLoaded=true})
+            .catch(error=>{window.baPdfLoadPromise=null;throw error});
+        return window.baPdfLoadPromise;
+    }
+    // PDF libraries are loaded only when the user requests a PDF.
 
     // Helper Functions
     window.parseRupiah = (str) => parseFloat(String(str).replace(/[^0-9,-]+/g,"").replace(",", ".")) || 0;
@@ -59,18 +48,9 @@
     // --- FUNGSI UTAMA GENERATE PDF ---
     // Didefinisikan di window agar global accessible
     window.generatePDF = async function(item, jsonData, retryCount = 0) {
-        // Cek kesiapan library
-        if (!window.pdfLibsLoaded || !window.jsPDF) {
-             if (retryCount >= 5) {
-                 alert("Gagal membuat PDF. Library PDF tidak dapat dimuat (Cek koneksi internet).");
-                 return;
-             }
-             console.warn(`Library PDF belum siap. Mencoba lagi... (${retryCount+1}/5)`);
-             await new Promise(resolve => setTimeout(resolve, 1000));
-             window.generatePDF(item, jsonData, retryCount + 1);
-             return;
-        }
-        
+        try { await startLoadingPDFLibs(); }
+        catch(error) { alert(error.message); return; }
+
         // Parsing data JSON jika masih string
         if (typeof jsonData === 'string') { try { jsonData = JSON.parse(jsonData); } catch(e) {} }
         item.data = { ...item.data, ...jsonData };

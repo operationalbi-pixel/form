@@ -965,7 +965,7 @@ for (const [ok, message] of transferAuditRequirements) {
 
 {
   const wrapperPath = 'docs/berita-acara.html';
-  const wrapper = await text(wrapperPath);
+  const wrapper = await text(wrapperPath) + await text('docs/ba-entry.js');
   if (!wrapper.includes("BAKERZIN_API.call('beritaAcaraHandoff'")) failures.push(`${wrapperPath} belum meminta kode SSO satu kali dari BI-Space`);
   if (!wrapper.includes('AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg')) failures.push(`${wrapperPath} tidak menuju deployment Berita Acara yang disepakati`);
   if (!wrapper.includes('env(safe-area-inset-top')) failures.push(`${wrapperPath} belum aman untuk notch aplikasi mobile`);
@@ -1048,7 +1048,7 @@ for (const [ok, message] of transferAuditRequirements) {
   if (!outletDashboard.includes('SWITCH TO APPROVAL MODE')) failures.push('User Mode approver belum memiliki tombol kembali ke Approval Mode');
 
   const baHtmlFiles = (await readdir('berita-acara-gas')).filter(name => /\.html$/i.test(name));
-  if (baHtmlFiles.length !== 22) failures.push(`Folder Berita Acara seharusnya berisi 22 HTML termasuk lapisan responsif bersama, ditemukan ${baHtmlFiles.length}`);
+  if (baHtmlFiles.length !== 23) failures.push(`Folder Berita Acara seharusnya berisi 23 HTML termasuk CSS terbangun dan lapisan responsif bersama, ditemukan ${baHtmlFiles.length}`);
   for (const fileName of baHtmlFiles) {
     const path = `berita-acara-gas/${fileName}`;
     const html = await text(path);

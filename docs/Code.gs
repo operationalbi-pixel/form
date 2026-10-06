@@ -424,6 +424,10 @@ function findBeritaAcaraEmployee_(nik) {
   throw new Error('NIK tidak terdaftar.');
 }
 
+function beritaAcaraIdentityKey_(employee) {
+  return digest_(JSON.stringify([employee.nik,employee.name,employee.outlet,normalizeEmployeePosition_(employee.position),employee.grade]));
+}
+
 function createBeritaAcaraHandoff(token) {
   return safe_(function () {
     const session = requireSession_(token);
@@ -431,7 +435,7 @@ function createBeritaAcaraHandoff(token) {
     assertEmployeeActive_(employee);
     const handoff = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
     CacheService.getScriptCache().put('ba-handoff:' + handoff, JSON.stringify({ nik: employee.nik, issuedAt: Date.now() }), 300);
-    return { handoff: handoff, expiresIn: 300 };
+    return { handoff: handoff, expiresIn: 300, identityKey: beritaAcaraIdentityKey_(employee) };
   });
 }
 
@@ -460,6 +464,7 @@ function consumeBeritaAcaraHandoff(handoff) {
       POSITION: position,
       GRADE: employee.grade,
       ROLE: employee.outlet === 'BIHQ' || position === 'AREA MANAGER' || position === 'FNB' ? 'APPROVER' : 'OUTLET',
+      ENTRY_IDENTITY_KEY: beritaAcaraIdentityKey_(employee),
       NOTIFY_TOKEN: notifyToken
     };
   });

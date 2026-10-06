@@ -23,11 +23,19 @@ server.doGet({parameter:{baSession:'session',mode:'user'}});assert.equal(include
 canApprove=false;server.doGet({parameter:{baSession:'session',mode:'approval'}});assert.equal(includes.at(-1),'OutletDashboard','mode query cannot grant approval access');
 const count=includes.length;server.requireBaSession_=()=>{throw Error('expired');};server.doGet({parameter:{baSession:'bad'}});assert.equal(includes.length,count,'invalid session cannot render a dashboard');
 
+// Session preparation avoids templates, approval-config reads and history queries.
+server.requireBaSession_=()=>({...identity,ENTRY_IDENTITY_KEY:'identity'});
+server.baUserCanApprove_=()=>{throw Error('Preparation must not load approval rules');};
+let preparation='';server.HtmlService.createHtmlOutput=html=>{preparation=html;return output;};
+server.doGet({parameter:{baSession:'session',prepareOnly:'1',entryNonce:'nonce'}});
+assert.ok(preparation.includes('baEntryReady'));assert.ok(preparation.includes('identity'));
+assert.equal(includes.length,count);
+
 // Mount bundled HTML immediately; keep dynamic-include fallback.
 let mounts=0,requests=0;
 const container={querySelectorAll:()=>[],innerHTML:'',className:''};
 const ui={initialDashboardPage:'OutletDashboard',initialDashboardHtml:'<section>Ready</section>',
- document:{getElementById:()=>container},window:{initializeDashboard:()=>mounts++},Array,
+ document:{getElementById:()=>container},window:{initializeDashboard:()=>mounts++,top:{postMessage(){}}},baEntryNonce:'nonce',Array,
  google:{script:{run:{withSuccessHandler(fn){this.success=fn;return this;},withFailureHandler(){return this;},include(){requests++;this.success('<section>Fallback</section>');}}}}};
 vm.createContext(ui);vm.runInContext(between(index,'        function openBiSpaceDashboard(','        function switchBaMode('),ui);
 ui.openBiSpaceDashboard({CAN_BA_APPROVE:false},'');assert.equal(mounts,1);assert.equal(requests,0);assert.equal(container.innerHTML,'<section>Ready</section>');
@@ -37,7 +45,7 @@ ui.openBiSpaceDashboard({CAN_BA_APPROVE:true},'');assert.equal(requests,1);asser
 const employees=Array.from({length:1001},(_,i)=>[i?'EMP'+i:'NIK','Name','BISS','','Server','','','','active','','','']);
 employees[600][0]='STAFF';let cells=0;const cache=new Map();let uuid=0;
 const empSheet={getLastRow:()=>employees.length,getRange:(r,c,h,w)=>({getDisplayValues:()=>{cells+=h*w;return employees.slice(r-1,r-1+h).map(row=>row.slice(c-1,c-1+w));}})};
-const auth={Date,JSON,CONFIG:{EMP_SHEET:'EMP_LIST'},getSpreadsheet_:()=>({getSheetByName:()=>empSheet}),
+const auth={Date,JSON,digest_:v=>v,CONFIG:{EMP_SHEET:'EMP_LIST'},getSpreadsheet_:()=>({getSheetByName:()=>empSheet}),
  CacheService:{getScriptCache:()=>({get:k=>cache.get(k),put:(k,v)=>cache.set(k,v),remove:k=>cache.delete(k)})},
  normalizeNik_:v=>String(v||'').trim().toUpperCase().replace(/\s+/g,''),normalizeEmployeePosition_:v=>String(v||'').toUpperCase(),
  requireSession_:()=>({nik:'STAFF'}),assertEmployeeActive_:e=>{if(e.status==='resign')throw Error('Resign');},

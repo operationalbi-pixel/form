@@ -4,9 +4,9 @@
     <base target="_top">
     <title>SISTEM BERITA ACARA DIGITAL</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <?!= include('TailwindStyles'); ?>
+    <link media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link media="print" onload="this.media='all'" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <?!= include('MobileResponsiveStyles'); ?>
     <style>
         body {
@@ -88,6 +88,8 @@
         const initialDashboardMode = <?!= initialModeJson ?>;
         const initialDashboardHtml = <?!= initialDashboardHtmlJson ?>;
         const initialDashboardPage = <?!= initialDashboardPageJson ?>;
+        const baEntryNonce = <?!= baEntryNonceJson ?>;
+        window.baReportHistoryReady = function(){window.top.postMessage({baHistoryReady:true,entryNonce:baEntryNonce},'*')};
         // --- LOGIC 1: DAILY QUOTES ---
         const quotesData = [
             // --- ISLAMI ---
@@ -222,6 +224,7 @@
                     oldScript.parentNode.replaceChild(newScript, oldScript);
                 });
                 if (window.initializeDashboard) window.initializeDashboard(user);
+                window.top.postMessage({baEntryReady:true,entryNonce:baEntryNonce,session:user.BA_SESSION,identityKey:user.ENTRY_IDENTITY_KEY||''},'*');
                 if (window.refreshBeritaAcaraResponsiveLayout) window.refreshBeritaAcaraResponsiveLayout(container);
             }
             if (page === initialDashboardPage && initialDashboardHtml) {
@@ -240,7 +243,7 @@
             const user = window.userData || initialBiSpaceUser;
             if (mode === 'approval' && user.CAN_BA_APPROVE !== true) return;
             const nextMode = mode === 'approval' ? 'approval' : 'user';
-            window.top.postMessage({ biSpaceBeritaAcara: true, mode: nextMode }, '*');
+            window.top.postMessage({ biSpaceBeritaAcara: true, mode: nextMode, entryNonce: baEntryNonce }, '*');
         }
 
     </script>

@@ -105,6 +105,12 @@ function doGet(e) {
     }
 
     user.BA_SESSION = baSession;
+    if (String(e && e.parameter && e.parameter.prepareOnly || '') === '1') {
+      const ready = {baEntryReady:true,entryNonce:String(e.parameter.entryNonce || ''),session:baSession,identityKey:user.ENTRY_IDENTITY_KEY||''};
+      return HtmlService.createHtmlOutput('<!doctype html><script>window.top.postMessage(' + JSON.stringify(ready).replace(/</g, '\\u003c') + ',"*");</script>')
+        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
+
     user.CAN_BA_APPROVE =
       baUserCanApprove_(user);
     const requestedMode = String(e && e.parameter && e.parameter.mode || '');
@@ -115,6 +121,7 @@ function doGet(e) {
 
     template.initialDashboardHtmlJson = JSON.stringify(include(dashboardPage)).replace(/</g, '\\u003c');
     template.initialDashboardPageJson = JSON.stringify(dashboardPage);
+    template.baEntryNonceJson = JSON.stringify(String(e && e.parameter && e.parameter.entryNonce || '')).replace(/</g, '\\u003c');
 
     template.initialUserJson =
       JSON.stringify(user).replace(/</g, '\\u003c');
@@ -149,6 +156,7 @@ function doGet(e) {
     return HtmlService
       .createHtmlOutput(
         '<!doctype html>' +
+        '<script>window.top.postMessage(' + JSON.stringify({baEntryError:true,entryNonce:String(e && e.parameter && e.parameter.entryNonce || ''),message:error.message}).replace(/</g, '\\u003c') + ',\"*\");</script>' +
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
         '<div style="min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box;background:#faf7f8;font-family:Arial,sans-serif;color:#362d30">' +
         '<div style="max-width:520px;padding:28px;border:1px solid #eadde0;border-radius:18px;background:#fff;text-align:center;box-shadow:0 16px 45px rgba(70,30,40,.08)">' +

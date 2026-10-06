@@ -28,31 +28,6 @@
       <iframe id="beritaAcaraFrame" class="frame" title="Sistem Berita Acara Digital" allow="camera; microphone; clipboard-write" referrerpolicy="strict-origin"></iframe>
     </section>
   </main>
-  <script>
-    (function(){
-      'use strict';
-      var WEB_APP_URL='https://script.google.com/macros/s/AKfycbxBCTJ4BbHWrcVqXNZmtQEjfV_AFnPy_G7J8tkz88hXGPrpX_l01BNOozI0COQenXDyxg/exec';
-      var token='';try{token=localStorage.getItem('bakerzin_session')||''}catch(error){}
-      var state=document.getElementById('state'),frame=document.getElementById('beritaAcaraFrame');
-      function fail(message){state.innerHTML='<div class="card"><strong>Berita Acara belum dapat dibuka</strong><p>'+escapeHtml(message)+'</p><button class="retry" type="button" onclick="location.reload()">Coba Lagi</button></div>'}
-      function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,function(char){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]})}
-      if(!token){location.replace('index.html');return}
-      function openFrame(mode){
-        state.style.display='grid';
-        state.innerHTML='<div class="card"><div class="spinner"></div><strong>Membuka '+(mode==='user'?'User Mode':'Approval Mode')+'...</strong><p>Memvalidasi ulang identitas dari EMP_LIST.</p></div>';
-        BAKERZIN_API.call('beritaAcaraHandoff',[token]).then(function(result){
-          if(!result||!result.ok||!result.data||!result.data.handoff)throw new Error(result&&result.error||'Sesi BI-Space tidak dapat diteruskan.');
-          frame.addEventListener('load',function(){state.style.display='none'},{once:true});
-          frame.src=WEB_APP_URL+'?handoff='+encodeURIComponent(result.data.handoff)+'&mode='+encodeURIComponent(mode||'');
-        }).catch(function(error){fail(error&&error.message||error)});
-      }
-      window.addEventListener('message',function(event){
-        var data=event.data||{},host='';try{host=new URL(event.origin).hostname}catch(error){}
-        if(!data.biSpaceBeritaAcara||!/(^|\.)googleusercontent\.com$|^script\.google\.com$/.test(host))return;
-        openFrame(data.mode==='user'?'user':'approval');
-      });
-      openFrame('');
-    }());
-  </script>
+  <script src="ba-entry.js?v=20261006-entry1"></script>
 </body>
 </html>
