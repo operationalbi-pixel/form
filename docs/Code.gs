@@ -391,10 +391,43 @@ function logout(token) {
 }
 
 /** Creates a short-lived, one-time sign-on code for the separate Berita Acara Web App. */
+function findBeritaAcaraEmployee_(nik) {
+  nik = normalizeNik_(nik);
+  if (!nik) throw new Error('NIK wajib diisi.');
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet) throw new Error('Sheet EMP_LIST tidak ditemukan.');
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('Data karyawan belum tersedia.');
+  const cache = CacheService.getScriptCache(), key = 'ba-employee-row:' + nik;
+  let pointer = null;
+  try { pointer = JSON.parse(cache.get(key) || 'null'); } catch (error) {}
+  function readRow(row) {
+    const values = sheet.getRange(row, 1, 1, 12).getDisplayValues()[0];
+    if (normalizeNik_(values[0]) !== nik) return null;
+    return {sheet:sheet,row:row,nik:nik,name:String(values[1]||'').trim()||nik,
+      outlet:String(values[2]||'').trim().toUpperCase(),position:normalizeEmployeePosition_(values[4]),
+      grade:String(values[5]||'').trim().toUpperCase(),section:String(values[6]||'').trim().toUpperCase()||'ALL',
+      status:String(values[8]||'').trim().toLowerCase(),password:String(values[11]||'')};
+  }
+  if (pointer && pointer.lastRow === lastRow && pointer.row >= 2 && pointer.row <= lastRow) {
+    const employee = readRow(pointer.row);
+    if (employee) return employee;
+  }
+  const keys = sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues();
+  for (let i = 0; i < keys.length; i++) {
+    if (normalizeNik_(keys[i][0]) !== nik) continue;
+    const employee = readRow(i + 2);
+    if (!employee) continue;
+    try { cache.put(key, JSON.stringify({row:i+2,lastRow:lastRow}), 600); } catch (error) {}
+    return employee;
+  }
+  throw new Error('NIK tidak terdaftar.');
+}
+
 function createBeritaAcaraHandoff(token) {
   return safe_(function () {
     const session = requireSession_(token);
-    const employee = findEmployee_(session.nik);
+    const employee = findBeritaAcaraEmployee_(session.nik);
     assertEmployeeActive_(employee);
     const handoff = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
     CacheService.getScriptCache().put('ba-handoff:' + handoff, JSON.stringify({ nik: employee.nik, issuedAt: Date.now() }), 300);
@@ -412,7 +445,7 @@ function consumeBeritaAcaraHandoff(handoff) {
     if (!raw) throw new Error('Kode akses Berita Acara sudah dipakai atau kedaluwarsa. Silakan buka kembali dari BI-Space.');
     const data = JSON.parse(raw);
     if (!data.issuedAt || Date.now() - Number(data.issuedAt) > 300000) throw new Error('Kode akses Berita Acara telah kedaluwarsa.');
-    const employee = findEmployee_(normalizeNik_(data.nik));
+    const employee = findBeritaAcaraEmployee_(data.nik);
     assertEmployeeActive_(employee);
     const position = normalizeEmployeePosition_(employee.position);
     const notifyToken = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
