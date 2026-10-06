@@ -16677,7 +16677,7 @@ function dashCacheVersion_() {
 }
 function clearDashboardCache_() {
   // CacheService tidak punya remove-by-prefix. Naikkan versi agar cache lama otomatis diabaikan.
-  PropertiesService.getScriptProperties().setProperty('DASH_CACHE_VERSION_V9_2', String(Date.now()));
+  PropertiesService.getScriptProperties().setProperty('DASH_CACHE_VERSION_V9_2', Utilities.getUuid());
 }
 function cacheKeyDashboard_(sess, year, month, outletFilter) {
   var scope = (sess && sess.role === 'admin')
@@ -17772,7 +17772,15 @@ function salesSheetRewriteUnlocked_(name, records) {
 function salesSheetWithLock_(callback) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
-  try { return callback(); } finally { lock.releaseLock(); }
+  try {
+    // A read performed before waiting may predate another writer's commit.
+    salesSheetResetReadCache_();
+    var result = callback();
+    SpreadsheetApp.flush();
+    salesSheetResetReadCache_();
+    clearDashboardCache_();
+    return result;
+  } finally { lock.releaseLock(); }
 }
 
 function bqIsAvailable_() {
@@ -17872,7 +17880,15 @@ function bqSyncGlobalDailyAnalysis_(key,isHoliday,holidayNote,hasPromo,promoNote
 }
 
 function bqSyncDaily_(oc,key,year,month,week,dow,sales,analisa,status,submittedBy){
-  salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('daily_sales',function(row){return String(row.outlet_code||'').toUpperCase()+'|'+salesSheetDateKey_(row.date);},{outlet_code:oc,date:key,year:year,month:month,week:week,day_of_week:dow,sales:sales,analisa_harian:analisa||'',analisa_status:status||'',submitted_by:submittedBy||oc});});
+  return salesSheetWithLock_(function(){
+    var identity = function(row){return String(row.outlet_code||'').toUpperCase()+'|'+salesSheetDateKey_(row.date);};
+    var previous = salesSheetLatest_(salesSheetTable_('daily_sales').rows.filter(function(row){return identity(row)===oc+'|'+key;}),identity)[0] || {};
+    var savedSales = sales === undefined ? Number(previous.sales)||0 : sales;
+    var savedAnalysis = analisa === undefined ? String(previous.analisa_harian||'') : analisa;
+    var savedStatus = savedAnalysis.length >= (Number(readConfig_().min_analysis_chars)||20) ? 'done' : 'pending';
+    salesSheetUpsertUnlocked_('daily_sales',identity,{outlet_code:oc,date:key,year:year,month:month,week:week,day_of_week:dow,sales:savedSales,analisa_harian:savedAnalysis,analisa_status:savedStatus,submitted_by:submittedBy||oc});
+    return {sales:savedSales,analisa:savedAnalysis,status:savedStatus};
+  });
 }
 function bqSyncWeekly_(oc,periodKey,year,month,week,periodStart,periodEnd,total,analisa,status,submittedBy){
   salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('weekly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,week:week,period_start:periodStart,period_end:periodEnd,total_sales:total,analisa_mingguan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
@@ -17993,12 +18009,13 @@ function saveDaily(token, payload) {
     var validOutlet = OUTLETS.some(function(outlet){ return outlet.role !== 'admin' && outlet.code === oc; });
     if (!validOutlet) return { ok:false, error:'Pilih outlet yang valid sebelum menyimpan sales.' };
   }
-  var analisa = (payload.analisa || '').trim();
-  var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
-  var sales = Number(payload.sales) || 0;
+  var analisa = payload.preserveAnalysis === true ? undefined : Object.prototype.hasOwnProperty.call(payload, 'analisa') ? String(payload.analisa || '').trim() : undefined;
+  var sales = payload.preserveSales === true ? undefined : Object.prototype.hasOwnProperty.call(payload, 'sales') ? Number(payload.sales) : undefined;
+  if (sales !== undefined && (!Number.isFinite(sales) || sales < 0)) return {ok:false,error:'Nominal sales tidak valid.'};
+  var saved;
 
   try {
-    bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, status, sess.outlet_code);
+    saved = bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, '', sess.outlet_code);
   } catch (e) {
     Logger.log('BQ save daily gagal: ' + e.message);
     return { ok:false, error:'Gagal simpan ke Google Sheets: ' + e.message };
@@ -18006,7 +18023,7 @@ function saveDaily(token, payload) {
 
   audit_(oc, sess.outlet_code, 'save_daily', 'day', key, payload);
   clearDashboardCache_();
-  return { ok:true, date:key, status:status, sales:sales, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
+  return { ok:true, date:key, status:saved.status, sales:saved.sales, analisa:saved.analisa, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
 }
 
 
