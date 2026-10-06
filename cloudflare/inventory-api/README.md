@@ -123,12 +123,16 @@ https://bakerzin-inventory-api.operational-bi.workers.dev/v1/ba/payments/doku/we
 ```
 
 The create-payment request also supplies this URL as DOKU Checkout's
-`override_notification_url`. Cloudflare verifies DOKU's HMAC-SHA256 notification
-signature against the exact request body, matches the invoice amount, stores
-`PAID` only for a `SUCCESS` transaction, and claims a paid order for one BA
-submission only. DOKU Checkout `FAILED` notifications are deliberately not
-treated as terminal because Checkout can let the customer retry another payment
-method.
+`override_notification_url`. The Worker accepts both DOKU notification formats
+used by Checkout channels: Non-SNAP (`Client-Id` / HMAC-SHA256) and SNAP
+(`X-PARTNER-ID` / HMAC-SHA512). Both paths verify the signature, match the
+payment amount, and keep payment processing idempotent. The status endpoint also
+reconciles pending orders with DOKU's non-SNAP Check Status API after 60 seconds.
+
+Only a verified successful payment becomes `PAID`, and a paid order can be
+claimed by one BA submission only. DOKU Checkout `FAILED` notifications are
+deliberately not treated as terminal because Checkout can let the customer retry
+another payment method.
 
 For the first production smoke test, use a deliberately low-value real
 transaction and verify the notification, amount, paid state, and one-time claim
