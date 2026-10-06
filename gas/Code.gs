@@ -16677,7 +16677,7 @@ function dashCacheVersion_() {
 }
 function clearDashboardCache_() {
   // CacheService tidak punya remove-by-prefix. Naikkan versi agar cache lama otomatis diabaikan.
-  PropertiesService.getScriptProperties().setProperty('DASH_CACHE_VERSION_V9_2', String(Date.now()));
+  PropertiesService.getScriptProperties().setProperty('DASH_CACHE_VERSION_V9_2', Utilities.getUuid());
 }
 function cacheKeyDashboard_(sess, year, month, outletFilter) {
   var scope = (sess && sess.role === 'admin')
@@ -17772,7 +17772,15 @@ function salesSheetRewriteUnlocked_(name, records) {
 function salesSheetWithLock_(callback) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
-  try { return callback(); } finally { lock.releaseLock(); }
+  try {
+    // A read performed before waiting may predate another writer's commit.
+    salesSheetResetReadCache_();
+    var result = callback();
+    SpreadsheetApp.flush();
+    salesSheetResetReadCache_();
+    clearDashboardCache_();
+    return result;
+  } finally { lock.releaseLock(); }
 }
 
 function bqIsAvailable_() {
@@ -17871,8 +17879,56 @@ function bqSyncGlobalDailyAnalysis_(key,isHoliday,holidayNote,hasPromo,promoNote
   if(otherAnalysis)bqInsertGlobalDailyAnalysisItem_(key,'OTHER',otherAnalysis,submittedBy);
 }
 
+function salesSheetDailyRecord_(sheet, headers, outlet, date) {
+  var lastRow = sheet.getLastRow();
+  var cacheKey = 'sales-daily-row:' + salesSpreadsheetId_() + ':' + outlet + ':' + date;
+  var cache = CacheService.getScriptCache();
+  var cached = null;
+  try { cached = JSON.parse(cache.get(cacheKey) || 'null'); } catch (error) {}
+  function recordAt(rowNumber) {
+    var values = sheet.getRange(rowNumber, 1, 1, headers.length).getValues()[0];
+    var record = {__rowNumber:rowNumber};
+    headers.forEach(function(header, column){record[header]=values[column];});
+    return record;
+  }
+  function matches(record) {
+    return String(record.outlet_code||'').toUpperCase()===outlet && salesSheetDateKey_(record.date)===date;
+  }
+  if (cached && cached.lastRow===lastRow && cached.row>=2 && cached.row<=lastRow) {
+    var record = recordAt(cached.row);
+    if (matches(record)) return {record:record,cacheKey:cacheKey,unique:true};
+  }
+  var outletColumn=headers.indexOf('outlet_code'), dateColumn=headers.indexOf('date');
+  var width=Math.max(outletColumn,dateColumn)+1;
+  var keys=lastRow>1 ? sheet.getRange(2,1,lastRow-1,width).getValues() : [];
+  var candidates=[];
+  keys.forEach(function(values,index){
+    if(String(values[outletColumn]||'').toUpperCase()===outlet && salesSheetDateKey_(values[dateColumn])===date) candidates.push(recordAt(index+2));
+  });
+  var latest=null;
+  candidates.forEach(function(record){if(!latest || salesSheetTime_(record)>=salesSheetTime_(latest)) latest=record;});
+  return {record:latest,cacheKey:cacheKey,unique:candidates.length<=1};
+}
+
 function bqSyncDaily_(oc,key,year,month,week,dow,sales,analisa,status,submittedBy){
-  salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('daily_sales',function(row){return String(row.outlet_code||'').toUpperCase()+'|'+salesSheetDateKey_(row.date);},{outlet_code:oc,date:key,year:year,month:month,week:week,day_of_week:dow,sales:sales,analisa_harian:analisa||'',analisa_status:status||'',submitted_by:submittedBy||oc});});
+  return salesSheetWithLock_(function(){
+    var sheet=salesSheetEnsure_('daily_sales');
+    var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0].map(function(value){return String(value||'').trim().toLowerCase();});
+    var lookup=salesSheetDailyRecord_(sheet,headers,oc,key);
+    var previous=lookup.record || {};
+    var savedSales = sales === undefined ? Number(previous.sales)||0 : sales;
+    var savedAnalysis = analisa === undefined ? String(previous.analisa_harian||'') : analisa;
+    var savedStatus = savedAnalysis.length >= (Number(readConfig_().min_analysis_chars)||20) ? 'done' : 'pending';
+    var now=new Date();
+    var record={outlet_code:oc,date:key,year:year,month:month,week:week,day_of_week:dow,sales:savedSales,analisa_harian:savedAnalysis,analisa_status:savedStatus,submitted_by:submittedBy||oc,submitted_at:previous.submitted_at||now,updated_at:now};
+    var rowNumber=previous.__rowNumber || sheet.getLastRow()+1;
+    sheet.getRange(rowNumber,1,1,headers.length).setValues([salesSheetObjectRow_(headers,record)]);
+    try {
+      if(lookup.unique) CacheService.getScriptCache().put(lookup.cacheKey,JSON.stringify({row:rowNumber,lastRow:sheet.getLastRow()}),600);
+      else CacheService.getScriptCache().remove(lookup.cacheKey);
+    } catch(error) { Logger.log('Sales row cache skipped: '+error.message); }
+    return {sales:savedSales,analisa:savedAnalysis,status:savedStatus};
+  });
 }
 function bqSyncWeekly_(oc,periodKey,year,month,week,periodStart,periodEnd,total,analisa,status,submittedBy){
   salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('weekly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,week:week,period_start:periodStart,period_end:periodEnd,total_sales:total,analisa_mingguan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
@@ -17983,7 +18039,6 @@ function deleteGlobalDailyAnalysisItem(token, payload) {
 
 function saveDaily(token, payload) {
   var sess = validateSession_(token);
-  if (!bqIsAvailable_()) return { ok:false, error:'Database Google Sheets Sales Analysis tidak dapat dibuka.' };
 
   var dt = parseDateKey_(payload.date);
   var key = dateKey_(dt);
@@ -17993,20 +18048,20 @@ function saveDaily(token, payload) {
     var validOutlet = OUTLETS.some(function(outlet){ return outlet.role !== 'admin' && outlet.code === oc; });
     if (!validOutlet) return { ok:false, error:'Pilih outlet yang valid sebelum menyimpan sales.' };
   }
-  var analisa = (payload.analisa || '').trim();
-  var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
-  var sales = Number(payload.sales) || 0;
+  var analisa = payload.preserveAnalysis === true ? undefined : Object.prototype.hasOwnProperty.call(payload, 'analisa') ? String(payload.analisa || '').trim() : undefined;
+  var sales = payload.preserveSales === true ? undefined : Object.prototype.hasOwnProperty.call(payload, 'sales') ? Number(payload.sales) : undefined;
+  if (sales !== undefined && (!Number.isFinite(sales) || sales < 0)) return {ok:false,error:'Nominal sales tidak valid.'};
+  var saved;
 
   try {
-    bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, status, sess.outlet_code);
+    saved = bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, '', sess.outlet_code);
   } catch (e) {
     Logger.log('BQ save daily gagal: ' + e.message);
     return { ok:false, error:'Gagal simpan ke Google Sheets: ' + e.message };
   }
 
   audit_(oc, sess.outlet_code, 'save_daily', 'day', key, payload);
-  clearDashboardCache_();
-  return { ok:true, date:key, status:status, sales:sales, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
+  return { ok:true, date:key, status:saved.status, sales:saved.sales, analisa:saved.analisa, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
 }
 
 
@@ -18049,10 +18104,24 @@ function saveGlobalDailyAnalysis(token, payload) {
   return { ok:true, date:key, global:saved, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
 }
 
+function salesPeriodSummary_(outlet, year, month, week) {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month<1 || month>12) throw new Error('Periode analisa tidak valid.');
+  var start=new Date(year,month-1,1), end=new Date(year,month,0);
+  if(week!==undefined){
+    var offset=(start.getDay()+6)%7;
+    var lastWeek=Math.floor((end.getDate()-1+offset)/7)+1;
+    if(!Number.isInteger(week) || week<1 || week>lastWeek) throw new Error('Minggu analisa tidak valid.');
+    start.setDate(1-offset+(week-1)*7);
+    end=new Date(start); end.setDate(end.getDate()+6);
+  }
+  var total=bqFetchDailyRows_([outlet],start,end).reduce(function(sum,row){return sum+(Number(row.sales)||0);},0);
+  var target=week===undefined ? Number(bqGetTargetsMap_(year,month)[outlet])||0 : 0;
+  return {total:total,start:dateKey_(start),end:dateKey_(end),target:target,pct:target?total/target*100:0};
+}
+
 function saveWeekly(token, payload) {
   var sess = validateSession_(token);
   if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input analisa outlet.' };
-  if (!bqIsAvailable_()) return { ok:false, error:'Database Google Sheets Sales Analysis tidak dapat dibuka.' };
 
   var oc = sess.outlet_code;
   var year = Number(payload.year);
@@ -18062,10 +18131,9 @@ function saveWeekly(token, payload) {
   var analisa = (payload.analisa || '').trim();
   var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
 
-  var dash = getMonthDashboard(token, year, month, oc);
-  var wk = (dash.weeks || []).find(function(w){ return Number(w.w) === week; });
-  var total = wk ? Number(wk.total) || 0 : 0;
-  var range = wk ? [wk.start, wk.end] : ['', ''];
+  var summary = salesPeriodSummary_(oc, year, month, week);
+  var total = summary.total;
+  var range = [summary.start, summary.end];
 
   try {
     bqSyncWeekly_(oc, periodKey, year, month, week, range[0], range[1], total, analisa, status, sess.outlet_code);
@@ -18082,7 +18150,6 @@ function saveWeekly(token, payload) {
 function saveMonthly(token, payload) {
   var sess = validateSession_(token);
   if (sess.role === 'admin') return { ok:false, error:'Akun HQ tidak boleh input analisa outlet.' };
-  if (!bqIsAvailable_()) return { ok:false, error:'Database Google Sheets Sales Analysis tidak dapat dibuka.' };
 
   var oc = sess.outlet_code;
   var year = Number(payload.year);
@@ -18091,10 +18158,10 @@ function saveMonthly(token, payload) {
   var analisa = (payload.analisa || '').trim();
   var status = analisa.length >= (Number(readConfig_().min_analysis_chars) || 20) ? 'done' : 'pending';
 
-  var dash = getMonthDashboard(token, year, month, oc);
-  var total = dash.month ? Number(dash.month.total) || 0 : 0;
-  var target = dash.month ? Number(dash.month.target) || 0 : 0;
-  var pct = dash.month ? Number(dash.month.pct) || 0 : 0;
+  var summary = salesPeriodSummary_(oc, year, month);
+  var total = summary.total;
+  var target = summary.target;
+  var pct = summary.pct;
 
   try {
     bqSyncMonthly_(oc, periodKey, year, month, total, target, pct, analisa, status, sess.outlet_code);
@@ -18584,15 +18651,16 @@ function salesAnalysisOutletDirectory_() {
   return rows;
 }
 
-function salesAnalysisContext_(token) {
+function salesAnalysisContext_(token, writeOnly) {
   SALES_ANALYSIS.beginRequest();
   var mainSession = requireSession_(token);
   var employee = findEmployee_(mainSession.nik);
   assertEmployeeActive_(employee);
-  var outlets = salesAnalysisOutletDirectory_();
-  SALES_ANALYSIS.syncOutlets(outlets);
   var role = employee.outlet === 'BIHQ' ? 'admin' : 'store';
   var employeeOutlet = salesAnalysisCanonicalOutletCode_(employee.outlet);
+  // Outlet writes need the authenticated employee's outlet, not every outlet.
+  var outlets = writeOnly && role==='store' ? [{code:employeeOutlet,name:employeeOutlet,role:role}] : salesAnalysisOutletDirectory_();
+  SALES_ANALYSIS.syncOutlets(outlets);
   var outlet = outlets.filter(function (row) { return row.code === employeeOutlet; })[0] || { code: employeeOutlet, name: employeeOutlet, role: role };
   var analysisSession = SALES_ANALYSIS.issueSession(outlet.code, outlet.name, role);
   return { employee: employee, outlets: outlets, session: analysisSession };
@@ -18652,21 +18720,21 @@ function getSalesAnalysisDailyReport(token, reportDate) {
 
 function saveSalesAnalysisDaily(token, payload) {
   return safe_(function () {
-    var context = salesAnalysisContext_(token);
+    var context = salesAnalysisContext_(token, true);
     return SALES_ANALYSIS.saveDaily(context.session.token, payload || {});
   });
 }
 
 function saveSalesAnalysisWeekly(token, payload) {
   return safe_(function () {
-    var context = salesAnalysisContext_(token);
+    var context = salesAnalysisContext_(token, true);
     return SALES_ANALYSIS.saveWeekly(context.session.token, payload || {});
   });
 }
 
 function saveSalesAnalysisMonthly(token, payload) {
   return safe_(function () {
-    var context = salesAnalysisContext_(token);
+    var context = salesAnalysisContext_(token, true);
     return SALES_ANALYSIS.saveMonthly(context.session.token, payload || {});
   });
 }

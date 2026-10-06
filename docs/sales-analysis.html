@@ -742,6 +742,45 @@ const state = {
 };
 const dailyReportCopyCache = new Map();
 let dailyReportPrepareId = 0;
+let monthLoadId = 0;
+let salesSavePending = false;
+const salesEditorDrafts = new Map();
+
+function salesEditorKey(field){
+  const outlet = session.role==='admin' ? state.outletFilter : session.outlet_code;
+  const selected = state.dash && state.dash.days[state.day-1];
+  const scope = field==='sales' ? 'day' : state.scope;
+  const period = scope==='day' ? state.day : scope==='week' ? selected && selected.week : 'month';
+  return [field,outlet,state.year,state.month,scope,period].join('|');
+}
+
+function salesSaveSnapshot(){
+  const selected = state.dash && state.dash.days[state.day-1];
+  return {year:state.year,month:state.month,day:state.day,scope:state.scope,
+    outlet:session.role==='admin'?state.outletFilter:session.outlet_code,
+    week:selected && selected.week,salesKey:salesEditorKey('sales'),analysisKey:salesEditorKey('analysis'),
+    salesInput:document.getElementById('dayAmount').value,analysisInput:document.getElementById('anaBox').value};
+}
+
+function clearSavedDraft(key, value){
+  if(salesEditorDrafts.get(key)===value) salesEditorDrafts.delete(key);
+}
+
+function applySavedDaily(snapshot, result){
+  if(state.year!==snapshot.year || state.month!==snapshot.month || state.outletFilter!==snapshot.outlet || !state.dash) return;
+  const d=state.dash.days[snapshot.day-1];
+  if(!d) return;
+  const delta=Number(result.sales)-Number(d.sales||0);
+  d.sales=Number(result.sales);
+  d.daily={text:result.analisa||'',status:result.status};
+  const week=state.dash.weeks.find(w=>w.w===d.week);
+  if(week) week.total=Number(week.total||0)+delta;
+  if(state.dash.month){
+    state.dash.month.total=Number(state.dash.month.total||0)+delta;
+    state.dash.month.pct=state.dash.month.target ? state.dash.month.total/state.dash.month.target*100 : 0;
+  }
+  state.dash.ytdTotal=Number(state.dash.ytdTotal||0)+delta;
+}
 
 const fmtIDR = n => Math.round(n||0).toLocaleString('id-ID');
 const fmtIDRInput = value => {
@@ -924,6 +963,10 @@ function enterApp(){
 }
 
 async function loadMonth(year, month, silent){
+  if(salesSavePending) return;
+  const requestId=++monthLoadId;
+  const outlet=state.outletFilter;
+  const isCurrent=()=>requestId===monthLoadId && state.year===year && state.month===month && state.outletFilter===outlet;
   if(!silent) showLoader(true);
   const ss = document.getElementById('syncStatus');
   if(!silent){ ss.classList.add('sync'); ss.textContent='Sync · loading'; } else { ss.classList.add('sync'); ss.textContent='Sync · background'; }
@@ -931,9 +974,10 @@ async function loadMonth(year, month, silent){
     // Parallel fetch: dashboard + targets for the period
     const periodKey = year + '-' + pad2(month);
     const [dash, tgtData] = await Promise.all([
-      call('getMonthDashboard', session.token, year, month, state.outletFilter),
+      call('getMonthDashboard', session.token, year, month, outlet),
       state.targetsCache[periodKey] ? Promise.resolve(null) : call('getTargets', session.token, year, month)
     ]);
+    if(!isCurrent()) return;
     state.dash = dash;
     if (tgtData) {
       state.targetsCache[periodKey] = tgtData.targets || {};
@@ -945,9 +989,10 @@ async function loadMonth(year, month, silent){
     ss.textContent = dash.fromCache ? ('Sinkron · cache' + src) : ('Sinkron' + src);
     ss.title = 'Dashboard dan penyimpanan Sales Analysis menggunakan database Google Sheets.';
   } catch(e){
+    if(!isCurrent()) return;
     toast('Gagal memuat: '+(e.message||e), true);
     if(String(e.message||'').indexOf('SESSION')!==-1){ sessionStorage.removeItem('bz_session'); location.reload(); }
-  } finally { if(!silent) showLoader(false); }
+  } finally { if(isCurrent() && !silent) showLoader(false); }
 }
 
 function refreshMonthInBackground(){
@@ -1025,7 +1070,8 @@ function render(){
   if(!isHQ){
     document.getElementById('inpMeta').textContent =
       ID_DOW_LONG[dt.getDay()]+' · '+pad2(day)+' '+ID_MONTHS_SHORT[month-1]+' · '+(session.role==='admin'?'BIHQ untuk '+state.outletFilter:(selDay&&selDay.daily.status==='done'?'tersimpan':'belum disimpan'));
-    document.getElementById('dayAmount').value = dSales>0?fmtIDR(dSales):'';
+    const salesKey=salesEditorKey('sales');
+    document.getElementById('dayAmount').value = salesEditorDrafts.has(salesKey) ? salesEditorDrafts.get(salesKey) : dSales>0?fmtIDR(dSales):'';
     document.getElementById('saveDay').disabled = false;
   }
 
@@ -1053,12 +1099,14 @@ function render(){
   // analisa text content based on scope and (HQ) selected outlet
   const txt = getAnalisaTextForCurrent();
   const ana = document.getElementById('anaBox');
-  ana.value = txt || '';
+  const analysisKey=salesEditorKey('analysis');
+  const hasDraft=salesEditorDrafts.has(analysisKey) && !isHQ && session.role!=='admin';
+  ana.value = hasDraft ? salesEditorDrafts.get(analysisKey) : txt || '';
   ana.readOnly = isHQ || session.role==='admin';
-  document.getElementById('anaCount').textContent = (txt||'').length;
+  document.getElementById('anaCount').textContent = ana.value.length;
   document.getElementById('submitBtn').disabled = isHQ || session.role==='admin';
   document.getElementById('tplBtn').style.display = (isHQ||session.role==='admin')?'none':'';
-  document.getElementById('savedAt').textContent = txt? `tersimpan · ${txt.length} char` : 'belum disimpan';
+  document.getElementById('savedAt').textContent = hasDraft ? 'perubahan belum disimpan' : txt? `tersimpan · ${txt.length} char` : 'belum disimpan';
 
   renderStatement();
   renderHQDetail();
@@ -1518,6 +1566,8 @@ document.getElementById('anaOutletPick').addEventListener('change', e=>{
 });
 
 document.getElementById('anaBox').addEventListener('input', e=>{
+  salesEditorDrafts.set(salesEditorKey('analysis'),e.target.value);
+  document.getElementById('savedAt').textContent='perubahan belum disimpan';
   document.getElementById('anaCount').textContent = e.target.value.length;
 });
 
@@ -1526,51 +1576,73 @@ document.getElementById('tplBtn').addEventListener('click', ()=>{
   if (ana.value.trim().length===0) ana.value = TEMPLATE_TEXT;
   else if (!ana.value.includes('Cuaca')) ana.value = TEMPLATE_TEXT + '\n\n' + ana.value;
   else { toast('Template sudah ada', true); return; }
+  salesEditorDrafts.set(salesEditorKey('analysis'),ana.value);
   document.getElementById('anaCount').textContent = ana.value.length;
   const pos = ana.value.indexOf('Cuaca') + 'Cuaca       : '.length;
   ana.focus();
   ana.setSelectionRange(pos, pos);
 });
 
-document.getElementById('dayAmount').addEventListener('input', e=>formatIDRInputElement(e.target));
+document.getElementById('dayAmount').addEventListener('input', e=>{
+  formatIDRInputElement(e.target);
+  salesEditorDrafts.set(salesEditorKey('sales'),e.target.value);
+});
 
 document.getElementById('saveDay').addEventListener('click', async ()=>{
+  if(salesSavePending) return;
+  const snapshot=salesSaveSnapshot();
   const targetOutlet = session.role==='admin' ? state.outletFilter : session.outlet_code;
   if (!targetOutlet || targetOutlet==='ALL'){ toast('Pilih salah satu outlet terlebih dahulu.', true); return; }
   const raw = document.getElementById('dayAmount').value.replace(/[^\d]/g,'');
   const sales = parseInt(raw||'0',10);
   const date = state.year+'-'+pad2(state.month)+'-'+pad2(state.day);
-  const selectedDay = state.dash && state.dash.days ? state.dash.days[state.day-1] : null;
-  const existingAnalysis = selectedDay && selectedDay.daily ? selectedDay.daily.text||'' : '';
+  const payload={date,sales,outlet_code:targetOutlet};
+  // Save the visible daily analysis; other scopes must not replace it.
+  if(snapshot.scope==='day' && session.role!=='admin') payload.analisa=snapshot.analysisInput;
+  else {
+    payload.analisa=state.dash.days[snapshot.day-1].daily.text||'';
+    payload.preserveAnalysis=true;
+  }
+  salesEditorDrafts.set(snapshot.salesKey,snapshot.salesInput);
+  if(!payload.preserveAnalysis) salesEditorDrafts.set(snapshot.analysisKey,snapshot.analysisInput);
+  salesSavePending=true;
+  ++monthLoadId;
   showLoader(true);
   try {
-    const r = await call('saveDaily', session.token, { date, sales, analisa: existingAnalysis, outlet_code:targetOutlet });
+    const r = await call('saveDaily', session.token, payload);
     if(!r.ok){ toast(r.error||'Gagal simpan',true); return; }
+    // Keep the frontend compatible while the older GAS deployment is updating.
+    if(r.analisa===undefined) r.analisa=payload.analisa;
     toast('Sales tersimpan');
-    const d = state.dash && state.dash.days ? state.dash.days[state.day-1] : null;
-    if(d){
-      const old = Number(d.sales)||0;
-      d.sales = sales;
-      if(state.scope==='day') d.daily = d.daily || {};
-      if(state.scope==='day'){ d.daily.text = document.getElementById('anaBox').value || ''; d.daily.status = r.status || d.daily.status; }
-      if(state.dash.month){ state.dash.month.total = (Number(state.dash.month.total)||0) - old + sales; }
-      render();
-    }
-    refreshMonthInBackground();
-  } catch(e){ toast('Gagal simpan', true); } finally { showLoader(false); }
+    clearSavedDraft(snapshot.salesKey,snapshot.salesInput);
+    if(!payload.preserveAnalysis) clearSavedDraft(snapshot.analysisKey,snapshot.analysisInput);
+    applySavedDaily(snapshot,r);
+    render();
+  } catch(e){ toast('Gagal simpan: '+(e.message||e), true); }
+  finally { salesSavePending=false; showLoader(false); refreshMonthInBackground(); }
 });
 
 document.getElementById('submitBtn').addEventListener('click', async ()=>{
+  if(salesSavePending) return;
   if (session.role==='admin' || state.dash.isAggregate) return;
   const text = document.getElementById('anaBox').value.trim();
   if(text.length<20){ toast('Min. 20 karakter', true); return; }
+  const snapshot=salesSaveSnapshot();
+  salesEditorDrafts.set(snapshot.analysisKey,snapshot.analysisInput);
+  salesSavePending=true;
+  ++monthLoadId;
   showLoader(true);
   try {
     let r;
     if(state.scope==='day'){
       const date = state.year+'-'+pad2(state.month)+'-'+pad2(state.day);
-      const sel = state.dash.days[state.day-1];
-      r = await call('saveDaily', session.token, { date, sales: sel?sel.sales:0, analisa: text });
+      const payload={date,analisa:text,sales:state.dash.days[snapshot.day-1].sales,preserveSales:true};
+      if(salesEditorDrafts.has(snapshot.salesKey)){
+        payload.sales=parseInt(snapshot.salesInput.replace(/[^\d]/g,'')||'0',10);
+        payload.preserveSales=false;
+      }
+      r = await call('saveDaily', session.token, payload);
+      if(r && r.analisa===undefined) r.analisa=text;
     } else if(state.scope==='week'){
       const sel = state.dash.days[state.day-1];
       r = await call('saveWeekly', session.token, { year:state.year, month:state.month, week:sel.week, analisa:text });
@@ -1579,12 +1651,17 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     }
     if(!r.ok){ toast(r.error||'Gagal submit', true); return; }
     toast('Analisa terkirim');
-    if(state.scope==='day'){ const d=state.dash.days[state.day-1]; if(d){ d.daily=d.daily||{}; d.daily.text=text; d.daily.status=r.status||'done'; } }
-    else if(state.scope==='week'){ const d=state.dash.days[state.day-1]; const w=state.dash.weeks.find(x=>x.w===d.week); if(w){ w.analysis=text; w.status=r.status||'done'; } }
-    else if(state.dash.month){ state.dash.month.analysis=text; state.dash.month.status=r.status||'done'; }
+    clearSavedDraft(snapshot.analysisKey,snapshot.analysisInput);
+    if(snapshot.scope==='day'){
+      clearSavedDraft(snapshot.salesKey,snapshot.salesInput);
+      applySavedDaily(snapshot,r);
+    } else if(state.year===snapshot.year && state.month===snapshot.month && state.outletFilter===snapshot.outlet){
+      if(snapshot.scope==='week'){ const w=state.dash.weeks.find(x=>x.w===snapshot.week); if(w){ w.analysis=text; w.status=r.status||'done'; } }
+      else if(state.dash.month){ state.dash.month.analysis=text; state.dash.month.status=r.status||'done'; }
+    }
     render();
-    refreshMonthInBackground();
-  } catch(e){ toast('Gagal submit', true); } finally { showLoader(false); }
+  } catch(e){ toast('Gagal submit: '+(e.message||e), true); }
+  finally { salesSavePending=false; showLoader(false); refreshMonthInBackground(); }
 });
 
 /* ============= DAY DETAIL MODAL ============= */
@@ -1863,7 +1940,7 @@ async function saveHqDailyFromModal(outletCode, day, contributor, box){
   button.disabled=true;
   button.textContent='Menyimpan';
   try{
-    const result = await call('saveDaily', session.token, { date, sales, analisa:contributor&&contributor.text||'', outlet_code:outletCode });
+    const result = await call('saveDaily', session.token, { date, sales, analisa:contributor&&contributor.text||'', preserveAnalysis:true, outlet_code:outletCode });
     if(!result || !result.ok) throw new Error(result&&result.error||'Gagal menyimpan Sales Harian.');
     box.querySelector('.ob-sales').innerHTML = sales>0?`<span class="rp">Rp</span>${fmtShort(sales)}`:'<span style="color:var(--soft);font-weight:500;font-size:11px">—</span>';
     toast(`Sales ${outletCode} tersimpan`);
