@@ -104,29 +104,35 @@ secrets and Apps Script Script Properties, never in source files.
 version that stores `source_event_id` for transfer correction and receipt
 reconciliation.
 
-### Midtrans Snap for Penjualan Asset
+### DOKU Checkout for Penjualan Asset
 
-Apply `cloudflare/migrations/0003_ba_asset_payments.sql` only to the
-`bakerzin-inventory-operations` D1 database. Then save the matching Midtrans
-Sandbox keys as Worker secrets (do not put either value in this repository):
-
-```text
-wrangler secret put MIDTRANS_SERVER_KEY
-wrangler secret put MIDTRANS_CLIENT_KEY
-```
-
-Configure the Midtrans Payment Notification URL as:
+The existing `cloudflare/migrations/0003_ba_asset_payments.sql` table is reused for
+verified asset-sale payments. Save the DOKU Production credentials as Worker
+secrets; never put either value in this repository:
 
 ```text
-https://bakerzin-inventory-api.operational-bi.workers.dev/v1/ba/payments/midtrans/webhook
+wrangler secret put DOKU_CLIENT_ID
+wrangler secret put DOKU_SECRET_KEY
 ```
 
-The checked-in `MIDTRANS_ENVIRONMENT` remains `sandbox` for the first end-to-end
-test. Change it to `production` only after a successful Sandbox payment, replace
-both secrets with the Production keys, redeploy, and perform one low-value live
-transaction. The form never trusts the browser callback: Cloudflare verifies the
-notification signature, checks Midtrans's Status API, matches the amount, and
-claims a paid order for one BA submission only.
+The checked-in `DOKU_ENVIRONMENT` is `production`. Configure the DOKU HTTP
+Notification URL as:
+
+```text
+https://bakerzin-inventory-api.operational-bi.workers.dev/v1/ba/payments/doku/webhook
+```
+
+The create-payment request also supplies this URL as DOKU Checkout's
+`override_notification_url`. Cloudflare verifies DOKU's HMAC-SHA256 notification
+signature against the exact request body, matches the invoice amount, stores
+`PAID` only for a `SUCCESS` transaction, and claims a paid order for one BA
+submission only. DOKU Checkout `FAILED` notifications are deliberately not
+treated as terminal because Checkout can let the customer retry another payment
+method.
+
+For the first production smoke test, use a deliberately low-value real
+transaction and verify the notification, amount, paid state, and one-time claim
+before normal use.
 
 Validate the split schema locally from the repository root:
 
