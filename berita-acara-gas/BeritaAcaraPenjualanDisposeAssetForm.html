@@ -179,7 +179,6 @@
         let paymentAmount = 0;
         let paymentConfirmed = false;
         let paymentStatusTimer = null;
-        let snapScriptPromise = null;
         
         // Auto Populate User Data
         if (user) {
@@ -383,24 +382,10 @@
             });
         }
 
-        function loadSnapScript(url, clientKey) {
-            if (window.snap) return Promise.resolve();
-            if (snapScriptPromise) return snapScriptPromise;
-            snapScriptPromise = new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = url;
-                script.dataset.clientKey = clientKey;
-                script.onload = resolve;
-                script.onerror = () => reject(new Error('Modul pembayaran gagal dimuat. Silakan coba kembali.'));
-                document.head.appendChild(script);
-            });
-            return snapScriptPromise;
-        }
-
         async function checkPaymentStatus(showPendingMessage = true) {
             if (!paymentOrderId) return false;
             try {
-                const payment = await runServer('getAssetMidtransPaymentStatus', paymentOrderId, window.GLOBAL_USER);
+                const payment = await runServer('getAssetDokuPaymentStatus', paymentOrderId, window.GLOBAL_USER);
                 if (payment && payment.status === 'PAID' && Number(payment.amount) === paymentAmount) {
                     paymentConfirmed = true;
                     clearTimeout(paymentStatusTimer);
@@ -443,43 +428,40 @@
             const paymentButton = document.getElementById('btnAssetPayment');
             const paymentButtonLabel = document.getElementById('paymentButtonLabel');
             const paymentButtonSpinner = document.getElementById('paymentButtonSpinner');
+            const checkoutWindow = window.open('about:blank', '_blank');
             paymentButton.disabled = true;
             paymentButtonLabel.textContent = 'MENYIAPKAN PEMBAYARAN...';
             paymentButtonSpinner.classList.remove('hidden');
             document.getElementById('paymentVerification').classList.remove('hidden');
-            setPaymentStatus(`Membuat checkout ${window.formatRupiah(expectedAmount)}...`);
+            setPaymentStatus(`Membuat checkout DOKU ${window.formatRupiah(expectedAmount)}...`);
+
             try {
-                const payment = await runServer('createAssetMidtransPayment', { amount: expectedAmount, email: email }, window.GLOBAL_USER);
+                const payment = await runServer('createAssetDokuPayment', { amount: expectedAmount, email: email }, window.GLOBAL_USER);
                 paymentOrderId = payment.orderId;
                 paymentAmount = Number(payment.amount);
                 paymentConfirmed = false;
-                await loadSnapScript(payment.snapJsUrl, payment.clientKey);
-                setPaymentStatus(`Checkout ${window.formatRupiah(paymentAmount)} dibuka. Pilih metode pembayaran dan selesaikan transaksi.`);
-                window.snap.pay(payment.token, {
-                    onSuccess: function() {
-                        setPaymentStatus('Pembayaran diterima. Sedang memverifikasi status transaksi...');
-                        checkPaymentStatus();
-                        pollPaymentStatus();
-                    },
-                    onPending: function() {
-                        setPaymentStatus('Pembayaran masih menunggu penyelesaian. Status akan diperiksa otomatis.');
-                        pollPaymentStatus();
-                    },
-                    onError: function() {
-                        setPaymentStatus('Pembayaran gagal. Klik tombol pembayaran untuk mencoba kembali.', 'error');
-                    },
-                    onClose: function() {
-                        setPaymentStatus('Checkout ditutup. Jika sudah membayar, status akan diperiksa otomatis.');
-                        checkPaymentStatus();
-                        pollPaymentStatus();
-                    }
-                });
+
+                if (!payment.paymentUrl) {
+                    throw new Error('URL checkout DOKU tidak tersedia.');
+                }
+
+                setPaymentStatus(`Checkout DOKU ${window.formatRupiah(paymentAmount)} dibuka di tab baru. Selesaikan pembayaran; status akan diperiksa otomatis.`);
+
+                if (checkoutWindow) {
+                    checkoutWindow.opener = null;
+                    checkoutWindow.location.replace(payment.paymentUrl);
+                } else {
+                    window.open(payment.paymentUrl, '_blank', 'noopener,noreferrer');
+                }
+
+                checkPaymentStatus(false);
                 pollPaymentStatus();
             } catch (error) {
+                if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
                 paymentOrderId = '';
                 paymentAmount = 0;
                 paymentConfirmed = false;
-                setPaymentStatus(error.message || 'Checkout pembayaran gagal dibuat.', 'error');
+                setPaymentStatus(error.message || 'Checkout DOKU gagal dibuat.', 'error');
             } finally {
                 paymentButton.disabled = false;
                 paymentButtonLabel.textContent = 'LANJUT KE PEMBAYARAN';
@@ -573,7 +555,7 @@
                 paymentConfirmed: existingPayment ? existingPayment.paymentConfirmed === true : paymentConfirmed,
                 paymentConfirmedAt: existingPayment ? (existingPayment.paymentConfirmedAt || null) : null,
                 paymentStatus: existingPayment ? (existingPayment.paymentStatus || '') : (paymentConfirmed ? 'PAID' : 'PENDING'),
-                paymentVerificationMethod: 'MIDTRANS_SERVER_WEBHOOK'
+                paymentVerificationMethod: 'DOKU_HTTP_NOTIFICATION'
             };
 
             const fileInputs = document.querySelectorAll('.file-input');

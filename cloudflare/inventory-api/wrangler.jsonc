@@ -17,7 +17,7 @@
   },
   "vars": {
     "ENVIRONMENT": "cloudflare-primary",
-    "MIDTRANS_ENVIRONMENT": "production",
+    "DOKU_ENVIRONMENT": "production",
     "SOPI_MODEL": "@cf/openai/gpt-oss-120b",
     "SOPI_FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
     "SOPI_LANGUAGE_MODEL": "@cf/aisingapore/gemma-sea-lion-v4-27b-it"

@@ -1138,7 +1138,7 @@ function baResolveApprovalState_(row, configMap) {
   };
 }
 
-function createAssetMidtransPayment(
+function createAssetDokuPayment(
   paymentData,
   userData
 ) {
@@ -1155,7 +1155,7 @@ function createAssetMidtransPayment(
   const result =
     baCloudflareRequest_(
       'post',
-      '/v1/ba/payments/midtrans/create',
+      '/v1/ba/payments/doku/create',
       {
         amount:
           Math.round(
@@ -1190,7 +1190,7 @@ function createAssetMidtransPayment(
   return result.payment;
 }
 
-function getAssetMidtransPaymentStatus(
+function getAssetDokuPaymentStatus(
   orderId,
   userData
 ) {
@@ -1214,7 +1214,7 @@ function getAssetMidtransPaymentStatus(
   const result =
     baCloudflareRequest_(
       'get',
-      '/v1/ba/payments/midtrans/status?order_id=' +
+      '/v1/ba/payments/doku/status?order_id=' +
       encodeURIComponent(
         safeOrderId
       )
@@ -1851,7 +1851,7 @@ function rekamData(
         verifiedPayment =
           baCloudflareRequest_(
             'get',
-            '/v1/ba/payments/midtrans/status?order_id=' +
+            '/v1/ba/payments/doku/status?order_id=' +
             encodeURIComponent(
               String(
                 formData.paymentOrderId ||
@@ -1898,12 +1898,12 @@ function rekamData(
         '';
 
       formData.paymentVerificationMethod =
-        'MIDTRANS_SERVER_WEBHOOK';
+        'DOKU_HTTP_NOTIFICATION';
 
       try {
         baCloudflareRequest_(
           'post',
-          '/v1/ba/payments/midtrans/claim',
+          '/v1/ba/payments/doku/claim',
           {
             orderId:
               String(
