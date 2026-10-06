@@ -1260,7 +1260,7 @@ if (!backend.includes("function bqEnsureDailyTargetsTable_()") || !backend.inclu
 if (!backend.includes('function bqGetDailyTargetsByDate_(outletCodes, year, month)') || !backend.includes('function bqSaveDailyTargetUpdates_(key, updates, submittedBy)') || !backend.includes('function saveDailyTargets(token, payload)')) {
   failures.push('Backend baca/edit target harian per outlet belum lengkap');
 }
-if (!backend.includes("'_SHEETS_V10'") || backend.includes('Number(targetsMap[oc])||0 : defaultTarget')) {
+if (!backend.includes("'_SHEETS_V11'") || backend.includes('Number(targetsMap[oc])||0 : defaultTarget')) {
   failures.push('Target bulanan kalender belum murni berasal dari akumulasi target harian atau cache belum dinaikkan');
 }
 if (!backend.includes('reported: !!row') || !backend.includes("if (sess.role !== 'admin') return { ok:false, error:'Hanya BIHQ yang boleh mengubah target harian.' }")) {
