@@ -391,10 +391,43 @@ function logout(token) {
 }
 
 /** Creates a short-lived, one-time sign-on code for the separate Berita Acara Web App. */
+function findBeritaAcaraEmployee_(nik) {
+  nik = normalizeNik_(nik);
+  if (!nik) throw new Error('NIK wajib diisi.');
+  const sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet) throw new Error('Sheet EMP_LIST tidak ditemukan.');
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('Data karyawan belum tersedia.');
+  const cache = CacheService.getScriptCache(), key = 'ba-employee-row:' + nik;
+  let pointer = null;
+  try { pointer = JSON.parse(cache.get(key) || 'null'); } catch (error) {}
+  function readRow(row) {
+    const values = sheet.getRange(row, 1, 1, 12).getDisplayValues()[0];
+    if (normalizeNik_(values[0]) !== nik) return null;
+    return {sheet:sheet,row:row,nik:nik,name:String(values[1]||'').trim()||nik,
+      outlet:String(values[2]||'').trim().toUpperCase(),position:normalizeEmployeePosition_(values[4]),
+      grade:String(values[5]||'').trim().toUpperCase(),section:String(values[6]||'').trim().toUpperCase()||'ALL',
+      status:String(values[8]||'').trim().toLowerCase(),password:String(values[11]||'')};
+  }
+  if (pointer && pointer.lastRow === lastRow && pointer.row >= 2 && pointer.row <= lastRow) {
+    const employee = readRow(pointer.row);
+    if (employee) return employee;
+  }
+  const keys = sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues();
+  for (let i = 0; i < keys.length; i++) {
+    if (normalizeNik_(keys[i][0]) !== nik) continue;
+    const employee = readRow(i + 2);
+    if (!employee) continue;
+    try { cache.put(key, JSON.stringify({row:i+2,lastRow:lastRow}), 600); } catch (error) {}
+    return employee;
+  }
+  throw new Error('NIK tidak terdaftar.');
+}
+
 function createBeritaAcaraHandoff(token) {
   return safe_(function () {
     const session = requireSession_(token);
-    const employee = findEmployee_(session.nik);
+    const employee = findBeritaAcaraEmployee_(session.nik);
     assertEmployeeActive_(employee);
     const handoff = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
     CacheService.getScriptCache().put('ba-handoff:' + handoff, JSON.stringify({ nik: employee.nik, issuedAt: Date.now() }), 300);
@@ -412,7 +445,7 @@ function consumeBeritaAcaraHandoff(handoff) {
     if (!raw) throw new Error('Kode akses Berita Acara sudah dipakai atau kedaluwarsa. Silakan buka kembali dari BI-Space.');
     const data = JSON.parse(raw);
     if (!data.issuedAt || Date.now() - Number(data.issuedAt) > 300000) throw new Error('Kode akses Berita Acara telah kedaluwarsa.');
-    const employee = findEmployee_(normalizeNik_(data.nik));
+    const employee = findBeritaAcaraEmployee_(data.nik);
     assertEmployeeActive_(employee);
     const position = normalizeEmployeePosition_(employee.position);
     const notifyToken = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
@@ -16758,9 +16791,7 @@ function putCacheJson_(key, obj, seconds) {
  * @param {string} outletFilter  'ALL' or outlet_code (admin only). Store user: dipaksa ke outlet sendiri.
  */
 function getMonthDashboard(token, year, month, outletFilter) {
-  if (!bqIsAvailable_()) {
-    throw new Error('Database Google Sheets Sales Analysis tidak dapat dibuka. Pastikan akun deployment memiliki akses Editor.');
-  }
+  // A cached dashboard does not need to open or read the transaction table.
   return getMonthDashboardBigQuery_(token, year, month, outletFilter);
 }
 
@@ -16770,7 +16801,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   outletFilter = (outletFilter || sess.outlet_code).toUpperCase();
   if (sess.role !== 'admin') outletFilter = sess.outlet_code;
 
-  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V10';
+  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V11';
   var cached = getCacheJson_(cacheKey);
   if (cached) {
     cached.fromCache = true;
@@ -16999,6 +17030,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
     outlet: outletFilter,
     outletName: outletFilter==='ALL' ? 'Semua Outlet (Aggregate)' : outletName_(outletFilter),
     isAggregate: outletFilter === 'ALL',
+    targets: targetsMap, defaultTarget: defaultTarget,
     monthTarget: finalTarget,
     today: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'),
     days: days,
@@ -17676,6 +17708,7 @@ const SALES_SHEET_TABS = {
   weekly_analysis: ['outlet_code','period_key','year','month','week','period_start','period_end','total_sales','analisa_mingguan','status','submitted_by','submitted_at','updated_at']
 };
 var SALES_SHEET_READ_CACHE = {};
+var SALES_SHEET_DATABASE = null;
 
 function salesSheetResetReadCache_() {
   SALES_SHEET_READ_CACHE = {};
@@ -17688,7 +17721,8 @@ function salesSpreadsheetId_() {
 function salesSpreadsheet_() {
   var id = salesSpreadsheetId_();
   if (!id) throw new Error('SALES_ANALYSIS_SPREADSHEET_ID belum diatur.');
-  return SpreadsheetApp.openById(id);
+  if (!SALES_SHEET_DATABASE) SALES_SHEET_DATABASE = SpreadsheetApp.openById(id);
+  return SALES_SHEET_DATABASE;
 }
 
 function salesSheetEnsure_(name) {
@@ -17794,18 +17828,20 @@ function salesSheetWithLock_(callback) {
 }
 
 function bqIsAvailable_() {
-  try { return !!salesSheetTable_('daily_sales').sheet; } catch (error) { Logger.log('Sales Analysis Sheet unavailable: ' + error.message); return false; }
+  try { return !!salesSheetEnsure_('daily_sales'); } catch (error) { Logger.log('Sales Analysis Sheet unavailable: ' + error.message); return false; }
 }
 
 function bqFetchDailyRows_(outletList, startDate, endDate) {
   var allowed = {};
   (outletList || []).forEach(function(code){ allowed[String(code).toUpperCase()] = true; });
   var startKey = salesSheetDateKey_(startDate), endKey = salesSheetDateKey_(endDate);
-  var rows = salesSheetTable_('daily_sales').rows.filter(function(row){
+  var table = salesSheetTable_('daily_sales');
+  var rows = table.rows.filter(function(row){
     var code = String(row.outlet_code || '').toUpperCase();
     var key = salesSheetDateKey_(row.date);
     return allowed[code] && key >= startKey && key <= endKey;
   });
+  if ((outletList || []).length === 1) salesSheetPrimeDailyPointers_(table, rows);
   return salesSheetLatest_(rows, function(row){ return String(row.outlet_code || '').toUpperCase() + '|' + salesSheetDateKey_(row.date); }).map(function(row){
     return { outlet_code:String(row.outlet_code || '').toUpperCase(), date:salesSheetDateKey_(row.date), sales:Number(row.sales)||0, analisa_harian:String(row.analisa_harian||''), analisa_status:String(row.analisa_status||'') };
   });
@@ -17887,6 +17923,24 @@ function bqSyncGlobalDailyAnalysis_(key,isHoliday,holidayNote,hasPromo,promoNote
   if(hasPromo&&promoNote)bqInsertGlobalDailyAnalysisItem_(key,'PROMO',promoNote,submittedBy);
   if(hasEvent&&eventNote)bqInsertGlobalDailyAnalysisItem_(key,'EVENT',eventNote,submittedBy);
   if(otherAnalysis)bqInsertGlobalDailyAnalysisItem_(key,'OTHER',otherAnalysis,submittedBy);
+}
+
+function salesSheetPrimeDailyPointers_(table, rows) {
+  // Dashboard has already read these rows; prepare the next save without another scan.
+  var byKey = {}, counts = {};
+  var spreadsheetId = salesSpreadsheetId_();
+  rows.forEach(function(row) {
+    var key = 'sales-daily-row:' + spreadsheetId + ':' + String(row.outlet_code || '').toUpperCase() + ':' + salesSheetDateKey_(row.date);
+    counts[key] = (counts[key] || 0) + 1;
+    byKey[key] = row.__rowNumber;
+  });
+  var entries = {};
+  Object.keys(byKey).forEach(function(key) {
+    if (counts[key] === 1) entries[key] = JSON.stringify({row:byKey[key],lastRow:table.values.length+1});
+  });
+  var keys = Object.keys(entries);
+  if (!keys.length || keys.length > 100) return;
+  try { CacheService.getScriptCache().putAll(entries, 600); } catch (error) { Logger.log('Sales row cache skipped: ' + error.message); }
 }
 
 function salesSheetDailyRecord_(sheet, headers, outlet, date) {
@@ -18661,10 +18715,41 @@ function salesAnalysisOutletDirectory_() {
   return rows;
 }
 
+function salesAnalysisEmployee_(nik) {
+  var sheet = getSpreadsheet_().getSheetByName(CONFIG.EMP_SHEET);
+  if (!sheet) throw new Error('Sheet EMP_LIST tidak ditemukan.');
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('Data karyawan belum tersedia.');
+  var key = 'sales-employee-row:' + nik;
+  var cache = CacheService.getScriptCache(), pointer = null;
+  try { pointer = JSON.parse(cache.get(key) || 'null'); } catch (error) {}
+  function readRow(row) {
+    var values = sheet.getRange(row, 1, 1, 12).getDisplayValues()[0];
+    if (normalizeNik_(values[0]) !== nik) return null;
+    return {sheet:sheet,row:row,nik:nik,name:String(values[1]||'').trim()||nik,
+      outlet:String(values[2]||'').trim().toUpperCase(),position:normalizeEmployeePosition_(values[4]),
+      grade:String(values[5]||'').trim().toUpperCase(),section:String(values[6]||'').trim().toUpperCase()||'ALL',
+      status:String(values[8]||'').trim().toLowerCase(),password:String(values[11]||'')};
+  }
+  if (pointer && pointer.lastRow === lastRow && pointer.row >= 2 && pointer.row <= lastRow) {
+    var employee = readRow(pointer.row);
+    if (employee) return employee;
+  }
+  var keys = sheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues();
+  for (var i = 0; i < keys.length; i++) {
+    if (normalizeNik_(keys[i][0]) !== nik) continue;
+    var found = readRow(i + 2);
+    if (!found) continue;
+    try { cache.put(key, JSON.stringify({row:i+2,lastRow:lastRow}), 600); } catch (error) {}
+    return found;
+  }
+  throw new Error('NIK tidak terdaftar.');
+}
+
 function salesAnalysisContext_(token, writeOnly) {
   SALES_ANALYSIS.beginRequest();
   var mainSession = requireSession_(token);
-  var employee = findEmployee_(mainSession.nik);
+  var employee = salesAnalysisEmployee_(mainSession.nik);
   assertEmployeeActive_(employee);
   var role = employee.outlet === 'BIHQ' ? 'admin' : 'store';
   var employeeOutlet = salesAnalysisCanonicalOutletCode_(employee.outlet);
@@ -18676,12 +18761,18 @@ function salesAnalysisContext_(token, writeOnly) {
   return { employee: employee, outlets: outlets, session: analysisSession };
 }
 
-function getSalesAnalysisBootstrap(token) {
+function getSalesAnalysisBootstrap(token, year, month) {
   return safe_(function () {
     var context = salesAnalysisContext_(token);
     var result = context.session;
     result.boot = SALES_ANALYSIS.getBootstrap();
     result.boot.outlets = context.outlets;
+    if (year !== undefined && month !== undefined) {
+      var y = Number(year), m = Number(month);
+      if (!Number.isInteger(y) || y < 2000 || y > 2100 || !Number.isInteger(m) || m < 1 || m > 12) throw new Error('Periode analisa tidak valid.');
+      // Reuse this request's authentication, outlet directory and Sheet reads.
+      result.dashboard = SALES_ANALYSIS.getMonthDashboard(result.token, y, m, result.role === 'admin' ? 'ALL' : result.outlet_code);
+    }
     return result;
   });
 }

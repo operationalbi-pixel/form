@@ -700,7 +700,7 @@
     return{
       withSuccessHandler:function(callback){return runner(callback,failure)},
       withFailureHandler:function(callback){return runner(success,callback)},
-      login:function(){invoke('salesAnalysisBootstrap',[],success,failure)},
+      login:function(year,month){invoke('salesAnalysisBootstrap',[year,month],success,failure)},
       logout:function(){if(success)success({ok:true})},
       getMonthDashboard:function(proxyToken,year,month,outlet){invoke('salesAnalysisDashboard',[year,month,outlet],success,failure)},
       getTargets:function(proxyToken,year,month){invoke('salesAnalysisTargets',[year,month],success,failure)},
@@ -934,7 +934,7 @@ document.getElementById('btnCopyDailyReport').addEventListener('click', async ev
 });
 
 /* ENTER APP */
-function enterApp(){
+function enterApp(initialDashboard){
   document.getElementById('appView').style.display='grid';
   document.getElementById('outletNameTop').textContent = session.outlet_name;
   document.getElementById('outletCodeTop').textContent = session.outlet_code;
@@ -959,7 +959,13 @@ function enterApp(){
   } else {
     state.outletFilter = session.outlet_code;
   }
-  loadMonth(state.year, state.month);
+  if(initialDashboard && initialDashboard.year===state.year && initialDashboard.monthNumber===state.month && initialDashboard.outlet===state.outletFilter){
+    state.dash=initialDashboard;
+    state.targetsCache[state.year+'-'+pad2(state.month)]=initialDashboard.targets||{};
+    state.defaultTarget=initialDashboard.defaultTarget||0;
+    render();
+    document.getElementById('syncStatus').textContent=initialDashboard.fromCache?'Sinkron · cache':'Sinkron';
+  } else loadMonth(state.year, state.month);
 }
 
 async function loadMonth(year, month, silent){
@@ -971,12 +977,11 @@ async function loadMonth(year, month, silent){
   const ss = document.getElementById('syncStatus');
   if(!silent){ ss.classList.add('sync'); ss.textContent='Sync · loading'; } else { ss.classList.add('sync'); ss.textContent='Sync · background'; }
   try {
-    // Parallel fetch: dashboard + targets for the period
     const periodKey = year + '-' + pad2(month);
-    const [dash, tgtData] = await Promise.all([
-      call('getMonthDashboard', session.token, year, month, outlet),
-      state.targetsCache[periodKey] ? Promise.resolve(null) : call('getTargets', session.token, year, month)
-    ]);
+    const dash = await call('getMonthDashboard', session.token, year, month, outlet);
+    // New backends include targets in the dashboard. Older deployments keep working.
+    const tgtData = dash.targets ? {targets:dash.targets,defaultTarget:dash.defaultTarget} :
+      state.targetsCache[periodKey] ? null : await call('getTargets', session.token, year, month);
     if(!isCurrent()) return;
     state.dash = dash;
     if (tgtData) {
@@ -2305,7 +2310,7 @@ window.addEventListener('keydown', e=>{
   try { mainToken=localStorage.getItem('bakerzin_session')||''; } catch(e){}
   if(!mainToken){ location.replace('index.html'); return; }
   try{
-    const res=await call('login','','');
+    const res=await call('login',state.year,state.month);
     if(!res || !res.ok) throw new Error(res&&res.error||'Sesi BI-Space tidak dapat dipakai.');
     Object.assign(BOOT,res.boot||{});
     session.token='BI_SPACE_PROXY';
@@ -2313,7 +2318,7 @@ window.addEventListener('keydown', e=>{
     session.outlet_name=res.outlet_name;
     session.role=res.role;
     document.getElementById('analysisBoot').classList.add('hide');
-    enterApp();
+    enterApp(res.dashboard);
   }catch(e){
     const card=document.querySelector('#analysisBoot .analysis-boot-card');
     const message=String(e&&e.message||e||'Gagal membuka Analisa Sales.')

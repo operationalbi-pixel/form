@@ -426,13 +426,15 @@
         document.getElementById('outletNameDisplay').textContent = user.OUTLET;
         document.getElementById('userNameDisplay').textContent = user.NAME;
         const switchButton = document.getElementById('switchApprovalMode');
-        google.script.run
-            .withSuccessHandler(access => {
-                if (switchButton && access && access.canApprove) {
-                    switchButton.classList.remove('hidden');
-                    switchButton.classList.add('inline-flex');
-                }
-            })
+        function applyApprovalAccess(access) {
+            if (switchButton && access && access.canApprove) {
+                switchButton.classList.remove('hidden');
+                switchButton.classList.add('inline-flex');
+            }
+        }
+        if (typeof user.CAN_BA_APPROVE === 'boolean') applyApprovalAccess({canApprove:user.CAN_BA_APPROVE});
+        else google.script.run
+            .withSuccessHandler(applyApprovalAccess)
             .withFailureHandler(error => console.warn('Akses Approval Mode tidak dapat diperiksa:', error))
             .getBaApprovalAccess(window.userData);
         setupCategoryToggles(); 

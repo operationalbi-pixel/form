@@ -107,9 +107,14 @@ function doGet(e) {
     user.BA_SESSION = baSession;
     user.CAN_BA_APPROVE =
       baUserCanApprove_(user);
+    const requestedMode = String(e && e.parameter && e.parameter.mode || '');
+    const dashboardPage = user.CAN_BA_APPROVE && requestedMode !== 'user' ? 'ApprovalDashboard' : 'OutletDashboard';
 
     const template =
       HtmlService.createTemplateFromFile('Index');
+
+    template.initialDashboardHtmlJson = JSON.stringify(include(dashboardPage)).replace(/</g, '\\u003c');
+    template.initialDashboardPageJson = JSON.stringify(dashboardPage);
 
     template.initialUserJson =
       JSON.stringify(user).replace(/</g, '\\u003c');
@@ -954,13 +959,9 @@ function getBaApprovalSettings(userData) {
 }
 
 function getBaApprovalAccess(userData) {
-  const settings =
-    getBaApprovalSettings(userData);
-
-  return {
-    canApprove: settings.canApprove,
-    canEdit: settings.canEdit
-  };
+  const user = requireBaSession_(userData && userData.BA_SESSION);
+  // The position directory is needed only by the settings editor.
+  return { canApprove: baUserCanApprove_(user), canEdit: baCanEditApprovalConfig_(user) };
 }
 
 function saveBaApprovalSettings(rows, userData) {
