@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import {
   dokuDigest,
   dokuGenerateSignature,
+  dokuRequestTimestamp,
   dokuGenerateSnapSignature,
   normalizeDokuStatus
 } from '../cloudflare/inventory-api/src/index.js';
@@ -24,6 +25,8 @@ const signature = await dokuGenerateSignature(
   'secret-test-only'
 );
 assert.match(signature, /^HMACSHA256=[A-Za-z0-9+/]+=*$/);
+
+assert.match(dokuRequestTimestamp(), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 assert.equal(
   signature,
   await dokuGenerateSignature(
@@ -105,7 +108,10 @@ assert.ok(worker.includes('https://api.doku.com'));
 assert.ok(worker.includes('X-Signature'));
 assert.ok(worker.includes('HMAC", hash: "SHA-512"'));
 assert.ok(worker.includes('/orders/v1/status/'));
-assert.ok(worker.includes('customer: {'));
+assert.ok(worker.includes('payment_due_date: 60'));
+assert.ok(worker.includes('DOKU_HTTP_'));
+assert.ok(!worker.includes('override_notification_url'));
+assert.ok(!worker.includes('const notificationUrl = new URL(request.url).origin'));
 assert.ok(!/DOKU_SECRET_KEY\s*[:=]\s*["'][^"']+["']/.test(worker));
 
 const appsScript = await readFile('berita-acara-gas/Code.gs', 'utf8');
