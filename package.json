@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "sync": "node scripts/sync-files.mjs",
-    "test": "node scripts/validate.mjs && node scripts/test-sales-save.mjs && node scripts/test-sales-loading.mjs && node scripts/test-staff-performance-indicators.mjs && node scripts/test-stock-position-job.mjs && node scripts/test-stock-cost-optimization.mjs && node scripts/test-midtrans-payment.mjs && node scripts/test-ba-loading.mjs && node scripts/test-ba-fast-approval.mjs && node scripts/test-ba-approval-mapping.mjs && node cloudflare/inventory-api/test/sopi.test.mjs"
+    "test": "node scripts/validate.mjs && node scripts/test-mock-recall.mjs && node scripts/test-sales-save.mjs && node scripts/test-sales-loading.mjs && node scripts/test-staff-performance-indicators.mjs && node scripts/test-stock-position-job.mjs && node scripts/test-stock-cost-optimization.mjs && node scripts/test-midtrans-payment.mjs && node scripts/test-ba-loading.mjs && node scripts/test-ba-fast-approval.mjs && node scripts/test-ba-approval-mapping.mjs && node cloudflare/inventory-api/test/sopi.test.mjs"
   }
 }
