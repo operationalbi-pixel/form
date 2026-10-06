@@ -1887,6 +1887,12 @@ async function dokuGenerateSignature(clientId, requestId, requestTimestamp, requ
 }
 __name(dokuGenerateSignature, "dokuGenerateSignature");
 
+function dokuRequestTimestamp() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+__name(dokuRequestTimestamp, "dokuRequestTimestamp");
+
+
 async function dokuSha256Hex(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value || ""));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1935,7 +1941,7 @@ __name(readTextWithLimit, "readTextWithLimit");
 
 async function dokuRequest(config, method, requestTarget, body) {
   const requestId = crypto.randomUUID();
-  const requestTimestamp = new Date().toISOString();
+  const requestTimestamp = dokuRequestTimestamp();
   const rawBody = body === undefined || body === null ? null : JSON.stringify(body);
   const signature = await dokuGenerateSignature(
     config.clientId,
@@ -1966,10 +1972,12 @@ async function dokuRequest(config, method, requestTarget, body) {
     throw new Error("DOKU_NON_JSON_RESPONSE");
   }
   if (!response.ok) {
-    const detail = Array.isArray(payload?.error_messages)
-      ? payload.error_messages.join("; ")
-      : cleanText(payload?.message || payload?.error?.message || `DOKU_HTTP_${response.status}`, 500);
-    throw new Error(detail || `DOKU_HTTP_${response.status}`);
+    const detail = Array.isArray(payload?.message)
+      ? payload.message.map((item) => cleanText(item, 200)).filter(Boolean).join("; ")
+      : Array.isArray(payload?.error_messages)
+        ? payload.error_messages.map((item) => cleanText(item, 200)).filter(Boolean).join("; ")
+        : cleanText(payload?.message || payload?.error?.message || `DOKU_HTTP_${response.status}`, 500);
+    throw new Error(`DOKU_HTTP_${response.status}: ${detail || "UNKNOWN_DOKU_ERROR"}`);
   }
   return payload;
 }
@@ -2141,7 +2149,8 @@ async function createDokuAssetPayment(request, env, requestId) {
   ).bind(orderId, amount, customerName || "Customer", customerEmail, outlet || null, nik || null, config.environment).run();
 
   try {
-    const notificationUrl = new URL(request.url).origin + "/v1/ba/payments/doku/webhook";
+    // Keep the create request identical to DOKU Checkout's documented Basic Request.
+    // Notification URLs are configured per payment channel in DOKU Back Office.
     const dokuPayload = {
       order: {
         amount,
@@ -2149,13 +2158,6 @@ async function createDokuAssetPayment(request, env, requestId) {
       },
       payment: {
         payment_due_date: 60
-      },
-      customer: {
-        name: customerName || "Customer",
-        email: customerEmail
-      },
-      additional_info: {
-        override_notification_url: notificationUrl
       }
     };
     const result = await dokuRequest(config, "POST", "/checkout/v1/payment", dokuPayload);
@@ -3916,6 +3918,7 @@ export {
   index_default as default,
   dokuDigest,
   dokuGenerateSignature,
+  dokuRequestTimestamp,
   dokuGenerateSnapSignature,
   normalizeDokuStatus,
   normalizeMovement,
