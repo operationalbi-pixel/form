@@ -234,6 +234,10 @@ function apiActions_() {
     mockRecallDetail: getMockRecallDetail,
     verifyGoodsReceipt: previewGoodsReceiptUpload,
     verifyGoodsDelivery: previewGoodsDeliveryUpload,
+    queueGoodsUpload: queueGoodsUpload,
+    goodsUploadStatus: listGoodsUploadStatus,
+    goodsUploadRequest: getGoodsUploadRequest,
+    retryGoodsUpload: retryGoodsUpload,
     verifyStockPosition: previewStockPositionUpload,
     queueStockPosition: queueStockPositionUpload,
     findStockPositionUpload: findStockPositionUpload,
@@ -4151,6 +4155,201 @@ function stockPositionAlreadyImported_(outlet, location, sourceHash) {
   return rows.length && Number(rows[0].total || 0) > 0;
 }
 
+/** Durable Goods Delivery / Goods Receipt jobs. Files and write plans stay server-side. */
+function goodsUploadJobKey_(id) { return 'goods-upload-job-' + String(id || ''); }
+function readGoodsUploadJob_(id) {
+  const raw = PropertiesService.getScriptProperties().getProperty(goodsUploadJobKey_(id));
+  return raw ? JSON.parse(raw) : null;
+}
+function writeGoodsUploadJob_(job) {
+  job.updatedAt = new Date().toISOString();
+  PropertiesService.getScriptProperties().setProperty(goodsUploadJobKey_(job.jobId), JSON.stringify(job));
+  return job;
+}
+function goodsUploadJobs_() {
+  const all = PropertiesService.getScriptProperties().getProperties();
+  return Object.keys(all).filter(function (key) { return key.indexOf('goods-upload-job-') === 0; }).map(function (key) {
+    try { return JSON.parse(all[key]); } catch (error) { return null; }
+  }).filter(Boolean);
+}
+function goodsUploadJobView_(job) {
+  return { jobId: job.jobId, type: job.type, fileName: job.fileName, outlet: job.outlet, location: job.location,
+    status: job.status, stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
+    total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
+}
+function goodsUploadOwner_(token, id) {
+  const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
+  const job = readGoodsUploadJob_(cleanText_(id, 100));
+  if (!job || job.ownerNik !== employee.nik) throw new Error('Upload tidak ditemukan atau bukan milik akun ini.');
+  return job;
+}
+function cleanupGoodsUploadFiles_(job) {
+  ['sourceDriveId', 'requestDriveId', 'planDriveId'].forEach(function (key) {
+    if (job[key]) { try { DriveApp.getFileById(job[key]).setTrashed(true); } catch (error) { return; } job[key] = ''; }
+  });
+}
+function queueGoodsUpload(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    if (['GOODS_DELIVERY', 'GOODS_RECEIPT'].indexOf(payload.type) < 0) throw new Error('Jenis upload tidak valid.');
+    const context = resolveStockContext_(token, payload.outlet, payload.location), fileName = cleanText_(payload.fileName, 180);
+    const requestId = String(payload.requestId || '');
+    if (!/^[a-zA-Z0-9-]{16,100}$/.test(requestId)) throw new Error('Identitas permintaan upload tidak valid.');
+    if (!/\.xlsx$/i.test(fileName)) throw new Error('Pilih file .xlsx.');
+    let bytes;
+    try { bytes = Utilities.base64Decode(String(payload.base64 || '').replace(/^data:[^,]+,/, '')); }
+    catch (error) { throw new Error('File Excel tidak dapat dibaca.'); }
+    if (!bytes.length || bytes.length > 5 * 1024 * 1024 || bytes[0] !== 80 || bytes[1] !== 75) throw new Error('File .xlsx harus valid dan maksimal 5 MB.');
+    const sourceHash = digest_(Utilities.base64Encode(bytes));
+    const jobId = digest_([context.employee.nik, requestId].join('|'));
+    // This metadata gate is separate from the stock write lock: a busy writer does not reject file acceptance.
+    const gate = LockService.getUserLock(); gate.waitLock(30000);
+    let job;
+    try {
+      job = readGoodsUploadJob_(jobId);
+      if (job) {
+        if (job.ownerNik !== context.employee.nik || job.type !== payload.type || job.outlet !== context.outlet || job.location !== context.location || job.sourceHash !== sourceHash) throw new Error('Identitas upload sudah digunakan untuk file lain.');
+        if (job.status !== 'ACTION_REQUIRED') return goodsUploadJobView_(job);
+      } else {
+        const active = goodsUploadJobs_().filter(function (candidate) { return candidate.ownerNik === context.employee.nik && candidate.type === payload.type && candidate.outlet === context.outlet && candidate.location === context.location && candidate.sourceHash === sourceHash && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })[0];
+        if (active) return goodsUploadJobView_(active);
+        if (goodsUploadJobs_().length >= 100) throw new Error('Antrean upload penuh. Hubungi BIHQ untuk memeriksa pekerjaan lama.');
+        // A periodic watchdog is required before acknowledging a durable background upload.
+        ensureStockMaintenanceTrigger_();
+        const now = new Date().toISOString();
+        job = { jobId: jobId, requestId: requestId, ownerNik: context.employee.nik, type: payload.type, outlet: context.outlet,
+          location: context.location, fileName: fileName, sourceHash: sourceHash, status: 'QUEUED', createdAt: now,
+          processed: 0, total: 0, progress: 3, workerLeaseUntil: 0, retryCount: 0, planDriveId: '' };
+        const file = DriveApp.createFile(Utilities.newBlob(bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'TEMP_GOODS_UPLOAD_' + jobId + '.xlsx'));
+        job.sourceDriveId = file.getId();
+      }
+      const request = { outlet: job.outlet, location: job.location, fileName: job.fileName,
+        conversions: payload.conversions || {}, skipDuplicateRows: payload.skipDuplicateRows || [], allowDuplicateRows: payload.allowDuplicateRows || [] };
+      const requestFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json', 'TEMP_GOODS_REQUEST_' + jobId + '.json'));
+      const previousRequest = job.requestDriveId;
+      job.requestDriveId = requestFile.getId(); job.status = 'QUEUED'; job.error = ''; job.retryCount = 0;
+      job.stage = 'File diterima. Menunggu proses background.';
+      try { writeGoodsUploadJob_(job); }
+      catch (error) { try { requestFile.setTrashed(true); } catch (ignore) {} if (!previousRequest) cleanupGoodsUploadFiles_(job); throw error; }
+      if (previousRequest) { try { DriveApp.getFileById(previousRequest).setTrashed(true); } catch (error) {} }
+    } finally { gate.releaseLock(); }
+    scheduleGoodsUploadWorker_();
+    return goodsUploadJobView_(job);
+  });
+}
+function listGoodsUploadStatus(token) {
+  return safe_(function () {
+    const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
+    return { jobs: goodsUploadJobs_().filter(function (job) { return job.ownerNik === employee.nik; })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); }).map(goodsUploadJobView_) };
+  });
+}
+function getGoodsUploadRequest(token, id) {
+  return safe_(function () {
+    const job = goodsUploadOwner_(token, id);
+    if (job.status !== 'ACTION_REQUIRED' || job.planDriveId) throw new Error('Upload ini tidak memerlukan perubahan file.');
+    const payload = stockPositionJobJson_(job.requestDriveId);
+    payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+    payload.requestId = job.requestId; payload.type = job.type;
+    return { job: goodsUploadJobView_(job), payload: payload };
+  });
+}
+function retryGoodsUpload(token, id) {
+  return safe_(function () {
+    const gate = LockService.getUserLock(); gate.waitLock(30000);
+    let job;
+    try {
+      job = goodsUploadOwner_(token, id);
+      if (job.status !== 'FAILED' || Number(job.workerLeaseUntil || 0) > Date.now()) throw new Error('Upload ini belum dapat dicoba ulang.');
+      job.status = 'QUEUED'; job.error = ''; job.retryCount = 0; job.stage = 'Melanjutkan dari bagian terakhir yang belum terkonfirmasi.';
+      writeGoodsUploadJob_(job);
+    } finally { gate.releaseLock(); }
+    scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job);
+  });
+}
+function scheduleGoodsUploadWorker_() {
+  try {
+    const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; });
+    if (!exists) ScriptApp.newTrigger('processGoodsUploadJobs').timeBased().after(1000).create();
+    return true;
+  } catch (error) { console.error('Antrean Goods Upload menunggu maintenance: ' + error.message); return false; }
+}
+function processGoodsUploadJobs() {
+  const gate = LockService.getUserLock(); if (!gate.tryLock(1000)) return;
+  let job;
+  try {
+    ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; })
+      .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
+    const jobs = goodsUploadJobs_();
+    jobs.forEach(function (old) {
+      if (['COMPLETE', 'FAILED', 'ACTION_REQUIRED'].indexOf(old.status) >= 0 && Date.now() - Date.parse(old.updatedAt) > 7 * 86400000) {
+        cleanupGoodsUploadFiles_(old); PropertiesService.getScriptProperties().deleteProperty(goodsUploadJobKey_(old.jobId));
+      }
+    });
+    if (jobs.some(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > Date.now(); })) return;
+    job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })
+      .sort(function (a, b) { return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt)); })[0];
+    if (!job) return;
+    job.workerLeaseUntil = Date.now() + 8 * 60000; job.lastWorkedAt = new Date().toISOString();
+    job.status = job.planDriveId ? 'PROCESSING' : 'PREPARING'; job.stage = 'Memeriksa file dan menunggu giliran penyimpanan.';
+    writeGoodsUploadJob_(job);
+  } finally { gate.releaseLock(); }
+  let lock;
+  const deadline = Date.now() + 240000;
+  try {
+    lock = acquireStockWriteLock_();
+    const employee = findEmployee_(job.ownerNik); assertEmployeeActive_(employee);
+    if (employee.outlet !== 'BIHQ' && employee.outlet !== job.outlet) throw new Error('Akses outlet pemilik upload sudah berubah.');
+    if (readStockLocations_(job.outlet).indexOf(job.location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
+    const context = { employee: employee, outlet: job.outlet, location: job.location };
+    let plan;
+    if (job.planDriveId) plan = stockPositionJobJson_(job.planDriveId);
+    else {
+      const payload = stockPositionJobJson_(job.requestDriveId);
+      payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+      plan = job.type === 'GOODS_DELIVERY' ? buildGoodsDeliveryPlan_(context, payload) : buildGoodsReceiptPlan_(context, payload);
+      const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan), 'application/json', 'TEMP_GOODS_PLAN_' + job.jobId + '.json'));
+      job.planDriveId = file.getId(); job.total = plan.stockRows.length + plan.pendingRows.length;
+      job.progress = 15; job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyimpan transaksi.';
+      // Persist IDs and complete write plan BEFORE any master, movement or transfer mutation.
+      writeGoodsUploadJob_(job);
+    }
+    appendOrActivateStockMasterItems_(plan.masterChanges);
+    const total = plan.stockRows.length + plan.pendingRows.length;
+    while (job.processed < total && Date.now() < deadline) {
+      const cursor = Number(job.processed || 0), stockPhase = cursor < plan.stockRows.length;
+      const start = stockPhase ? cursor : cursor - plan.stockRows.length;
+      const batch = (stockPhase ? plan.stockRows : plan.pendingRows).slice(start, start + 100);
+      // Reuse the saved record_id/event_id after a timeout or worker restart; Cloudflare rejects duplicate IDs.
+      if (stockPhase) insertStockCardRows_(batch); else cloudflareWriteTransferEvents_(batch);
+      job.processed = cursor + batch.length; job.total = total; job.retryCount = 0;
+      job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, total) * 83));
+      job.stage = 'Menyimpan ' + job.processed + ' dari ' + total + ' baris.'; writeGoodsUploadJob_(job);
+    }
+    job.workerLeaseUntil = 0;
+    if (job.processed >= total) {
+      job.status = 'COMPLETE'; job.progress = 100; job.stage = 'Upload selesai. Transaksi sudah tersimpan.'; job.error = '';
+      writeGoodsUploadJob_(job);
+      try { notifyPendingStockTransfers_(plan.pendingRows); } catch (error) { console.error('Notifikasi upload: ' + error.message); }
+      cleanupGoodsUploadFiles_(job); writeGoodsUploadJob_(job);
+    } else { job.status = 'QUEUED'; job.stage = 'Melanjutkan bagian berikutnya di background.'; writeGoodsUploadJob_(job); }
+  } catch (error) {
+    job.workerLeaseUntil = 0; job.error = String(error.message || error);
+    const busy = /sedang menyimpan transaksi lain.*data Anda belum disimpan/i.test(job.error);
+    const transient = /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
+    if (busy || (transient && Number(job.retryCount || 0) < 5)) {
+      job.status = 'QUEUED'; job.retryCount = Number(job.retryCount || 0) + 1;
+      job.stage = busy ? 'Menunggu giliran penyimpanan. Proses akan dilanjutkan otomatis.' : 'Gangguan sementara. Melanjutkan otomatis dengan ID transaksi yang sama.';
+    } else {
+      job.status = job.planDriveId ? 'FAILED' : 'ACTION_REQUIRED';
+      job.stage = job.planDriveId ? 'Penyimpanan belum selesai. Klik Coba Lagi untuk melanjutkan.' : 'Perlu tindakan. Tinjau file, konversi, atau duplikat.';
+    }
+    writeGoodsUploadJob_(job);
+  } finally { if (lock) lock.releaseLock(); }
+  if (goodsUploadJobs_().some(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })) scheduleGoodsUploadWorker_();
+  return goodsUploadJobView_(job);
+}
+
 function stockPositionJobKey_(jobId) { return 'stock-position-upload-job-' + String(jobId || '').trim(); }
 
 function writeStockPositionJob_(job) {
@@ -7835,44 +8034,50 @@ function uploadGoodsReceipt(token, payload) {
     const report = parseGoodsReceiptReport_(String(payload.base64 || "").replace(/^data:[^,]+,/, "").trim(), cleanText_(payload.fileName, 180));
     const lock = acquireStockWriteLock_();
     try {
-      // Refresh duplicate and balance checks after waiting for the write lock.
-      const prepared = prepareGoodsReceiptImport_(context, payload, false, report);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-      if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
-      appendOrActivateStockMasterItems_(prepared.masterChanges);
-      const now = new Date();
-      const rows = prepared.items.map(function (receipt) {
-        const logicalId = Utilities.getUuid(), recordId = Utilities.getUuid();
-        const alertInfo = receipt.fefoAlert ? ' | FEFO ALERT: expiry masuk ' + receipt.expiryDate + ' lebih cepat dari stok existing ' + receipt.existingExpiryDate : '';
-        const conversionInfo = receipt.converted ? ' · Konversi ' + formatQty_(receipt.originalQty) + ' ' + receipt.originalUnit + ' = ' + formatQty_(receipt.qty) + ' ' + receipt.item.unit : '';
-        return { insertId: recordId, json: {
-          record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
-          outlet: context.outlet, location: context.location, item_code: receipt.item.code,
-          category: receipt.item.category, item_name: receipt.item.name, unit: receipt.item.unit,
-          direction: 'IN', qty: receipt.qty, movement_type: 'Goods Receipt',
-          supplier: cleanText_(receipt.supplier || '-', 180),
-          info: cleanText_('Supplier ' + (receipt.supplier || '-') + ' · PO ' + (receipt.poNumber || '-') + ' · GR ' + (receipt.grNumber || '-') +
-            ' · ' + prepared.fileName + ' · Baris ' + receipt.sourceRow + conversionInfo + alertInfo, 500),
-          expiry_date: receipt.expiryDate || null, source_arrival_date: receipt.transactionDate, event_date: receipt.transactionDate,
-          created_at: now.getTime() / 1000, created_by: context.employee.nik,
-          source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: receipt.sourceRow
-        }};
-      });
-      insertStockCardRows_(rows);
-      return {
-        uploaded: true, outlet: context.outlet, location: context.location,
-        transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
-        sourceItemCount: prepared.sourceItemCount, movementCount: rows.length,
-        duplicateRowsSkipped: prepared.skippedDuplicates.length,
-        duplicateRowsUploaded: prepared.allowedDuplicates.length,
-        receiptCount: prepared.receiptCount, expiryLotCount: prepared.expiryLotCount,
-        noExpiryItemCount: prepared.noExpiryItemCount, newItemCount: prepared.newItemCount,
-        conversionCount: prepared.conversionCount, expiryWarnings: prepared.expiryWarnings || []
-      };
+      const plan = buildGoodsReceiptPlan_(context, payload, report);
+      appendOrActivateStockMasterItems_(plan.masterChanges);
+      insertStockCardRows_(plan.stockRows);
+      return plan.result;
     } finally {
       lock.releaseLock();
     }
   });
+}
+
+function buildGoodsReceiptPlan_(context, payload, report) {
+  // Refresh duplicate and balance checks after waiting for the write lock.
+  const prepared = prepareGoodsReceiptImport_(context, payload, false, report);
+  if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+  if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
+  const now = new Date();
+  const rows = prepared.items.map(function (receipt) {
+    const logicalId = Utilities.getUuid(), recordId = Utilities.getUuid();
+    const alertInfo = receipt.fefoAlert ? ' | FEFO ALERT: expiry masuk ' + receipt.expiryDate + ' lebih cepat dari stok existing ' + receipt.existingExpiryDate : '';
+    const conversionInfo = receipt.converted ? ' · Konversi ' + formatQty_(receipt.originalQty) + ' ' + receipt.originalUnit + ' = ' + formatQty_(receipt.qty) + ' ' + receipt.item.unit : '';
+    return { insertId: recordId, json: {
+      record_id: recordId, logical_id: logicalId, version: 1, record_type: 'MOVEMENT',
+      outlet: context.outlet, location: context.location, item_code: receipt.item.code,
+      category: receipt.item.category, item_name: receipt.item.name, unit: receipt.item.unit,
+      direction: 'IN', qty: receipt.qty, movement_type: 'Goods Receipt',
+      supplier: cleanText_(receipt.supplier || '-', 180),
+      info: cleanText_('Supplier ' + (receipt.supplier || '-') + ' · PO ' + (receipt.poNumber || '-') + ' · GR ' + (receipt.grNumber || '-') +
+        ' · ' + prepared.fileName + ' · Baris ' + receipt.sourceRow + conversionInfo + alertInfo, 500),
+      expiry_date: receipt.expiryDate || null, source_arrival_date: receipt.transactionDate, event_date: receipt.transactionDate,
+      created_at: now.getTime() / 1000, created_by: context.employee.nik,
+      source_file: prepared.fileName, source_hash: prepared.sourceHash, source_row: receipt.sourceRow
+    }};
+  });
+  const result = {
+    uploaded: true, outlet: context.outlet, location: context.location,
+    transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
+    sourceItemCount: prepared.sourceItemCount, movementCount: rows.length,
+    duplicateRowsSkipped: prepared.skippedDuplicates.length,
+    duplicateRowsUploaded: prepared.allowedDuplicates.length,
+    receiptCount: prepared.receiptCount, expiryLotCount: prepared.expiryLotCount,
+    noExpiryItemCount: prepared.noExpiryItemCount, newItemCount: prepared.newItemCount,
+    conversionCount: prepared.conversionCount, expiryWarnings: prepared.expiryWarnings || []
+  };
+  return { type: 'GOODS_RECEIPT', masterChanges: prepared.masterChanges, stockRows: rows, pendingRows: [], result: result };
 }
 
 function prepareGoodsReceiptImport_(context, payload, allowPendingConversions, reportOverride) {
@@ -8179,79 +8384,85 @@ function uploadGoodsDelivery(token, payload) {
     const report = parseGoodsDeliveryReport_(String(payload.base64 || "").replace(/^data:[^,]+,/, "").trim(), cleanText_(payload.fileName, 180));
     const lock = acquireStockWriteLock_();
     try {
-      // Refresh duplicate and balance checks after waiting for the write lock.
-      const prepared = prepareGoodsDeliveryImport_(context, payload, false, report);
-      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-      if (!prepared.items.length && !(prepared.recoveryTransfers || []).length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
-      appendOrActivateStockMasterItems_(prepared.masterChanges);
-      const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, lotQueues = {}, stockRows = [], pendingRows = [];
-      prepared.items.forEach(function (delivery) {
-        totalByCode[delivery.item.code] = Number(totalByCode[delivery.item.code] || 0) + Number(delivery.qty || 0);
-        itemByCode[delivery.item.code] = delivery.item;
-      });
-      Object.keys(totalByCode).forEach(function (code) {
-        lotQueues[code] = allocateTransferLots_(context.outlet, context.location, itemByCode[code], totalByCode[code]).map(function (lot) {
-          return { qty: Number(lot.qty || 0), expiryDate: lot.expiryDate || '' };
-        });
-      });
-      prepared.items.forEach(function (delivery) {
-        const groupKey = delivery.gdNumber + '|' + delivery.destinationCode;
-        if (!transferIds[groupKey]) transferIds[groupKey] = Utilities.getUuid();
-        const transferId = transferIds[groupKey], queue = lotQueues[delivery.item.code] || [], allocated = [];
-        let remaining = Number(delivery.qty || 0);
-        while (remaining > 0.0000001 && queue.length) {
-          const lot = queue[0], taken = Math.min(remaining, Number(lot.qty || 0));
-          if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate || '' });
-          remaining -= taken;
-          lot.qty -= taken;
-          if (lot.qty <= 0.0000001) queue.shift();
-        }
-        if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '' });
-        const conversionInfo = delivery.converted ? ' | Konversi ' + formatQty_(delivery.originalQty) + ' ' + delivery.originalUnit + ' = ' + formatQty_(delivery.qty) + ' ' + delivery.item.unit : '';
-        const destinationInfo = delivery.destinationName + ' (' + delivery.destinationCode + ')';
-        const lineNote = cleanText_('Transfer To ' + destinationInfo + ' | No Transfer ' + (delivery.transferNumber || delivery.gdNumber) + ' | No. GD ' + delivery.gdNumber + ' | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 300);
-        allocated.forEach(function (lot) {
-          const recordId = Utilities.getUuid(), eventId = Utilities.getUuid();
-          stockRows.push({ insertId: recordId, json: {
-            record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
-            outlet: context.outlet, location: context.location, item_code: delivery.item.code,
-            category: delivery.item.category, item_name: delivery.item.name, unit: delivery.item.unit,
-            direction: 'OUT', qty: lot.qty, movement_type: 'Transfer Out Antar Outlet',
-            supplier: cleanText_(delivery.destinationName, 180),
-            info: cleanText_('Transfer To ' + destinationInfo + ' | No Transfer ' + (delivery.transferNumber || delivery.gdNumber) + ' | GD ' + delivery.gdNumber + ' | Dari ' + delivery.originName + ' (' + context.outlet + ') | Ke ' + destinationInfo +
-              ' | Menunggu konfirmasi penerima | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 500),
-            expiry_date: lot.expiryDate || null, event_date: delivery.transactionDate,
-            created_at: now.getTime() / 1000, created_by: context.employee.nik,
-            source_file: prepared.fileName, source_hash: delivery.rowHash, source_row: delivery.sourceRow
-          }});
-          pendingRows.push({ insertId: eventId, json: {
-            event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
-            to_outlet: delivery.destinationCode, to_location: null, item_code: delivery.item.code, category: delivery.item.category,
-            item_name: delivery.item.name, unit: delivery.item.unit, qty: lot.qty, note: lineNote, expiry_date: lot.expiryDate || null,
-            created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000,
-            delivery_date: delivery.transactionDate
-          }});
-        });
-      });
-      appendGoodsDeliveryRecoveryEvents_(context, prepared, pendingRows, now);
-      insertStockCardRows_(stockRows);
-      cloudflareWriteTransferEvents_(pendingRows);
-      notifyPendingStockTransfers_(pendingRows);
-      return {
-        uploaded: true, outlet: context.outlet, location: context.location,
-        transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
-        sourceItemCount: prepared.sourceItemCount, movementCount: stockRows.length, pendingLineCount: pendingRows.length,
-        transferCount: Object.keys(transferIds).length, duplicateRowsSkipped: prepared.skippedDuplicates.length,
-        duplicateRowsUploaded: prepared.allowedDuplicates.length,
-        recoveredTransferLineCount: (prepared.recoveryTransfers || []).length,
-        deliveryCount: prepared.deliveryCount, destinationCount: prepared.destinationCount,
-        newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
-        negativeItemCount: prepared.negativeItemCount
-      };
+      const plan = buildGoodsDeliveryPlan_(context, payload, report);
+      appendOrActivateStockMasterItems_(plan.masterChanges);
+      insertStockCardRows_(plan.stockRows);
+      cloudflareWriteTransferEvents_(plan.pendingRows);
+      notifyPendingStockTransfers_(plan.pendingRows);
+      return plan.result;
     } finally {
       lock.releaseLock();
     }
   });
+}
+
+function buildGoodsDeliveryPlan_(context, payload, report) {
+  // Refresh duplicate and balance checks after waiting for the write lock.
+  const prepared = prepareGoodsDeliveryImport_(context, payload, false, report);
+  if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+  if (!prepared.items.length && !(prepared.recoveryTransfers || []).length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
+  const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, lotQueues = {}, stockRows = [], pendingRows = [];
+  prepared.items.forEach(function (delivery) {
+    totalByCode[delivery.item.code] = Number(totalByCode[delivery.item.code] || 0) + Number(delivery.qty || 0);
+    itemByCode[delivery.item.code] = delivery.item;
+  });
+  Object.keys(totalByCode).forEach(function (code) {
+    lotQueues[code] = allocateTransferLots_(context.outlet, context.location, itemByCode[code], totalByCode[code]).map(function (lot) {
+      return { qty: Number(lot.qty || 0), expiryDate: lot.expiryDate || '' };
+    });
+  });
+  prepared.items.forEach(function (delivery) {
+    const groupKey = delivery.gdNumber + '|' + delivery.destinationCode;
+    if (!transferIds[groupKey]) transferIds[groupKey] = Utilities.getUuid();
+    const transferId = transferIds[groupKey], queue = lotQueues[delivery.item.code] || [], allocated = [];
+    let remaining = Number(delivery.qty || 0);
+    while (remaining > 0.0000001 && queue.length) {
+      const lot = queue[0], taken = Math.min(remaining, Number(lot.qty || 0));
+      if (taken > 0.0000001) allocated.push({ qty: taken, expiryDate: lot.expiryDate || '' });
+      remaining -= taken;
+      lot.qty -= taken;
+      if (lot.qty <= 0.0000001) queue.shift();
+    }
+    if (remaining > 0.0000001) allocated.push({ qty: remaining, expiryDate: '' });
+    const conversionInfo = delivery.converted ? ' | Konversi ' + formatQty_(delivery.originalQty) + ' ' + delivery.originalUnit + ' = ' + formatQty_(delivery.qty) + ' ' + delivery.item.unit : '';
+    const destinationInfo = delivery.destinationName + ' (' + delivery.destinationCode + ')';
+    const lineNote = cleanText_('Transfer To ' + destinationInfo + ' | No Transfer ' + (delivery.transferNumber || delivery.gdNumber) + ' | No. GD ' + delivery.gdNumber + ' | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 300);
+    allocated.forEach(function (lot) {
+      const recordId = Utilities.getUuid(), eventId = Utilities.getUuid();
+      stockRows.push({ insertId: recordId, json: {
+        record_id: recordId, logical_id: Utilities.getUuid(), version: 1, record_type: 'MOVEMENT', transfer_id: transferId,
+        outlet: context.outlet, location: context.location, item_code: delivery.item.code,
+        category: delivery.item.category, item_name: delivery.item.name, unit: delivery.item.unit,
+        direction: 'OUT', qty: lot.qty, movement_type: 'Transfer Out Antar Outlet',
+        supplier: cleanText_(delivery.destinationName, 180),
+        info: cleanText_('Transfer To ' + destinationInfo + ' | No Transfer ' + (delivery.transferNumber || delivery.gdNumber) + ' | GD ' + delivery.gdNumber + ' | Dari ' + delivery.originName + ' (' + context.outlet + ') | Ke ' + destinationInfo +
+          ' | Menunggu konfirmasi penerima | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 500),
+        expiry_date: lot.expiryDate || null, event_date: delivery.transactionDate,
+        created_at: now.getTime() / 1000, created_by: context.employee.nik,
+        source_file: prepared.fileName, source_hash: delivery.rowHash, source_row: delivery.sourceRow
+      }});
+      pendingRows.push({ insertId: eventId, json: {
+        event_id: eventId, transfer_id: transferId, status: 'PENDING', from_outlet: context.outlet, from_location: context.location,
+        to_outlet: delivery.destinationCode, to_location: null, item_code: delivery.item.code, category: delivery.item.category,
+        item_name: delivery.item.name, unit: delivery.item.unit, qty: lot.qty, note: lineNote, expiry_date: lot.expiryDate || null,
+        created_by: context.employee.nik, created_by_name: context.employee.name, created_at: now.getTime() / 1000,
+        delivery_date: delivery.transactionDate
+      }});
+    });
+  });
+  appendGoodsDeliveryRecoveryEvents_(context, prepared, pendingRows, now);
+  const result = {
+    uploaded: true, outlet: context.outlet, location: context.location,
+    transactionDate: prepared.transactionDate, transactionDateEnd: prepared.transactionDateEnd,
+    sourceItemCount: prepared.sourceItemCount, movementCount: stockRows.length, pendingLineCount: pendingRows.length,
+    transferCount: Object.keys(transferIds).length, duplicateRowsSkipped: prepared.skippedDuplicates.length,
+    duplicateRowsUploaded: prepared.allowedDuplicates.length,
+    recoveredTransferLineCount: (prepared.recoveryTransfers || []).length,
+    deliveryCount: prepared.deliveryCount, destinationCount: prepared.destinationCount,
+    newItemCount: prepared.newItemCount, conversionCount: prepared.conversionCount,
+    negativeItemCount: prepared.negativeItemCount
+  };
+  return { type: 'GOODS_DELIVERY', masterChanges: prepared.masterChanges, stockRows: stockRows, pendingRows: pendingRows, result: result };
 }
 
 function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, reportOverride) {
@@ -10556,6 +10767,8 @@ function maybeCompactStockSummaryTables_() {
 function refreshDirtyStockBalances() {
   // Run upload queues first. Balance rebuilds can be expensive and previously
   // consumed the whole trigger execution before Sales COGS got a turn.
+  try { processGoodsUploadJobs(); }
+  catch (goodsError) { console.error('Antrean Goods Upload: ' + goodsError.message); }
   try { processStockPositionUploadJobs(); }
   catch (positionError) { console.error('Gagal menjalankan antrean Stock Posisi: ' + positionError.message); }
   try { processSalesCogsUploadJobs(); }

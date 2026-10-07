@@ -101,3 +101,13 @@ Setelah setup selesai, buka **Actions → Deploy Main GAS → Run workflow** sat
 Jika halaman terus menampilkan spinner, pastikan deployment GAS sudah memakai
 `gas/Code.gs` versi terbaru. Respons HtmlService harus mengirim hasil dengan
 `top.postMessage`, karena Google membungkus output GAS dalam iframe internal.
+
+## Background Goods Delivery dan Goods Receipt
+
+Goods Delivery dan Goods Receipt dikirim melalui `queueGoodsUpload`. Setelah respons **File diterima**, browser boleh berpindah menu atau ditutup. File sumber, pilihan konversi/duplikat, dan rencana transaksi disimpan di Drive; metadata pekerjaan disimpan di Script Properties. Token login tidak disimpan di pekerjaan. Worker memeriksa status karyawan dan akses outlet saat memproses.
+
+Tombol **Status Upload** menampilkan pekerjaan milik akun yang sedang login. Statusnya Menunggu, Memeriksa, Diproses, Selesai, Perlu Tindakan, atau Gagal. Panel memperbarui status setiap 15 detik ketika terbuka. **Tinjau** membuka kembali file yang membutuhkan keputusan konversi atau duplikat; **Coba Lagi** melanjutkan rencana transaksi yang sama. Persentase penyimpanan dihitung dari baris yang sudah dikonfirmasi server, bukan estimasi waktu.
+
+Worker `processGoodsUploadJobs` berjalan melalui trigger satu kali dan dipulihkan oleh maintenance lima menit `refreshDirtyStockBalances`. Antrean memasang maintenance sebelum mengonfirmasi penerimaan. Jadwal GAS dapat terlambat; penerimaan file tidak berarti stok sudah tersimpan. Selesai ditampilkan hanya setelah seluruh movement dan event transfer dikonfirmasi. Rencana transaksi dipersistenkan sebelum penulisan, sehingga pemulihan memakai record/event ID yang sama dan endpoint Cloudflare yang idempoten.
+
+Deploy Main GAS dan GitHub Pages bersama, termasuk `docs/stock-upload-jobs.js`. Tidak diperlukan database atau kredensial baru; akses Drive dan izin trigger memakai layanan GAS yang sudah digunakan antrean Stock Posisi. Riwayat pekerjaan disimpan tujuh hari; file sementara dibuang setelah pekerjaan selesai atau retensi habis. Uji produksi dengan report kecil, tutup halaman setelah File diterima, lalu buka Status Upload kembali dan cocokkan Stock Card serta transfer penerima.
