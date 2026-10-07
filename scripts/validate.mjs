@@ -443,7 +443,7 @@ if (!modernUiCss.includes('.logout-icon-button.dashboard-back-standard') || !mod
 for (const path of ['docs/index.html', 'docs/stock-card.html', 'docs/showcaselog.html']) {
   if (!(await text(path)).includes('ui-modern.css?v=20260910-toolbar1')) failures.push(`${path} belum memaksa browser mengambil perbaikan UI terbaru`);
 }
-if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("server('uploadStockOpname'")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
+if (!frontendStockCard.includes("server('verifyStockOpname'") || !frontendStockCard.includes("queueOtherStockUpload('STOCK_OPNAME')")) failures.push('UI Upload Stock Opname belum terhubung ke proses verifikasi dan upload');
 if (!frontendStockCard.includes('id="stockOpnameConversionModal"') || !frontendStockCard.includes('function continueStockOpnameConversion()') ||
     !frontendStockCard.includes("server('changeDefaultUnit'") || !frontendStockCard.includes('Unit Default baru')) failures.push('Popup perubahan Unit Default dari Stock Opname belum tersedia');
 if (!frontendStockCard.includes('id="stockOpnameHistoryButton"') || !frontendStockCard.includes('id="stockOpnameHistorySearch"') ||
@@ -471,10 +471,10 @@ if (!backend.includes('const effectiveDate = eventDate;') ||
     !frontendStockCard.includes('QTY hasil SO akan menjadi balance pada tanggal yang dipilih.')) failures.push('Stock Opname belum diterapkan sebagai balance pada tanggal yang dipilih');
 if (!frontendStockCard.includes('stock-opname-history-highlight') || !frontendStockCard.includes("Hasil Stock Opname '+formatDate")) failures.push('Riwayat Stock Card belum memiliki baris highlight hasil Stock Opname');
 if (!backend.includes("normalizeLocation_(payload.location || 'Store') || 'Store'") ||
-    !frontendStockCard.includes("function stockOpnameLocation(){return APP.location||'Store'}")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
+    !frontendStockCard.includes("APP.stockOpname.backgroundContext.location:APP.location||'Store'")) failures.push('Upload Stock Opname BIHQ belum memakai penyimpanan Store saat outlet belum dipilih');
 if (!frontendStockCard.includes('>Daily Upload</span>') || !frontendStockCard.includes('stock-opname-modal')) failures.push('Label Daily Upload atau penyempurnaan modal Stock Opname belum tersedia');
 if (!frontendStockCard.includes('Bulk Repair Konversi Transaksi (BIHQ)') || !frontendStockCard.includes('id="salesRepairType"') ||
-    !frontendStockCard.includes("server('previewTransactionRepair'") || !frontendStockCard.includes("server('repairTransactionConversions'")) {
+    !frontendStockCard.includes("server('previewTransactionRepair'") || !frontendStockCard.includes("queueOtherStockUpload('TRANSACTION_REPAIR')")) {
   failures.push('Tombol atau modal Bulk Repair Konversi Transaksi BIHQ belum lengkap');
 }
 if (!backend.includes('previewTransactionRepair: previewTransactionConversionRepair') ||

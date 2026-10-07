@@ -174,3 +174,27 @@ assert.ok(!element('goodsUploadStatusRows').innerHTML.includes('<script>'));
 assert.ok(element('goodsUploadStatusRows').innerHTML.includes('data-goods-review'));
 assert.equal(element('goodsUploadStatusBadge').textContent, 1);
 console.log('Browser acceptance confirmation, safe request replay, and status rendering passed');
+
+// Execute the shared browser acceptance path for every newly queued upload form.
+for (const [kind, key, payloadFn, closeFn] of [
+  ['ITEM_JOURNAL', 'itemJournal', 'itemJournalPayload', 'closeItemJournalModal'],
+  ['STOCK_OPNAME', 'stockOpname', 'stockOpnamePayload', 'closeStockOpnameModal'],
+  ['BIHQ_GOODS_DELIVERY', 'bihqBatch', 'bihqBatchPayload', 'closeBihqBatchModal'],
+  ['WIP_PRODUCTION', 'wip', 'wipProductionPayload', 'closeWipProductionModal'],
+  ['TRANSACTION_REPAIR', 'salesRepair', 'salesRepairPayload', 'closeSalesRepairModal']
+]) {
+  let formClosed = 0;
+  browserContext.APP[key] = { verified: true, upload: { fileName: 'source.xlsx', base64: 'UEsK' } };
+  browserContext[payloadFn] = () => ({ fileName: 'source.xlsx', base64: 'UEsK' });
+  browserContext[closeFn] = () => formClosed++;
+  rejectAcceptance = true;
+  browserContext.queueOtherStockUpload(kind); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(formClosed, 0, kind + ': retain form on unconfirmed acceptance');
+  const request = submissions.at(-1).requestId;
+  rejectAcceptance = false;
+  browserContext.queueOtherStockUpload(kind); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(formClosed, 1, kind + ': release form after durable acceptance');
+  assert.equal(submissions.at(-1).requestId, request, 'Retry keeps the same acceptance identity');
+  assert.equal(submissions.at(-1).type, kind);
+}
+console.log('All additional upload forms confirm acceptance before releasing the UI');
