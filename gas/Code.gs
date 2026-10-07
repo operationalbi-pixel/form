@@ -7832,12 +7832,13 @@ function uploadGoodsReceipt(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const prepared = prepareGoodsReceiptImport_(context, payload, false);
-    if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-    if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
-    const lock = LockService.getScriptLock();
-    if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
+    const report = parseGoodsReceiptReport_(String(payload.base64 || "").replace(/^data:[^,]+,/, "").trim(), cleanText_(payload.fileName, 180));
+    const lock = acquireStockWriteLock_();
     try {
+      // Refresh duplicate and balance checks after waiting for the write lock.
+      const prepared = prepareGoodsReceiptImport_(context, payload, false, report);
+      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+      if (!prepared.items.length) throw new Error('Semua baris pada file ini sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Stock Masuk baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date();
       const rows = prepared.items.map(function (receipt) {
@@ -8175,12 +8176,13 @@ function uploadGoodsDelivery(token, payload) {
   return safe_(function () {
     payload = payload || {};
     const context = resolveStockContext_(token, payload.outlet, payload.location);
-    const prepared = prepareGoodsDeliveryImport_(context, payload, false);
-    if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
-    if (!prepared.items.length && !(prepared.recoveryTransfers || []).length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
-    const lock = LockService.getScriptLock();
-    if (!lock.tryLock(5000)) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');
+    const report = parseGoodsDeliveryReport_(String(payload.base64 || "").replace(/^data:[^,]+,/, "").trim(), cleanText_(payload.fileName, 180));
+    const lock = acquireStockWriteLock_();
     try {
+      // Refresh duplicate and balance checks after waiting for the write lock.
+      const prepared = prepareGoodsDeliveryImport_(context, payload, false, report);
+      if (prepared.requiresDuplicateDecision) throw new Error('Ditemukan baris duplikat. Pilih Batal Upload, Tetap Upload Duplikat, atau Skip Duplikat.');
+      if (!prepared.items.length && !(prepared.recoveryTransfers || []).length) throw new Error('Semua baris sudah pernah dicatat atau dipilih untuk dilewati. Tidak ada Transfer Out baru yang di-upload.');
       appendOrActivateStockMasterItems_(prepared.masterChanges);
       const now = new Date(), transferIds = {}, totalByCode = {}, itemByCode = {}, lotQueues = {}, stockRows = [], pendingRows = [];
       prepared.items.forEach(function (delivery) {
