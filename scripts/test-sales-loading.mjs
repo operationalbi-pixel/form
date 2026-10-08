@@ -7,7 +7,7 @@ function between(source,start,end){const a=source.indexOf(start),b=source.indexO
 
 // The cached dashboard path must not open a spreadsheet or scan transactions.
 const cached={year:2026,monthNumber:10,targets:{BISS:1000}};
-const warm={Date,Number,TZ:'Asia/Jakarta',
+const warm={Date,Number,TZ:'Asia/Jakarta',salesSpreadsheetId_:()=> 'database',
   validateSession_:()=>({outlet_code:'BISS',outlet_name:'Outlet',role:'store'}),
   cacheKeyDashboard_:()=> 'key',getCacheJson_:()=>({...cached}),
   Utilities:{formatDate:()=> '2026-10-06'},

@@ -719,6 +719,7 @@
 }());
 </script>
 
+<script src="sales-save-jobs.js?v=20261008-sales-background1"></script>
 <script>
 const BOOT = {today:new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Jakarta'}),outlets:[],brand:'Bakerzin'};
 const ID_MONTHS_LONG = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
@@ -822,7 +823,23 @@ function weekOfYear(year, month, day){
 }
 function showLoader(on){ document.getElementById('loader').classList.toggle('show', on); }
 function toast(msg, err){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.toggle('err',!!err); t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2000); }
-function call(fn, ...args){ return new Promise((res,rej)=>google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](...args)); }
+function call(fn, ...args){
+  if(window.SalesSaveOutbox && SalesSaveOutbox.accepts(fn)){
+    try{return Promise.resolve(SalesSaveOutbox.enqueue(fn,args[1],salesSaveSnapshot()));}catch(error){return Promise.reject(error);}
+  }
+  return new Promise((res,rej)=>google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](...args));
+}
+function salesSaveCommitted(entry,result){
+  const snapshot=entry.snapshot,payload=entry.payload;
+  if(!snapshot||!result)return;
+  const selectedDate=snapshot.year+'-'+pad2(snapshot.month)+'-'+pad2(snapshot.day);
+  if(entry.fn==='saveDaily' && (payload.date!==selectedDate || (payload.outlet_code && payload.outlet_code!==snapshot.outlet))){refreshMonthInBackground();return;}
+  if(payload.preserveSales!==true && payload.sales!==undefined)clearSavedDraft(snapshot.salesKey,snapshot.salesInput);
+  if(payload.preserveAnalysis!==true && payload.analisa!==undefined)clearSavedDraft(snapshot.analysisKey,snapshot.analysisInput);
+  if(entry.fn==='saveDaily')applySavedDaily(snapshot,result);
+  render();refreshMonthInBackground();
+}
+
 
 document.getElementById('btnLogout').addEventListener('click', ()=>{
   location.href='index.html';
@@ -1615,6 +1632,7 @@ document.getElementById('saveDay').addEventListener('click', async ()=>{
   showLoader(true);
   try {
     const r = await call('saveDaily', session.token, payload);
+    if(r.accepted){toast('Sales diproses di background');return;}
     if(!r.ok){ toast(r.error||'Gagal simpan',true); return; }
     // Keep the frontend compatible while the older GAS deployment is updating.
     if(r.analisa===undefined) r.analisa=payload.analisa;
@@ -1654,6 +1672,7 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
     } else {
       r = await call('saveMonthly', session.token, { year:state.year, month:state.month, analisa:text });
     }
+    if(r.accepted){toast('Analisa diproses di background');return;}
     if(!r.ok){ toast(r.error||'Gagal submit', true); return; }
     toast('Analisa terkirim');
     clearSavedDraft(snapshot.analysisKey,snapshot.analysisInput);
@@ -1946,6 +1965,7 @@ async function saveHqDailyFromModal(outletCode, day, contributor, box){
   button.textContent='Menyimpan';
   try{
     const result = await call('saveDaily', session.token, { date, sales, analisa:contributor&&contributor.text||'', preserveAnalysis:true, outlet_code:outletCode });
+    if(result && result.accepted){toast('Sales diproses di background');button.disabled=false;button.textContent='Simpan';return;}
     if(!result || !result.ok) throw new Error(result&&result.error||'Gagal menyimpan Sales Harian.');
     box.querySelector('.ob-sales').innerHTML = sales>0?`<span class="rp">Rp</span>${fmtShort(sales)}`:'<span style="color:var(--soft);font-weight:500;font-size:11px">—</span>';
     toast(`Sales ${outletCode} tersimpan`);
@@ -2319,6 +2339,12 @@ window.addEventListener('keydown', e=>{
     session.role=res.role;
     document.getElementById('analysisBoot').classList.add('hide');
     enterApp(res.dashboard);
+    const pending=SalesSaveOutbox.start(salesSaveCommitted);
+    pending.forEach(entry=>{const snap=entry.snapshot;if(!snap)return;
+      if(entry.payload.preserveSales!==true && entry.payload.sales!==undefined)salesEditorDrafts.set(snap.salesKey,snap.salesInput);
+      if(entry.payload.preserveAnalysis!==true && entry.payload.analisa!==undefined)salesEditorDrafts.set(snap.analysisKey,snap.analysisInput);
+    });
+    render();
   }catch(e){
     const card=document.querySelector('#analysisBoot .analysis-boot-card');
     const message=String(e&&e.message||e||'Gagal membuka Analisa Sales.')

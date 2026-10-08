@@ -3864,6 +3864,22 @@ async function compactApplicationRecords(request, env, requestId) {
   const results=await env.OPERATIONS_DB.batch(statements);
   return responseJson({ok:true,removed:results.reduce((n,r)=>n+Number(r.meta?.changes||0),0)},200);
 }
+async function acceptSalesSaveJob(request, env, requestId) {
+  let job;
+  try { job = (await readJsonWithLimit(request, 150000))?.job; } catch { return apiError(400,'INVALID_PAYLOAD','Data Sales tidak valid.',requestId); }
+  if(!job || job.engine!=='SALES' || !['DAILY','WEEKLY','MONTHLY'].includes(job.type) || !/^[a-f0-9]{32,128}$/.test(job.jobId||'') || !job.ownerNik || !job.sourceHash || !job.spreadsheetId || !job.outlet || !job.payload)
+    return apiError(400,'INVALID_JOB','Permintaan Sales tidak valid.',requestId);
+  await ensureApplicationRecords(env);
+  job={...job,status:'QUEUED',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),error:'',progress:10};
+  // Acceptance is insert-only: concurrent retries cannot reset a processing/completed job.
+  await env.OPERATIONS_DB.prepare("INSERT INTO application_records(table_name,record_id,outlet_code,payload_json,created_at) VALUES('background_upload_jobs',?,?,?,?) ON CONFLICT(table_name,record_id) DO NOTHING")
+    .bind(job.jobId,job.outlet,JSON.stringify(job),job.createdAt).run();
+  const saved=await env.OPERATIONS_DB.prepare("SELECT payload_json FROM application_records WHERE table_name='background_upload_jobs' AND record_id=?").bind(job.jobId).all();
+  const accepted=JSON.parse(saved.results[0].payload_json);
+  if(accepted.engine!=='SALES'||accepted.ownerNik!==job.ownerNik||accepted.sourceHash!==job.sourceHash)
+    return apiError(409,'REQUEST_CONFLICT','Identitas permintaan sudah digunakan untuk input lain.',requestId);
+  return responseJson({ok:true,job:accepted},200);
+}
 async function applicationRecords(request, url, env, requestId) {
   const table = cleanText(url.searchParams.get('table'), 80);
   if (!/^[a-z][a-z0-9_]{0,79}$/.test(table)) return apiError(400, 'INVALID_TABLE', 'Identitas data tidak valid.', requestId);
@@ -3901,14 +3917,20 @@ async function applicationRecords(request, url, env, requestId) {
   const bindings = [table];
   let where = 'table_name=?';
   if(recordId){where+=' AND record_id=?';bindings.push(recordId);}
+  const ids=String(url.searchParams.get('record_ids')||'').split(',').filter(Boolean);
+  if(ids.length>50)return apiError(400,'INVALID_BATCH','Maksimal 50 identitas per permintaan.',requestId);
+  if(ids.length){where+=' AND record_id IN ('+ids.map(()=>'?').join(',')+')';bindings.push(...ids);}
   if(table==='background_upload_jobs'){
+    const engine=cleanText(url.searchParams.get('engine'),30);if(engine){where+=" AND json_extract(payload_json,'$.engine')=?";bindings.push(engine);}
+    if(url.searchParams.get('unresolved')==='1')where+=" AND json_extract(payload_json,'$.status') IN ('QUEUED','PREPARING','PROCESSING','ACTION_REQUIRED')";
     if(url.searchParams.get('active')==='1')where+=" AND json_extract(payload_json,'$.status') IN ('QUEUED','PREPARING','PROCESSING')";
     const owner=cleanText(url.searchParams.get('owner_nik'),100);if(owner){where+=" AND json_extract(payload_json,'$.ownerNik')=?";bindings.push(owner);}
   }
   if (outlet) { where += ' AND outlet_code=?'; bindings.push(outlet); }
   if (cursor) { where += ' AND record_id>?'; bindings.push(cursor); }
   bindings.push(limit + 1);
-  const result = await env.OPERATIONS_DB.prepare(`SELECT record_id,payload_json FROM application_records WHERE ${where} ORDER BY record_id LIMIT ?`).bind(...bindings).all();
+  const order=url.searchParams.get('recent')==='1'?'created_at DESC, record_id':'record_id';
+  const result = await env.OPERATIONS_DB.prepare(`SELECT record_id,payload_json FROM application_records WHERE ${where} ORDER BY ${order} LIMIT ?`).bind(...bindings).all();
   const records = result.results || [], hasMore = records.length > limit, selected = records.slice(0,limit);
   return responseJson({ ok: true, data: selected.map(row => JSON.parse(row.payload_json)), nextCursor: hasMore ? selected.at(-1).record_id : '' },200);
 }
@@ -3922,6 +3944,7 @@ async function route(request, env) {
   if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/sales-save-jobs") return acceptSalesSaveJob(request,env,requestId);
   if (request.method === "POST" && url.pathname === "/v1/application-records/compact") return compactApplicationRecords(request,env,requestId);
   if (["GET","POST","DELETE"].includes(request.method) && url.pathname === "/v1/application-records") return applicationRecords(request, url, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
