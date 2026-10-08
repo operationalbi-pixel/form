@@ -19,7 +19,7 @@ const CONFIG = Object.freeze({
   PUSH_TOKEN_SHEET: 'APP_PUSH_TOKENS',
   MOBILE_EVENT_SHEET: 'APP_MOBILE_EVENTS',
   CHAT_SPREADSHEET_ID: '1-2UtuE33BtRu4xxAdKUvP69VlmYGhK9_Z-fMjEXE8ao',
-  SALES_ANALYSIS_SPREADSHEET_ID: '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8',
+  SALES_ANALYSIS_SPREADSHEET_ID: '1akfbA3BNDa4sZK95eSRBdYu2BhC60MrxvPZ09pYO7wk',
   STAFF_PERFORMANCE_CONFIG_SPREADSHEET_ID: '19A_QtC62JP6uQcCkQu0yUKTV60kuy2MfXIXKz7aVDSU',
   STAFF_PERFORMANCE_INDICATOR_SHEET: 'Config_Indicators',
   STORE_CODE_SHEET: 'STORE CODE',
@@ -17494,7 +17494,10 @@ function salesSheetResetReadCache_() {
 }
 
 function salesSpreadsheetId_() {
-  return String(PropertiesService.getScriptProperties().getProperty('SALES_ANALYSIS_SPREADSHEET_ID') || SHEET_ID || '').trim();
+  var override = String(PropertiesService.getScriptProperties().getProperty('SALES_ANALYSIS_SPREADSHEET_ID') || '').trim();
+  // Ignore the retired database override so existing deployments switch to the replacement Sheet.
+  if (override === '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8') override = '';
+  return override || String(SHEET_ID || '').trim();
 }
 
 function salesSpreadsheet_() {
