@@ -425,7 +425,7 @@
       <div class="save-link"></div>
       <div class="save-flow-row">
         <div class="save-node active" id="save-step-send"><span id="save-icon-send">↑</span></div>
-        <div class="save-flow-copy"><b>Mengirim Data</b><span>Menunggu konfirmasi server</span></div>
+        <div class="save-flow-copy"><b>Mengirim Data</b><span>Memastikan data tersimpan</span></div>
       </div>
       <div class="save-link"></div>
       <div class="save-flow-row">
@@ -1043,7 +1043,7 @@
     var canDashboard = !!(s.isHq || s.canMonitor);
     // Tombol laporan langsung tersedia sejak home tampil, termasuk sebelum mulai break.
     show('box-report-action', canDashboard);
-    // Saat login cepat, state awal belum membaca Break_log. Dashboard menunggu sinkron background.
+    // Saat login cepat, state awal belum membaca Break_log. Dashboard memerlukan sinkron background.
     if (s.pendingSync) canDashboard = false;
     $('home-col').classList.toggle('wide', canDashboard);
     show('box-hq', canDashboard);

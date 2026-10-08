@@ -46,24 +46,17 @@ const backfillEnd = source.indexOf('/** Refreshes compact balances', backfillSta
 const backfillSource = source.slice(backfillStart, backfillEnd);
 assert.match(backfillSource, /stock_item_summary_backfill_queue/, 'Backfill must use the compact BigQuery queue');
 assert.match(backfillSource, /STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1/, 'Backfill must advance with one cursor');
-assert.match(backfillSource, /GROUP BY 1, 2, 3, 4\) AS grouped/, 'Cursor must be calculated after grouping the stock identities');
+assert.match(backfillSource, /Object.keys\(grouped\).sort/, 'Backfill must sort grouped stock identities before cursor processing');
 assert.doesNotMatch(backfillSource, /setProperties\(updates/, 'Backfill must not create one Script Property per stock item');
-
-assert.match(source, /ensureBigQueryTable_\('stock_summary_jobs'/, 'Persistent summary queue must live in BigQuery');
-const pendingJobStart = source.indexOf('function stockPendingSummaryJobs_(');
-const pendingJobEnd = source.indexOf('function acknowledgeStockSummaryJob_(', pendingJobStart);
-const pendingJobSource = source.slice(pendingJobStart, pendingJobEnd);
-assert.match(pendingJobSource, /FORMAT_TIMESTAMP\(\\'%Y-%m-%d %H:%M:%E6S\\', pending_through, \\'UTC\\'\)/,
-  'ACK timestamps must be UTC without the +00 suffix rejected by BigQuery insertAll, preserving microseconds');
-assert.doesNotMatch(pendingJobSource, /CAST\(pending_through AS STRING\)/,
-  'Do not pass BigQuery CAST timestamps with +00 into the ACK insert');
-assert.match(source, /function applyStockBalanceDeltas_/, 'Normal stock writes must support incremental balances');
-assert.match(source, /MERGE ['"]? \+ table/, 'Incremental balances must use an atomic BigQuery MERGE');
+assert.match(source, /cloudflareApplicationRecords_\('stock_summary_jobs'/, 'Persistent summary queue must live in Cloudflare');
+assert.match(source, /cloudflarePendingSummaryJobs_/, 'Pending jobs must compare durable ACK watermarks');
+assert.match(source, /function applyStockBalanceDeltas_/, 'Normal writes must preserve native Cloudflare balances');
+assert.doesNotMatch(source, /BigQuery\.(Jobs|Tabledata|Tables)\./, 'No runtime BigQuery access');
 assert.match(source, /row\.record_type === 'OPNAME_DETAIL'.*movement_type.*Stock Opname.*version/s,
   'Stock Opname and corrected versions must remain on the full rebuild path');
 assert.match(source, /function compactStockSummaryTables\(\)/, 'Summary version compaction must be available');
-assert.match(source, /ROW_NUMBER\(\) OVER \(PARTITION BY event_date, outlet, location/, 'Daily compaction must keep only the newest item/day version');
-assert.match(source, /stock_summary_jobs_compact_tmp/, 'Processed BigQuery queue versions must also be compacted');
+assert.match(source, /application-records\/compact/, 'Daily compaction uses native Cloudflare endpoint');
+assert.match(source, /cloudflarePendingSummaryJobs_/, 'Processed queue watermarks must remain durable');
 assert.match(source, /date >= rebuildFrom/, 'Changed item rebuilds must only append affected dates');
 assert.match(source, /function activateBigQuerySummaryMaintenanceV2\(\)/, 'Deployment must expose one safe V2 activation entry point');
 assert.doesNotMatch(source, /function markStockItemSummariesDirty_/, 'Item jobs must no longer be stored as Script Properties');

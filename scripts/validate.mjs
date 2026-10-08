@@ -167,13 +167,13 @@ if (!chatBackend.includes("fastSource: 'CLOUDFLARE_D1'") || !chatBackend.include
 if (/stockFifoFefoStatus_\(readStockHistoryForFifoRecalculation_/.test(chatBackend)) {
   failures.push('Stock History masih menjalankan full-history FIFO query terpisah saat drawer dibuka');
 }
-if (!chatBackend.includes('request.maximumBytesBilled') || !chatBackend.includes("getProperty('BQ_MAX_BYTES_BILLED')")) {
+if (/\bBigQuery\.(?:Jobs|Tabledata|Tables|Datasets)\s*\./.test(chatBackend)) {
   failures.push('Pengaman maksimum biaya per query BigQuery belum aktif');
 }
 if (!chatBackend.includes('function runUiReadQuery_(') || !chatBackend.includes("getProperty('BQ_UI_MAX_BYTES_BILLED')") || !chatBackend.includes('268435456')) {
   failures.push('Query UI belum memiliki batas biaya 256 MB yang terpisah');
 }
-if (!chatBackend.includes("ensureBigQueryTable_('stock_item_daily_summary'") || !chatBackend.includes("ensureBigQueryTable_('stock_item_lot_summary'") || !chatBackend.includes('function processStockItemSummaryJobs()')) {
+if (!chatBackend.includes("insertAll_('stock_item_daily_summary'") || !chatBackend.includes("insertAll_('stock_item_lot_summary'") || !chatBackend.includes('function processStockItemSummaryJobs()')) {
   failures.push('Tabel ringkasan harian/lot atau worker perubahan item belum tersedia');
 }
 if (!chatBackend.includes("everyMinutes(5)") || !chatBackend.includes('function startBigQueryCostOptimization()')) {
@@ -390,11 +390,12 @@ try {
     }
   });
   new vm.Script(backend, { filename: 'docs/Code.gs#insert-all-batch-test' }).runInContext(insertContext);
+  insertContext.cloudflareInventoryRequest_ = (method,path,request) => { insertCalls.push({request,path}); return {confirmed:request.rows.length}; };
   const batchRows = Array.from({ length: 1201 }, (_, index) => ({ insertId: `ROW-${index}`, json: { value: `Data ${index}` } }));
   const batchResult = insertContext.insertAll_('stock_card_test', batchRows);
   const batchSizes = insertCalls.map(call => call.request.rows.length);
-  if (batchSizes.join(',') !== '500,500,201') failures.push(`BigQuery insertAll belum membagi 1.201 baris secara aman: ${batchSizes.join(',')}`);
-  if (batchResult.insertedRows !== 1201 || batchResult.batchCount !== 3) failures.push('Ringkasan batch BigQuery tidak sesuai jumlah baris yang dikirim');
+  if (batchSizes.length !== 25 || batchSizes.slice(0,-1).some(size=>size!==50) || batchSizes.at(-1)!==1) failures.push(`Cloudflare records belum membagi 1.201 baris secara aman: ${batchSizes.join(',')}`);
+  if (batchResult.insertedRows !== 1201 || batchResult.batchCount !== 25) failures.push('Ringkasan batch Cloudflare tidak sesuai jumlah baris yang dikirim');
   const showcaseResult = insertContext.resolveSalesTarget_('SHOWCASE PRODUCT', {
     showcase: [{ code: 'SC-1', name: 'SHOWCASE PRODUCT' }],
     wip: [{ code: 'WIP-1', name: 'SHOWCASE PRODUCT' }],
@@ -429,7 +430,7 @@ try {
   insertContext.appendMockRecallWipTree_(recallState, 'WIP-DIRECT', 'DIRECT ITEM', [{ qty: 2, unit: 'PCS' }], 1, 0, {}, false);
   if (recallState.materials.length !== 1 || recallState.materials[0].salesUsageMode !== 'DIRECT_WIP') failures.push('Mock Recall DIRECT_WIP masih menampilkan turunan material resep');
 } catch (error) {
-  failures.push(`Uji batch BigQuery gagal: ${error.message}`);
+  failures.push(`Uji batch Cloudflare gagal: ${error.message}`);
 }
 const frontendStockCard = await text('docs/stock-card.html');
 if (!frontendStockCard.includes("item.salesUsageMode==='DIRECT_WIP'?'DIRECT WIP':'WIP'")) failures.push('Mock Recall belum memberi label DIRECT WIP');
@@ -456,8 +457,8 @@ if (!backend.includes('stockOpnameHistory: getStockOpnameUploadHistory') || !bac
     !backend.includes("record_type: 'OPNAME_DETAIL'")) failures.push('Backend History Stock Opname atau audit detail seluruh item belum tersedia');
 if (!backend.includes('stockOpnameCorrectionPreview: previewStockOpnameDateCorrection') || !backend.includes('stockOpnameCorrectionApply: applyStockOpnameDateCorrection') ||
     !backend.includes("record_type: 'OPNAME_CORRECTION'") || !backend.includes('correctionReason: prepared.reason')) failures.push('Backend koreksi tanggal Stock Opname belum menyimpan versi baru dan audit koreksi');
-if (!backend.includes('payload.useProvidedFactor === true') || !backend.includes('const convertedAuditInfo') ||
-    !backend.includes('JSON_SET(PARSE_JSON(info)')) failures.push('Perubahan Unit Default belum mengonversi saldo, riwayat, transfer, dan audit Stock Opname secara konsisten');
+if (!backend.includes('payload.useProvidedFactor === true') || !backend.includes('oldUnit: oldUnit') ||
+    !backend.includes("'/v1/items/convert-unit'")) failures.push('Perubahan Unit Default belum mengonversi saldo, riwayat, transfer, dan audit Stock Opname secara konsisten');
 if (!backend.includes("event_date: prepared.eventDate") || !backend.includes("event_date <= CAST(@eventDate AS DATE)")) failures.push('Stock Opname backdate belum menghitung dan menyimpan balance pada tanggal SO yang dipilih');
 if (!backend.includes('currentQtyAfter: Number(currentBalance[row.code] || 0) + delta')) failures.push('Stock Opname backdate belum meneruskan selisih ke saldo tanggal berikutnya');
 if (!backend.includes("'BRANCH', 'LOCATION', 'PRODUCT', 'PRODUCT CODE', 'CATEGORY', 'SUBCATEGORY', 'UNIT', 'OPNAME STOCK'")) failures.push('Parser Stock Opname belum mengikuti header file Excel yang disediakan');
@@ -554,7 +555,7 @@ if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('retryStockPositionUpload: retryStockPositionUpload') ||
     !backend.includes('function processStockPositionJobItem_(job, prepared)') ||
     !backend.includes('existingStockPositionRecordIds_(job, rows)') ||
-    !backend.includes("stockCheckpointBalanceCtes_('', true)")) {
+    !backend.includes('cloudflareBalanceAtDate_(outlet, location')) {
   failures.push('Stock Posisi belum diproses bertahap dengan pemulihan per item dan query saldo terbatas outlet');
 }
 if (!frontendStockCard.includes("server('queueStockPosition'") ||
@@ -566,7 +567,7 @@ if (!frontendStockCard.includes("server('queueStockPosition'") ||
   failures.push('Upload Stock Posisi masih menunggu penyimpanan sinkron atau belum dapat menyambungkan ulang job');
 }
 if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
-    !backend.includes('Antrean terhenti terdeteksi. Worker dijalankan kembali otomatis.') ||
+    !backend.includes('Proses terhenti terdeteksi. Worker dijalankan kembali otomatis.') ||
     !backend.includes('candidate.workerLeaseUntil') || !backend.includes('a.lastWorkedAt || a.createdAt')) {
   failures.push('Antrean Sales COGS belum dapat memulihkan trigger macet atau melewati job lama yang masih terkunci');
 }
@@ -586,8 +587,8 @@ if (!backend.includes('const startDate = requestedStartDate || stockDefaultRecal
 if (!frontendStockCard.includes('Recalculate FIFO &amp; FEFO')) failures.push('Tombol rekalkulasi FIFO/FEFO belum tersedia');
 if (!frontendStockCard.includes("openExpiryAlertModal('FIFO')") && !frontendStockCard.includes("openExpiryAlertModal(\\'FIFO\\')")) failures.push('Daftar detail item FIFO/FEFO belum tersedia');
 if (!backend.includes('correctMovement: correctUploadedStockMovement') || !backend.includes('function correctUploadedStockMovement(token, payload)')) failures.push('Endpoint koreksi transaksi upload Stock Card belum tersedia');
-if (!backend.includes("ensureBigQueryTable_('stock_movement_corrections'") || !backend.includes('old_qty: oldQty, new_qty: newQty, reason: reason')) failures.push('Audit QTY lama, QTY baru, dan alasan koreksi belum tersimpan');
-if (!backend.includes("'UPDATE ' + corrections + ' SET old_qty = old_qty * CAST(@factor AS FLOAT64), new_qty = new_qty * CAST(@factor AS FLOAT64)")) failures.push('Audit koreksi QTY belum ikut berubah saat Unit Default dikonversi');
+if (!backend.includes("insertAll_('stock_movement_corrections'") || !backend.includes('old_qty: oldQty, new_qty: newQty, reason: reason')) failures.push('Audit QTY lama, QTY baru, dan alasan koreksi belum tersimpan');
+if (!backend.includes('function convertStockDefaultUnitBigQuery_(')) failures.push('Audit koreksi QTY belum ikut berubah saat Unit Default dikonversi');
 if (!backend.includes('function appendLocalTransferCounterpartCorrection_(') ||
     !backend.includes("cloudflareReadTransferEvents_({ transfer_id: transferId })")) failures.push('Koreksi transfer belum menjaga pasangan lokal dan QTY transfer pending di Cloudflare');
 if (backend.includes("insertAll_('stock_transfers'") ||
@@ -634,7 +635,7 @@ try {
   let pairedRows = [];
   transferContext.Utilities = { getUuid: () => 'NEW-PAIR' };
   transferContext.latestStockMovementCte_ = () => 'WITH latest AS (SELECT 1)';
-  transferContext.runNamedQuery_ = () => [{ record_id: 'PAIR-1', logical_id: 'PAIR-1', version: 1, outlet: 'BICP', location: 'Gudang', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', direction: 'IN', qty: 638, movement_type: 'Transfer In', info: 'Transfer From Store', expiry_date: '2026-09-30', event_date: '2026-09-04' }];
+  transferContext.cloudflareLedgerRows_ = () => [{ record_id: 'PAIR-1', logical_id: 'PAIR-1', version: 1, outlet: 'BICP', location: 'Gudang', item_code: 'ITEM-1', item_name: 'Mushroom', unit: 'KG', direction: 'IN', qty: 638, movement_type: 'Transfer In', info: 'Transfer From Store', expiry_date: '2026-09-30', event_date: '2026-09-04' }];
   transferContext.insertStockCardRows_ = value => { pairedRows = value; };
   const pairedCount = transferContext.appendLocalTransferCounterpartCorrection_({ transfer_id: 'LOCAL-1', logical_id: 'SOURCE-1', outlet: 'BICP', item_code: 'ITEM-1', direction: 'OUT', qty: 638, movement_type: 'Transfer Out', expiry_date: '2026-09-30' }, 6.38, 'Salah desimal', { nik: 'EMP-1', name: 'User Test' }, new Date('2026-09-04T04:00:00Z'));
   if (pairedCount !== 1 || !pairedRows.length || Math.abs(pairedRows[0].json.qty - 6.38) > 0.000001 || pairedRows[0].json.version !== 2) failures.push('Pasangan IN/OUT transfer internal belum dikoreksi sebagai versi baru');
@@ -708,7 +709,7 @@ try {
   repairContext.stockCardTable_ = () => '`test.stock_card`';
   repairContext.digest_ = value => String(value).includes('BICP|2026-09-01|IJ-1') ? 'ROW-HASH' : 'REPAIR-TOKEN';
   repairContext.Utilities = { getUuid: (() => { let id = 0; return () => `ID-${++id}`; })() };
-  repairContext.runNamedQuery_ = () => [{
+  repairContext.cloudflareLedgerRows_ = () => [{
     record_id: 'OLD-1', logical_id: 'OLD-1', version: 1, outlet: 'BICP', location: 'Store', item_code: 'ITEM1',
     category: 'Food', item_name: 'London Cake', unit: 'BOX@15PCS', direction: 'OUT', qty: 5,
     movement_type: 'Item Journal', info: 'Item Journal Number: IJ-1', event_date: '2026-09-01',
@@ -817,10 +818,10 @@ try {
   if (!savedOpnameAudit || savedOpnameAudit.json.qty !== 7 || JSON.parse(savedOpnameAudit.json.info).cardQty !== 5) failures.push('Audit detail Stock Opname belum menyimpan QTY sebelum dan hasil SO');
   if (!unchangedOpnameMarker || unchangedOpnameMarker.json.qty !== 0 || unchangedOpnameMarker.json.direction !== 'IN') failures.push('Item Stock Opname tanpa selisih belum tetap menyimpan marker balance untuk riwayat');
   backendContext.stockCardTable_ = () => '`test.stock_card`';
-  backendContext.runNamedQuery_ = sql => sql.includes('COUNT(*)') ? [{ total: 11 }] : [{ outlet: 'BICP', location: 'Store', source_hash: 'HASH-SO', source_file: 'SO.xlsx', event_date: '2026-09-01', info: 'Import Stock Opname 2026-08-31 · Opening 2026-09-01', created_at: '2026-09-01T00:00:00Z', created_by: 'HQ-1' }];
+  backendContext.cloudflareLedgerRows_ = () => Array.from({length:11},(_,index)=>({record_id:'IMP-'+index, outlet: 'BICP', location: 'Store', source_hash: 'HASH-SO', source_file: 'SO.xlsx', event_date: '2026-09-01', info: 'Import Stock Opname 2026-08-31 · Opening 2026-09-01', created_at: '2026-09-01T00:00:00Z', created_by: 'HQ-1'}));
   const uploadHistory = backendContext.getStockOpnameUploadHistory('TOKEN', { page: 2, query: 'bicp' });
   if (uploadHistory.page !== 2 || uploadHistory.pages !== 2 || uploadHistory.rows[0]?.eventDate !== '2026-08-31') failures.push('Pagination 10 baris atau tanggal History Upload Stock Opname belum benar');
-  backendContext.runNamedQuery_ = () => [{ record_type: 'OPNAME_DETAIL', item_code: 'ITEM1', item_name: 'Item 1', unit: 'PCS', qty: 7, direction: null, info: JSON.stringify({ cardQty: 5, actualQty: 7 }), source_row: 2 }];
+  backendContext.cloudflareLedgerRows_ = () => [{ record_type: 'OPNAME_DETAIL', item_code: 'ITEM1', item_name: 'Item 1', unit: 'PCS', qty: 7, direction: null, info: JSON.stringify({ cardQty: 5, actualQty: 7 }), source_row: 2 }];
   const uploadDetail = backendContext.getStockOpnameUploadHistoryDetail('TOKEN', { outlet: 'BICP', location: 'Store', sourceHash: 'HASH-SO', effectiveDate: '2026-09-01', page: 1, query: 'item' });
   if (uploadDetail.pageSize !== 20 || uploadDetail.rows[0]?.openingQty !== 5 || uploadDetail.rows[0]?.opnameQty !== 7) failures.push('Detail History Stock Opname belum memuat QTY sebelum dan hasil SO dengan pagination 20 baris');
   const correctionSourceRows = [
@@ -829,12 +830,8 @@ try {
     { record_id: 'MOV-1', logical_id: 'MOV-1', version: 1, record_type: 'MOVEMENT', outlet: 'BICP', location: 'Store', item_code: 'ITEM1', category: 'Food', item_name: 'Item 1', unit: 'PCS', direction: 'IN', qty: 2, movement_type: 'Stock Opname', event_date: '2026-09-01', source_file: 'SO.xlsx', source_hash: 'HASH-SO', source_row: 2 }
   ];
   backendContext.requireAdmin_ = () => ({ nik: 'HQ-1', outlet: 'BIHQ' });
-  backendContext.runNamedQuery_ = sql => {
-    if (sql.includes('SELECT record_id, logical_id, version, record_type')) return correctionSourceRows;
-    if (sql.includes('SELECT COUNT(*) AS total FROM latest WHERE event_date >=')) return [{ total: 0 }];
-    if (sql.includes('SUM(CASE WHEN direction')) return [{ item_code: 'ITEM1', current_qty: 6 }];
-    throw new Error(`Query koreksi tidak dikenali: ${sql.slice(0, 80)}`);
-  };
+  backendContext.cloudflareLedgerRows_ = scope => scope.sourceHash ? correctionSourceRows : [];
+  backendContext.cloudflareBalanceAtDate_ = () => ({ITEM1:6});
   const correctionPayload = { outlet: 'BICP', location: 'Store', sourceHash: 'HASH-SO', effectiveDate: '2026-09-01', newEventDate: '2026-09-02', reason: 'Tanggal upload sebelumnya salah' };
   const correctionPreview = backendContext.previewStockOpnameDateCorrection('TOKEN', correctionPayload);
   const correctionLine = correctionPreview.items?.[0];

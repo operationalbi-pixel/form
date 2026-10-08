@@ -39,6 +39,7 @@ for (const [prefix, worker, chunk] of [
   const workerCtx = vm.createContext({ console }); vm.runInContext(source, workerCtx);
   let cleaned = 0;
   Object.assign(workerCtx, {
+    cloudflareReadAllPages_: () => [],
     PropertiesService: { getScriptProperties: () => properties },
     ScriptApp: { getProjectTriggers: () => [] },
     acquireStockScopeLock_: () => ({ releaseLock() {} }),

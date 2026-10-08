@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 const source = await readFile('docs/Code.gs', 'utf8');
-const properties = new Map(), files = new Map(), stock = new Map(), transfers = new Map();
-let fileSequence = 0, buildCount = 0, busy = false, interrupted = false, owner = 'N1', lease = false;
+const properties = new Map(), jobRecords = new Map(), files = new Map(), stock = new Map(), transfers = new Map();
+let metadataInterrupted=false, fileSequence = 0, buildCount = 0, busy = false, interrupted = false, owner = 'N1', lease = false;
 const context = vm.createContext({ console });
 vm.runInContext(source, context);
-const jobList = () => [...properties.entries()].filter(([key]) => key.startsWith('goods-upload-job-')).map(([, value]) => JSON.parse(value));
+const jobList = () => [...jobRecords.values()].map(value=>JSON.parse(value));
 const lock = { waitLock() {}, tryLock: () => true, releaseLock() {} };
 const propApi = { getProperty: key => properties.get(key), setProperty: (key, value) => properties.set(key, value), deleteProperty: key => properties.delete(key), getProperties: () => Object.fromEntries(properties) };
 const driveFile = (id, blob) => ({ getId: () => id, getBlob: () => ({ getDataAsString: () => blob.value, getBytes: () => blob.value }), setTrashed: () => files.delete(id) });
@@ -17,8 +17,15 @@ Object.assign(context, {
   resolveStockContext_: (_token, outlet, location) => ({ employee: { nik: owner, outlet: 'BIMC', name: 'Staff' }, outlet, location }),
   requireSession_: () => ({ nik: owner }), findEmployee_: nik => ({ nik, outlet: 'BIMC', name: 'Staff' }), assertEmployeeActive_() {},
   readStockLocations_: () => ['Store'], ensureStockMaintenanceTrigger_() {},
+  cloudflareInventoryRequest_: (method,path,payload) => {
+    if(method==='GET'){const id=new URL('https://test'+path).searchParams.get('record_id');return {data:jobRecords.has(id)?[JSON.parse(jobRecords.get(id))]:[]};}
+    if(method==='POST'){payload.rows.forEach(row=>jobRecords.set(row.insertId,JSON.stringify(row.json)));if(metadataInterrupted){metadataInterrupted=false;throw new Error('Cloudflare HTTP 503 after metadata commit');}return {confirmed:payload.rows.length};}
+    if(method==='DELETE'){jobRecords.delete(new URL('https://test'+path).searchParams.get('record_id'));return {ok:true};}
+    throw new Error('Unexpected request');
+  },
+  cloudflareReadAllPages_: (path,params) => {assert.equal(params.table,'background_upload_jobs');return jobList().filter(job=>!params.active||['QUEUED','PREPARING','PROCESSING'].includes(job.status));},
   PropertiesService: { getScriptProperties: () => propApi }, LockService: { getUserLock: () => lock },
-  Utilities: { base64Decode: () => [80, 75, 10], base64Encode: () => 'UEsK', newBlob: (value, type, name) => ({ value, type, name }) },
+  Utilities: { base64Decode: () => [80, 75, 10], base64Encode: () => 'UEsK', newBlob: (value, type, name) => ({ value, type, name, getBytes:()=>Array.from(Buffer.from(String(value))) }) },
   DriveApp: { createFile: blob => { const id = 'f' + ++fileSequence; const file = driveFile(id, blob); files.set(id, file); return file; }, getFileById: id => { assert.ok(files.has(id), 'Durable file exists'); return files.get(id); } },
   ScriptApp: { getProjectTriggers: () => [], newTrigger: () => ({ timeBased() { return this; }, after() { return this; }, create() {} }), deleteTrigger() {} },
   acquireStockWriteLock_: () => { if (busy) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.'); return lock; },
@@ -198,3 +205,42 @@ for (const [kind, key, payloadFn, closeFn] of [
   assert.equal(submissions.at(-1).type, kind);
 }
 console.log('All additional upload forms confirm acceptance before releasing the UI');
+
+// Showcase uses durable JSON requests, not an Excel source, and finishes without a browser session.
+jobRecords.clear();let showcaseBuilds=0,taskCompletions=0;
+Object.assign(context,{todayIso_:()=> '2026-10-08',normalizeDate_:value=>value,removeScriptCacheKeys_(){},markShowcaseLogTaskComplete_:()=>taskCompletions++,buildShowcaseSavePlan_:()=>{showcaseBuilds++;return {stockRows:[{json:{record_id:'showcase-'+showcaseBuilds}}],pendingRows:[],masterChanges:[],result:{completed:true}};}});
+for(let i=0;i<301;i++)jobRecords.set('completed-'+i,JSON.stringify({jobId:'completed-'+i,ownerNik:'N1',status:'COMPLETE',createdAt:'2026-10-01T00:00:00Z'}));
+const showcasePayload={requestId:'showcase-request-000001',outlet:'BIMC',eventDate:'2026-10-08',entries:[{itemCode:'MENU',inQty:2,hasInInput:true}]};
+const showcase=context.queueShowcaseLog('login',showcasePayload);assert.equal(showcase.ok,true,'Existing jobs must not reject acceptance due to a queue capacity');
+const showcaseFiles=fileSequence;assert.equal(context.queueShowcaseLog('login',showcasePayload).data.jobId,showcase.data.jobId);assert.equal(fileSequence,showcaseFiles);
+assert.equal(context.queueShowcaseLog('login',{...showcasePayload,entries:[{itemCode:'MENU',inQty:3,hasInInput:true}]}).ok,false,'A pending request cannot be reused for different stock input');
+assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).sourceDriveId,undefined);
+context.requireSession_=()=>{throw new Error('Browser session expired');};
+busy=true;context.processGoodsUploadJobs();busy=false;assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'QUEUED');assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).error,'');
+interrupted=true;context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'QUEUED');assert.equal(taskCompletions,0);
+context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'COMPLETE');assert.equal(showcaseBuilds,1);assert.equal(taskCompletions,1);
+context.requireSession_=()=>({nik:owner});assert.equal(context.queueShowcaseLog('login',showcasePayload).data.status,'COMPLETE');
+const needsReview=context.queueShowcaseLog('login',{...showcasePayload,requestId:'showcase-request-000002'});
+const builder=context.buildShowcaseSavePlan_;context.buildShowcaseSavePlan_=()=>{throw new Error('Balance tidak cukup.');};context.processGoodsUploadJobs();
+assert.equal(context.getGoodsUploadRequest('login',needsReview.data.jobId).data.payload.entries[0].inQty,2);
+context.buildShowcaseSavePlan_=builder;assert.equal(context.queueShowcaseLog('login',{...showcasePayload,requestId:'showcase-request-000002',entries:[{itemCode:'MENU',inQty:1,hasInInput:true}]}).data.jobId,needsReview.data.jobId);
+context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(needsReview.data.jobId).status,'COMPLETE');
+console.log('Showcase durable acceptance, busy recovery, complete-only task updates, expired-session execution and editable review passed');
+const earlierSave=context.queueShowcaseLog('login',{...showcasePayload,requestId:'showcase-request-000003'});
+const laterSave=context.queueShowcaseLog('login',{...showcasePayload,requestId:'showcase-request-000004'});
+let earlierJob=context.readGoodsUploadJob_(earlierSave.data.jobId);earlierJob.createdAt='2026-10-08T01:00:00Z';earlierJob.lastWorkedAt='9999-01-01T00:00:00Z';context.writeGoodsUploadJob_(earlierJob);
+let laterJob=context.readGoodsUploadJob_(laterSave.data.jobId);laterJob.createdAt='2026-10-08T02:00:00Z';context.writeGoodsUploadJob_(laterJob);
+context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(earlierSave.data.jobId).status,'COMPLETE');assert.equal(context.readGoodsUploadJob_(laterSave.data.jobId).status,'QUEUED','New Showcase totals cannot overtake an earlier active save');
+console.log('Showcase saves preserve acceptance order within the same outlet.');
+
+context.processGoodsUploadJobs();
+metadataInterrupted=true;const uncertainRequest={...showcasePayload,requestId:'showcase-request-000005'};
+assert.equal(context.queueShowcaseLog('login',uncertainRequest).ok,false);
+const recovered=context.queueShowcaseLog('login',uncertainRequest);assert.equal(recovered.ok,true);
+assert.ok(files.has(context.readGoodsUploadJob_(recovered.data.jobId).requestDriveId),'Lost metadata acknowledgement must not delete an accepted request');
+context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(recovered.data.jobId).status,'COMPLETE');
+metadataInterrupted=true;const uncertainFile={...payload,requestId:'request-000000000009',type:'GOODS_RECEIPT'};
+assert.equal(context.queueGoodsUpload('login',uncertainFile).ok,false);const recoveredFile=context.queueGoodsUpload('login',uncertainFile);assert.equal(recoveredFile.ok,true);
+const recoveredJob=context.readGoodsUploadJob_(recoveredFile.data.jobId);assert.ok(files.has(recoveredJob.requestDriveId));assert.ok(files.has(recoveredJob.sourceDriveId));
+context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(recoveredFile.data.jobId).status,'COMPLETE');
+console.log('Uncertain D1 metadata acknowledgement retains accepted JSON and Excel files for idempotent recovery.');
