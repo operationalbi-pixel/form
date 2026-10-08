@@ -4,9 +4,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
 const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'berita-acara-digital';
-const DATASET_ID = process.env.BQ_DATASET_ID || 'bakerzin_internal';
-const BQ_LOCATION = process.env.BQ_LOCATION || 'asia-southeast2';
-const CACHE_COLLECTION = 'stock_read_models';
+const CACHE_COLLECTION = 'stock_read_models_cloudflare_v1';
 const CACHE_TTL_MS = 120000;
 const DEFAULT_LIMIT = 500;
 const MAX_LIMIT = 500;
@@ -15,10 +13,8 @@ let clients;
 
 function googleClients() {
   if (clients) return clients;
-  const { BigQuery } = require('@google-cloud/bigquery');
   const { Firestore } = require('@google-cloud/firestore');
   clients = {
-    bigquery: new BigQuery({ projectId: PROJECT_ID }),
     firestore: new Firestore({ projectId: PROJECT_ID, ignoreUndefinedProperties: true })
   };
   return clients;
@@ -79,63 +75,20 @@ function mapMovement(row) {
   };
 }
 
-function historyQuery() {
-  const stockCard = '`' + PROJECT_ID + '.' + DATASET_ID + '.stock_card`';
-  const balances = '`' + PROJECT_ID + '.' + DATASET_ID + '.stock_balances`';
-  return 'WITH latest AS (' +
-    ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version,' +
-    ' event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier,' +
-    ' source_file, source_row, created_by, created_at' +
-    ' FROM ' + stockCard +
-    ' WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location' +
-    ' AND ((@itemCode != \'\' AND item_code = @itemCode)' +
-    ' OR ((item_code IS NULL OR item_code = \'\') AND item_name = @itemName)' +
-    ' OR (@itemCode = \'\' AND item_name = @itemName))' +
-    ' QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id)' +
-    ' ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1' +
-    '), balance AS (' +
-    ' SELECT current_qty, updated_at FROM ' + balances +
-    ' WHERE outlet = @outlet AND location = @location' +
-    ' AND ((@itemCode != \'\' AND item_code = @itemCode)' +
-    ' OR ((item_code IS NULL OR item_code = \'\') AND item_name = @itemName)' +
-    ' OR (@itemCode = \'\' AND item_name = @itemName))' +
-    ' ORDER BY updated_at DESC LIMIT 1' +
-    ')' +
-    ' SELECT COALESCE((SELECT current_qty FROM balance),' +
-    ' (SELECT SUM(CASE WHEN direction = \'IN\' THEN qty WHEN direction = \'OUT\' THEN -qty ELSE 0 END) FROM latest), 0) AS current_qty,' +
-    ' ARRAY(SELECT AS STRUCT * FROM latest ORDER BY event_date DESC, created_at DESC LIMIT @rowLimit) AS history';
-}
-
-async function queryBigQuery(context) {
-  const startedAt = Date.now();
-  const rowLimit = MAX_LIMIT + 1;
-  const [rows] = await googleClients().bigquery.query({
-    query: historyQuery(),
-    location: BQ_LOCATION,
-    params: {
-      outlet: context.outlet,
-      location: context.location,
-      itemCode: context.itemCode,
-      itemName: context.itemName,
-      rowLimit
-    },
-    types: { outlet: 'STRING', location: 'STRING', itemCode: 'STRING', itemName: 'STRING', rowLimit: 'INT64' },
-    useQueryCache: true,
-    maximumBytesBilled: '1000000000'
-  });
-  const result = rows[0] || {};
-  const movements = Array.isArray(result.history) ? result.history.map(mapMovement) : [];
-  const hasMore = movements.length > MAX_LIMIT;
-
-  return {
-    item: { code: context.itemCode, name: context.itemName },
-    outlet: context.outlet,
-    location: context.location,
-    currentQty: Number(result.current_qty || 0),
-    history: movements.slice(0, MAX_LIMIT),
-    hasMore,
-    meta: { source: 'BIGQUERY', durationMs: Date.now() - startedAt }
-  };
+async function queryCloudflare(context) {
+  const startedAt=Date.now();
+  const base=String(process.env.CLOUDFLARE_INVENTORY_API_URL||'').replace(/\/$/,'');
+  const key=process.env.CLOUDFLARE_INVENTORY_API_KEY;
+  if(!base||!key)throw new Error('Cloudflare inventory belum dikonfigurasi.');
+  async function request(path,params){const url=new URL(base+path);for(const [name,value]of Object.entries(params))if(value)url.searchParams.set(name,String(value));const response=await fetch(url,{headers:{'x-api-key':key},signal:AbortSignal.timeout(20000)});const payload=await response.json();if(!response.ok||!payload.ok)throw new Error('Cloudflare inventory tidak dapat dibaca.');return payload;}
+  const params={outlet:context.outlet,location:context.location,record_type:'MOVEMENT',limit:MAX_LIMIT+1};
+  if((context.location==='Showcase'&&context.itemName)||!context.itemCode)params.item_name=context.itemName;else params.item_code=context.itemCode;
+  const payload=await request('/v1/movements',params);
+  const movements=(payload.data||[]).map(row=>mapMovement({...row,qty:row.quantity,source_arrival_date:row.arrival_date}));
+  let balances=[],cursor='',pages=0;
+  do{const data=await request('/v1/balances',{outlet:context.outlet,location:context.location,limit:1000,cursor});balances.push(...data.data||[]);cursor=data.nextCursor||'';if(++pages>100)throw new Error('Batas halaman Cloudflare terlampaui.');}while(cursor);
+  const balance=balances.find(row=>(context.location==='Showcase'&&context.itemName)?String(row.item_name||'').toLowerCase()===context.itemName.toLowerCase():String(row.item_code||'').toUpperCase()===context.itemCode);
+  return {item:{code:context.itemCode,name:context.itemName},outlet:context.outlet,location:context.location,currentQty:Number(balance?.current_qty||0),history:movements.slice(0,MAX_LIMIT),hasMore:Boolean(payload.nextCursor||movements.length>MAX_LIMIT),meta:{source:'CLOUDFLARE',durationMs:Date.now()-startedAt}};
 }
 
 async function readCache(documentId) {
@@ -175,9 +128,9 @@ async function getStockHistory(input) {
   if (cached) {
     return shapePayload(cached, context.limit, 'FIRESTORE', Date.now() - startedAt);
   }
-  const payload = await queryBigQuery(context);
+  const payload = await queryCloudflare(context);
   await writeCache(documentId, context, payload);
-  return shapePayload(payload, context.limit, 'BIGQUERY', Date.now() - startedAt);
+  return shapePayload(payload, context.limit, 'CLOUDFLARE', Date.now() - startedAt);
 }
 
 function shapePayload(payload, limit, source, durationMs) {

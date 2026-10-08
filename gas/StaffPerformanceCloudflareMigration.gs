@@ -199,20 +199,7 @@ function readStaffPerformanceScoreBatch_(offset, limit) {
 }
 
 function runStaffPerformanceMigrationQuery_(sql) {
-  let result = BigQuery.Jobs.query({ query: sql, useLegacySql: false, location: STAFF_PERFORMANCE_MIGRATION.LOCATION, useQueryCache: false }, STAFF_PERFORMANCE_MIGRATION.PROJECT_ID);
-  const jobId = result.jobReference.jobId;
-  let waitMs = 500;
-  while (!result.jobComplete) {
-    Utilities.sleep(waitMs);
-    waitMs = Math.min(waitMs * 2, 5000);
-    result = BigQuery.Jobs.getQueryResults(STAFF_PERFORMANCE_MIGRATION.PROJECT_ID, jobId, { location: STAFF_PERFORMANCE_MIGRATION.LOCATION });
-  }
-  const fields = result.schema && result.schema.fields || [];
-  return (result.rows || []).map(function (row) {
-    const object = {};
-    row.f.forEach(function (cell, index) { object[fields[index].name] = cell.v; });
-    return object;
-  });
+  throw new Error('Migrasi BigQuery telah dihentikan. Gunakan ekspor data yang sudah tersedia untuk impor Cloudflare.');
 }
 
 function staffPerformanceMigrationRequest_(method, path, payload) {

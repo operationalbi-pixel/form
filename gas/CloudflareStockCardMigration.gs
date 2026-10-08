@@ -118,69 +118,11 @@ function stopCloudflareStockCardMigration() {
 }
 
 function cloudflareStockCardDateBounds_() {
-  var sql = 'SELECT CAST(MIN(event_date) AS STRING) min_date, ' +
-    'CAST(MAX(event_date) AS STRING) max_date, COUNT(*) row_count ' +
-    'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card_v2` ' +
-    "WHERE event_date >= DATE '2026-01-01' AND event_date < DATE '2027-01-01'";
-  var result = BigQuery.Jobs.query({
-    query: sql, useLegacySql: false, location: CONFIG.BQ_LOCATION, maxResults: 1
-  }, CONFIG.BQ_PROJECT_ID);
-  var jobId = result.jobReference.jobId;
-  while (!result.jobComplete) {
-    Utilities.sleep(500);
-    result = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, jobId, {
-      location: CONFIG.BQ_LOCATION, maxResults: 1
-    });
-  }
-  if (!result.rows || !result.rows.length || !result.rows[0].f[0].v) {
-    throw new Error('Tidak ada data stock_card_v2 tahun 2026 untuk dimigrasikan.');
-  }
-  return {
-    minDate: String(result.rows[0].f[0].v),
-    maxDate: String(result.rows[0].f[1].v),
-    rowCount: Number(result.rows[0].f[2].v || 0)
-  };
+  throw new Error('Migrasi BigQuery telah dihentikan. Gunakan ekspor data yang sudah tersedia untuk impor Cloudflare.');
 }
 
 function cloudflareReadStockCardPage_(state) {
-  var result;
-  var jobId = String(state.jobId || '');
-  if (!jobId) {
-    var sql = 'SELECT record_id, logical_id, version, record_type, outlet, location, ' +
-      'item_code, category, item_name, unit, direction, qty, movement_type, info, ' +
-      'CAST(event_date AS STRING) event_date, CAST(source_arrival_date AS STRING) arrival_date, ' +
-      'CAST(production_date AS STRING) production_date, CAST(expiry_date AS STRING) expiry_date, ' +
-      'supplier, transfer_id, source_file, source_hash, source_row, created_by, ' +
-      "FORMAT_TIMESTAMP('%FT%T%Ez', created_at) created_at " +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card_v2` ' +
-      "WHERE event_date = DATE '" + state.currentDate + "' ORDER BY record_id";
-    result = BigQuery.Jobs.query({
-      query: sql,
-      useLegacySql: false,
-      location: CONFIG.BQ_LOCATION,
-      maxResults: CLOUDFLARE_STOCK_CARD_BATCH_SIZE,
-      useQueryCache: true
-    }, CONFIG.BQ_PROJECT_ID);
-    jobId = result.jobReference.jobId;
-    while (!result.jobComplete) {
-      Utilities.sleep(500);
-      result = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, jobId, {
-        location: CONFIG.BQ_LOCATION,
-        maxResults: CLOUDFLARE_STOCK_CARD_BATCH_SIZE
-      });
-    }
-  } else {
-    result = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, jobId, {
-      location: CONFIG.BQ_LOCATION,
-      maxResults: CLOUDFLARE_STOCK_CARD_BATCH_SIZE,
-      pageToken: state.pageToken
-    });
-  }
-  return {
-    jobId: jobId,
-    nextPageToken: String(result.pageToken || ''),
-    rows: (result.rows || []).map(cloudflareMapStockCardRow_)
-  };
+  throw new Error('Migrasi BigQuery telah dihentikan. Gunakan ekspor data yang sudah tersedia untuk impor Cloudflare.');
 }
 
 function cloudflareMapStockCardRow_(row) {

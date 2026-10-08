@@ -648,12 +648,14 @@ async function convertItemUnit(request, env, requestId) {
     const historyResults = [];
     for (const entry of historyDatabaseEntries(env)) {
       historyResults.push(...await entry.database.batch([
-        entry.database.prepare("UPDATE stock_movements_history SET quantity = quantity * ?, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, newUnit, itemCode, oldUnit),
+        entry.database.prepare("UPDATE stock_movements_history SET info = CASE WHEN record_type = 'OPNAME_DETAIL' AND json_valid(info) AND json_type(info, '$.cardQty') IS NOT NULL THEN json_set(info, '$.cardQty', CAST(json_extract(info, '$.cardQty') AS REAL) * ?, '$.actualQty', CAST(json_extract(info, '$.actualQty') AS REAL) * ?) ELSE info END, quantity = quantity * ?, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, factor, newUnit, itemCode, oldUnit),
         entry.database.prepare("UPDATE stock_lot_allocations_history SET quantity = quantity * ?, unit = ? WHERE UPPER(unit) = ? AND movement_id IN (SELECT record_id FROM stock_movements_history WHERE item_code = ?)").bind(factor, newUnit, oldUnit, itemCode)
       ]));
     }
+    await ensureApplicationRecords(env);
     const operationResults = await env.OPERATIONS_DB.batch([
-      env.OPERATIONS_DB.prepare("UPDATE stock_movements SET quantity = quantity * ?, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, newUnit, itemCode, oldUnit),
+      env.OPERATIONS_DB.prepare("UPDATE application_records SET payload_json = json_set(payload_json, '$.old_qty', CAST(json_extract(payload_json, '$.old_qty') AS REAL) * ?, '$.new_qty', CAST(json_extract(payload_json, '$.new_qty') AS REAL) * ?, '$._unit', ?) WHERE table_name = 'stock_movement_corrections' AND UPPER(json_extract(payload_json, '$.item_code')) = ? AND UPPER(COALESCE(json_extract(payload_json, '$._unit'), json_extract(payload_json, '$.unit'), ?)) = ?").bind(factor, factor, newUnit, itemCode, oldUnit, oldUnit),
+      env.OPERATIONS_DB.prepare("UPDATE stock_movements SET info = CASE WHEN record_type = 'OPNAME_DETAIL' AND json_valid(info) AND json_type(info, '$.cardQty') IS NOT NULL THEN json_set(info, '$.cardQty', CAST(json_extract(info, '$.cardQty') AS REAL) * ?, '$.actualQty', CAST(json_extract(info, '$.actualQty') AS REAL) * ?) ELSE info END, quantity = quantity * ?, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, factor, newUnit, itemCode, oldUnit),
       env.OPERATIONS_DB.prepare("UPDATE stock_balances SET current_qty = current_qty * ?, unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(COALESCE(unit, '')) = ?").bind(factor, newUnit, itemCode, oldUnit),
       env.OPERATIONS_DB.prepare("UPDATE stock_lots SET original_qty = original_qty * ?, current_qty = current_qty * ?, unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, newUnit, itemCode, oldUnit),
       env.OPERATIONS_DB.prepare("UPDATE stock_transfer_lines SET requested_qty = requested_qty * ?, received_qty = CASE WHEN received_qty IS NULL THEN NULL ELSE received_qty * ? END, unit = ? WHERE item_code = ? AND UPPER(unit) = ?").bind(factor, factor, newUnit, itemCode, oldUnit),
@@ -661,7 +663,7 @@ async function convertItemUnit(request, env, requestId) {
     ]);
     const masterResult = await env.MASTER_DB.prepare("UPDATE stock_items SET default_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE item_code = ? AND UPPER(default_unit) = ?").bind(newUnit, itemCode, oldUnit).run();
     const changes = /* @__PURE__ */ __name((results) => results.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0), "changes");
-    return responseJson({ ok: true, itemCode, oldUnit, newUnit, historyRows: changes(historyResults), operationRows: changes(operationResults), masterRows: Number(masterResult.meta?.changes || 0), requestId });
+    return responseJson({ ok: true, itemCode, oldUnit, newUnit, historyRows: changes(historyResults), operationRows: changes(operationResults), stock_rows: historyResults.reduce((sum,result,index)=>sum+(index%2===0?Number(result.meta?.changes||0):0),0)+Number(operationResults[1]?.meta?.changes||0), transfer_rows: Number(operationResults[4]?.meta?.changes||0)+Number(operationResults[5]?.meta?.changes||0), masterRows: Number(masterResult.meta?.changes || 0), requestId });
   } catch (error) {
     return apiError(400, "UNIT_CONVERSION_FAILED", error instanceof Error ? error.message : String(error), requestId);
   }
@@ -921,7 +923,7 @@ async function listStockCard(url, env, requestId) {
     historyDatabasesForRange(env, from, to),
     (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
   );
-  const merged = activeMovements([...operations.results, ...history]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)));
+  const merged = (url.searchParams.get("raw")==="1"?[...operations.results,...history]:activeMovements([...operations.results, ...history])).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id)));
   const rows = merged.slice(0, limit);
   return responseJson({
     ok: true,
@@ -955,6 +957,12 @@ async function listMovements(url, env, requestId) {
   add("outlet_code = ?", outlet);
   add("location_code = ?", location);
   add("item_code = ?", itemCode);
+  const keyCode=cleanText(url.searchParams.get('item_key_code'),80).toUpperCase(),keyName=cleanText(url.searchParams.get('item_key_name'),180);
+  if(keyCode){conditions.push("(item_code=? OR (COALESCE(item_code,'')='' AND item_name=? COLLATE NOCASE))");bindings.push(keyCode,keyName);}
+  const itemCodes=cleanText(url.searchParams.get('item_codes'),10000).split('|').map(code=>code.trim().toUpperCase()).filter(Boolean);
+  if(itemCodes.length>80)return apiError(400,'INVALID_ITEMS','Terlalu banyak kode item.',requestId);
+  if(itemCodes.length){conditions.push('item_code IN ('+itemCodes.map(()=>'?').join(',')+')');bindings.push(...itemCodes);}
+
   add("item_name = ? COLLATE NOCASE", itemName);
   add("COALESCE(NULLIF(logical_id, ''), record_id) = ?", logicalId);
   add("record_type = ?", recordType);
@@ -3829,6 +3837,82 @@ __name(saveStaffPerformanceScores, "saveStaffPerformanceScores");
 
 /* ===================== END BERITA ACARA ADD-ON ===================== */
 
+// Durable non-inventory form records and derived read models in the operations D1 database.
+async function ensureApplicationRecords(env) {
+  await env.OPERATIONS_DB.prepare(`CREATE TABLE IF NOT EXISTS application_records (
+    table_name TEXT NOT NULL, record_id TEXT NOT NULL, outlet_code TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(table_name, record_id))`).run();
+}
+async function compactApplicationRecords(request, env, requestId) {
+  let payload;
+  try { payload=await readJsonWithLimit(request,10000); } catch { return apiError(400,'INVALID_PAYLOAD','Data tidak valid.',requestId); }
+  await ensureApplicationRecords(env);
+  const statements=[];
+  for(const table of ['stock_item_daily_summary','stock_item_lot_summary']) {
+    const key=table==='stock_item_daily_summary'?", COALESCE(json_extract(payload_json,'$.event_date'),'')":"";
+    statements.push(env.OPERATIONS_DB.prepare(`DELETE FROM application_records WHERE table_name=? AND record_id IN (
+      SELECT record_id FROM (SELECT record_id,ROW_NUMBER() OVER (PARTITION BY outlet_code,json_extract(payload_json,'$.location'),json_extract(payload_json,'$.item_code'),json_extract(payload_json,'$.item_name') ${key}
+      ORDER BY json_extract(payload_json,'$.updated_at') DESC,created_at DESC,record_id DESC) AS rank FROM application_records WHERE table_name=?) WHERE rank>1)`).bind(table,table));
+  }
+  if(payload.generation)statements.push(env.OPERATIONS_DB.prepare("DELETE FROM application_records WHERE table_name='stock_item_summary_backfill_queue' AND COALESCE(json_extract(payload_json,'$.generation'),'')<>?").bind(String(payload.generation)));
+  // ACKs are kept as watermarks. Only completed ENQUEUE records are pruned.
+  statements.push(env.OPERATIONS_DB.prepare(`DELETE FROM application_records AS pending WHERE table_name='stock_summary_jobs' AND json_extract(payload_json,'$.action')='ENQUEUE' AND EXISTS (
+    SELECT 1 FROM application_records AS ack WHERE ack.table_name='stock_summary_jobs' AND json_extract(ack.payload_json,'$.action')='ACK'
+    AND json_extract(ack.payload_json,'$.job_type')=json_extract(pending.payload_json,'$.job_type')
+    AND json_extract(ack.payload_json,'$.scope_key')=json_extract(pending.payload_json,'$.scope_key')
+    AND json_extract(ack.payload_json,'$.ack_through')>=json_extract(pending.payload_json,'$.created_at'))`));
+  const results=await env.OPERATIONS_DB.batch(statements);
+  return responseJson({ok:true,removed:results.reduce((n,r)=>n+Number(r.meta?.changes||0),0)},200);
+}
+async function applicationRecords(request, url, env, requestId) {
+  const table = cleanText(url.searchParams.get('table'), 80);
+  if (!/^[a-z][a-z0-9_]{0,79}$/.test(table)) return apiError(400, 'INVALID_TABLE', 'Identitas data tidak valid.', requestId);
+  await ensureApplicationRecords(env);
+  const recordId=cleanText(url.searchParams.get('record_id'),200);
+  if(request.method==='DELETE'){
+    if(table!=='background_upload_jobs'||!recordId)return apiError(400,'INVALID_DELETE','Data tidak valid.',requestId);
+    await env.OPERATIONS_DB.prepare('DELETE FROM application_records WHERE table_name=? AND record_id=?').bind(table,recordId).run();
+    return responseJson({ok:true},200);
+  }
+  if (request.method === 'POST') {
+    let payload;
+    try { payload = await readJsonWithLimit(request, 750000); } catch { return apiError(400, 'INVALID_PAYLOAD', 'Data tidak valid.', requestId); }
+    const rows = payload?.rows;
+    if (!Array.isArray(rows) || rows.length > 100) return apiError(400, 'INVALID_BATCH', 'Batch data tidak valid.', requestId);
+    let statements;
+    try {
+      statements = rows.map(entry => {
+        const value = entry?.json;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_RECORD');
+        const id = requiredText(entry.insertId, 'record_id', 200);
+        const json = JSON.stringify(value);
+        if (new TextEncoder().encode(json).length > 500000) throw new Error('RECORD_TOO_LARGE');
+        const conflict=table==='background_upload_jobs'?'DO UPDATE SET outlet_code=excluded.outlet_code,payload_json=excluded.payload_json':'DO NOTHING';
+        return env.OPERATIONS_DB.prepare('INSERT INTO application_records(table_name,record_id,outlet_code,payload_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(table_name,record_id) '+conflict)
+          .bind(table, id, String(value.outlet || '').toUpperCase(), json, new Date().toISOString());
+      });
+    } catch (error) { return apiError(400, error.message, 'Record data tidak valid.', requestId); }
+    await runStatementBatches(env.OPERATIONS_DB, statements);
+    return responseJson({ ok: true, received: rows.length, confirmed: rows.length }, 200);
+  }
+  const outlet = cleanText(url.searchParams.get('outlet'), 40).toUpperCase();
+  const cursor = cleanText(url.searchParams.get('cursor'), 200);
+  const limit = positiveInt(url.searchParams.get('limit'), 1000, 1000);
+  const bindings = [table];
+  let where = 'table_name=?';
+  if(recordId){where+=' AND record_id=?';bindings.push(recordId);}
+  if(table==='background_upload_jobs'){
+    if(url.searchParams.get('active')==='1')where+=" AND json_extract(payload_json,'$.status') IN ('QUEUED','PREPARING','PROCESSING')";
+    const owner=cleanText(url.searchParams.get('owner_nik'),100);if(owner){where+=" AND json_extract(payload_json,'$.ownerNik')=?";bindings.push(owner);}
+  }
+  if (outlet) { where += ' AND outlet_code=?'; bindings.push(outlet); }
+  if (cursor) { where += ' AND record_id>?'; bindings.push(cursor); }
+  bindings.push(limit + 1);
+  const result = await env.OPERATIONS_DB.prepare(`SELECT record_id,payload_json FROM application_records WHERE ${where} ORDER BY record_id LIMIT ?`).bind(...bindings).all();
+  const records = result.results || [], hasMore = records.length > limit, selected = records.slice(0,limit);
+  return responseJson({ ok: true, data: selected.map(row => JSON.parse(row.payload_json)), nextCursor: hasMore ? selected.at(-1).record_id : '' },200);
+}
+
 async function route(request, env) {
   const requestId = request.headers.get("cf-ray") || crypto.randomUUID();
   const url = new URL(request.url);
@@ -3838,6 +3922,8 @@ async function route(request, env) {
   if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
+  if (request.method === "POST" && url.pathname === "/v1/application-records/compact") return compactApplicationRecords(request,env,requestId);
+  if (["GET","POST","DELETE"].includes(request.method) && url.pathname === "/v1/application-records") return applicationRecords(request, url, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sync/master") return syncMasterData(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/stock-movements") return writeStockMovements(request, env, requestId);
   if (request.method === "POST" && url.pathname === "/v1/movements/preload") return preloadMovements(request, env, requestId);

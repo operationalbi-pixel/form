@@ -3,7 +3,7 @@
  *
  * Persiapan sekali saja:
  * 1. Pastikan akun yang menjalankan Web App memiliki akses Edit ke spreadsheet.
- * 2. Untuk fitur form, aktifkan Advanced Google Service: BigQuery API.
+ * 2. Seluruh transaksi menggunakan Cloudflare D1; tidak memerlukan BigQuery API.
  * 3. Deploy > New deployment > Web app.
  *    Execute as: Me | Who has access: sesuai kebijakan internal perusahaan.
  */
@@ -278,6 +278,7 @@ function apiActions_() {
     showcaseLogMonitoring: getShowcaseLogMonitoring,
     showcaseLogAging: getShowcaseLogAging,
     saveShowcaseLog: saveShowcaseLog,
+    queueShowcaseLog: queueShowcaseLog,
     complete: markTaskComplete
   });
 }
@@ -298,7 +299,7 @@ function authorizeProjectServices() {
   SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID).getName();
   SpreadsheetApp.openById(CONFIG.CHAT_SPREADSHEET_ID).getName();
   DriveApp.getRootFolder().getName();
-  BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
+  cloudflareInventoryConfig_();
   // Memaksa layar otorisasi meminta scope script.external_request yang
   // dibutuhkan untuk mengambil hasil export XLSX dari Google Sheets.
   UrlFetchApp.fetch('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest', {
@@ -337,6 +338,7 @@ function checkNik(nik) {
 function activateAccount(nik, password, confirmPassword) {
   return safe_(function () {
     nik = normalizeNik_(nik);
+    if (verifyGeneralPassword_(password)) { const result=login(nik,password);if(!result.ok)throw new Error(result.error);return result.data; }
     validateNewPassword_(password, confirmPassword);
 
     const lock = LockService.getScriptLock();
@@ -360,17 +362,19 @@ function login(nik, password) {
     assertNotRateLimited_(nik);
     const employee = findEmployee_(nik);
     assertEmployeeActive_(employee);
-    if (!employee.password) throw new Error('Akun belum diaktivasi. Buat password terlebih dahulu.');
-    if (!verifyPassword_(password, employee.password)) {
+    const generalAccess = verifyGeneralPassword_(password);
+    if (!employee.password && !generalAccess) throw new Error('Akun belum diaktivasi. Buat password terlebih dahulu.');
+    if (!generalAccess && !verifyPassword_(password, employee.password)) {
       recordLoginFailure_(nik);
       throw new Error('Password tidak sesuai.');
     }
     clearLoginFailures_(nik);
 
     // Migrates a legacy plain-text password after a successful validation.
-    if (String(employee.password).indexOf('v1$') !== 0) {
+    if (!generalAccess && String(employee.password).indexOf('v1$') !== 0) {
       employee.sheet.getRange(employee.row, 12).setValue(hashPassword_(password));
     }
+    if (generalAccess) console.info(JSON.stringify({event:'GENERAL_POV_LOGIN',nik:employee.nik,at:new Date().toISOString()}));
     return createSession_(employee);
   });
 }
@@ -656,7 +660,7 @@ function getMobileNotifications(token) {
           id: 'TRANSFER:' + transfer.transferId,
           type: 'TRANSFER',
           title: 'Transfer masuk dari ' + transfer.fromOutlet,
-          body: String((transfer.items || []).length) + ' item menunggu diterima di ' + transfer.toOutlet + '.',
+          body: String((transfer.items || []).length) + ' item siap diterima di ' + transfer.toOutlet + '.',
           createdAt: transfer.createdAt || new Date().toISOString(),
           url: 'https://operationalbi-pixel.github.io/form/stock-card.html'
         });
@@ -907,7 +911,7 @@ function notifyPendingStockTransfers_(pendingRows) {
       id: 'TRANSFER:' + group.transferId,
       type: 'TRANSFER',
       title: 'Transfer masuk dari ' + group.fromOutlet,
-      body: count + ' item menunggu diterima di ' + group.toOutlet + '.',
+      body: count + ' item siap diterima di ' + group.toOutlet + '.',
       url: 'https://operationalbi-pixel.github.io/form/stock-card.html'
     });
   });
@@ -2031,7 +2035,7 @@ function markStockTaskCompleteFromUploads_(context, periodKey, completedType) {
     const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
       'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND item_code IS NOT NULL AND item_code != \'\' AND event_date = CAST(@periodKey AS DATE) ' +
       'AND movement_type IN UNNEST(SPLIT(@movementTypes, \'|\')) AND source_file IS NOT NULL AND source_file != \'\'';
-    const rows = runNamedQuery_(sql, { outlet: context.outlet, periodKey: periodKey, movementTypes: otherTypes.join('|') });
+    const rows = [{total:cloudflareLedgerRows_({outlet:context.outlet,from:periodKey,to:periodKey,recordTypes:['MOVEMENT'],movementTypes:otherTypes}).filter(function(row){return row.item_code&&row.source_file;}).length}];
     if (!rows.length || Number(rows[0].total || 0) <= 0) return false;
     const task = readTasksForEmployee_(context.employee).filter(function (item) {
       return item.type === 'FORM' && item.target === 'StockCard' && item.frequency === 'DAILY';
@@ -2161,10 +2165,8 @@ function changeStockItemDefaultUnit(token, payload) {
     const lock = acquireStockWriteLock_();
     let converted = false;
     try {
-      const contexts = runNamedQuery_(
-        'SELECT DISTINCT outlet, location FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' AND (item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))',
-        { code: itemCode, name: itemName }, { useQueryCache: false });
-      const result = convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor);
+      const contexts = cloudflareDistinctContexts_(cloudflareLedgerRows_({itemCode:itemCode,itemName:itemName,recordTypes:['MOVEMENT']}));
+      const result = convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor, oldUnit);
       converted = true;
       try {
         masterSheet.getRange(masterIndex + 2, 4).setValue(newUnit);
@@ -2187,7 +2189,7 @@ function changeStockItemDefaultUnit(token, payload) {
         SpreadsheetApp.flush();
       } catch (sheetError) {
         try { masterSheet.getRange(masterIndex + 2, 4).setValue(oldUnit); SpreadsheetApp.flush(); } catch (restoreSheetError) { console.error(restoreSheetError); }
-        convertStockDefaultUnitBigQuery_(itemCode, itemName, oldUnit, 1 / factor);
+        convertStockDefaultUnitBigQuery_(itemCode, itemName, oldUnit, 1 / factor, newUnit);
         converted = false;
         throw new Error('Perubahan sheet gagal dan konversi stok telah dipulihkan: ' + sheetError.message);
       }
@@ -2203,10 +2205,7 @@ function changeStockItemDefaultUnit(token, payload) {
       return { changed: true, itemCode: itemCode, itemName: itemName, oldUnit: oldUnit, newUnit: newUnit, factor: factor,
         affectedStockRows: Number(result.stock_rows || 0), affectedTransferRows: Number(result.transfer_rows || 0) };
     } catch (error) {
-      if (converted) console.error('Konversi Unit Default sudah menyentuh BigQuery sebelum error: ' + error.message);
-      if (/streaming buffer/i.test(String(error && error.message || error))) {
-        throw new Error('Item ini baru saja memiliki transaksi. Tunggu sekitar 30 menit lalu ulangi Change Default Unit agar BigQuery dapat mengonversi seluruh baris dengan aman.');
-      }
+      if (converted) console.error('Konversi Unit Default sudah menyentuh Cloudflare sebelum error: ' + error.message);
       throw error;
     } finally {
       lock.releaseLock();
@@ -2214,27 +2213,8 @@ function changeStockItemDefaultUnit(token, payload) {
   });
 }
 
-function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor) {
-  const active = stockCardTable_();
-  const mirrorId = stockCardMirrorTableId_();
-  const mirror = mirrorId && mirrorId !== stockCardTableId_() ? '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + mirrorId + '`' : '';
-  const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
-  const corrections = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_movement_corrections`';
-  const balances = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
-  const condition = '(item_code = @code OR ((item_code IS NULL OR item_code = \'\') AND item_name = @name))';
-  const convertedAuditInfo = 'CASE WHEN record_type = \'OPNAME_DETAIL\' AND JSON_VALUE(info, \'$.cardQty\') IS NOT NULL THEN ' +
-    'TO_JSON_STRING(JSON_SET(PARSE_JSON(info), \'$.cardQty\', CAST(JSON_VALUE(info, \'$.cardQty\') AS FLOAT64) * CAST(@factor AS FLOAT64), ' +
-    '\'$.actualQty\', CAST(JSON_VALUE(info, \'$.actualQty\') AS FLOAT64) * CAST(@factor AS FLOAT64))) ELSE info END';
-  let sql = 'BEGIN TRANSACTION; UPDATE ' + active + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
-  if (mirror) sql += 'UPDATE ' + mirror + ' SET qty = qty * CAST(@factor AS FLOAT64), unit = @newUnit, info = ' + convertedAuditInfo + ' WHERE ' + condition + '; ';
-  sql += 'UPDATE ' + transfers + ' SET qty = qty * CAST(@factor AS FLOAT64), received_qty = IF(received_qty IS NULL, NULL, received_qty * CAST(@factor AS FLOAT64)), unit = @newUnit WHERE ' + condition + '; ' +
-    'UPDATE ' + corrections + ' SET old_qty = old_qty * CAST(@factor AS FLOAT64), new_qty = new_qty * CAST(@factor AS FLOAT64) WHERE ' + condition + '; ' +
-    'DELETE FROM ' + balances + ' WHERE ' + condition + '; ' +
-    'INSERT INTO ' + balances + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
-    stockCheckpointBalanceCtes_('') + ' SELECT l.outlet, l.location, l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() FROM latest l ' +
-    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') + ' WHERE ' + condition.replace(/item_/g, 'l.item_') + ' GROUP BY l.outlet, l.location, l.item_code, l.item_name; ' +
-    'COMMIT TRANSACTION; SELECT (SELECT COUNT(*) FROM ' + active + ' WHERE ' + condition + ') AS stock_rows, (SELECT COUNT(*) FROM ' + transfers + ' WHERE ' + condition + ') AS transfer_rows;';
-  return runNamedQuery_(sql, { code: itemCode, name: itemName, newUnit: newUnit, factor: factor }, { useQueryCache: false })[0] || {};
+function convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor, oldUnit) {
+  return cloudflareInventoryRequest_('POST','/v1/items/convert-unit',{itemCode:itemCode,oldUnit:oldUnit,newUnit:newUnit,factor:factor});
 }
 
 function getStockTransferOptions(token, requestedOutlet, sourceLocation) {
@@ -2590,7 +2570,7 @@ function readUploadedStockCorrectionRow_(outlet, location, item, logicalId) {
     'FROM ' + stockCardTable_() + ' WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location AND ' + stockHistoryItemCondition_(location) + ' ' +
     'AND COALESCE(NULLIF(logical_id, \'\'), record_id) = @logicalId QUALIFY ROW_NUMBER() OVER (' +
     'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name, logicalId: logicalId }, { useQueryCache: false });
+  const rows = cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT'], itemCode: item.code, itemName: item.name, logicalId: logicalId });
   return rows.length ? rows[0] : null;
 }
 
@@ -2636,9 +2616,7 @@ function appendLocalTransferCounterpartCorrection_(movement, newQty, reason, emp
     'FROM latest WHERE transfer_id = @transferId AND item_code = @itemCode AND movement_type IN (\'Transfer In\', \'Transfer Out\') ' +
     'AND COALESCE(NULLIF(logical_id, \'\'), record_id) != @logicalId';
   const expiry = String(movement.expiry_date || '').slice(0, 10), oldQty = Number(movement.qty || 0);
-  const counterparts = runNamedQuery_(sql, {
-    transferId: transferId, itemCode: String(movement.item_code || ''), logicalId: String(movement.logical_id || '')
-  }, { useQueryCache: false }).filter(function (row) {
+  const counterparts = cloudflareLedgerRows_({ outlet: movement.outlet, transferId: transferId, itemCode: String(movement.item_code || ''), movementTypes: ['Transfer In', 'Transfer Out'] }).filter(function (row) { return String(row.logical_id || row.record_id) !== String(movement.logical_id || ''); }).filter(function (row) {
     return String(row.outlet || '') === String(movement.outlet || '') &&
       String(row.direction || '') !== String(movement.direction || '') &&
       String(row.expiry_date || '').slice(0, 10) === expiry && Math.abs(Number(row.qty || 0) - oldQty) < 0.0000001;
@@ -3084,7 +3062,7 @@ function uploadMissingExpiryExcel(token, payload) {
     const jobId = Utilities.getUuid(), now = new Date().toISOString();
     writeMissingExpiryJob_({ jobId: jobId, ownerNik: context.employee.nik, ownerName: context.employee.name,
       outlet: context.outlet, location: context.location, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), preparedDriveId: '',
-      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3, processed: 0, total: 0, saved: 0, skipped: 0,
+      status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, processed: 0, total: 0, saved: 0, skipped: 0,
       retryCount: 0, error: '', createdAt: now, updatedAt: now });
     try { ensureStockMaintenanceTrigger_(); }
     catch (triggerError) { console.error('Trigger maintenance Expired Date belum tersedia: ' + triggerError.message); }
@@ -3125,7 +3103,7 @@ function scheduleMissingExpiryWorker_() {
   try {
     const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processMissingExpiryUploadJobs'; });
     if (!exists) ScriptApp.newTrigger('processMissingExpiryUploadJobs').timeBased().after(1000).create();
-  } catch (error) { console.error('Worker Expired Date menunggu trigger maintenance: ' + error.message); }
+  } catch (error) { console.error('Worker Expired Date diproses trigger maintenance: ' + error.message); }
 }
 
 function prepareMissingExpiryJob_(job) {
@@ -3221,7 +3199,7 @@ function processMissingExpiryUploadJobs() {
     catch (error) {
       job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
       if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu/i.test(String(error.message || error)))) {
-        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Menunggu giliran penyimpanan. Upload tetap dalam antrean.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeMissingExpiryJob_(job);
+        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeMissingExpiryJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses berhenti pada item ' + (job.processed + 1) + '.'; job.error = String(error.message || error);
         cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
@@ -3802,12 +3780,7 @@ function stockOpnameDisplayEventDate_(row) {
 }
 
 function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
-  const sql = 'WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') ' +
-    'QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
-    'SELECT COUNT(*) AS total FROM latest WHERE outlet = @outlet AND location = @location ' +
-    'AND movement_type = \'Stock Opname\' AND event_date = CAST(@eventDate AS DATE) AND source_hash = @sourceHash';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate, sourceHash: sourceHash });
-  return rows.length && Number(rows[0].total || 0) > 0;
+  return cloudflareSourceExists_({ outlet: outlet, location: location, from: eventDate, to: eventDate, sourceHash: sourceHash, movementTypes: ['Stock Opname'], recordTypes: ['MOVEMENT', 'IMPORT'] });
 }
 
 function getStockOpnameUploadHistory(token, payload) {
@@ -3824,11 +3797,8 @@ function getStockOpnameUploadHistory(token, payload) {
     const where = ' WHERE outlet IN UNNEST(@outlets) ' +
       'AND (@query = \'\' OR LOWER(CONCAT(IFNULL(outlet, \'\'), \' \' , IFNULL(source_file, \'\'), \' \' , CAST(DATE_SUB(event_date, INTERVAL 1 DAY) AS STRING))) LIKE @search) ';
     const params = { outlets: allowedOutlets, query: query, search: search };
-    const countRows = runNamedQuery_('SELECT COUNT(*) AS total' + source + where, params, { useQueryCache: false });
-    const total = Number(countRows.length && countRows[0].total || 0), pages = Math.max(1, Math.ceil(total / pageSize));
-    const currentPage = Math.min(page, pages), offset = (currentPage - 1) * pageSize;
-    const rows = runNamedQuery_('SELECT outlet, location, source_hash, source_file, event_date, info, created_at, created_by' + source + where +
-      'ORDER BY event_date DESC, created_at DESC, outlet ASC LIMIT ' + pageSize + ' OFFSET ' + offset, params, { useQueryCache: false });
+    const selected = cloudflareLedgerRows_({outlets:allowedOutlets,recordTypes:['IMPORT'],movementTypes:['Stock Opname']}).filter(function(row){return !query || [row.outlet,row.source_file,stockOpnameDisplayEventDate_(row)].join(' ').toLowerCase().indexOf(query)>=0;}).sort(function(a,b){return String(b.event_date).localeCompare(String(a.event_date))||String(b.created_at).localeCompare(String(a.created_at))||String(a.outlet).localeCompare(String(b.outlet));});
+    const total=selected.length,pages=Math.max(1,Math.ceil(total/pageSize)),currentPage=Math.min(page,pages),offset=(currentPage-1)*pageSize,rows=selected.slice(offset,offset+pageSize);
     return { page: currentPage, pageSize: pageSize, total: total, pages: pages, rows: rows.map(function (row) {
       return { outlet: String(row.outlet || ''), location: String(row.location || ''), sourceHash: String(row.source_hash || ''),
         fileName: String(row.source_file || ''), effectiveDate: String(row.event_date || '').slice(0, 10),
@@ -3855,7 +3825,7 @@ function getStockOpnameUploadHistoryDetail(token, payload) {
       'WHERE event_date = CAST(@effectiveDate AS DATE) ' +
       'AND ((record_type = \'OPNAME_DETAIL\' AND movement_type = \'Stock Opname Audit\') OR (record_type = \'MOVEMENT\' AND movement_type = \'Stock Opname\')) ' +
       'ORDER BY CASE WHEN record_type = \'OPNAME_DETAIL\' THEN 0 ELSE 1 END, source_row, item_code';
-    const records = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash, effectiveDate: effectiveDate }, { useQueryCache: false });
+    const records = cloudflareLedgerRows_({outlet:outlet,location:location,sourceHash:sourceHash,from:effectiveDate,to:effectiveDate,recordTypes:['MOVEMENT','OPNAME_DETAIL'],movementTypes:['Stock Opname','Stock Opname Audit']}).sort(function(a,b){return (a.record_type==='OPNAME_DETAIL'?0:1)-(b.record_type==='OPNAME_DETAIL'?0:1)||Number(a.source_row||0)-Number(b.source_row||0);});
     const grouped = {};
     records.forEach(function (row) {
       const code = String(row.item_code || '').trim().toUpperCase();
@@ -3982,7 +3952,7 @@ function prepareStockOpnameDateCorrection_(employee, payload) {
     'PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) ' +
     'SELECT record_id, logical_id, version, record_type, outlet, location, item_code, category, item_name, unit, direction, qty, movement_type, info, ' +
     'event_date, source_file, source_hash, source_row, created_by, created_at FROM latest ORDER BY record_type, source_row, item_code';
-  const sourceRows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash }, { useQueryCache: false });
+  const sourceRows = cloudflareLedgerRows_({outlet:outlet,location:location,sourceHash:sourceHash,recordTypes:['IMPORT','MOVEMENT','OPNAME_DETAIL']});
   const importRow = sourceRows.filter(function (row) {
     return row.record_type === 'IMPORT' && row.movement_type === 'Stock Opname' && String(row.event_date || '').slice(0, 10) === requestedEffectiveDate;
   })[0];
@@ -3993,13 +3963,7 @@ function prepareStockOpnameDateCorrection_(employee, payload) {
   if (newEventDate === oldEventDate) throw new Error('Tanggal baru sama dengan tanggal Stock Opname saat ini.');
 
   const laterStart = oldEffectiveDate < newEffectiveDate ? oldEffectiveDate : newEffectiveDate;
-  const laterUploads = runNamedQuery_('WITH latest AS (SELECT * FROM ' + stockCardTable_() + ' WHERE record_type = \'IMPORT\' AND movement_type = \'Stock Opname\' ' +
-    'AND outlet = @outlet AND location = @location QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(logical_id, \'\'), record_id) ' +
-    'ORDER BY COALESCE(version, 1) DESC, created_at DESC) = 1) SELECT COUNT(*) AS total FROM latest WHERE event_date >= CAST(@laterStart AS DATE) ' +
-    'AND COALESCE(NULLIF(logical_id, \'\'), record_id) != @importLogicalId', {
-      outlet: outlet, location: location, laterStart: laterStart,
-      importLogicalId: String(importRow.logical_id || importRow.record_id)
-    }, { useQueryCache: false });
+  const laterUploads = cloudflareLedgerRows_({outlet:outlet,location:location,recordTypes:['IMPORT'],movementTypes:['Stock Opname']}).filter(function(row){return String(row.logical_id||row.record_id)!==String(importRow.logical_id||importRow.record_id)&&String(row.event_date)>=laterStart;}).map(function(row){return {total:1};});
   if (Number(laterUploads.length && laterUploads[0].total || 0) > 0) {
     throw new Error('Terdapat Stock Opname lain setelah periode ini. Koreksi harus dimulai dari upload Stock Opname yang paling baru.');
   }
@@ -4021,10 +3985,7 @@ function prepareStockOpnameDateCorrection_(employee, payload) {
     'FROM latest WHERE outlet = @outlet AND location = @location AND event_date <= CAST(@newEventDate AS DATE) ' +
     'AND COALESCE(NULLIF(logical_id, \'\'), record_id) NOT IN UNNEST(@excludedLogicalIds) ' +
     'AND item_code IS NOT NULL AND item_code != \'\' GROUP BY item_code';
-  const balanceMap = {};
-  runNamedQuery_(balanceSql, { outlet: outlet, location: location, newEventDate: newEventDate, excludedLogicalIds: excludedLogicalIds }, { useQueryCache: false }).forEach(function (row) {
-    balanceMap[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
-  });
+  const balanceMap = cloudflareBalanceAtDate_(outlet,location,newEventDate,excludedLogicalIds);
   const items = auditRows.map(function (audit) {
     const code = String(audit.item_code || '').trim().toUpperCase(), previous = movementMap[code] || null;
     let auditInfo = {};
@@ -4217,14 +4178,9 @@ function parseStockPositionReport_(base64, fileName) {
 }
 
 function stockPositionAlreadyImported_(outlet, location, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND location = @location ' +
-    'AND movement_type = \'Stock Adjustment\' AND source_hash = @sourceHash';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash });
-  return rows.length && Number(rows[0].total || 0) > 0;
+  return cloudflareSourceExists_({ outlet: outlet, location: location, sourceHash: sourceHash, movementTypes: ['Stock Adjustment'], recordTypes: ['MOVEMENT'] });
 }
 
-/** Durable Goods Delivery / Goods Receipt jobs. Files and write plans stay server-side. */
 function stockUploadBusy_(error) {
   return /sedang menyimpan transaksi lain|batas waktu penguncian|penyimpanan sedang sibuk|lock timeout|could not acquire.*lock/i.test(String(error && error.message || error || ''));
 }
@@ -4315,6 +4271,7 @@ function buildRepairUploadPlan_(context, payload) {
   return { stockRows: rows, pendingRows: [], masterChanges: [], batchEnds: batchEnds, result: { repaired: true, sourceRowsRepaired: plan.changedHashes.length } };
 }
 function buildBackgroundUploadPlan_(type, context, payload) {
+  if(type==='SHOWCASE_LOG')return buildShowcaseSavePlan_(context,payload);
   if (type === 'GOODS_DELIVERY') return buildGoodsDeliveryPlan_(context, payload);
   if (type === 'GOODS_RECEIPT') return buildGoodsReceiptPlan_(context, payload);
   if (type === 'WIP_PRODUCTION') return buildWipUploadPlan_(context, payload);
@@ -4355,22 +4312,26 @@ function otherStockUploadJobs_() {
 
 function goodsUploadJobKey_(id) { return 'goods-upload-job-' + String(id || ''); }
 function readGoodsUploadJob_(id) {
-  const raw = PropertiesService.getScriptProperties().getProperty(goodsUploadJobKey_(id));
-  return raw ? JSON.parse(raw) : null;
+  const response=cloudflareInventoryRequest_('GET','/v1/application-records?'+cloudflareQueryString_({table:'background_upload_jobs',record_id:String(id),limit:1}));
+  const record=(response.data||[])[0];if(record)return record;
+  const raw=PropertiesService.getScriptProperties().getProperty(goodsUploadJobKey_(id));return raw?JSON.parse(raw):null;
 }
 function writeGoodsUploadJob_(job) {
-  job.updatedAt = new Date().toISOString();
-  PropertiesService.getScriptProperties().setProperty(goodsUploadJobKey_(job.jobId), JSON.stringify(job));
-  return job;
+  job.updatedAt=new Date().toISOString();
+  cloudflareStoreApplicationRecords_('background_upload_jobs',[{insertId:job.jobId,json:job}]);
+  PropertiesService.getScriptProperties().deleteProperty(goodsUploadJobKey_(job.jobId));return job;
 }
-function goodsUploadJobs_() {
-  const all = PropertiesService.getScriptProperties().getProperties();
-  return Object.keys(all).filter(function (key) { return key.indexOf('goods-upload-job-') === 0; }).map(function (key) {
-    try { return JSON.parse(all[key]); } catch (error) { return null; }
-  }).filter(Boolean);
+function deleteGoodsUploadJob_(id) {
+  cloudflareInventoryRequest_('DELETE','/v1/application-records?table=background_upload_jobs&record_id='+encodeURIComponent(id),{});
+  PropertiesService.getScriptProperties().deleteProperty(goodsUploadJobKey_(id));
+}
+function goodsUploadJobs_(activeOnly,ownerNik) {
+  const jobs=cloudflareReadAllPages_('/v1/application-records',{table:'background_upload_jobs',active:activeOnly?1:'',owner_nik:ownerNik||''},1000,100),known={};jobs.forEach(function(job){known[job.jobId]=true});
+  const all=PropertiesService.getScriptProperties().getProperties();
+  Object.keys(all).filter(function(key){return key.indexOf('goods-upload-job-')===0}).forEach(function(key){try{const job=JSON.parse(all[key]);if(!known[job.jobId])jobs.push(job)}catch(error){console.error('Metadata upload tidak valid: '+key)}});return jobs.filter(function(job){return (!activeOnly||['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0)&&(!ownerNik||job.ownerNik===ownerNik)});
 }
 function goodsUploadJobView_(job) {
-  return { jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
+  return { requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
     status: job.status, stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
     total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
 }
@@ -4408,9 +4369,8 @@ function queueGoodsUpload(token, payload) {
         if (job.ownerNik !== context.employee.nik || job.type !== payload.type || job.outlet !== context.outlet || job.location !== context.location || job.sourceHash !== sourceHash) throw new Error('Identitas upload sudah digunakan untuk file lain.');
         if (job.status !== 'ACTION_REQUIRED') return goodsUploadJobView_(job);
       } else {
-        const active = goodsUploadJobs_().filter(function (candidate) { return candidate.ownerNik === context.employee.nik && candidate.type === payload.type && candidate.outlet === context.outlet && candidate.location === context.location && candidate.sourceHash === sourceHash && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })[0];
+        const active = goodsUploadJobs_(true,context.employee.nik).filter(function (candidate) { return candidate.ownerNik === context.employee.nik && candidate.type === payload.type && candidate.outlet === context.outlet && candidate.location === context.location && candidate.sourceHash === sourceHash && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })[0];
         if (active) return goodsUploadJobView_(active);
-        if (goodsUploadJobs_().length >= 300) throw new Error('Antrean upload penuh. Hubungi BIHQ untuk memeriksa pekerjaan lama.');
         // A periodic watchdog is required before acknowledging a durable background upload.
         ensureStockMaintenanceTrigger_();
         const now = new Date().toISOString();
@@ -4425,9 +4385,11 @@ function queueGoodsUpload(token, payload) {
       const requestFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json', 'TEMP_GOODS_REQUEST_' + jobId + '.json'));
       const previousRequest = job.requestDriveId;
       job.requestDriveId = requestFile.getId(); job.status = 'QUEUED'; job.error = ''; job.retryCount = 0;
-      job.stage = 'File diterima. Menunggu proses background.';
+      job.stage = 'File diterima. Proses berlangsung di background.';
       try { writeGoodsUploadJob_(job); }
-      catch (error) { try { requestFile.setTrashed(true); } catch (ignore) {} if (!previousRequest) cleanupGoodsUploadFiles_(job); throw error; }
+      catch (error) { // Cloudflare may have committed even when its response was lost. Retain request/source files for replay.
+        throw error;
+      }
       if (previousRequest) { try { DriveApp.getFileById(previousRequest).setTrashed(true); } catch (error) {} }
     } finally { gate.releaseLock(); }
     scheduleGoodsUploadWorker_();
@@ -4437,7 +4399,7 @@ function queueGoodsUpload(token, payload) {
 function listGoodsUploadStatus(token) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
-    return { jobs: goodsUploadJobs_().concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik; })
+    return { jobs: goodsUploadJobs_(false,employee.nik).concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik; })
       .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); }).map(goodsUploadJobView_) };
   });
 }
@@ -4446,7 +4408,7 @@ function getGoodsUploadRequest(token, id) {
     const job = goodsUploadOwner_(token, id);
     if (job.status !== 'ACTION_REQUIRED' || job.planDriveId) throw new Error('Upload ini tidak memerlukan perubahan file.');
     const payload = stockPositionJobJson_(job.requestDriveId);
-    payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+    if(job.sourceDriveId)payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
     payload.requestId = job.requestId; payload.type = job.type;
     return { job: goodsUploadJobView_(job), payload: payload };
   });
@@ -4469,7 +4431,7 @@ function scheduleGoodsUploadWorker_() {
     const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; });
     if (!exists) ScriptApp.newTrigger('processGoodsUploadJobs').timeBased().after(1000).create();
     return true;
-  } catch (error) { console.error('Antrean Goods Upload menunggu maintenance: ' + error.message); return false; }
+  } catch (error) { console.error('Proses background Goods Upload diproses maintenance: ' + error.message); return false; }
 }
 function processGoodsUploadJobs() {
   const gate = LockService.getUserLock(); if (!gate.tryLock(1000)) return;
@@ -4477,18 +4439,14 @@ function processGoodsUploadJobs() {
   try {
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; })
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
-    const jobs = goodsUploadJobs_();
-    jobs.forEach(function (old) {
-      if (['COMPLETE', 'FAILED', 'ACTION_REQUIRED'].indexOf(old.status) >= 0 && Date.now() - Date.parse(old.updatedAt) > 7 * 86400000) {
-        cleanupGoodsUploadFiles_(old); PropertiesService.getScriptProperties().deleteProperty(goodsUploadJobKey_(old.jobId));
-      }
-    });
+    const jobs = goodsUploadJobs_(true);
     if (jobs.some(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > Date.now(); })) return;
     job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })
+      .filter(function(candidate){return candidate.type!=='SHOWCASE_LOG'||!jobs.some(function(earlier){return earlier.type==='SHOWCASE_LOG'&&earlier.outlet===candidate.outlet&&earlier.location===candidate.location&&earlier.jobId!==candidate.jobId&&String(earlier.createdAt)+'|'+earlier.jobId<String(candidate.createdAt)+'|'+candidate.jobId;});})
       .sort(function (a, b) { return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt)); })[0];
     if (!job) return;
     job.workerLeaseUntil = Date.now() + 8 * 60000; job.lastWorkedAt = new Date().toISOString();
-    job.status = job.planDriveId ? 'PROCESSING' : 'PREPARING'; job.stage = 'Memeriksa file dan menunggu giliran penyimpanan.';
+    job.status = job.planDriveId ? 'PROCESSING' : 'PREPARING'; job.stage = 'Memeriksa data untuk pembaruan stok.';
     writeGoodsUploadJob_(job);
   } finally { gate.releaseLock(); }
   let lock;
@@ -4503,7 +4461,7 @@ function processGoodsUploadJobs() {
     if (job.planDriveId) plan = stockPositionJobJson_(job.planDriveId);
     else {
       const payload = stockPositionJobJson_(job.requestDriveId);
-      payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+      if(job.sourceDriveId)payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
       plan = buildBackgroundUploadPlan_(job.type, context, payload);
       const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan), 'application/json', 'TEMP_GOODS_PLAN_' + job.jobId + '.json'));
       job.planDriveId = file.getId(); job.total = plan.stockRows.length + plan.pendingRows.length;
@@ -4527,6 +4485,8 @@ function processGoodsUploadJobs() {
     }
     job.workerLeaseUntil = 0;
     if (job.processed >= total) {
+      job.result=plan.result||null;
+      if(job.type==='SHOWCASE_LOG'){removeScriptCacheKeys_([showcaseAgingCacheKey_(job.outlet,job.eventDate)]);if(plan.result&&plan.result.completed)markShowcaseLogTaskComplete_(employee,job.outlet,job.eventDate);}
       job.status = 'COMPLETE'; job.progress = 100; job.stage = 'Upload selesai. Transaksi sudah tersimpan.'; job.error = '';
       writeGoodsUploadJob_(job);
       try { notifyPendingStockTransfers_(plan.pendingRows); } catch (error) { console.error('Notifikasi upload: ' + error.message); }
@@ -4537,15 +4497,16 @@ function processGoodsUploadJobs() {
     const busy = stockUploadBusy_(job.error);
     const transient = /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
     if (busy || (transient && Number(job.retryCount || 0) < 5)) {
+      if(busy)job.error='';
       job.status = 'QUEUED'; job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      job.stage = busy ? 'Menunggu giliran penyimpanan. Proses akan dilanjutkan otomatis.' : 'Gangguan sementara. Melanjutkan otomatis dengan ID transaksi yang sama.';
+      job.stage = busy ? 'Proses berjalan di background dan dilanjutkan otomatis.' : 'Gangguan sementara. Melanjutkan otomatis dengan ID transaksi yang sama.';
     } else {
       job.status = job.planDriveId ? 'FAILED' : 'ACTION_REQUIRED';
       job.stage = job.planDriveId ? 'Penyimpanan belum selesai. Klik Coba Lagi untuk melanjutkan.' : 'Perlu tindakan. Tinjau file, konversi, atau duplikat.';
     }
     writeGoodsUploadJob_(job);
   } finally { if (lock) lock.releaseLock(); }
-  if (goodsUploadJobs_().some(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })) scheduleGoodsUploadWorker_();
+  if (goodsUploadJobs_(true).some(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })) scheduleGoodsUploadWorker_();
   return goodsUploadJobView_(job);
 }
 
@@ -4713,7 +4674,7 @@ function scheduleStockPositionWorker_() {
     return true;
   } catch (error) {
     try { PropertiesService.getScriptProperties().deleteProperty('stock-position-worker-scheduled-at'); } catch (ignore) {}
-    console.error('Worker Stock Posisi menunggu maintenance: ' + error.message);
+    console.error('Worker Stock Posisi diproses maintenance: ' + error.message);
     return false;
   } finally { gate.releaseLock(); }
 }
@@ -4759,8 +4720,7 @@ function existingStockPositionRecordIds_(job, rows) {
   const sql = 'SELECT record_id FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND location = @location ' +
     'AND source_hash = @sourceHash AND record_id IN UNNEST(@recordIds)';
   const found = {};
-  runNamedQuery_(sql, { outlet: job.outlet, location: job.location, sourceHash: job.sourceHash,
-    recordIds: ids }, { useQueryCache: false }).forEach(function (row) { found[String(row.record_id)] = true; });
+  cloudflareLedgerRows_({ outlet: job.outlet, location: job.location, sourceHash: job.sourceHash, recordIds: ids }).forEach(function (row) { found[String(row.record_id)] = true; });
   return found;
 }
 
@@ -4847,7 +4807,7 @@ function processStockPositionUploadJobs() {
     } catch (error) {
       job.workerLeaseUntil = 0; job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
       if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
-        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Menunggu giliran penyimpanan. Upload tetap dalam antrean.' : 'Gangguan sementara. Mencoba kembali item yang belum selesai (' + job.retryCount + '/3).';
+        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Mencoba kembali item yang belum selesai (' + job.retryCount + '/3).';
         job.error = '';
       } else {
         job.status = 'FAILED'; job.stage = 'Proses berhenti pada item ' + (Number(job.processed || 0) + 1) + '. Klik Coba Lagi untuk melanjutkan.';
@@ -5686,10 +5646,7 @@ function readStoreCodeDirectory_() {
 }
 
 function salesUsageHashAlreadyImported_(outlet, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type IN (\'MOVEMENT\', \'IMPORT\') AND outlet = @outlet AND movement_type = \'Terjual\' AND source_hash = @sourceHash';
-  const rows = runNamedQuery_(sql, { outlet: outlet, sourceHash: sourceHash });
-  return rows.length && Number(rows[0].total || 0) > 0;
+  return cloudflareSourceExists_({ outlet: outlet,  sourceHash: sourceHash, movementTypes: ['Terjual'], recordTypes: ['MOVEMENT', 'IMPORT'] });
 }
 
 function readExistingSalesUsageItemCodes_(outlet, transactionDate) {
@@ -5697,7 +5654,7 @@ function readExistingSalesUsageItemCodes_(outlet, transactionDate) {
     'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Terjual\' ' +
     'AND event_date = CAST(@transactionDate AS DATE) AND source_file IS NOT NULL AND source_file != \'\' AND item_code IS NOT NULL';
   const map = {};
-  runNamedQuery_(sql, { outlet: outlet, transactionDate: transactionDate }).forEach(function (row) {
+  cloudflareLedgerRows_({ outlet: outlet, from: transactionDate, to: transactionDate, recordTypes: ['MOVEMENT'], movementTypes: ['Terjual'] }).filter(function (row) { return Boolean(row.source_file); }).forEach(function (row) {
     const code = String(row.item_code || '').trim().toUpperCase();
     if (code) map[code] = true;
   });
@@ -5916,9 +5873,7 @@ function applyStockHistoryAuditRows_(rows) {
 
 function readStockHistoryPageRows_(outlet, location, item) {
   const sql = stockHistoryScopedLatestCte_(location) + ' SELECT ' + stockHistorySelectFields_() + ' FROM latest ORDER BY event_date, created_at';
-  return applyStockHistoryAuditRows_(runNamedQuery_(sql, {
-    outlet: outlet, location: location, code: item.code, item: item.name
-  }).map(mapStockHistoryQueryRow_));
+  return applyStockHistoryAuditRows_(cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT', 'OPNAME_DETAIL'], itemCode: item.code, itemName: item.name }).map(mapStockHistoryQueryRow_));
 }
 
 /** Reads only complete transaction days for the requested month. The cursor is a
@@ -5939,7 +5894,7 @@ function readStockHistoryMonthPage_(outlet, location, item, bounds, cursor, page
   // Include one raw H+1 day for legacy Stock Opname rows whose selected/effective
   // date belongs to the requested month. The mapped date is filtered again below.
   const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: stockIsoDateOffset_(bounds.end, 1), cursor: cursorDate };
-  const queryRows = runUiReadQuery_(sql, params), hasMore = Number(queryRows[0] && queryRows[0].page_date_count || 0) > limit;
+  const queryRows = cloudflareHistoryMonthRows_(outlet,location,item,bounds,cursorDate,limit), hasMore = Number(queryRows[0] && queryRows[0].page_date_count || 0) > limit;
   const rows = applyStockHistoryAuditRows_(queryRows.map(mapStockHistoryQueryRow_)).filter(function (row) {
     const date = String(row.date || '').slice(0, 10);
     return date >= bounds.start && date < bounds.end && (!cursorDate || date < cursorDate);
@@ -5994,13 +5949,7 @@ function stockSummaryJobTable_() {
 }
 
 function stockItemSummaryIsDirty_(outlet, location, item) {
-  const scopeKey = stockItemSummaryScopeKey_(outlet, location, item.code, item.name);
-  const sql = 'WITH state AS (SELECT MAX(IF(action = \'ENQUEUE\', created_at, NULL)) AS enqueued_at, ' +
-    'MAX(IF(action = \'ACK\', ack_through, NULL)) AS acked_at FROM ' + stockSummaryJobTable_() +
-    ' WHERE job_type = \'ITEM\' AND scope_key = @scopeKey) ' +
-    'SELECT IF(enqueued_at IS NOT NULL AND (acked_at IS NULL OR enqueued_at > acked_at), 1, 0) AS pending FROM state';
-  const rows = runUiReadQuery_(sql, { scopeKey: scopeKey });
-  return Number(rows[0] && rows[0].pending || 0) > 0;
+  const scopeKey = stockItemSummaryScopeKey_(outlet, location, item.code, item.name); return cloudflarePendingSummaryJobs_('ITEM').some(function(row) { return row.scope_key === scopeKey; });
 }
 
 function parseStockSummaryJson_(value, fallback) {
@@ -6018,22 +5967,9 @@ function readStockItemSummary_(outlet, location, item, bounds, includeCurrentLot
     : '((item_code = @code) OR ((item_code IS NULL OR item_code = \'\') AND item_name = @item))';
   const params = { outlet: outlet, location: location, code: item.code, item: item.name, start: bounds.start, end: bounds.end,
     scopeKey: stockItemSummaryScopeKey_(outlet, location, item.code, item.name) };
-  const lotRows = runUiReadQuery_(
-    'WITH job_state AS (SELECT MAX(IF(action = \'ENQUEUE\', created_at, NULL)) AS enqueued_at, ' +
-    'MAX(IF(action = \'ACK\', ack_through, NULL)) AS acked_at FROM ' + stockSummaryJobTable_() +
-    ' WHERE job_type = \'ITEM\' AND scope_key = @scopeKey), latest_lot AS (' +
-    'SELECT current_qty, lots_json, fifo_status_json, as_of_date FROM ' + lots +
-    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' ORDER BY updated_at DESC LIMIT 1) ' +
-    'SELECT current_qty, lots_json, fifo_status_json, CAST(as_of_date AS STRING) AS as_of_date, ' +
-    'IF(enqueued_at IS NOT NULL AND (acked_at IS NULL OR enqueued_at > acked_at), 1, 0) AS pending ' +
-    'FROM latest_lot CROSS JOIN job_state', params);
+  const lotRows = cloudflareItemSummaryRows_('stock_item_lot_summary',outlet,location,item,bounds).slice(0,1).map(function(row){return Object.assign({},row,{pending:stockItemSummaryIsDirty_(outlet,location,item)?1:0});});
   if (!lotRows.length || Number(lotRows[0].pending || 0) > 0) return null;
-  const dailyRows = runUiReadQuery_(
-    'WITH scoped AS (SELECT event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM ' + daily +
-    ' WHERE outlet = @outlet AND location = @location AND ' + itemFilter + ' AND event_date < CAST(@end AS DATE) ' +
-    'QUALIFY ROW_NUMBER() OVER (PARTITION BY event_date ORDER BY updated_at DESC) = 1) ' +
-    'SELECT CAST(event_date AS STRING) AS event_date, closing_qty, fifo_lots_json, total_in, total_out, movement_count FROM scoped ' +
-    'WHERE event_date >= CAST(@start AS DATE) OR event_date = (SELECT MAX(event_date) FROM scoped WHERE event_date < CAST(@start AS DATE)) ORDER BY event_date', params);
+  const dailyRows = cloudflareItemSummaryRows_('stock_item_daily_summary',outlet,location,item,bounds);
   const lotRow = lotRows[0], fifoLotsByDate = {}, balancesByDate = {};
   let periodClosingQty = 0, hasPrevious = false;
   dailyRows.forEach(function (row) {
@@ -6502,18 +6438,13 @@ function processWipProduction(token, payload) {
 }
 
 function wipProductionHashAlreadyImported_(outlet, location, sourceHash) {
-  if (!sourceHash) return false;
-  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE outlet = @outlet AND location = @location AND movement_type = \'Production\' AND source_hash = @sourceHash ' +
-    'AND STARTS_WITH(COALESCE(source_file, \'\'), \'WIP_PRODUCTION|\')';
-  const rows = runNamedQuery_(sql, { outlet: outlet, location: location, sourceHash: sourceHash }, { useQueryCache: false });
-  return rows.length && Number(rows[0].total || 0) > 0;
+  return cloudflareSourceExists_({ outlet: outlet, location: location, sourceHash: sourceHash, movementTypes: ['Production'], recordTypes: ['MOVEMENT'] });
 }
 
 function readLatestProductionRows_(outlet, location, productionId) {
   const sql = latestStockMovementCte_() + ' SELECT * FROM latest WHERE outlet = @outlet AND location = @location AND transfer_id = @productionId ' +
     'AND movement_type IN (\'Production\', \'WIP Material Usage\') ORDER BY created_at ASC';
-  return runNamedQuery_(sql, { outlet: outlet, location: location, productionId: productionId }, { useQueryCache: false });
+  return cloudflareLedgerRows_({ outlet: outlet, location: location, transferId: productionId, recordTypes: ['MOVEMENT'], movementTypes: ['Production','WIP Material Usage'] });
 }
 
 function wipProductionSourceType_(sourceFile) {
@@ -6540,7 +6471,7 @@ function getWipProductionHistory(token, payload) {
       'FROM latest WHERE outlet=@outlet AND location=@location AND movement_type=\'Production\' AND qty>0.0000001 ' +
       'AND CAST(COALESCE(production_date,event_date) AS DATE)=CAST(@date AS DATE) ' +
       'ORDER BY COALESCE(production_date,event_date) DESC,created_at DESC,item_name';
-    const rows = runNamedQuery_(sql, { outlet: context.outlet, location: context.location, date: date }, { useQueryCache: false }).map(function (row) {
+    const rows = cloudflareLedgerRows_({outlet:context.outlet,location:context.location,recordTypes:['MOVEMENT'],movementTypes:['Production']}).filter(function(row){return Number(row.qty)>0.0000001 && String(row.production_date||row.event_date).slice(0,10)===date;}).reverse().map(function (row) {
       const productionId = String(row.transfer_id || row.logical_id || row.record_id || '');
       const sourceFile = String(row.source_file || '');
       return {
@@ -6579,7 +6510,7 @@ function wipProductionMaterialDetails_(outlet, location, usageRows) {
       'transfer_id,supplier,source_file,source_row,created_by,created_at FROM latest ' +
       'WHERE outlet=@outlet AND location=@location AND item_code IN UNNEST(@codes) ORDER BY item_code,event_date,created_at';
     const histories = {};
-    runNamedQuery_(sql, { outlet: outlet, location: location, codes: codes }, { useQueryCache: false }).forEach(function (raw) {
+    cloudflareLedgerRows_({outlet:outlet,location:location,recordTypes:['MOVEMENT'],itemCodes:codes}).forEach(function (raw) {
       const code = String(raw.item_code || '').toUpperCase();
       if (!histories[code]) histories[code] = [];
       histories[code].push(salesHistoryRowFromQuery_(raw));
@@ -7903,93 +7834,6 @@ function ensureStockCardInfrastructure_() {
   cloudflareInventoryConfig_();
   infrastructureCache.put('stock-card-infrastructure-v20', 'ready', 21600);
   return;
-  // Legacy BigQuery provisioning is intentionally unreachable. It remains in
-  // this source temporarily for rollback/audit reference while inventory is
-  // fully served by Cloudflare.
-  try {
-    BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
-  } catch (error) {
-    if (!/not found|Not found|404/.test(String(error))) throw new Error('BigQuery belum dapat diakses. Aktifkan Advanced Service BigQuery API. Detail: ' + error.message);
-    BigQuery.Datasets.insert({
-      datasetReference: { projectId: CONFIG.BQ_PROJECT_ID, datasetId: CONFIG.BQ_DATASET_ID },
-      location: CONFIG.BQ_LOCATION,
-      description: 'Dataset general untuk seluruh form Bakerzin Internal Hub'
-    }, CONFIG.BQ_PROJECT_ID);
-  }
-  ensureBigQueryTable_('stock_card', [
-    bqField_('record_id', 'STRING', 'REQUIRED'), bqField_('record_type', 'STRING', 'REQUIRED'),
-    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
-    bqField_('item_code', 'STRING'), bqField_('category', 'STRING'), bqField_('item_name', 'STRING'), bqField_('unit', 'STRING'),
-    bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
-    bqField_('direction', 'STRING'), bqField_('qty', 'FLOAT'), bqField_('movement_type', 'STRING'),
-    bqField_('info', 'STRING'), bqField_('production_date', 'DATE'), bqField_('expiry_date', 'DATE'), bqField_('event_date', 'DATE', 'REQUIRED'),
-    bqField_('created_at', 'TIMESTAMP', 'REQUIRED'), bqField_('created_by', 'STRING', 'REQUIRED')
-  ], 'created_at');
-  const stockCardAdditionalFields = [
-    bqField_('item_code', 'STRING'), bqField_('logical_id', 'STRING'), bqField_('version', 'INTEGER'),
-    bqField_('source_file', 'STRING'), bqField_('source_hash', 'STRING'), bqField_('source_row', 'INTEGER'),
-    bqField_('supplier', 'STRING'), bqField_('transfer_id', 'STRING'),
-    bqField_('source_arrival_date', 'DATE'), bqField_('production_date', 'DATE')
-  ];
-  ensureBigQueryFields_('stock_card', stockCardAdditionalFields);
-  if (stockCardTableId_() !== 'stock_card') ensureBigQueryFields_(stockCardTableId_(), stockCardAdditionalFields);
-  ensureBigQueryTable_('stock_balances', [
-    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
-    bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
-    bqField_('current_qty', 'FLOAT', 'REQUIRED'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
-  ]);
-  ensureBigQueryTable_('stock_upload_daily_summary', [
-    bqField_('event_date', 'DATE', 'REQUIRED'), bqField_('outlet', 'STRING', 'REQUIRED'),
-    bqField_('upload_type', 'STRING', 'REQUIRED'), bqField_('actual_item_count', 'INTEGER', 'REQUIRED'),
-    bqField_('marker_count', 'INTEGER', 'REQUIRED'), bqField_('last_upload', 'TIMESTAMP'),
-    bqField_('last_user', 'STRING'), bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
-  ], 'event_date', ['outlet', 'upload_type']);
-  ensureBigQueryTable_('stock_item_daily_summary', [
-    bqField_('event_date', 'DATE', 'REQUIRED'), bqField_('outlet', 'STRING', 'REQUIRED'),
-    bqField_('location', 'STRING', 'REQUIRED'), bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
-    bqField_('total_in', 'FLOAT', 'REQUIRED'), bqField_('total_out', 'FLOAT', 'REQUIRED'),
-    bqField_('net_qty', 'FLOAT', 'REQUIRED'), bqField_('closing_qty', 'FLOAT', 'REQUIRED'),
-    bqField_('movement_count', 'INTEGER', 'REQUIRED'), bqField_('fifo_lots_json', 'STRING'),
-    bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
-  ], 'event_date', ['outlet', 'location', 'item_code']);
-  ensureBigQueryTable_('stock_item_lot_summary', [
-    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'),
-    bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'), bqField_('current_qty', 'FLOAT', 'REQUIRED'),
-    bqField_('lots_json', 'STRING'), bqField_('fifo_status_json', 'STRING'), bqField_('as_of_date', 'DATE'),
-    bqField_('updated_at', 'TIMESTAMP', 'REQUIRED')
-  ], '', ['outlet', 'location', 'item_code']);
-  ensureBigQueryTable_('stock_summary_jobs', [
-    bqField_('job_date', 'DATE', 'REQUIRED'), bqField_('job_type', 'STRING', 'REQUIRED'),
-    bqField_('action', 'STRING', 'REQUIRED'), bqField_('scope_key', 'STRING', 'REQUIRED'),
-    bqField_('outlet', 'STRING'), bqField_('location', 'STRING'), bqField_('item_code', 'STRING'),
-    bqField_('item_name', 'STRING'), bqField_('earliest_date', 'DATE'), bqField_('event_date', 'DATE'),
-    bqField_('upload_type', 'STRING'), bqField_('movement_type', 'STRING'),
-    bqField_('created_at', 'TIMESTAMP', 'REQUIRED'), bqField_('ack_through', 'TIMESTAMP')
-  ], 'job_date', ['job_type', 'scope_key', 'outlet', 'location']);
-  ensureBigQueryTable_('stock_transfers', [
-    bqField_('event_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING', 'REQUIRED'), bqField_('status', 'STRING', 'REQUIRED'),
-    bqField_('from_outlet', 'STRING'), bqField_('from_location', 'STRING'), bqField_('to_outlet', 'STRING'), bqField_('to_location', 'STRING'),
-    bqField_('item_code', 'STRING'), bqField_('category', 'STRING'), bqField_('item_name', 'STRING'), bqField_('unit', 'STRING'),
-    bqField_('qty', 'FLOAT'), bqField_('note', 'STRING'), bqField_('expiry_date', 'DATE'),
-    bqField_('created_by', 'STRING'), bqField_('created_by_name', 'STRING'), bqField_('created_at', 'TIMESTAMP', 'REQUIRED'),
-    bqField_('accepted_by', 'STRING'), bqField_('accepted_at', 'TIMESTAMP')
-  ], 'created_at');
-  ensureBigQueryFields_('stock_transfers', [
-    bqField_('received_qty', 'FLOAT'), bqField_('accepted_by_name', 'STRING'),
-    bqField_('received_at', 'TIMESTAMP'), bqField_('storage_entered_at', 'TIMESTAMP'), bqField_('product_temperature', 'FLOAT'),
-    bqField_('rejected_by', 'STRING'), bqField_('rejected_by_name', 'STRING'), bqField_('rejected_at', 'TIMESTAMP'),
-    bqField_('rejection_reason', 'STRING'), bqField_('receipt_no', 'STRING'),
-    bqField_('photo_file_ids', 'STRING'), bqField_('photo_count', 'INTEGER'), bqField_('photo_data_json', 'STRING'),
-    bqField_('delivery_date', 'DATE'), bqField_('source_event_id', 'STRING')
-  ]);
-  ensureBigQueryTable_('stock_movement_corrections', [
-    bqField_('correction_id', 'STRING', 'REQUIRED'), bqField_('logical_id', 'STRING', 'REQUIRED'), bqField_('transfer_id', 'STRING'),
-    bqField_('outlet', 'STRING', 'REQUIRED'), bqField_('location', 'STRING', 'REQUIRED'), bqField_('item_code', 'STRING'), bqField_('item_name', 'STRING'),
-    bqField_('movement_type', 'STRING'), bqField_('old_qty', 'FLOAT'), bqField_('new_qty', 'FLOAT'), bqField_('reason', 'STRING'),
-    bqField_('corrected_by', 'STRING'), bqField_('corrected_by_name', 'STRING'), bqField_('corrected_at', 'TIMESTAMP', 'REQUIRED'),
-    bqField_('source_file', 'STRING'), bqField_('source_row', 'INTEGER')
-  ], 'corrected_at', ['outlet', 'item_code', 'movement_type']);
-  infrastructureCache.put('stock-card-infrastructure-v20', 'ready', 21600);
 }
 
 function validateTransferLines_(outlet, location, rawItems) {
@@ -8139,10 +7983,7 @@ function mergeOutletStockUploadCompletions_(completionMap, outlets, tasks, assig
       'AND movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\') AND source_file IS NOT NULL AND source_file != \'\' ' +
       'GROUP BY outlet, event_date HAVING MAX(IF(movement_type = \'Goods Receipt\', 1, 0)) = 1 ' +
       'AND MAX(IF(movement_type IN (\'Terjual\', \'Sold\'), 1, 0)) = 1';
-    runNamedQuery_(query, {
-      currentDaily: periodKeys.CURRENT.DAILY,
-      previousDaily: periodKeys.PREVIOUS.DAILY
-    }, { useQueryCache: false }).forEach(function (row) {
+    cloudflareCompletedUploadDays_(outlets,[periodKeys.CURRENT.DAILY,periodKeys.PREVIOUS.DAILY]).forEach(function (row) {
       const outlet = String(row.outlet || '').toUpperCase();
       const periodKey = String(row.period_key || '').slice(0, 10);
       if (outlets.indexOf(outlet) < 0 || !periodKey) return;
@@ -8178,13 +8019,9 @@ function taskExistedForPeriod_(task, frequency, periodKey) {
 }
 
 function goodsReceiptAlreadyImported_(outlet, sourceHash) {
-  const sql = 'SELECT COUNT(*) AS total FROM ' + stockCardTable_() + ' ' +
-    'WHERE record_type = \'MOVEMENT\' AND outlet = @outlet AND movement_type = \'Goods Receipt\' AND source_hash = @sourceHash';
-  const rows = runNamedQuery_(sql, { outlet: outlet, sourceHash: sourceHash });
-  return rows.length && Number(rows[0].total || 0) > 0;
+  return cloudflareSourceExists_({ outlet: outlet,  sourceHash: sourceHash, movementTypes: ['Goods Receipt'], recordTypes: ['MOVEMENT'] });
 }
 
-/** Validates an ESB Goods Receipt Recapitulation Report before upload. */
 function previewGoodsReceiptUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
@@ -8401,7 +8238,7 @@ function applyGoodsReceiptFefoWarnings_(outlet, location, items) {
   const sql = latestStockMovementCte_() + ' SELECT item_code, record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, created_at FROM latest ' +
     'WHERE outlet = @outlet AND location = @location AND item_code IN (' + placeholders.join(',') + ') ORDER BY event_date, created_at LIMIT 10000';
-  runNamedQuery_(sql, params).forEach(function (row) {
+  cloudflareLedgerRows_({outlet:outlet,location:location,recordTypes:['MOVEMENT'],itemCodes:codes}).forEach(function (row) {
     const code = String(row.item_code || '').toUpperCase();
     if (!histories[code]) histories[code] = [];
     histories[code].push({ recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
@@ -8464,7 +8301,7 @@ function findGoodsReceiptDuplicateRows_(outlet, sourceItems) {
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'GROUP BY event_date, item_code, source_hash, source_file, source_row';
   const existingByKey = {};
-  runNamedQuery_(sql, { outlet: outlet, startDate: dates[0], endDate: dates[dates.length - 1] }).forEach(function (row) {
+  cloudflareReceiptSourceGroups_(cloudflareLedgerRows_({outlet:outlet,from:dates[0],to:dates[dates.length-1],recordTypes:['MOVEMENT'],movementTypes:['Goods Receipt']})).forEach(function (row) {
     const existing = {
       transactionDate: String(row.event_date || '').slice(0, 10), itemCode: String(row.item_code || ''),
       itemName: String(row.item_name || ''), qty: Number(row.qty || 0), unit: String(row.unit || ''),
@@ -8634,7 +8471,7 @@ function buildGoodsDeliveryPlan_(context, payload, report, preparedOverride) {
         direction: 'OUT', qty: lot.qty, movement_type: 'Transfer Out Antar Outlet',
         supplier: cleanText_(delivery.destinationName, 180),
         info: cleanText_('Transfer To ' + destinationInfo + ' | No Transfer ' + (delivery.transferNumber || delivery.gdNumber) + ' | GD ' + delivery.gdNumber + ' | Dari ' + delivery.originName + ' (' + context.outlet + ') | Ke ' + destinationInfo +
-          ' | Menunggu konfirmasi penerima | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 500),
+          ' | Diproses konfirmasi penerima | ' + prepared.fileName + ' | Baris ' + delivery.sourceRow + conversionInfo, 500),
         expiry_date: lot.expiryDate || null, event_date: delivery.transactionDate,
         created_at: now.getTime() / 1000, created_by: context.employee.nik,
         source_file: prepared.fileName, source_hash: delivery.rowHash, source_row: delivery.sourceRow
@@ -9961,7 +9798,7 @@ function readStockHistoryForFifoRecalculation_(outlet, location, item) {
   const sql = latestStockMovementCte_() + ' SELECT record_id, COALESCE(NULLIF(logical_id, \'\'), record_id) AS logical_id, COALESCE(version, 1) AS version, ' +
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, transfer_id, supplier, source_file, source_row, created_by, created_at ' +
     'FROM latest WHERE outlet = @outlet AND location = @location AND ' + itemCondition + ' ORDER BY event_date, created_at';
-  return runNamedQuery_(sql, { outlet: outlet, location: location, code: item.code, item: item.name }, { useQueryCache: false }).map(function (row) {
+  return cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT'], itemCode: item.code, itemName: item.name }).map(function (row) {
     return {
       recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
       date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
@@ -10168,7 +10005,7 @@ function readRemainingStockLots_(outlet, location, itemCode, itemName) {
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
     'FROM latest WHERE outlet = @outlet AND location = @location AND ((item_code = @itemCode AND @itemCode != \'\') OR (LOWER(item_name) = LOWER(@itemName))) ' +
     'ORDER BY event_date, created_at';
-  const history = runNamedQuery_(sql, { outlet: outlet, location: location, itemCode: String(itemCode || '').trim().toUpperCase(), itemName: itemName }, { useQueryCache: false }).map(function (row) {
+  const history = cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT'], itemCode: itemCode, itemName: itemName }).map(function (row) {
     return {
       recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
       date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0),
@@ -10196,7 +10033,7 @@ function readRemainingStockLotsBatch_(outlet, location, items) {
     'event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
     'FROM latest ORDER BY item_code, event_date, created_at';
   const historyByCode = {};
-  runNamedQuery_(sql, { outlet: outlet, location: location, itemCodes: codes.join('|') }, { useQueryCache: false }).forEach(function (row) {
+  cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT'], itemCodes: codes }).forEach(function (row) {
     const code = String(row.item_code || '').trim().toUpperCase();
     if (!result.hasOwnProperty(code)) return;
     if (!historyByCode[code]) historyByCode[code] = [];
@@ -10220,7 +10057,7 @@ function readStockExpiryAlerts_(outlet, location) {
     'item_code, item_name, event_date, direction, qty, movement_type, info, production_date, expiry_date, source_arrival_date, created_at ' +
     'FROM latest WHERE outlet = @outlet AND location = @location ORDER BY event_date, created_at';
   const grouped = {};
-  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
+  cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT'] }).forEach(function (row) {
     const code = String(row.item_code || '').trim().toUpperCase();
     const name = String(row.item_name || '').trim();
     const key = code || 'NAME|' + name.toLowerCase();
@@ -10428,58 +10265,13 @@ function scheduleStockBalanceRebuildScopesSafely_(scopes) {
     const properties = PropertiesService.getScriptProperties();
     properties.setProperty('STOCK_SUMMARY_FORCE_LEDGER_V1', '1');
     properties.setProperty('STOCK_SUMMARY_FULL_RECOVERY_REQUIRED_V1', new Date().toISOString());
-    console.error('Antrean rebuild saldo tertunda; ledger dipakai sebagai fallback: ' + error.message);
+    console.error('Proses background rebuild saldo tertunda; ledger dipakai sebagai fallback: ' + error.message);
   }
 }
 
 function applyStockBalanceDeltas_(rows, unsafeScopes) {
-  unsafeScopes = unsafeScopes || {};
-  const deltas = {}, scopes = {}, properties = PropertiesService.getScriptProperties();
-  (rows || []).forEach(function (entry) {
-    const row = entry && entry.json ? entry.json : entry;
-    if (!row || row.record_type !== 'MOVEMENT' || !row.outlet || !row.location || (row.direction !== 'IN' && row.direction !== 'OUT')) return;
-    const scopeKey = stockBalanceSummaryScopeKey_(row.outlet, row.location);
-    scopes[scopeKey] = { outlet: String(row.outlet).toUpperCase(), location: normalizeLocation_(row.location) };
-    if (unsafeScopes && unsafeScopes[scopeKey]) return;
-    // A legacy dirty marker means the compact balance may already be stale; rebuild it once instead of adding a delta.
-    if (properties.getProperty(stockBalanceStateKey_('dirty', row.outlet, row.location))) {
-      unsafeScopes[scopeKey] = scopes[scopeKey]; return;
-    }
-    const itemCode = String(row.item_code || '').trim().toUpperCase(), itemName = String(row.item_name || '').trim();
-    const itemKey = [scopeKey, itemCode, itemName.toUpperCase()].join('|');
-    if (!deltas[itemKey]) deltas[itemKey] = { outlet: scopes[scopeKey].outlet, location: scopes[scopeKey].location, itemCode: itemCode, itemName: itemName, delta: 0 };
-    deltas[itemKey].delta += (row.direction === 'IN' ? 1 : -1) * Number(row.qty || 0);
-  });
-  const payload = Object.keys(deltas).map(function (key) { return deltas[key]; }).filter(function (row) { return Math.abs(row.delta) > 0.0000001; });
-  if (!payload.length) {
-    scheduleStockBalanceRebuildScopesSafely_(unsafeScopes);
-    return { updatedItems: 0, rebuildScopes: Object.keys(unsafeScopes || {}).length };
-  }
-  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
-  const sql = 'MERGE ' + table + ' AS target USING (' +
-    'SELECT JSON_VALUE(value, \'$.outlet\') AS outlet, JSON_VALUE(value, \'$.location\') AS location, ' +
-    'NULLIF(JSON_VALUE(value, \'$.itemCode\'), \'\') AS item_code, JSON_VALUE(value, \'$.itemName\') AS item_name, ' +
-    'SUM(SAFE_CAST(JSON_VALUE(value, \'$.delta\') AS FLOAT64)) AS qty_delta FROM UNNEST(JSON_QUERY_ARRAY(@payload)) AS value ' +
-    'GROUP BY outlet, location, item_code, item_name) AS source ON target.outlet = source.outlet AND target.location = source.location ' +
-    'AND ((target.item_code = source.item_code) OR ((target.item_code IS NULL OR target.item_code = \'\') AND source.item_code IS NULL AND target.item_name = source.item_name)) ' +
-    'WHEN MATCHED THEN UPDATE SET current_qty = target.current_qty + source.qty_delta, updated_at = CURRENT_TIMESTAMP() ' +
-    'WHEN NOT MATCHED THEN INSERT (outlet, location, item_code, item_name, current_qty, updated_at) ' +
-    'VALUES (source.outlet, source.location, source.item_code, source.item_name, source.qty_delta, CURRENT_TIMESTAMP())';
-  try {
-    runNamedQuery_(sql, { payload: JSON.stringify(payload) }, { useQueryCache: false });
-    Object.keys(scopes).forEach(function (scopeKey) {
-      if (unsafeScopes && unsafeScopes[scopeKey]) return;
-      const scope = scopes[scopeKey];
-      properties.setProperty(stockBalanceStateKey_('ready', scope.outlet, scope.location), '1');
-      properties.setProperty(stockBalanceStateKey_('checkpoint-v1', scope.outlet, scope.location), '1');
-      removeScriptCacheKeys_([stockItemsCacheKey_(scope.outlet, scope.location)]);
-    });
-  } catch (error) {
-    Object.keys(scopes).forEach(function (scopeKey) { unsafeScopes[scopeKey] = scopes[scopeKey]; });
-    console.error('Update saldo incremental gagal; scope dijadwalkan untuk rebuild: ' + error.message);
-  }
-  scheduleStockBalanceRebuildScopesSafely_(unsafeScopes);
-  return { updatedItems: payload.length, rebuildScopes: Object.keys(unsafeScopes || {}).length };
+  // Cloudflare confirms movements and balance changes together; never apply a second delta here.
+  scheduleStockBalanceRebuildScopesSafely_(unsafeScopes); return {updatedItems:0,rebuildScopes:Object.keys(unsafeScopes||{}).length,storage:'Cloudflare'};
 }
 
 function ensureStockItemSummaryWorker_() {
@@ -10517,97 +10309,23 @@ function mirrorStockCardRows_(rows) {
 }
 
 function rebuildStockUploadDailySummary_(state) {
-  const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
-  const movementFilter = state.uploadType === 'salesUsage'
-    ? "movement_type IN ('Terjual', 'Sold')"
-    : state.uploadType === 'goodsReceipt'
-      ? "movement_type = 'Goods Receipt'"
-      : state.uploadType === 'itemJournal'
-        ? "movement_type = 'Item Journal'"
-        : "movement_type = 'Transfer Out Antar Outlet'";
-  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
-  const sourceFilter = state.uploadType === 'salesUsage'
-    ? " AND UPPER(COALESCE(source_file, '')) != 'SHOWCASE_LOG'"
-    : '';
-  const sql = 'BEGIN TRANSACTION; DELETE FROM ' + summary + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND upload_type = @uploadType; ' +
-    'INSERT INTO ' + summary + ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
-    'SELECT CAST(@eventDate AS DATE), @outlet, @uploadType, ' +
-    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
-    'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND ' + movementFilter + sourceFilter + '; COMMIT TRANSACTION;';
-  runNamedQuery_(sql, {
-    outlet: state.outlet, eventDate: state.eventDate, uploadType: state.uploadType
-  }, { useQueryCache: false });
-  removeScriptCacheKeys_(['stock-upload-monitor-v2-' + state.eventDate.slice(0, 7)]);
+  cloudflareReadUploadProgress_(state.eventDate.slice(0,7),state.outlet); removeScriptCacheKeys_(['stock-upload-monitor-v2-'+state.eventDate.slice(0,7)]);
 }
 
-/** Run once after deployment, then only the small dirty slices are refreshed. */
 function backfillStockUploadDailySummary() {
-  ensureStockCardInfrastructure_();
-  const summary = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_upload_daily_summary`';
-  const sourceRowKey = "CONCAT(COALESCE(source_file, ''), '|', COALESCE(source_hash, ''), '|', CAST(COALESCE(source_row, 0) AS STRING))";
-  const uploadType = "CASE WHEN movement_type = 'Goods Receipt' THEN 'goodsReceipt' WHEN movement_type IN ('Terjual', 'Sold') THEN 'salesUsage' WHEN movement_type = 'Item Journal' THEN 'itemJournal' ELSE 'goodsDelivery' END";
-  const sql = 'TRUNCATE TABLE ' + summary + '; INSERT INTO ' + summary +
-    ' (event_date, outlet, upload_type, actual_item_count, marker_count, last_upload, last_user, updated_at) ' +
-    'SELECT event_date, outlet, ' + uploadType + ', ' +
-    'COUNT(DISTINCT IF(record_type = \'MOVEMENT\' AND item_code IS NOT NULL AND item_code != \'\' AND source_file IS NOT NULL AND source_file != \'\', ' + sourceRowKey + ', NULL)), ' +
-    'COUNTIF(record_type = \'IMPORT\'), MAX(created_at), ARRAY_AGG(created_by IGNORE NULLS ORDER BY created_at DESC LIMIT 1)[SAFE_OFFSET(0)], CURRENT_TIMESTAMP() ' +
-    'FROM ' + stockCardTable_() + ' WHERE movement_type IN (\'Goods Receipt\', \'Terjual\', \'Sold\', \'Item Journal\', \'Transfer Out Antar Outlet\') ' +
-    "AND NOT (movement_type IN ('Terjual', 'Sold') AND UPPER(COALESCE(source_file, '')) = 'SHOWCASE_LOG') " +
-    'GROUP BY event_date, outlet, ' + uploadType;
-  runNamedQuery_(sql, {}, { useQueryCache: false });
-  PropertiesService.getScriptProperties().setProperties({ STOCK_UPLOAD_SUMMARY_SHOWCASE_ISOLATION_V1: '1', STOCK_UPLOAD_SUMMARY_ITEM_JOURNAL_V1: '1' }, false);
-  removeScriptCacheKeys_(['stock-upload-monitor-v2-' + todayIso_().slice(0, 7)]);
-  return { completed: true, table: 'stock_upload_daily_summary', sourceTable: stockCardTableId_() };
+  ensureStockCardInfrastructure_(); cloudflareReadUploadProgress_(todayIso_().slice(0,7)); return {completed:true,storage:'Cloudflare'};
 }
 
-/** Run once after deployment so the first Stock Card view can use compact balances immediately. */
 function backfillStockBalanceSummaries() {
-  ensureStockCardInfrastructure_();
-  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
-  const sql = 'TRUNCATE TABLE ' + table + '; INSERT INTO ' + table +
-    ' (outlet, location, item_code, item_name, current_qty, updated_at) ' + stockCheckpointBalanceCtes_('') +
-    ' SELECT l.outlet, l.location, l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() ' +
-    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
-    ' GROUP BY l.outlet, l.location, l.item_code, l.item_name; SELECT DISTINCT outlet, location FROM ' + table;
-  const scopes = runNamedQuery_(sql, {}, { useQueryCache: false });
-  const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), cacheKeys = [];
-  Object.keys(all).forEach(function (key) {
-    if (key.indexOf('stock-balance-ready-') === 0 || key.indexOf('stock-balance-dirty-') === 0) properties.deleteProperty(key);
-  });
-  scopes.forEach(function (scope) {
-    properties.setProperty(stockBalanceStateKey_('ready', scope.outlet, scope.location), '1');
-    properties.setProperty(stockBalanceStateKey_('checkpoint-v1', scope.outlet, scope.location), '1');
-    cacheKeys.push(stockItemsCacheKey_(scope.outlet, scope.location));
-  });
-  removeScriptCacheKeys_(cacheKeys);
-  return { completed: true, scopeCount: scopes.length, table: 'stock_balances', sourceTable: stockCardTableId_() };
+  ensureStockCardInfrastructure_(); readActiveOutlets_().forEach(function(outlet){readStockLocations_(outlet).forEach(function(location){rebuildStockBalanceSummary_(outlet,location);});}); return {completed:true,storage:'Cloudflare'};
 }
 
 function readStockLedgerBalanceRows_(outlet, location) {
-  const sql = stockCheckpointBalanceCtes_('') + ' SELECT l.item_code, l.item_name, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty ' +
-    'FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
-    ' WHERE l.outlet = @outlet AND l.location = @location GROUP BY l.item_code, l.item_name';
-  return runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
+  const map = cloudflareBalanceAtDate_(outlet,location,''); return Object.keys(map).map(function(code){return {item_code:code,current_qty:map[code]};});
 }
 
-function rebuildStockBalanceSummary_(outlet, location) {
-  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_balances`';
-  const sql = 'BEGIN TRANSACTION; ' +
-    'DELETE FROM ' + table + ' WHERE outlet = @outlet AND location = @location; ' +
-    'INSERT INTO ' + table + ' (outlet, location, item_code, item_name, current_qty, updated_at) ' +
-    stockCheckpointBalanceCtes_('') + ' SELECT @outlet, @location, l.item_code, l.item_name, ' +
-    stockCheckpointBalanceSql_('l', 'cp') + ', CURRENT_TIMESTAMP() FROM latest l LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
-    ' WHERE l.outlet = @outlet AND l.location = @location GROUP BY l.item_code, l.item_name; ' +
-    'COMMIT TRANSACTION;';
-  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false });
-
-  const properties = PropertiesService.getScriptProperties();
-  const readyKey = stockBalanceStateKey_('ready', outlet, location);
-  properties.setProperty(readyKey, '1');
-  properties.setProperty(stockBalanceStateKey_('checkpoint-v1', outlet, location), '1');
-  properties.deleteProperty(stockBalanceStateKey_('dirty', outlet, location));
-  removeScriptCacheKeys_([stockItemsCacheKey_(outlet, location)]);
+function rebuildStockBalanceSummary_(outlet, location, expectedDirty) {
+  readStockBalanceRows_(outlet, location); const properties=PropertiesService.getScriptProperties(); properties.setProperty(stockBalanceStateKey_('ready',outlet,location),'1'); properties.setProperty(stockBalanceStateKey_('checkpoint-v1',outlet,location),'1'); const dirty=stockBalanceStateKey_('dirty',outlet,location); if (!expectedDirty || properties.getProperty(dirty) === expectedDirty) properties.deleteProperty(dirty); removeScriptCacheKeys_([stockItemsCacheKey_(outlet,location)]);
 }
 
 function readStockBalanceRows_(outlet, location) {
@@ -10680,20 +10398,7 @@ function rebuildStockItemSummary_(state) {
 }
 
 function stockPendingSummaryJobs_(jobType, limit) {
-  limit = Math.max(1, Math.min(20, Number(limit || 8)));
-  const sql = 'WITH acknowledgements AS (' +
-    'SELECT scope_key, MAX(ack_through) AS ack_through FROM ' + stockSummaryJobTable_() +
-    ' WHERE job_type = @jobType AND action = \'ACK\' GROUP BY scope_key), pending AS (' +
-    'SELECT enqueue.*, MIN(enqueue.earliest_date) OVER (PARTITION BY enqueue.scope_key) AS pending_earliest_date, ' +
-    'MAX(enqueue.created_at) OVER (PARTITION BY enqueue.scope_key) AS pending_through FROM ' + stockSummaryJobTable_() + ' AS enqueue ' +
-    'LEFT JOIN acknowledgements ack USING (scope_key) WHERE enqueue.job_type = @jobType AND enqueue.action = \'ENQUEUE\' ' +
-    'AND (ack.ack_through IS NULL OR enqueue.created_at > ack.ack_through)) ' +
-    'SELECT scope_key, outlet, location, item_code, item_name, CAST(pending_earliest_date AS STRING) AS earliest_date, ' +
-    'CAST(event_date AS STRING) AS event_date, upload_type, movement_type, ' +
-    'FORMAT_TIMESTAMP(\'%Y-%m-%d %H:%M:%E6S\', pending_through, \'UTC\') AS pending_through ' +
-    'FROM pending QUALIFY ROW_NUMBER() OVER (PARTITION BY scope_key ORDER BY created_at DESC) = 1 ' +
-    'ORDER BY pending_through LIMIT ' + limit;
-  return runNamedQuery_(sql, { jobType: jobType }, { useQueryCache: false });
+  return cloudflarePendingSummaryJobs_(jobType).slice(0, Math.max(1, Math.min(20, Number(limit || 8))));
 }
 
 function acknowledgeStockSummaryJob_(jobType, state) {
@@ -10764,8 +10469,8 @@ function processStockItemSummaryJobsLocked_(token) {
       ensureStockItemSummaryWorker_();
       return { processed: 0, remaining: 1, recoveryQueued: true };
     } catch (recoveryError) {
-      console.error('Recovery penuh ringkasan masih menunggu BigQuery: ' + recoveryError.message);
-      // A persistent BigQuery failure must wait for the five-minute watchdog.
+      console.error('Recovery ringkasan Cloudflare dicoba ulang: ' + recoveryError.message);
+      // A persistent Cloudflare failure must wait for the five-minute watchdog.
       return { processed: 0, remaining: 1, recoveryPending: true };
     }
   }
@@ -10786,7 +10491,7 @@ function processStockItemSummaryJobsLocked_(token) {
     } catch (error) { hadFailure = true; console.error('Gagal memperbarui ringkasan item: ' + error.message); return true; }
     return false;
   });
-  // The initial backfill uses one compact BigQuery queue plus a single cursor.
+  // The initial backfill uses one compact Cloudflare queue plus a single cursor.
   // Do not materialize one Script Property per item: Apps Script limits total
   // property storage and large stock masters can exceed that quota immediately.
   const backfillActiveKey = 'STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1';
@@ -10795,11 +10500,8 @@ function processStockItemSummaryJobsLocked_(token) {
     const cursor = String(properties.getProperty(backfillCursorKey) || '');
     const queue = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_summary_backfill_queue`';
     const batchSize = 8 - processed;
-    const backfillRows = runNamedQuery_(
-      'SELECT outlet, location, item_code, item_name, CAST(earliest_date AS STRING) AS earliest_date, cursor_key ' +
-      'FROM ' + queue + ' WHERE cursor_key > @cursor ORDER BY cursor_key LIMIT ' + batchSize,
-      { cursor: cursor }, { useQueryCache: false }
-    );
+    const generation=properties.getProperty('STOCK_SUMMARY_BACKFILL_GENERATION');
+    const backfillRows=cloudflareApplicationRecords_('stock_item_summary_backfill_queue').filter(function(row){return row.generation===generation&&row.cursor_key>cursor;}).sort(function(a,b){return a.cursor_key.localeCompare(b.cursor_key);}).slice(0,batchSize);
     let completedBatch = true;
     backfillRows.some(function (row) {
       if (Date.now() - started > 45000) { completedBatch = false; return true; }
@@ -10866,33 +10568,10 @@ function processStockItemSummaryJobsLocked_(token) {
 }
 
 function backfillStockItemSummaries() {
-  ensureStockCardInfrastructure_();
-  const properties = PropertiesService.getScriptProperties();
-  // Release markers left by an interrupted legacy backfill. The queue created
-  // below is a complete ledger snapshot; new writes after this cleanup create
-  // fresh dirty markers and therefore remain protected from races.
-  const existingProperties = properties.getProperties();
-  Object.keys(existingProperties).forEach(function (key) {
-    if (key.indexOf('stock-item-summary-dirty-') === 0) properties.deleteProperty(key);
-  });
-  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');
-  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1');
-  const queue = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_summary_backfill_queue`';
-  const sql = 'CREATE OR REPLACE TABLE ' + queue + ' CLUSTER BY outlet, location, item_code AS ' +
-    'SELECT grouped.*, TO_JSON_STRING(STRUCT(grouped.outlet AS outlet, grouped.location AS location, ' +
-    'grouped.item_code AS item_code, grouped.item_name AS item_name)) AS cursor_key FROM (' +
-    'SELECT UPPER(COALESCE(outlet, \'\')) AS outlet, COALESCE(location, \'\') AS location, ' +
-    'UPPER(COALESCE(item_code, \'\')) AS item_code, COALESCE(item_name, \'\') AS item_name, ' +
-    'MIN(event_date) AS earliest_date FROM ' + stockCardTable_() +
-    ' WHERE record_type IN (\'MOVEMENT\', \'OPNAME_DETAIL\') GROUP BY 1, 2, 3, 4) AS grouped; ' +
-    'SELECT COUNT(*) AS queued FROM ' + queue;
-  const rows = runNamedQuery_(sql, {}, { useQueryCache: false });
-  const queued = Number(rows[0] && rows[0].queued || 0);
-  properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_COMPLETED_AT_V1');
-  if (queued > 0) properties.setProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1', '1');
-  else properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');
-  ensureStockItemSummaryWorker_();
-  return { queued: queued, workerScheduled: queued > 0, storageMode: 'bigquery_queue_with_single_cursor' };
+  ensureStockCardInfrastructure_(); const grouped={},generation=Utilities.getUuid(),properties=PropertiesService.getScriptProperties();
+  cloudflareLedgerRows_({recordTypes:['MOVEMENT','OPNAME_DETAIL']}).forEach(function(row){const key=JSON.stringify({outlet:row.outlet,location:row.location,item_code:row.item_code||'',item_name:row.item_name||''}); if(!grouped[key])grouped[key]=Object.assign({},row,{cursor_key:key,earliest_date:row.event_date,generation:generation}); if(row.event_date<grouped[key].earliest_date)grouped[key].earliest_date=row.event_date;});
+  const rows=Object.keys(grouped).sort().map(function(key){return {insertId:digest_(generation+'|'+key),json:grouped[key]};}); insertAll_('stock_item_summary_backfill_queue',rows);
+  properties.setProperty('STOCK_SUMMARY_BACKFILL_GENERATION',generation);properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_CURSOR_V1'); if(rows.length)properties.setProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1','1');else properties.deleteProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1');ensureStockItemSummaryWorker_();return {queued:rows.length,workerScheduled:rows.length>0,storageMode:'cloudflare'};
 }
 
 function migrateLegacyStockSummaryJobs_() {
@@ -10920,35 +10599,7 @@ function migrateLegacyStockSummaryJobs_() {
 }
 
 function compactStockSummaryTables() {
-  ensureStockCardInfrastructure_();
-  if (PropertiesService.getScriptProperties().getProperty('STOCK_ITEM_SUMMARY_BACKFILL_ACTIVE_V1') === '1') {
-    return { compacted: false, reason: 'Backfill item masih berjalan; kompaksi ditunda.' };
-  }
-  const daily = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary`';
-  const dailyTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_daily_summary_compact_tmp`';
-  const lots = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary`';
-  const lotsTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_item_lot_summary_compact_tmp`';
-  const jobs = stockSummaryJobTable_();
-  const jobsTemp = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_summary_jobs_compact_tmp`';
-  const sql = 'CREATE OR REPLACE TABLE ' + dailyTemp + ' PARTITION BY event_date CLUSTER BY outlet, location, item_code AS ' +
-    'SELECT * EXCEPT(summary_rank) FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY event_date, outlet, location, COALESCE(item_code, \'\'), item_name ORDER BY updated_at DESC) AS summary_rank FROM ' + daily + ') WHERE summary_rank = 1; ' +
-    'CREATE OR REPLACE TABLE ' + daily + ' PARTITION BY event_date CLUSTER BY outlet, location, item_code AS SELECT * FROM ' + dailyTemp + '; ' +
-    'DROP TABLE ' + dailyTemp + '; ' +
-    'CREATE OR REPLACE TABLE ' + lotsTemp + ' CLUSTER BY outlet, location, item_code AS ' +
-    'SELECT * EXCEPT(summary_rank) FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY outlet, location, COALESCE(item_code, \'\'), item_name ORDER BY updated_at DESC) AS summary_rank FROM ' + lots + ') WHERE summary_rank = 1; ' +
-    'CREATE OR REPLACE TABLE ' + lots + ' CLUSTER BY outlet, location, item_code AS SELECT * FROM ' + lotsTemp + '; ' +
-    'DROP TABLE ' + lotsTemp + '; ' +
-    'CREATE OR REPLACE TABLE ' + jobsTemp + ' PARTITION BY job_date CLUSTER BY job_type, scope_key, outlet, location AS ' +
-    'SELECT * EXCEPT(latest_ack, action_rank) FROM (' +
-    'SELECT *, MAX(IF(action = \'ACK\', ack_through, NULL)) OVER (PARTITION BY job_type, scope_key) AS latest_ack, ' +
-    'ROW_NUMBER() OVER (PARTITION BY job_type, scope_key, action ORDER BY created_at DESC) AS action_rank FROM ' + jobs + ') ' +
-    'WHERE (action = \'ENQUEUE\' AND (latest_ack IS NULL OR created_at > latest_ack)) OR (action = \'ACK\' AND action_rank = 1); ' +
-    'CREATE OR REPLACE TABLE ' + jobs + ' PARTITION BY job_date CLUSTER BY job_type, scope_key, outlet, location AS SELECT * FROM ' + jobsTemp + '; ' +
-    'DROP TABLE ' + jobsTemp;
-  runNamedQuery_(sql, {}, { useQueryCache: false });
-  const properties = PropertiesService.getScriptProperties();
-  properties.setProperty('STOCK_SUMMARY_COMPACTION_LAST_AT_V1', new Date().toISOString());
-  return { compacted: true, tables: ['stock_item_daily_summary', 'stock_item_lot_summary', 'stock_summary_jobs'] };
+  ensureStockCardInfrastructure_(); const result=cloudflareInventoryRequest_('POST','/v1/application-records/compact',{generation:PropertiesService.getScriptProperties().getProperty('STOCK_SUMMARY_BACKFILL_GENERATION')||''});PropertiesService.getScriptProperties().setProperty('STOCK_SUMMARY_COMPACTION_LAST_AT_V1',new Date().toISOString());return result;
 }
 
 function maybeCompactStockSummaryTables_() {
@@ -10966,15 +10617,15 @@ function refreshDirtyStockBalances() {
   // Run upload queues first. Balance rebuilds can be expensive and previously
   // consumed the whole trigger execution before Sales COGS got a turn.
   try { processGoodsUploadJobs(); }
-  catch (goodsError) { console.error('Antrean Goods Upload: ' + goodsError.message); }
+  catch (goodsError) { console.error('Proses background Goods Upload: ' + goodsError.message); }
   try { processStockPositionUploadJobs(); }
-  catch (positionError) { console.error('Gagal menjalankan antrean Stock Posisi: ' + positionError.message); }
+  catch (positionError) { console.error('Gagal menjalankan proses background Stock Posisi: ' + positionError.message); }
   try { processSalesCogsUploadJobs(); }
-  catch (salesError) { console.error('Gagal menjalankan antrean Sales COGS: ' + salesError.message); }
+  catch (salesError) { console.error('Gagal menjalankan proses background Sales COGS: ' + salesError.message); }
   try { processMissingExpiryUploadJobs(); }
-  catch (expiryError) { console.error('Gagal menjalankan antrean Expired Date: ' + expiryError.message); }
+  catch (expiryError) { console.error('Gagal menjalankan proses background Expired Date: ' + expiryError.message); }
   try { processStockItemSummaryJobs(); }
-  catch (summaryError) { console.error('Gagal menjalankan antrean ringkasan item: ' + summaryError.message); }
+  catch (summaryError) { console.error('Gagal menjalankan proses background ringkasan item: ' + summaryError.message); }
   try { maybeCompactStockSummaryTables_(); }
   catch (compactError) { console.error('Kompaksi ringkasan ditunda: ' + compactError.message); }
 }
@@ -11005,16 +10656,7 @@ function activateBigQuerySummaryMaintenanceV2() {
 
 /** Run once after deploying delivery_date to preserve the original date on older pending transfers. */
 function backfillStockTransferDeliveryDates() {
-  ensureStockCardInfrastructure_();
-  const transfers = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_transfers`';
-  const card = stockCardTable_();
-  const sql = 'UPDATE ' + transfers + ' AS target SET delivery_date = source.delivery_date FROM (' +
-    'SELECT transfer_id, MIN(event_date) AS delivery_date FROM ' + card + ' ' +
-    'WHERE transfer_id IS NOT NULL AND transfer_id != \'\' AND direction = \'OUT\' ' +
-    'AND movement_type IN (\'Transfer Out\', \'Transfer Out Antar Outlet\') GROUP BY transfer_id' +
-    ') AS source WHERE target.transfer_id = source.transfer_id AND target.delivery_date IS NULL';
-  runNamedQuery_(sql, {}, { useQueryCache: false });
-  return { completed: true, field: 'stock_transfers.delivery_date' };
+  ensureStockCardInfrastructure_(); readActiveOutlets_().forEach(function(outlet){readPendingStockTransfers_(outlet);}); return {completed:true,storage:'Cloudflare',mode:'delivery_dates_derived_from_movements'};
 }
 
 function stockCardMigrationTable_() {
@@ -11022,64 +10664,12 @@ function stockCardMigrationTable_() {
 }
 
 function ensureStockCardV2Table_() {
-  let existing = null;
-  try {
-    existing = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card_v2');
-  } catch (error) {
-    if (!/not found|Not found|404/.test(String(error))) throw error;
-  }
-  if (!existing) {
-    const source = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card');
-    BigQuery.Tables.insert({
-      tableReference: {
-        projectId: CONFIG.BQ_PROJECT_ID,
-        datasetId: CONFIG.BQ_DATASET_ID,
-        tableId: 'stock_card_v2'
-      },
-      schema: JSON.parse(JSON.stringify(source.schema)),
-      timePartitioning: { type: 'DAY', field: 'event_date' },
-      clustering: { fields: ['outlet', 'location', 'item_code', 'record_type'] },
-      description: 'Stock card partitioned by event_date. Created by safe v2 migration.'
-    }, CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
-    existing = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, 'stock_card_v2');
-  }
-  const partitionField = existing.timePartitioning && existing.timePartitioning.field;
-  if (partitionField !== 'event_date') {
-    throw new Error('stock_card_v2 sudah ada tetapi bukan dipartisi berdasarkan event_date. Hapus/ubah nama tabel v2 yang salah terlebih dahulu; stock_card lama tidak disentuh.');
-  }
-  return existing;
+  return { storage: 'Cloudflare', legacyDisabled: true };
 }
 
-function syncStockCardV2Migration() {
-  ensureStockCardInfrastructure_();
-  ensureStockCardV2Table_();
-  const source = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.stock_card`';
-  const target = stockCardMigrationTable_();
-  const sql = 'MERGE ' + target + ' AS target USING ' + source + ' AS source ON target.record_id = source.record_id ' +
-    'WHEN NOT MATCHED THEN INSERT ROW';
-  runNamedQuery_(sql, {}, { useQueryCache: false });
-  PropertiesService.getScriptProperties().deleteProperty('STOCK_CARD_MIRROR_LAST_ERROR');
-  return auditStockCardV2Migration();
-}
+function syncStockCardV2Migration() { throw new Error('Migrasi tabel lama dihentikan. Gunakan alat migrasi Cloudflare.'); }
 
-function stockCardMigrationStats_(tableId) {
-  const table = '`' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.' + tableId + '`';
-  const rows = runNamedQuery_(
-    'SELECT COUNT(*) AS row_count, COUNT(DISTINCT record_id) AS record_count, ' +
-    'COALESCE(SUM(qty), 0) AS qty_total, CAST(MIN(event_date) AS STRING) AS min_date, ' +
-    'CAST(MAX(event_date) AS STRING) AS max_date FROM ' + table,
-    {}, { useQueryCache: false }
-  );
-  const row = rows[0] || {};
-  return {
-    tableId: tableId,
-    rowCount: Number(row.row_count || 0),
-    recordCount: Number(row.record_count || 0),
-    qtyTotal: Number(row.qty_total || 0),
-    minDate: String(row.min_date || ''),
-    maxDate: String(row.max_date || '')
-  };
-}
+function stockCardMigrationStats_(tableId) { throw new Error('Migrasi tabel lama dihentikan. Gunakan alat migrasi Cloudflare.'); }
 
 function auditStockCardV2Migration() {
   ensureStockCardV2Table_();
@@ -11131,16 +10721,8 @@ function activateStockCardV2AfterAudit() {
 }
 
 /** Emergency rollback: old table becomes active immediately; v2 remains mirrored and no table is deleted. */
-function rollbackStockCardV2Migration() {
-  const properties = PropertiesService.getScriptProperties();
-  properties.setProperty('STOCK_CARD_TABLE_ID', 'stock_card');
-  properties.setProperty('STOCK_CARD_MIRROR_TABLE_ID', 'stock_card_v2');
-  properties.setProperty('STOCK_CARD_MIGRATION_ROLLED_BACK_AT', new Date().toISOString());
-  CacheService.getScriptCache().remove('stock-card-infrastructure-v19');
-  return { rolledBack: true, activeTable: 'stock_card', mirrorTable: 'stock_card_v2' };
-}
+function rollbackStockCardV2Migration() { throw new Error('Migrasi tabel lama dihentikan. Gunakan alat migrasi Cloudflare.'); }
 
-/** Optional final step after the agreed observation period. Both tables remain in BigQuery. */
 function finishStockCardV2Migration() {
   if (stockCardTableId_() !== 'stock_card_v2') throw new Error('stock_card_v2 belum aktif; finalisasi dibatalkan.');
   const audit = auditStockCardV2Migration();
@@ -11189,27 +10771,10 @@ function readStockHiddenMap_(outlet, location) {
 }
 
 function readCurrentStockCodeQtyMap_(outlet, location) {
-  const sql = stockCheckpointBalanceCtes_('', true) + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
-    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
-    ' WHERE l.outlet = @outlet AND l.location = @location AND l.item_code IS NOT NULL AND l.item_code != \'\' GROUP BY l.item_code';
-  const map = {};
-  runNamedQuery_(sql, { outlet: outlet, location: location }, { useQueryCache: false }).forEach(function (row) {
-    map[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
-  });
-  return map;
+  const map = {}; readStockBalanceRows_(outlet, location).forEach(function (row) { if (row.item_code) map[String(row.item_code).toUpperCase()] = Number(row.current_qty || 0); }); return map;
 }
 
-function readStockCodeQtyMapAtDate_(outlet, location, eventDate) {
-  const sql = stockCheckpointBalanceCtes_('@eventDate') + ' SELECT l.item_code, ' + stockCheckpointBalanceSql_('l', 'cp') + ' AS current_qty FROM latest l ' +
-    'LEFT JOIN latest_checkpoint cp ON ' + stockCheckpointJoinSql_('l', 'cp') +
-    ' WHERE l.outlet = @outlet AND l.location = @location AND l.event_date <= CAST(@eventDate AS DATE) ' +
-    'AND l.item_code IS NOT NULL AND l.item_code != \'\' GROUP BY l.item_code';
-  const map = {};
-  runNamedQuery_(sql, { outlet: outlet, location: location, eventDate: eventDate }, { useQueryCache: false }).forEach(function (row) {
-    map[String(row.item_code || '').trim().toUpperCase()] = Number(row.current_qty || 0);
-  });
-  return map;
-}
+function readStockCodeQtyMapAtDate_(outlet, location, eventDate) { return cloudflareBalanceAtDate_(outlet, location, eventDate); }
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
   // Gunakan daftar saldo lengkap yang sudah di-cache. Sebagian versi Worker
@@ -12335,7 +11900,7 @@ function salesRowHash_(row) {
 function existingSalesRowHashes_(outlet, transactionDate) {
   const map = {}, sql = 'SELECT DISTINCT source_hash FROM ' + stockCardTable_() +
     ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND movement_type = \'Sold\' AND source_hash IS NOT NULL';
-  runNamedQuery_(sql, { outlet: outlet, eventDate: transactionDate }, { useQueryCache: false }).forEach(function (row) { if (row.source_hash) map[String(row.source_hash)] = true; });
+  cloudflareLedgerRows_({ outlet: outlet, from: transactionDate, to: transactionDate, movementTypes: ['Sold'] }).forEach(function (row) { if (row.source_hash) map[String(row.source_hash)] = true; });
   return map;
 }
 
@@ -12991,7 +12556,7 @@ function readActiveSalesRepairRows_(sourceHashes) {
       'FROM latest WHERE direction IN (\'IN\',\'OUT\',\'LOT\') ' +
       'AND movement_type IN (\'Sold\',\'Terjual\',\'WIP Material Usage\',\'Production\') ' +
       'ORDER BY event_date,source_row,created_at,item_code';
-    runNamedQuery_(sql, { hashes: chunk }, { useQueryCache: false }).forEach(function (row) {
+    cloudflareLedgerRows_({ sourceHashes: chunk, recordTypes: ['MOVEMENT'], movementTypes: ['Sold', 'Terjual', 'WIP Material Usage', 'Production'] }).filter(function (row) { return ['IN','OUT','LOT'].indexOf(row.direction) >= 0; }).forEach(function (row) {
       result.push({
         recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''),
         version: Number(row.version || 1), outlet: String(row.outlet || ''), location: String(row.location || 'Store'),
@@ -13351,7 +12916,7 @@ function queueSalesCogsUpload(token, payload) {
     const job = {
       jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
       sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
-      status: 'QUEUED', stage: 'File diterima. Menunggu proses background.', progress: 3, batchSize: 500,
+      status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 500,
       processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
       outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
     };
@@ -13376,7 +12941,7 @@ function getSalesCogsUploadStatus(token, jobId) {
       }
       if (scheduleSalesCogsWorker_()) {
         job.stage = job.status === 'QUEUED'
-          ? 'Antrean terhenti terdeteksi. Worker dijalankan kembali otomatis.'
+          ? 'Proses terhenti terdeteksi. Worker dijalankan kembali otomatis.'
           : 'Proses terhenti terdeteksi. Sistem melanjutkan kembali otomatis.';
         writeSalesCogsJob_(job);
       }
@@ -13404,7 +12969,7 @@ function scheduleSalesCogsWorker_() {
     return true;
   } catch (error) {
     try { PropertiesService.getScriptProperties().deleteProperty(scheduleKey); } catch (cleanupError) {}
-    console.error('Worker Sales COGS menunggu trigger maintenance: ' + error.message);
+    console.error('Worker Sales COGS diproses trigger maintenance: ' + error.message);
     return false;
   } finally {
     gate.releaseLock();
@@ -13597,7 +13162,7 @@ function processSalesCogsUploadJobs() {
       job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
       if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
         if (/timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
-        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Menunggu giliran penyimpanan. Upload tetap dalam antrean.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
+        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
         job.error = String(error.message || error); cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
@@ -13639,7 +13204,7 @@ function readActiveItemJournalRepairRows_(sourceHashes) {
       'source_arrival_date,transfer_id,event_date,created_at,created_by,source_file,source_hash,source_row ' +
       'FROM latest WHERE direction IN (\'IN\',\'OUT\') AND movement_type = \'Item Journal\' ' +
       'ORDER BY event_date,source_row,created_at,item_code';
-    runNamedQuery_(sql, { hashes: chunk }, { useQueryCache: false }).forEach(function (row) {
+    cloudflareLedgerRows_({ sourceHashes: chunk, recordTypes: ['MOVEMENT'], movementTypes: ['Item Journal'] }).filter(function (row) { return ['IN','OUT','LOT'].indexOf(row.direction) >= 0; }).forEach(function (row) {
       result.push({
         recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
         outlet: String(row.outlet || ''), location: String(row.location || 'Store'), itemCode: String(row.item_code || ''),
@@ -13834,7 +13399,7 @@ function prepareItemJournalImport_(employee, payload, allowPending, options) {
     if (!existingByScope[scope]) {
       existingByScope[scope] = {};
       const sql = 'SELECT DISTINCT source_hash FROM ' + stockCardTable_() + ' WHERE outlet=@outlet AND event_date=CAST(@date AS DATE) AND movement_type=\'Item Journal\' AND source_hash IS NOT NULL';
-      runNamedQuery_(sql, { outlet: outlet, date: row.transactionDate }, { useQueryCache: false }).forEach(function (found) {
+      cloudflareLedgerRows_({ outlet: outlet, from: row.transactionDate, to: row.transactionDate, recordTypes: ['MOVEMENT'], movementTypes: ['Item Journal'] }).forEach(function (found) {
         if (found.source_hash) existingByScope[scope][String(found.source_hash)] = true;
       });
     }
@@ -14851,63 +14416,22 @@ function normalizeHtmlFile_(value) {
   return String(value || '').trim().replace(/\.html$/i, '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
 }
 
-// ---------- BigQuery: initialized only on first form creation ----------
+// ---------- Cloudflare application records; legacy helper names retained ----------
 
 function ensureBigQueryInfrastructure_() {
-  try {
-    BigQuery.Datasets.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
-  } catch (error) {
-    if (!/not found|Not found|404/.test(String(error))) throw new Error('BigQuery belum dapat diakses. Aktifkan Advanced Service BigQuery API. Detail: ' + error.message);
-    BigQuery.Datasets.insert({
-      datasetReference: { projectId: CONFIG.BQ_PROJECT_ID, datasetId: CONFIG.BQ_DATASET_ID },
-      location: CONFIG.BQ_LOCATION,
-      description: 'Data form dan penyelesaian task Bakerzin Internal Hub'
-    }, CONFIG.BQ_PROJECT_ID);
-  }
-  ensureBigQueryTable_('form_responses', [
-    field_('response_id'), field_('task_id'), field_('form_file'), field_('nik'), field_('outlet'), field_('period_key'),
-    { name: 'submitted_at', type: 'TIMESTAMP', mode: 'REQUIRED' }, { name: 'response_json', type: 'STRING', mode: 'NULLABLE' }
-  ]);
-  ensureBigQueryTable_('task_completions', [
-    field_('completion_id'), field_('task_id'), field_('nik'), field_('outlet'), field_('period_key'),
-    { name: 'completed_at', type: 'TIMESTAMP', mode: 'REQUIRED' }, field_('source')
-  ]);
+  cloudflareInventoryConfig_(); return { storage: 'Cloudflare' };
 }
 
-function ensureBigQueryTable_(tableId, fields, partitionField, clusteringFields) {
-  try {
-    BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
-  } catch (error) {
-    if (!/not found|Not found|404/.test(String(error))) throw error;
-    const table = {
-      tableReference: { projectId: CONFIG.BQ_PROJECT_ID, datasetId: CONFIG.BQ_DATASET_ID, tableId: tableId },
-      schema: { fields: fields }
-    };
-    const field = partitionField || (tableId === 'form_responses' ? 'submitted_at' : tableId === 'task_completions' ? 'completed_at' : '');
-    if (field) table.timePartitioning = { type: 'DAY', field: field };
-    if (clusteringFields && clusteringFields.length) table.clustering = { fields: clusteringFields.slice(0, 4) };
-    BigQuery.Tables.insert(table, CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID);
-  }
+function ensureBigQueryTable_(tableId, fields) {
+  cloudflareInventoryConfig_(); return { storage: 'Cloudflare', tableId: tableId };
 }
 
 function ensureBigQueryField_(tableId, field) {
   ensureBigQueryFields_(tableId, [field]);
 }
 
-function ensureBigQueryFields_(tableId, requestedFields) {
-  const table = BigQuery.Tables.get(CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
-  const fields = table.schema && table.schema.fields ? table.schema.fields : [];
-  const existing = {};
-  fields.forEach(function (field) { existing[field.name] = true; });
-  let changed = false;
-  requestedFields.forEach(function (field) {
-    if (existing[field.name]) return;
-    fields.push(field);
-    existing[field.name] = true;
-    changed = true;
-  });
-  if (!changed) return;
-  BigQuery.Tables.patch({ schema: { fields: fields } }, CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
+function ensureBigQueryFields_(tableId, fields) {
+  cloudflareInventoryConfig_(); return { storage: 'Cloudflare', tableId: tableId };
 }
 
 function field_(name) { return { name: name, type: 'STRING', mode: 'REQUIRED' }; }
@@ -14923,46 +14447,7 @@ function insertAllRowSize_(row) {
 }
 
 function insertAll_(tableId, rows) {
-  rows = Array.isArray(rows) ? rows : [];
-  if (!rows.length) return { insertedRows: 0, batchCount: 0 };
-
-  // tabledata.insertAll memiliki batas request 10 MB. Gunakan maksimum 500 baris
-  // dan 7,5 MB agar masih ada ruang untuk envelope JSON serta karakter UTF-8.
-  const maxRowsPerBatch = 500, maxPayloadBytes = Math.floor(7.5 * 1024 * 1024), envelopeBytes = 160;
-  let batch = [], batchBytes = envelopeBytes, insertedRows = 0, batchCount = 0;
-
-  function flushBatch_() {
-    if (!batch.length) return;
-    const firstRow = insertedRows + 1, currentBatch = batchCount + 1;
-    const result = BigQuery.Tabledata.insertAll({ rows: batch, skipInvalidRows: false, ignoreUnknownValues: false },
-      CONFIG.BQ_PROJECT_ID, CONFIG.BQ_DATASET_ID, tableId);
-    if (result.insertErrors && result.insertErrors.length) {
-      const errors = result.insertErrors.map(function (entry) {
-        const localIndex = Number(entry && entry.index || 0);
-        return {
-          row: firstRow + localIndex,
-          errors: entry && entry.errors ? entry.errors : entry
-        };
-      });
-      throw new Error('BigQuery menolak data pada batch ' + currentBatch + ': ' + JSON.stringify(errors));
-    }
-    insertedRows += batch.length;
-    batchCount += 1;
-    batch = [];
-    batchBytes = envelopeBytes;
-  }
-
-  rows.forEach(function (row, index) {
-    const rowBytes = insertAllRowSize_(row);
-    if (rowBytes + envelopeBytes > maxPayloadBytes) {
-      throw new Error('Baris ' + (index + 1) + ' terlalu besar untuk dikirim ke BigQuery. Kurangi ukuran lampiran atau isi teks pada baris tersebut.');
-    }
-    if (batch.length && (batch.length >= maxRowsPerBatch || batchBytes + rowBytes > maxPayloadBytes)) flushBatch_();
-    batch.push(row);
-    batchBytes += rowBytes;
-  });
-  flushBatch_();
-  return { insertedRows: insertedRows, batchCount: batchCount };
+  return cloudflareStoreApplicationRecords_(tableId, rows);
 }
 
 function runUiReadQuery_(query, params, options) {
@@ -14984,86 +14469,11 @@ function logBigQueryUsage_(query, result) {
 }
 
 function runNamedQuery_(query, params, options) {
-  const queryParameters = Object.keys(params || {}).map(function (name) {
-    const value = params[name];
-    if (Array.isArray(value)) {
-      return {
-        name: name,
-        parameterType: { type: 'ARRAY', arrayType: { type: 'STRING' } },
-        parameterValue: { arrayValues: value.map(function (item) { return { value: String(item) }; }) }
-      };
-    }
-    return { name: name, parameterType: { type: 'STRING' }, parameterValue: { value: String(value) } };
-  });
-  const configuredMaximum = Number(PropertiesService.getScriptProperties().getProperty('BQ_MAX_BYTES_BILLED') || 2147483648);
-  const maximumBytesBilled = options && options.maximumBytesBilled !== undefined ? Number(options.maximumBytesBilled) : configuredMaximum;
-  const request = {
-    query: query, useLegacySql: false, location: CONFIG.BQ_LOCATION,
-    parameterMode: 'NAMED', queryParameters: queryParameters, maxResults: 10000,
-    useQueryCache: !(options && options.useQueryCache === false)
-  };
-  if (isFinite(maximumBytesBilled) && maximumBytesBilled > 0) request.maximumBytesBilled = String(Math.floor(maximumBytesBilled));
-  let result;
-  try {
-    result = BigQuery.Jobs.query(request, CONFIG.BQ_PROJECT_ID);
-  } catch (error) {
-    if (/maximum bytes billed|bytes billed limit|billingTierLimitExceeded/i.test(String(error && error.message || error))) {
-      throw new Error('Query dihentikan karena melewati batas biaya BigQuery. Persempit periode/data atau hubungi BIHQ.');
-    }
-    throw error;
-  }
-  let attempts = 0;
-  while (!result.jobComplete && attempts < 20) {
-    Utilities.sleep(150);
-    result = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, result.jobReference.jobId, {
-      location: CONFIG.BQ_LOCATION, maxResults: 10000
-    });
-    attempts++;
-  }
-  if (!result.jobComplete) throw new Error('Query BigQuery melewati batas waktu. Silakan coba kembali.');
-  const fields = result.schema && result.schema.fields ? result.schema.fields.map(function (f) { return f.name; }) : [];
-  const mapped = [];
-  function appendRows(rows) {
-    (rows || []).forEach(function (row) {
-      const object = {};
-      row.f.forEach(function (cell, i) { object[fields[i]] = cell.v; });
-      mapped.push(object);
-    });
-  }
-  appendRows(result.rows);
-  let pageToken = result.pageToken || '';
-  while (pageToken) {
-    const page = BigQuery.Jobs.getQueryResults(CONFIG.BQ_PROJECT_ID, result.jobReference.jobId, {
-      location: CONFIG.BQ_LOCATION, maxResults: 10000, pageToken: pageToken
-    });
-    appendRows(page.rows);
-    pageToken = page.pageToken || '';
-  }
-  logBigQueryUsage_(query, result);
-  return mapped;
+  throw new Error('Jalur SQL legacy telah dinonaktifkan. Gunakan pembacaan Cloudflare native.');
 }
 
 function readCompletionMap_(outlet) {
-  const map = {};
-  try {
-    const query = 'SELECT task_id, period_key, MAX(completed_at) AS completed_at ' +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.task_completions` ' +
-      'WHERE outlet = @outlet GROUP BY task_id, period_key';
-    const request = {
-      query: query, useLegacySql: false, location: CONFIG.BQ_LOCATION,
-      parameterMode: 'NAMED', queryParameters: [{ name: 'outlet', parameterType: { type: 'STRING' }, parameterValue: { value: outlet } }]
-    };
-    let result = BigQuery.Jobs.query(request, CONFIG.BQ_PROJECT_ID);
-    if (!result.jobComplete) return map;
-    (result.rows || []).forEach(function (row) {
-      const values = row.f.map(function (cell) { return cell.v; });
-      map[values[0] + '|' + values[1]] = values[2];
-    });
-  } catch (error) {
-    // Dataset legitimately does not exist before the first form is registered.
-    if (!/not found|Not found|404/.test(String(error))) console.error(error);
-  }
-  return map;
+  const map = {}; cloudflareApplicationRecords_('task_completions', outlet).forEach(function(row) { const key = row.task_id + '|' + row.period_key; if (!map[key] || String(map[key]) < String(row.completed_at)) map[key] = row.completed_at; }); return map;
 }
 
 function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
@@ -15102,30 +14512,7 @@ function mergeStockUploadCompletions_(completionMap, tasks, outlet) {
 }
 
 function readCurrentOutletCompletionMap_(periodKeys) {
-  const map = {};
-  try {
-    const query = 'SELECT outlet, task_id, period_key, MAX(completed_at) AS completed_at ' +
-      'FROM `' + CONFIG.BQ_PROJECT_ID + '.' + CONFIG.BQ_DATASET_ID + '.task_completions` ' +
-      'WHERE period_key IN (@currentDaily, @currentWeekly, @currentMonthly, @currentYearly, ' +
-      '@previousDaily, @previousWeekly, @previousMonthly, @previousYearly) ' +
-      'GROUP BY outlet, task_id, period_key';
-    const rows = runNamedQuery_(query, {
-      currentDaily: periodKeys.CURRENT.DAILY,
-      currentWeekly: periodKeys.CURRENT.WEEKLY,
-      currentMonthly: periodKeys.CURRENT.MONTHLY,
-      currentYearly: periodKeys.CURRENT.YEARLY,
-      previousDaily: periodKeys.PREVIOUS.DAILY,
-      previousWeekly: periodKeys.PREVIOUS.WEEKLY,
-      previousMonthly: periodKeys.PREVIOUS.MONTHLY,
-      previousYearly: periodKeys.PREVIOUS.YEARLY
-    });
-    rows.forEach(function (row) {
-      map[String(row.outlet || '').toUpperCase() + '|' + String(row.task_id || '') + '|' + String(row.period_key || '')] = row.completed_at || true;
-    });
-  } catch (error) {
-    if (!/not found|Not found|404/.test(String(error))) console.error(error);
-  }
-  return map;
+  const map = {}, periods = Object.keys(periodKeys.CURRENT).map(function(key){return periodKeys.CURRENT[key];}).concat(Object.keys(periodKeys.PREVIOUS).map(function(key){return periodKeys.PREVIOUS[key];})); cloudflareApplicationRecords_('task_completions').filter(function(row){return periods.indexOf(row.period_key)>=0;}).forEach(function(row){const key=String(row.outlet).toUpperCase()+'|'+row.task_id+'|'+row.period_key;if(!map[key]||String(map[key])<String(row.completed_at))map[key]=row.completed_at;});return map;
 }
 
 function currentPeriodKey_(frequency) {
@@ -17530,38 +16917,9 @@ function bqCellValue_(cell) {
   return cell.v;
 }
 function bqQuery_(sql) {
-  if (!bqIsAvailable_()) throw new Error('BigQuery API belum aktif di Apps Script Services.');
-  var request = { query: sql, useLegacySql: false, location: BQ_LOCATION };
-  var res = BigQuery.Jobs.query(request, BQ_PROJECT_ID);
-  var jobId = res.jobReference.jobId;
-  var args = { location: BQ_LOCATION, maxResults: 10000 };
-  var waitMs = 150;
-  while (!res.jobComplete) {
-    Utilities.sleep(waitMs);
-    res = BigQuery.Jobs.getQueryResults(BQ_PROJECT_ID, jobId, args);
-    waitMs = Math.min(waitMs * 2, 1200);
-  }
-  if (res.errors && res.errors.length) throw new Error(JSON.stringify(res.errors));
-  var fields = (res.schema && res.schema.fields) ? res.schema.fields : [];
-  var out = [];
-  function pushRows_(r) {
-    (r.rows || []).forEach(function(row){
-      var obj = {};
-      fields.forEach(function(f, i){ obj[f.name] = bqCellValue_(row.f[i]); });
-      out.push(obj);
-    });
-  }
-  pushRows_(res);
-  var pageToken = res.pageToken;
-  while (pageToken) {
-    var pageArgs = { location: BQ_LOCATION, maxResults: 10000, pageToken: pageToken };
-    var page = BigQuery.Jobs.getQueryResults(BQ_PROJECT_ID, jobId, pageArgs);
-    if (!fields.length && page.schema && page.schema.fields) fields = page.schema.fields;
-    pushRows_(page);
-    pageToken = page.pageToken;
-  }
-  return out;
+  throw new Error('Jalur SQL legacy telah dinonaktifkan. Gunakan pembacaan Cloudflare native.');
 }
+
 function bqRunDml_(sql) {
   return bqQuery_(sql);
 }
@@ -20152,4 +19510,313 @@ function mppFormatDate_(dateObj) {
 
 function mppFormatRupiah_(num) {
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(num);
+}
+
+
+/** Native Cloudflare ledger reads. Never falls back to another datastore. */
+function cloudflareLedgerRows_(scope) {
+  scope = scope || {};
+  if((scope.itemCodes||[]).length>80||encodeURIComponent((scope.itemCodes||[]).join('|')).length>1200){let combined=[];for(let offset=0;offset<scope.itemCodes.length;offset+=12)combined=combined.concat(cloudflareLedgerRows_(Object.assign({},scope,{itemCodes:scope.itemCodes.slice(offset,offset+12)})));return combined;}
+  const query = { raw: 1, outlet: scope.outlet || '', location: scope.location || '', record_type: (scope.recordTypes || []).length === 1 ? scope.recordTypes[0] : '',
+    item_codes: (scope.itemCodes||[]).join('|'), item_key_code: scope.location==='Showcase'&&scope.itemName?'':scope.itemCode||'', item_key_name:scope.itemName||'', item_name:scope.location==='Showcase'?scope.itemName||'':'',
+    source_hash: scope.sourceHash || '', logical_id: scope.logicalId || '', transfer_id: scope.transferId || '', from: '', to: '' };
+  const outlets = scope.outlet ? [scope.outlet] : (scope.outlets || readActiveOutlets_());
+  let rows = [];
+  outlets.forEach(function (outlet) {
+    rows = rows.concat(cloudflareReadAllPages_('/v1/movements', Object.assign({}, query, { outlet: outlet }), 1000, 100));
+  });
+  const latest = {};
+  rows.forEach(function (raw) {
+    const row = Object.assign({}, raw, { outlet: raw.outlet_code || raw.outlet || '', location: raw.location_code || raw.location || '',
+      qty: Number(raw.quantity === undefined ? raw.qty || 0 : raw.quantity), source_arrival_date: raw.arrival_date || raw.source_arrival_date || '' });
+    const id = String(row.logical_id || row.record_id || '');
+    if (!id) throw new Error('Cloudflare mengembalikan transaksi tanpa identitas.');
+    const previous = latest[id];
+    if (!previous || Number(row.version || 1) > Number(previous.version || 1) ||
+      (Number(row.version || 1) === Number(previous.version || 1) && String(row.created_at || '').localeCompare(String(previous.created_at || '')) > 0)) latest[id] = row;
+  });
+  return Object.keys(latest).map(function (id) { return latest[id]; }).filter(function (row) {
+    const code = String(row.item_code || '').toUpperCase(), name = String(row.item_name || '').toLowerCase();
+    if (scope.itemCode || scope.itemName) {
+      if ((scope.location === 'Showcase' && scope.itemName) || !scope.itemCode) { if (name !== String(scope.itemName || '').toLowerCase()) return false; }
+      else if (code !== String(scope.itemCode).toUpperCase() && (code || name !== String(scope.itemName || '').toLowerCase())) return false;
+    }
+    return (!(scope.recordTypes || []).length || scope.recordTypes.indexOf(row.record_type) >= 0) &&
+      (!(scope.movementTypes || []).length || scope.movementTypes.indexOf(row.movement_type) >= 0) &&
+      (!(scope.itemCodes || []).length || scope.itemCodes.indexOf(code) >= 0) &&
+      (!(scope.sourceHashes || []).length || scope.sourceHashes.indexOf(row.source_hash) >= 0) &&
+      (!(scope.recordIds || []).length || scope.recordIds.indexOf(row.record_id) >= 0) &&
+      (!scope.sourceHash || row.source_hash === scope.sourceHash) &&
+      (!scope.logicalId || String(row.logical_id || row.record_id) === scope.logicalId) &&
+      (!scope.transferId || row.transfer_id === scope.transferId) &&
+      (!scope.from || String(row.event_date || '') >= scope.from) && (!scope.to || String(row.event_date || '') <= scope.to);
+  }).sort(function (a,b) { return String(a.event_date || '').localeCompare(String(b.event_date || '')) || String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.record_id).localeCompare(String(b.record_id)); });
+}
+function cloudflareSourceExists_(scope) { return cloudflareLedgerRows_(scope).length > 0; }
+function cloudflareBalanceAtDate_(outlet, location, date, excludedIds) {
+  const rows = cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT', 'OPNAME_DETAIL'], to: date || '' }), grouped = {};
+  rows.forEach(function (row) {
+    if ((excludedIds || []).indexOf(String(row.logical_id || row.record_id)) >= 0) return;
+    const code = String(row.item_code || '').trim().toUpperCase(); if (!code) return;
+    if (!grouped[code]) grouped[code] = [];
+    grouped[code].push(mapStockHistoryQueryRow_(row));
+  });
+  const map = {};
+  Object.keys(grouped).forEach(function (code) { map[code] = stockCheckpointBalanceUntil_(applyStockHistoryAuditRows_(grouped[code]), date ? stockIsoDateOffset_(date, 1) : ''); });
+  return map;
+}
+
+function verifyGeneralPassword_(password) {
+  const override = PropertiesService.getScriptProperties().getProperty('GENERAL_PASSWORD_HASH');
+  if (override === 'DISABLED') return false;
+  return verifyPassword_(password, override || 'v1$b1dd03bf23eaa8a5d7831ab85e112a6b$09286e8514c9088c95cb9841b6fd3f4bcbc84f4872aa9bd4e58fe2d6f352a083');
+}
+
+function cloudflareApplicationRecords_(table, outlet) {
+  return cloudflareReadAllPages_('/v1/application-records', { table: table, outlet: outlet || '' }, 1000, 100);
+}
+function cloudflareStoreApplicationRecords_(table, rows) {
+  rows = (rows || []).map(function(entry) { return { insertId: String(entry.insertId || Utilities.getUuid()), json: entry.json }; });
+  let batches = 0, confirmed = 0, batch = [], bytes = 0;
+  function flush() {
+    if (!batch.length) return;
+    const response = cloudflareInventoryRequest_('POST', '/v1/application-records?table=' + encodeURIComponent(table), { rows: batch });
+    if (Number(response.confirmed) !== batch.length) throw new Error('Cloudflare belum mengonfirmasi seluruh record.');
+    confirmed += batch.length; batches++; batch = []; bytes = 0;
+  }
+  rows.forEach(function(row) {
+    const size = Utilities.newBlob(JSON.stringify(row)).getBytes().length;
+    if (size > 500000) throw new Error('Record data melebihi batas penyimpanan.');
+    if (batch.length && (batch.length >= 50 || bytes + size > 700000)) flush();
+    batch.push(row); bytes += size;
+  });
+  flush(); return { insertedRows: confirmed, batchCount: batches };
+}
+function cloudflarePendingSummaryJobs_(jobType) {
+  const rows = cloudflareApplicationRecords_('stock_summary_jobs'), acknowledgements = {}, grouped = {};
+  rows.filter(function(row) { return row.job_type === jobType && row.action === 'ACK'; }).forEach(function(row) {
+    const value = String(row.ack_through || ''); if (!acknowledgements[row.scope_key] || acknowledgements[row.scope_key] < value) acknowledgements[row.scope_key] = value;
+  });
+  rows.filter(function(row) { return row.job_type === jobType && row.action === 'ENQUEUE' && String(row.created_at || '') > String(acknowledgements[row.scope_key] || ''); }).forEach(function(row) {
+    const previous = grouped[row.scope_key], date = String(row.earliest_date || '');
+    const earliest = previous && previous.earliest_date && (!date || previous.earliest_date < date) ? previous.earliest_date : date;
+    if (!previous || String(row.created_at) >= previous.pending_through) grouped[row.scope_key] = Object.assign({}, row, { pending_through: String(row.created_at), earliest_date: earliest });
+    else previous.earliest_date = earliest;
+  });
+  return Object.keys(grouped).map(function(key) { return grouped[key]; }).sort(function(a,b) { return a.pending_through.localeCompare(b.pending_through); });
+}
+
+function cloudflareDistinctContexts_(rows) {
+  const map={}; rows.forEach(function(row){map[row.outlet+'|'+row.location]={outlet:row.outlet,location:row.location};});return Object.keys(map).map(function(key){return map[key];});
+}
+function cloudflareReceiptSourceGroups_(rows) {
+  const map={}; rows.filter(function(row){return row.direction==='IN';}).forEach(function(row){
+    const key=[row.event_date,row.item_code,row.source_hash,row.source_file,row.source_row].join('|');
+    if(!map[key])map[key]=Object.assign({},row,{qty:0});
+    map[key].qty+=Number(row.qty||0);if(String(row.created_at)<String(map[key].created_at))map[key].created_at=row.created_at;
+  });return Object.keys(map).map(function(key){return map[key];});
+}
+function cloudflareCompletedUploadDays_(outlets, dates) {
+  const grouped={}; cloudflareLedgerRows_({outlets:outlets,recordTypes:['MOVEMENT'],movementTypes:['Goods Receipt','Terjual','Sold'],from:dates.slice().sort()[0],to:dates.slice().sort().reverse()[0]}).filter(function(row){return row.source_file&&dates.indexOf(String(row.event_date))>=0;}).forEach(function(row){
+    const key=row.outlet+'|'+row.event_date;if(!grouped[key])grouped[key]={outlet:row.outlet,period_key:row.event_date,receipt:false,sales:false};
+    if(row.movement_type==='Goods Receipt')grouped[key].receipt=true;else grouped[key].sales=true;
+  });return Object.keys(grouped).map(function(key){return grouped[key];}).filter(function(row){return row.receipt&&row.sales;});
+}
+function cloudflareHistoryMonthRows_(outlet, location, item, bounds, cursor, limit) {
+  const raw=cloudflareLedgerRows_({outlet:outlet,location:location,itemCode:item.code,itemName:item.name,recordTypes:['MOVEMENT','OPNAME_DETAIL'],from:bounds.start,to:bounds.end});
+  const mapped=raw.map(mapStockHistoryQueryRow_), audited=applyStockHistoryAuditRows_(mapped), included={}, dates={};
+  audited.forEach(function(row){if(row.date>=bounds.start&&row.date<bounds.end&&(!cursor||row.date<cursor)){dates[row.date]=true;included[row.recordId]=row.date;}});
+  const allDates=Object.keys(dates).sort().reverse(),selected=allDates.slice(0,limit);
+  return raw.filter(function(row){const date=included[row.record_id];return row.record_type==='OPNAME_DETAIL'||selected.indexOf(date)>=0;}).map(function(row){return Object.assign({},row,{page_date_count:allDates.length});});
+}
+function cloudflareItemSummaryRows_(table,outlet,location,item,bounds) {
+  const latest={};cloudflareApplicationRecords_(table,outlet).filter(function(row){return row.location===location&&(location==='Showcase'?row.item_name===item.name:row.item_code===item.code||(!row.item_code&&row.item_name===item.name))&&(!row.event_date||row.event_date<bounds.end);}).forEach(function(row){
+    const key=row.event_date||'current';if(!latest[key]||String(row.updated_at)>String(latest[key].updated_at))latest[key]=row;
+  });return Object.keys(latest).sort().map(function(key){return latest[key];});
+}
+
+function buildShowcaseSavePlan_(context, payload) {
+  const employee=context.employee,outlet=context.outlet;
+    const eventDate = normalizeDate_(payload.eventDate, true);
+    if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
+    const rawEntries = Array.isArray(payload.entries) ? payload.entries : [];
+    if (!rawEntries.length || rawEntries.length > 500) throw new Error('Belum ada input Showcase Log yang dapat disimpan.');
+    const showcaseItems = readShowcaseItems_();
+    const itemMap = {};
+    showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
+    const snapshot = readShowcaseLogSnapshot_(outlet, eventDate);
+    const existingTotals = snapshot.totals;
+    const entries = rawEntries.map(function (raw) {
+      const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
+      if (!item) throw new Error('Item Showcase tidak ditemukan atau kode item sudah berubah. Muat ulang halaman.');
+      const hasInInput = Boolean(raw.hasInInput || raw.hasInTotal), hasSoldInput = Boolean(raw.hasSoldInput || raw.hasSoldTotal), hasWasteInput = Boolean(raw.hasWasteInput || raw.hasWasteTotal);
+      const values = [raw.inQty, raw.soldQty, raw.wasteQty].map(function (value) {
+        if (value === '' || value === null || value === undefined) return 0;
+        const qty = Number(value);
+        if (!isFinite(qty) || qty < 0) throw new Error(item.name + ': QTY wajib berupa angka 0 atau lebih.');
+        return Math.round(qty * 1000000) / 1000000;
+      });
+      const day = existingTotals[item.name.toLowerCase()] || { totalIn: 0, totalSold: 0, totalWaste: 0 };
+      const targetValues = [[raw.hasInTotal, raw.inTotal, day.totalIn, 'In'], [raw.hasSoldTotal, raw.soldTotal, day.totalSold, 'Sold'], [raw.hasWasteTotal, raw.wasteTotal, day.totalWaste, 'Waste']].map(function (definition) {
+        if (!definition[0]) return null;
+        const target = Number(definition[1]);
+        if (!isFinite(target) || target < 0) throw new Error(item.name + ': Total ' + definition[3] + ' wajib berupa angka 0 atau lebih.');
+        return Math.round((target - Number(definition[2] || 0)) * 1000000) / 1000000;
+      });
+      return {
+        item: item,
+        inQty: raw.hasInTotal ? targetValues[0] : (hasInInput ? values[0] : 0),
+        soldQty: raw.hasSoldTotal ? targetValues[1] : (hasSoldInput ? values[1] : 0),
+        wasteQty: raw.hasWasteTotal ? targetValues[2] : (hasWasteInput ? values[2] : 0),
+        hasInInput: hasInInput, hasSoldInput: hasSoldInput, hasWasteInput: hasWasteInput
+      };
+    }).filter(function (entry) { return entry.hasInInput || entry.hasSoldInput || entry.hasWasteInput; });
+    if (!entries.length) throw new Error('Isi minimal satu kolom In, Sold, atau Waste sebelum menyimpan.');
+
+      const productNeeds = {}, mappings = {};
+      entries.forEach(function (entry) {
+        const selectedDay = existingTotals[entry.item.name.toLowerCase()] || { balance: 0 };
+        const current = Number(selectedDay.balance || 0);
+        if (current + entry.inQty - entry.soldQty - entry.wasteQty < -0.0000001) {
+          throw new Error(entry.item.name + ': total Sold dan Waste melebihi Balance pada tanggal yang dipilih setelah In.');
+        }
+        if (!entry.inQty) return;
+        const mapping = resolveShowcaseProductMapping_(entry.item);
+        mappings[entry.item.code] = mapping;
+        if (entry.inQty < 0) return;
+        if (!productNeeds[mapping.product.code]) productNeeds[mapping.product.code] = { product: mapping.product, qty: 0 };
+        productNeeds[mapping.product.code].qty += entry.inQty * mapping.productPerMenu;
+      });
+      const productPools = {};
+      const productItems = Object.keys(productNeeds).map(function (code) { return productNeeds[code].product; });
+      const storeLotsByCode = readRemainingStockLotsBatch_(outlet, 'Store', productItems);
+      Object.keys(productNeeds).forEach(function (code) {
+        const need = productNeeds[code], required = Math.round(need.qty * 1000000) / 1000000;
+        productPools[code] = allocateTransferLotsFromAvailable_(storeLotsByCode[need.product.code] || [], required).map(function (lot) {
+          return { qty: Number(lot.qty), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+        });
+      });
+
+      const progress = snapshot.progress;
+      const selectedProgress = progress.days.filter(function (day) { return day.date === eventDate; })[0] || {};
+      const now = new Date(), rows = [];
+      entries.forEach(function (entry, entryIndex) {
+        if (entry.inQty > 0) {
+          const mapping = mappings[entry.item.code];
+          const requiredProductQty = Math.round(entry.inQty * mapping.productPerMenu * 1000000) / 1000000;
+          const productLots = takeShowcaseProductLots_(productPools[mapping.product.code], requiredProductQty);
+          const transferId = Utilities.getUuid();
+          let assignedMenuQty = 0;
+          productLots.forEach(function (lot, lotIndex) {
+            const storeInfo = 'Transfer To Showcase untuk Produk ' + entry.item.name + ' · Dari Store · QTY Showcase ' + formatQty_(entry.inQty) + ' ' + entry.item.unit;
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'OUT', lot.qty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            storeRow.json.source_file = 'SHOWCASE_LOG';
+            storeRow.json.source_row = entryIndex + 1;
+            storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+            rows.push(storeRow);
+            const remainingMenuQty = Math.max(0, entry.inQty - assignedMenuQty);
+            const menuLotQty = lotIndex === productLots.length - 1
+              ? Math.round(remainingMenuQty * 1000000) / 1000000
+              : Math.min(remainingMenuQty, Math.round((lot.qty / mapping.productPerMenu) * 1000000) / 1000000);
+            assignedMenuQty += menuLotQty;
+            if (menuLotQty <= 0.0000001) return;
+            const showcaseInfo = 'Transfer From Store · Ke Showcase · Product ' + mapping.product.name + ' ' + formatQty_(lot.qty) + ' ' + mapping.product.unit;
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'IN', menuLotQty, 'Transfer In', showcaseInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            showcaseRow.json.source_arrival_date = lot.sourceDate || null;
+            showcaseRow.json.source_file = 'SHOWCASE_LOG';
+            showcaseRow.json.source_row = entryIndex + 1;
+            showcaseRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+            rows.push(showcaseRow);
+          });
+        }
+        if (entry.inQty < 0) {
+          const mapping = mappings[entry.item.code], correctionQty = Math.abs(entry.inQty);
+          const menuLots = allocateTransferLots_(outlet, 'Showcase', entry.item, correctionQty);
+          menuLots.forEach(function (lot) {
+            const transferId = Utilities.getUuid(), productQty = Math.round(Number(lot.qty) * mapping.productPerMenu * 1000000) / 1000000;
+            const showcaseInfo = 'Koreksi Total In · Transfer To Store · Dari Showcase';
+            const showcaseRow = stockTransferMovementRow_(transferId, outlet, 'Showcase', entry.item, 'OUT', lot.qty, 'Transfer In', showcaseInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            showcaseRow.json.source_file = 'SHOWCASE_LOG'; showcaseRow.json.source_row = entryIndex + 1;
+            showcaseRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000; rows.push(showcaseRow);
+            const storeInfo = 'Koreksi Total In Showcase · Transfer From Showcase · Ke Store · ' + entry.item.name;
+            const storeRow = stockTransferMovementRow_(transferId, outlet, 'Store', mapping.product, 'IN', productQty, 'Transfer Out', storeInfo, lot.expiryDate, employee, now, eventDate, lot.productionDate);
+            storeRow.json.source_arrival_date = lot.sourceDate || null; storeRow.json.source_file = 'SHOWCASE_LOG'; storeRow.json.source_row = entryIndex + 1;
+            storeRow.json.created_at = now.getTime() / 1000 + rows.length / 1000000; rows.push(storeRow);
+          });
+        }
+        [['soldQty', 'Terjual'], ['wasteQty', 'Waste']].forEach(function (definition) {
+          const qty = Number(entry[definition[0]] || 0);
+          if (Math.abs(qty) <= 0.0000001) return;
+          const direction = qty > 0 ? 'OUT' : 'IN';
+          const movement = stockTransferMovementRow_(Utilities.getUuid(), outlet, 'Showcase', entry.item, direction, Math.abs(qty), definition[1], 'Koreksi Total Showcase Log', '', employee, now, eventDate);
+          movement.json.source_file = 'SHOWCASE_LOG';
+          movement.json.source_row = entryIndex + 1;
+          movement.json.created_at = now.getTime() / 1000 + rows.length / 1000000;
+          rows.push(movement);
+        });
+      });
+      const submittedIn = entries.some(function (entry) { return entry.hasInInput; });
+      const submittedSold = entries.some(function (entry) { return entry.hasSoldInput; });
+      const submittedWaste = entries.some(function (entry) { return entry.hasWasteInput; });
+      [[submittedIn, 'Showcase Log In'], [submittedSold, 'Showcase Log Sold'], [submittedWaste, 'Showcase Log Waste']].forEach(function (activity) {
+        if (!activity[0]) return;
+        const markerId = Utilities.getUuid();
+        rows.push({ insertId: markerId, json: {
+          record_id: markerId, logical_id: markerId, version: 1, record_type: 'LOG',
+          outlet: outlet, location: 'Showcase', item_code: '__LOG__', category: 'System', item_name: activity[1], unit: 'NONE',
+          direction: null, qty: 0, movement_type: activity[1], info: '',
+          expiry_date: null, event_date: eventDate, created_at: now.getTime() / 1000 + rows.length / 1000000,
+          created_by: employee.nik, source_file: 'SHOWCASE_LOG', source_row: 0
+        }});
+      });
+      const hasIn = Boolean(selectedProgress.stockIn || submittedIn);
+      const hasSold = Boolean(selectedProgress.sold || submittedSold);
+      const hasWaste = Boolean(selectedProgress.waste || submittedWaste);
+
+      progress.days.forEach(function (day) {
+        if (day.date !== eventDate) return;
+        day.stockIn = hasIn; day.sold = hasSold; day.waste = hasWaste; day.complete = hasIn && hasSold && hasWaste;
+      });
+      const result = {
+        saved: true, outlet: outlet, eventDate: eventDate,
+        movementCount: rows.filter(function (row) { return row.json.record_type === 'MOVEMENT'; }).length,
+        entries: entries.map(function (entry) { return { itemCode: entry.item.code, inQty: entry.inQty, soldQty: entry.soldQty, wasteQty: entry.wasteQty }; }),
+        progress: progress, completed: hasIn && hasSold && hasWaste
+      };
+  return { stockRows: rows, pendingRows: [], masterChanges: [], result: result };
+}
+
+
+
+function queueShowcaseLog(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context=resolveStockContext_(token,payload.outlet,'Showcase'),eventDate=normalizeDate_(payload.eventDate,true);
+    if(eventDate>todayIso_())throw new Error('Tanggal Showcase tidak boleh melebihi hari ini.');
+    if(!Array.isArray(payload.entries)||!payload.entries.length||payload.entries.length>500)throw new Error('Isi input Showcase terlebih dahulu.');
+    const requestId=String(payload.requestId||'');if(!/^[a-zA-Z0-9-]{16,100}$/.test(requestId))throw new Error('Identitas penyimpanan tidak valid.');
+    const request={outlet:context.outlet,location:'Showcase',eventDate:eventDate,entries:payload.entries};
+    const sourceHash=digest_(JSON.stringify(request)),jobId=digest_([context.employee.nik,requestId].join('|'));
+    const gate=LockService.getUserLock();gate.waitLock(30000);
+    try {
+      let job=readGoodsUploadJob_(jobId);
+      if(job){
+        if(job.ownerNik!==context.employee.nik||job.type!=='SHOWCASE_LOG'||job.outlet!==context.outlet||job.eventDate!==eventDate)throw new Error('Identitas penyimpanan sudah digunakan untuk transaksi lain.');
+        if(job.status!=='ACTION_REQUIRED'){
+          if(job.sourceHash!==sourceHash)throw new Error('Permintaan sebelumnya belum selesai. Periksa Status Simpan terlebih dahulu.');
+          return goodsUploadJobView_(job);
+        }
+      }
+      ensureStockMaintenanceTrigger_();
+      const now=new Date().toISOString(),file=DriveApp.createFile(Utilities.newBlob(JSON.stringify(request),'application/json','TEMP_SHOWCASE_SAVE_'+jobId+'.json'));
+      const previous=job&&job.requestDriveId;
+      job=Object.assign(job||{}, {jobId:jobId,requestId:requestId,ownerNik:context.employee.nik,type:'SHOWCASE_LOG',outlet:context.outlet,location:'Showcase',eventDate:eventDate,
+        fileName:'Showcase '+eventDate,sourceHash:sourceHash,requestDriveId:file.getId(),status:'QUEUED',stage:'Proses pembaruan stok berlangsung di background.',createdAt:job&&job.createdAt||now,
+        processed:0,total:0,progress:3,retryCount:0,error:'',workerLeaseUntil:0,planDriveId:''});
+      // A lost D1 acknowledgement can still mean acceptance succeeded. Keep the immutable request for replay.
+      writeGoodsUploadJob_(job);
+      if(previous){try{DriveApp.getFileById(previous).setTrashed(true);}catch(error){console.error(error);}}
+    }finally{gate.releaseLock();}
+    scheduleGoodsUploadWorker_();return goodsUploadJobView_(readGoodsUploadJob_(jobId));
+  });
 }

@@ -14,7 +14,7 @@ function queueGoodsUploadFromForm(kind) {
   state.uploading = true;
   byId(delivery ? 'confirmGoodsDeliveryUpload' : 'confirmGoodsReceiptUpload').disabled = true;
   byId(delivery ? 'chooseGoodsDeliveryFile' : 'chooseGoodsReceiptFile').disabled = true;
-  progress(10, 'Mengirim file ke antrean. Tunggu konfirmasi file diterima.', 'MENGIRIM');
+  progress(10, 'Mengirim file ke proses background. Tunggu konfirmasi file diterima.', 'MENGIRIM');
   BAKERZIN_API.call('queueGoodsUpload', [APP.token, payload]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'File belum dapat diterima.');
     state.uploading = false;
@@ -42,7 +42,7 @@ function closeGoodsUploadStatus() {
   byId('goodsUploadStatusButton').focus();
 }
 function goodsUploadStatusLabel(status) {
-  return { QUEUED: 'Menunggu', PREPARING: 'Memeriksa', PROCESSING: 'Diproses', COMPLETE: 'Selesai', ACTION_REQUIRED: 'Perlu Tindakan', FAILED: 'Gagal' }[status] || status;
+  return { QUEUED: 'Diproses', PREPARING: 'Memeriksa', PROCESSING: 'Diproses', COMPLETE: 'Selesai', ACTION_REQUIRED: 'Perlu Tindakan', FAILED: 'Gagal' }[status] || status;
 }
 function renderGoodsUploadStatus(jobs) {
   GOODS_UPLOAD_PANEL.jobs = jobs;
@@ -85,13 +85,14 @@ function refreshGoodsUploadStatus() {
 function retryGoodsUploadJob(id) {
   BAKERZIN_API.call('retryGoodsUpload', [APP.token, id]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'Upload belum dapat dilanjutkan.');
-    toast('Upload kembali masuk antrean.'); refreshGoodsUploadStatus();
+    toast('Upload kembali masuk proses background.'); refreshGoodsUploadStatus();
   }).catch(function (error) { toast(error.message, true); });
 }
 function reviewGoodsUploadJob(id) {
   BAKERZIN_API.call('goodsUploadRequest', [APP.token, id]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'File tidak dapat dibuka.');
     var data = response.data;
+    if(data.job.type==='SHOWCASE_LOG'){window.location.href='showcaselog.html';return;}
     if (['GOODS_DELIVERY','GOODS_RECEIPT'].indexOf(data.job.type) < 0) { reviewOtherStockUpload(data); return; }
     var delivery = data.job.type === 'GOODS_DELIVERY', key = delivery ? 'goodsDelivery' : 'goodsReceipt';
     closeGoodsUploadStatus();

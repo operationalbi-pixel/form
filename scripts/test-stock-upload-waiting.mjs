@@ -40,7 +40,7 @@ for (const name of ['uploadGoodsDelivery', 'uploadGoodsReceipt']) {
   assert.equal(success.result.uploaded, true);
   assert.equal(success.failure, undefined);
   assert.equal(success.progress.length, 5);
-  assert.equal(success.progress[0][2], 'MENUNGGU');
+  assert.equal(success.progress[0][2], 'DIPROSES');
   const timeout = await runUpload(name, [new Error('Server tidak merespons')]);
   assert.equal(timeout.calls, 1, 'Never replay an upload with unknown write outcome');
   const thrownBusy = await runUpload(name, [new Error(busy)]);
