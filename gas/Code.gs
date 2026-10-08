@@ -168,6 +168,9 @@ function apiActions_() {
     salesAnalysisSaveDailyTargets: saveSalesAnalysisDailyTargets,
     salesAnalysisDailyReport: getSalesAnalysisDailyReport,
     salesAnalysisSaveDaily: saveSalesAnalysisDaily,
+    queueSalesSave: queueSalesSave,
+    salesSaveJobs: getSalesSaveJobs,
+    retrySalesSave: retrySalesSave,
     salesAnalysisSaveWeekly: saveSalesAnalysisWeekly,
     salesAnalysisSaveMonthly: saveSalesAnalysisMonthly,
     salesAnalysisSaveGlobal: saveSalesAnalysisGlobal,
@@ -4399,7 +4402,7 @@ function queueGoodsUpload(token, payload) {
 function listGoodsUploadStatus(token) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
-    return { jobs: goodsUploadJobs_(false,employee.nik).concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik; })
+    return { jobs: goodsUploadJobs_(false,employee.nik).concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik && job.engine !== 'SALES'; })
       .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); }).map(goodsUploadJobView_) };
   });
 }
@@ -4439,7 +4442,7 @@ function processGoodsUploadJobs() {
   try {
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; })
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
-    const jobs = goodsUploadJobs_(true);
+    const jobs = goodsUploadJobs_(true).filter(function(candidate){return candidate.engine!=='SALES';});
     if (jobs.some(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > Date.now(); })) return;
     job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })
       .filter(function(candidate){return candidate.type!=='SHOWCASE_LOG'||!jobs.some(function(earlier){return earlier.type==='SHOWCASE_LOG'&&earlier.outlet===candidate.outlet&&earlier.location===candidate.location&&earlier.jobId!==candidate.jobId&&String(earlier.createdAt)+'|'+earlier.jobId<String(candidate.createdAt)+'|'+candidate.jobId;});})
@@ -16609,7 +16612,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   outletFilter = (outletFilter || sess.outlet_code).toUpperCase();
   if (sess.role !== 'admin') outletFilter = sess.outlet_code;
 
-  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V11';
+  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V12_' + salesSpreadsheetId_();
   var cached = getCacheJson_(cacheKey);
   if (cached) {
     cached.fromCache = true;
@@ -17488,12 +17491,15 @@ const SALES_SHEET_TABS = {
 };
 var SALES_SHEET_READ_CACHE = {};
 var SALES_SHEET_DATABASE = null;
+var SALES_JOB_SPREADSHEET_ID = '';
+function salesUseDatabase_(id) { SALES_JOB_SPREADSHEET_ID = String(id || ''); SALES_SHEET_DATABASE = null; salesSheetResetReadCache_(); }
 
 function salesSheetResetReadCache_() {
   SALES_SHEET_READ_CACHE = {};
 }
 
 function salesSpreadsheetId_() {
+  if (SALES_JOB_SPREADSHEET_ID) return SALES_JOB_SPREADSHEET_ID;
   var override = String(PropertiesService.getScriptProperties().getProperty('SALES_ANALYSIS_SPREADSHEET_ID') || '').trim();
   // Ignore the retired database override so existing deployments switch to the replacement Sheet.
   if (override === '1KCpLNDBNjQuNUvYJRf9ZqKj-6wb8lDotM76nwOPWiW8') override = '';
@@ -18440,6 +18446,8 @@ function issueBiSpaceSession_(outletCode, outletName, role) {
 
 return Object.freeze({
   beginRequest: salesSheetResetReadCache_,
+  spreadsheetId: salesSpreadsheetId_,
+  useDatabase: salesUseDatabase_,
   testDatabase: testSalesAnalysisDatabase,
   syncOutlets: syncOutlets_,
   issueSession: issueBiSpaceSession_,
