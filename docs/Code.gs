@@ -4797,9 +4797,9 @@ function processStockPositionUploadJobs() {
       else {
         job.status = 'PROCESSING';
         const prepared = stockPositionJobJson_(job.preparedDriveId);
-        const deadline = Date.now() + 45000;
         const lotItems=prepared.items.slice(Number(job.processed||0),Number(job.processed||0)+8).filter(function(line,index){return line.delta<0&&!(index===0&&job.pendingDriveId);}).map(function(line){return line.item;});
         const availableLots=readTransferAvailableLotsBatch_(job.outlet,job.location,lotItems);
+        const deadline = Date.now() + 45000;
         for (let count = 0; count < 8 && job.processed < job.total && Date.now() < deadline; count++) {
           job = processStockPositionJobItem_(job, prepared, availableLots);
         }

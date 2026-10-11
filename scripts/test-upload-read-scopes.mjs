@@ -35,6 +35,16 @@ assert.equal(c.readStockCodeQtyMapAtDate_('BICP','Store','2026-10-01',['A']).A,7
 queries=[];c.cloudflareReadAllPages_=(path,params)=>{queries.push({path,params});return Array.from({length:550},(_,i)=>ledger(String(i).padStart(4,'0'),'2026-09-01',1,'IN')).concat(ledger('out','2026-10-01',520,'OUT',{movement_type:'Usage'}));};
 const lots=c.readTransferAvailableLotsBatch_('BICP','Store',[{code:'A'}]);assert.equal(lots.A.reduce((sum,lot)=>sum+lot.qty,0),30,'batch FIFO retains opening receipts beyond the old 500-row cutoff');assert.equal(queries.length,1);
 
+// Slow preloading must not consume the worker's entire write window and repeat forever.
+let clock=Date.parse('2026-10-12T00:00:00Z');const RealDate=Date;
+class ClockDate extends RealDate{constructor(...args){super(...(args.length?args:[clock]))}static now(){return clock}}
+const job={jobId:'job',outlet:'BICP',location:'Store',status:'PROCESSING',preparedDriveId:'prepared',processed:0,total:2,createdAt:'2026-10-11T00:00:00Z',updatedAt:'2026-10-11T00:00:00Z'};
+const properties={['stock-position-upload-job-job']:JSON.stringify(job)};
+const saved={Date:c.Date,PropertiesService:c.PropertiesService};
+Object.assign(c,{Date:ClockDate,PropertiesService:{getScriptProperties:()=>({getProperties:()=>({...properties}),deleteProperty:key=>delete properties[key]})},ScriptApp:{getProjectTriggers:()=>[]},acquireStockScopeLock_:()=>({releaseLock(){}}),writeStockPositionJob_:j=>{properties['stock-position-upload-job-job']=JSON.stringify(j);return j},stockPositionJobJson_:()=>({items:[{delta:-1,item:{code:'A'}},{delta:1,item:{code:'B'}}]}),readTransferAvailableLotsBatch_:()=>{clock+=60000;return{A:[]}},processStockPositionJobItem_:j=>{j.processed++;return j},cleanupStockPositionJobFiles_(){},scheduleStockPositionWorker_(){}});
+assert.equal(c.processStockPositionUploadJobs().status,'COMPLETE','a 60-second lot preload still leaves time to persist the slice');
+c.Date=saved.Date;c.PropertiesService=saved.PropertiesService;
+
 queries=[];let transfers=[];c.cloudflareReadAllPages_=(path,params)=>{queries.push({path,params});return [ledger('gd','2026-10-01',2,'OUT',{movement_type:'Transfer Out Antar Outlet',source_hash:'saved',transfer_id:'old'})]};c.cloudflareReadTransferEvents_=params=>{transfers.push(params);return [{transfer_id:'old'}]};
 let duplicates=c.findGoodsDeliveryDuplicateRows_('BICP',[{sourceRow:1,transactionDate:'2026-10-01',itemCode:'A',rowHash:'saved'}]);assert.equal(duplicates[0].recoveryMovements.length,0);assert.equal(transfers[0].transfer_ids,'old');assert.equal(queries[0].params.resolve_scope,1);
 transfers=[];c.findGoodsDeliveryDuplicateRows_('BICP',[{sourceRow:1,transactionDate:'2026-10-01',itemCode:'A',rowHash:'fresh'}]);assert.equal(transfers.length,0,'new files never load outlet transfer history');
