@@ -553,7 +553,7 @@ if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('findStockPositionUpload: findStockPositionUpload') ||
     !backend.includes('stockPositionUploadStatus: getStockPositionUploadStatus') ||
     !backend.includes('retryStockPositionUpload: retryStockPositionUpload') ||
-    !backend.includes('function processStockPositionJobItem_(job, prepared)') ||
+    !backend.includes('function processStockPositionJobItem_(job, prepared, availableLots)') ||
     !backend.includes('existingStockPositionRecordIds_(job, rows)') ||
     !backend.includes('cloudflareBalanceAtDate_(outlet, location')) {
   failures.push('Stock Posisi belum diproses bertahap dengan pemulihan per item dan query saldo terbatas outlet');
@@ -611,10 +611,10 @@ try {
   const transferContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#transfer-correction-test' }).runInContext(transferContext);
   transferContext.cloudflareReadTransferEvents_ = () => [];
-  transferContext.cloudflareReadMovements_ = () => [{
-    sourceHash: 'HASH-1', sourceFile: 'gd.xlsx', sourceRow: 7, createdAt: '2026-09-26T01:00:00Z',
-    transferId: 'TRF-RECOVERY', qty: 5, expiryDate: '2026-10-01', itemCode: 'ITEM-1',
-    itemName: 'Mushroom', category: 'FOOD', unit: 'KG'
+  transferContext.cloudflareLedgerRows_ = () => [{
+    source_hash: 'HASH-1', source_file: 'gd.xlsx', source_row: 7, created_at: '2026-09-26T01:00:00Z',
+    transfer_id: 'TRF-RECOVERY', quantity: 5, expiry_date: '2026-10-01', item_code: 'ITEM-1',
+    item_name: 'Mushroom', category: 'FOOD', unit: 'KG'
   }];
   const recoveryDuplicates = transferContext.findGoodsDeliveryDuplicateRows_('BICP', [{
     rowHash: 'HASH-1', sourceRow: 7, transactionDate: '2026-09-26', gdNumber: 'GD-1',
@@ -750,7 +750,7 @@ try {
   ];
   backendContext.readStockUnitConversions_ = () => ({});
   backendContext.readStockCodeQtyMapAtDate_ = outlet => outlet === 'BICP' ? { ITEM1: 10 } : { ITEM2: 3 };
-  backendContext.readCurrentStockCodeQtyMap_ = outlet => outlet === 'BICP' ? { ITEM1: 14 } : { ITEM2: 8 };
+  backendContext.readCurrentStockCodeQtyMapForItems_ = outlet => outlet === 'BICP' ? { ITEM1: 14 } : { ITEM2: 8 };
   const opname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO.xlsx', base64: 'DATA', eventDate: '2026-09-01', location: 'Store' });
   const item1Opname = opname.items.find(item => item.item.code === 'ITEM1');
   if (!item1Opname || item1Opname.delta !== -3 || item1Opname.currentQtyAfter !== 11) failures.push('Backdate Stock Opname belum mempertahankan flow transaksi setelah tanggal opname');

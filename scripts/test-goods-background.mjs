@@ -119,7 +119,7 @@ const item = { code: 'ITEM', category: 'Food', name: 'Cake', unit: 'PCS' };
 const prepared = { items: [{ item, qty: 3, sourceRow: 8, gdNumber: 'GD1', destinationCode: 'DEST', destinationName: 'Destination', transactionDate: '2026-10-07', originName: 'Origin' }], masterChanges: [], skippedDuplicates: [], allowedDuplicates: [], sourceItemCount: 1, fileName: 'report.xlsx' };
 Object.assign(builders, { Utilities: { getUuid: () => 'uuid-' + ++uuid }, cleanText_: value => String(value), formatQty_: String,
   prepareGoodsDeliveryImport_: () => prepared, prepareGoodsReceiptImport_: () => prepared,
-  allocateTransferLots_: () => [{ qty: 1, expiryDate: '2026-10-08' }, { qty: 2, expiryDate: '2026-10-09' }],
+  readTransferAvailableLotsBatch_: () => ({ITEM:[{ qty: 1, expiryDate: '2026-10-08' }, { qty: 2, expiryDate: '2026-10-09' }]}),
   appendGoodsDeliveryRecoveryEvents_() {} });
 const ctx = { outlet: 'BIMC', location: 'Store', employee: { nik: 'N1', name: 'Staff' } };
 const deliveryPlan = builders.buildGoodsDeliveryPlan_(ctx, {});

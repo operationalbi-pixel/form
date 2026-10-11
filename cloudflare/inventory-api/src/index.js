@@ -673,7 +673,9 @@ async function listTransferEvents(url, env, requestId) {
   const transferId = cleanText(url.searchParams.get("transfer_id"), 160);
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   if (!transferId && !outlet) return apiError(400, "INVALID_FILTER", "transfer_id atau outlet wajib diisi.", requestId);
-  const result = transferId ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all() : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
+  const ids=[...new Set((url.searchParams.get("transfer_ids")||"").split("|").filter(Boolean))];
+  if(ids.length>40 || ids.some(id=>id.length>160))return apiError(400,"INVALID_TRANSFER_IDS","Maksimal 40 identitas transfer.",requestId);
+  const result = ids.length ? await env.OPERATIONS_DB.prepare(`SELECT DISTINCT transfer_id FROM stock_transfer_events WHERE transfer_id IN (${ids.map(()=>"?").join(",")}) AND (from_outlet = ? OR to_outlet = ?)`).bind(...ids,outlet,outlet).all() : transferId ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all() : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
   return responseJson({ ok: true, data: result.results, requestId });
 }
 __name(listTransferEvents, "listTransferEvents");
@@ -882,13 +884,16 @@ async function listBalances(url, env, requestId) {
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
   const limit = positiveInt(url.searchParams.get("limit"), 100);
   if (!outlet || !location) return apiError(400, "INVALID_SCOPE", "Outlet dan lokasi wajib diisi.", requestId);
+  const codes=[...new Set((url.searchParams.get("item_codes")||"").split("|").map(code=>code.trim().toUpperCase()).filter(Boolean))];
+  if(codes.length>40 || codes.some(code=>code.length>80))return apiError(400,"INVALID_ITEM_CODES","Maksimal 40 kode item.",requestId);
+  const filter=codes.length?` AND item_code IN (${codes.map(()=>"?").join(",")})`:"";
   const result = await env.OPERATIONS_DB.prepare(
     `SELECT item_code, item_name, current_qty, unit, updated_at
        FROM stock_balances
-      WHERE outlet_code = ? AND location_code = ? AND item_code > ?
+      WHERE outlet_code = ? AND location_code = ? AND item_code > ?${filter}
       ORDER BY item_code
       LIMIT ?`
-  ).bind(outlet, location, cursor, limit + 1).all();
+  ).bind(outlet, location, cursor, ...codes, limit + 1).all();
   const rows = result.results.slice(0, limit);
   return responseJson({
     ok: true,
