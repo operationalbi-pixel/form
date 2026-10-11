@@ -3401,7 +3401,7 @@ function uploadSalesUsage(token, payload) {
 function previewStockOpnameUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const prepared = prepareStockOpnameImport_(token, payload);
+    const prepared = prepareStockOpnameImport_(token, payload, { validationOnly: true });
     if (prepared.requiresConversion) {
       return {
         verified: false, requiresConversion: true, fileName: prepared.fileName,
@@ -3413,7 +3413,7 @@ function previewStockOpnameUpload(token, payload) {
       };
     }
     return {
-      verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
+      verified: true, balancePending: Boolean(prepared.balancePending), fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
       outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
       location: prepared.location, outletCount: prepared.outletCount,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
@@ -3633,12 +3633,13 @@ function addStockOpnameMasterItems_(items) {
   return additions.length;
 }
 
-function prepareStockOpnameImport_(token, payload) {
+function prepareStockOpnameImport_(token, payload, options) {
   const session = requireSession_(token);
-  return prepareStockOpnameForEmployee_(findEmployee_(session.nik), payload);
+  return prepareStockOpnameForEmployee_(findEmployee_(session.nik), payload, options);
 }
 
-function prepareStockOpnameForEmployee_(employee, payload) {
+function prepareStockOpnameForEmployee_(employee, payload, options) {
+  options = options || {};
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const eventDate = normalizeDate_(payload.eventDate, false);
@@ -3657,7 +3658,9 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   if (unauthorized.length) throw new Error('Branch tidak aktif atau tidak dapat diakses akun ini: ' + unauthorized.join(', ') + '.');
   const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
   if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
-  const duplicates = reportOutlets.filter(function (outlet) {
+  // Preview validates the workbook and access only. Duplicate and live balance
+  // checks remain mandatory when the durable background job builds its plan.
+  const duplicates = options.validationOnly ? [] : reportOutlets.filter(function (outlet) {
     return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
@@ -3670,8 +3673,8 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   reportOutlets.forEach(function (outlet) {
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
     const codes=Array.from(new Set(rows.map(function(row){return row.code;})));
-    const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
-    const currentBalance = readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
+    const balanceAtDate = options.validationOnly ? {} : readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
+    const currentBalance = options.validationOnly ? {} : readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
     const items = [], auditItems = [];
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
@@ -3685,6 +3688,7 @@ function prepareStockOpnameForEmployee_(employee, payload) {
           oldUnit: masterUnit, newUnit: reportUnit, fromUnit: masterUnit, toUnit: reportUnit, suggestedFactor: suggestedFactor };
         return;
       }
+      if (options.validationOnly) return;
       const factor = 1, actualQty = row.actualQty;
       const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
       const auditLine = {
@@ -3717,6 +3721,7 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   return {
     employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
     location: location, outletCount: outlets.length, outlets: outlets, newItems: masterPrepared.newItems,
+    balancePending: Boolean(options.validationOnly),
     sourceItemCount: report.rows.length, items: allItems, auditItems: allAuditItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount, conversionCount: conversionCount,
     requiresConversion: false, conversionRequests: []
