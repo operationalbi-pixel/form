@@ -494,7 +494,7 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
 }
 if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preload'") ||
     !backend.includes('const batchSize = 400;') ||
-    !backend.includes('const runtime = {}, deadline = Date.now() + 210000, maxSteps = 4;') ||
+    !backend.includes('const runtime = {}, deadline = Date.now() + 240000;') ||
     backend.slice(backend.indexOf('function preloadSalesFifoLots_('), backend.indexOf('function salesHistoryBalanceAtDate_(')).includes('runNamedQuery_(')) {
   failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis besar, dan multi-batch worker');
 }

@@ -7794,6 +7794,37 @@ function cloudflarePreloadSalesFifoRows_(params) {
   return (body.data || []).map(cloudflareMovementToApp_);
 }
 
+/** Independent read requests only. Writes retain their sequential, atomic path. */
+function cloudflarePreloadSalesFifoRowsBatch_(requests) {
+  if (!requests.length) return [];
+  const config = cloudflareInventoryConfig_(), result = [];
+  // Bound concurrency so one large sales file cannot flood the inventory API.
+  for (let offset = 0; offset < requests.length; offset += 3) {
+    const chunk = requests.slice(offset, offset + 3);
+    let responses;
+    try {
+      responses = UrlFetchApp.fetchAll(chunk.map(function (payload) {
+        return { url: config.url + '/v1/movements/preload', method: 'post',
+          contentType: 'application/json', headers: { 'x-api-key': config.apiKey },
+          payload: JSON.stringify(payload), muteHttpExceptions: true };
+      }));
+    } catch (error) {
+      // A transport failure has no write side effects. Retry through the normal
+      // gateway, preserving its authentication and bounded retry policy.
+      responses = [];
+    }
+    chunk.forEach(function (payload, index) {
+      const response = responses[index];
+      let body;
+      try { body = response && JSON.parse(response.getContentText() || '{}'); } catch (error) {}
+      if (!response || response.getResponseCode() < 200 || response.getResponseCode() >= 300 || !body || body.ok !== true || !Array.isArray(body.data)) {
+        result.push(cloudflarePreloadSalesFifoRows_(payload));
+      } else result.push(body.data.map(cloudflareMovementToApp_));
+    });
+  }
+  return result;
+}
+
 function cloudflareWriteStockRows_(rows) {
   if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
   let accepted = 0, duplicates = 0;
@@ -9716,7 +9747,8 @@ function readStockItemsWithQtyCached_(outlet, location) {
 }
 
 function invalidateStockItemCachesForRows_(rows) {
-  const keys = {}, monitorKeys = {};
+  const keys = {}, monitorKeys = {}, seenScopes = {};
+  const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry;
     if (!row || !row.outlet || !row.location) return;
@@ -9726,7 +9758,9 @@ function invalidateStockItemCachesForRows_(rows) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       monitorKeys['stock-upload-monitor-v2-' + date.slice(0, 7)] = true;
       const firstMonth = Number(row.version || 1) > 1 ? '2019-01' : date.slice(0, 7);
-      const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+      const scope = JSON.stringify([row.outlet, row.location, item.code, item.name, firstMonth]);
+      if (seenScopes[scope]) return;
+      seenScopes[scope] = true;
       let cursor = firstMonth, count = 0;
       while (/^\d{4}-\d{2}$/.test(cursor) && cursor <= currentMonth && count < 120) {
         keys[stockHistoryCacheKey_(row.outlet, row.location, item, cursor, false)] = true;
@@ -12117,7 +12151,7 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
 function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes) {
   excludedSourceHashes = (excludedSourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
   const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
-  const byOutlet = {}, result = { __balances: {} }, chunkSize = 18;
+  const byOutlet = {}, result = { __balances: {} }, chunkSize = 30;
   refs.forEach(function (ref) {
     if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
     const code = String(ref.item.code || '').trim().toUpperCase();
@@ -12127,23 +12161,29 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
 
   Object.keys(byOutlet).forEach(function (outlet) {
     const entries = Object.keys(byOutlet[outlet]).map(function (code) { return byOutlet[outlet][code]; });
+    const requests = [];
+    for (let offset = 0; offset < entries.length; offset += chunkSize) {
+      const chunk = entries.slice(offset, offset + chunkSize);
+      const dates = chunk.reduce(function (all, entry) { return all.concat(Object.keys(entry.dates)); }, []).sort();
+      requests.push({ outlet: outlet, location: 'Store', to: dates[dates.length - 1],
+        itemCodes: chunk.map(function (entry) { return String(entry.item.code || '').trim().toUpperCase(); }),
+        itemNames: chunk.map(function (entry) { return String(entry.item.name || ''); }),
+        excludedSourceHashes: excludedSourceHashes, perItemLimit: 500 });
+    }
+    let loadedChunks = [];
     result[outlet] = {};
     result.__balances[outlet] = {};
     for (let offset = 0; offset < entries.length; offset += chunkSize) {
-      const chunk = entries.slice(offset, offset + chunkSize), codes = [], names = [], nameToCode = {}, histories = {};
-      let maxDate = '';
+      const chunkIndex = offset / chunkSize;
+      if (chunkIndex % 3 === 0) loadedChunks = cloudflarePreloadSalesFifoRowsBatch_(requests.slice(chunkIndex, chunkIndex + 3));
+      const chunk = entries.slice(offset, offset + chunkSize), nameToCode = {}, histories = {};
       chunk.forEach(function (entry) {
         const item = entry.item, code = String(item.code || '').trim().toUpperCase();
         if (!code) return;
-        codes.push(code); names.push(String(item.name || '')); nameToCode[normalizeStoreName_(item.name)] = code; histories[code] = [];
-        Object.keys(entry.dates).forEach(function (date) { if (!maxDate || date > maxDate) maxDate = date; });
+        nameToCode[normalizeStoreName_(item.name)] = code; histories[code] = [];
       });
-      if (!codes.length) continue;
 
-      cloudflarePreloadSalesFifoRows_({
-        outlet: outlet, location: 'Store', to: maxDate, itemCodes: codes, itemNames: names,
-        excludedSourceHashes: excludedSourceHashes, perItemLimit: 500
-      }).forEach(function (row) {
+      loadedChunks[chunkIndex % 3].forEach(function (row) {
         let code = String(row.itemCode || '').trim().toUpperCase();
         if (!histories[code]) code = nameToCode[normalizeStoreName_(row.itemName)] || '';
         if (!code || !histories[code]) return;
@@ -13191,12 +13231,17 @@ function processSalesCogsUploadJobs() {
     job.lastWorkedAt = new Date().toISOString();
     job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
     try {
-      const runtime = {}, deadline = Date.now() + 210000, maxSteps = 4;
-      let steps = 0;
+      const runtime = {}, deadline = Date.now() + 240000;
+      let lastStepMillis = 0;
       do {
+        const stepStartedAt = Date.now();
         job = processSalesCogsJobChunk_(job, runtime);
-        steps++;
-      } while (job.status !== 'COMPLETE' && steps < maxSteps && Date.now() < deadline);
+        lastStepMillis = Date.now() - stepStartedAt;
+        job.lastBatchMillis = lastStepMillis;
+        // Continue while the execution has room for another batch. Do not spend
+        // several trigger-delivery cycles on an arbitrary four-batch ceiling.
+        // Keep a margin for checkpointing and slower network responses.
+      } while (job.status !== 'COMPLETE' && Date.now() + Math.max(5000, lastStepMillis * 1.5) + 15000 < deadline);
       job.workerLeaseUntil = 0; writeSalesCogsJob_(job);
     }
     catch (error) {
