@@ -489,7 +489,7 @@ if (!frontendStockCard.includes("server('queueUsageUpload'") || !frontendStockCa
 }
 if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.includes('usageUploadStatus: getSalesCogsUploadStatus') ||
     !backend.includes('function processSalesCogsUploadJobs()') || !backend.includes('function processSalesCogsJobChunk_(') ||
-    !backend.includes("processSalesCogsUploadJobs();")) {
+    !backend.includes("recoverStockUploadWorkers_(otherStockUploadJobs_())")) {
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }
 if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preload'") ||
@@ -571,7 +571,7 @@ if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
     !backend.includes('candidate.workerLeaseUntil') || !backend.includes('a.lastWorkedAt || a.createdAt')) {
   failures.push('Antrean Sales COGS belum dapat memulihkan trigger macet atau melewati job lama yang masih terkunci');
 }
-const maintenanceSalesIndex = backend.indexOf('try { processSalesCogsUploadJobs(); }', backend.indexOf('function refreshDirtyStockBalances()'));
+const maintenanceSalesIndex = backend.indexOf('try { recoverStockUploadWorkers_(', backend.indexOf('function refreshDirtyStockBalances()'));
 const maintenanceBalanceIndex = backend.indexOf('try { processStockItemSummaryJobs(); }', backend.indexOf('function refreshDirtyStockBalances()'));
 if (maintenanceSalesIndex < 0 || maintenanceBalanceIndex < 0 || maintenanceSalesIndex > maintenanceBalanceIndex) {
   failures.push('Maintenance worker masih menjalankan antrean ringkasan sebelum antrean Sales COGS');

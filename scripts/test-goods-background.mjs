@@ -157,6 +157,7 @@ const browserContext = vm.createContext({
   goodsDeliveryPayload: () => ({ outlet: 'BIMC', location: 'Store', fileName: 'report.xlsx', base64: 'UEsK' }),
   closeGoodsDeliveryModal: () => closed++, closeGoodsReceiptModal() {},
   BAKERZIN_API: { call: async (action, args) => {
+    if (action === 'startStockUploadWorker') return {ok:true,data:{started:true}};
     if (action === 'goodsUploadStatus') return { ok: true, data: { jobs: [] } };
     submissions.push(args[1]);
     if (rejectAcceptance) throw new Error('Lost acceptance response');
