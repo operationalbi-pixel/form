@@ -11901,11 +11901,18 @@ function salesRowHash_(row) {
   return digest_([row.outlet, row.transactionDate, row.salesNumber, row.menu, row.product, row.unit].map(normalizeStoreName_).join('|'));
 }
 
+function existingSalesRowHashesForPeriod_(outlet, startDate, endDate) {
+  const byDate = {};
+  cloudflareLedgerRows_({outlet:outlet,from:startDate,to:endDate,movementTypes:['Sold'],resolveScope:true}).forEach(function(row){
+    if(!row.source_hash)return;
+    const date=String(row.event_date||'').slice(0,10);
+    if(!byDate[date])byDate[date]={};
+    byDate[date][String(row.source_hash)]=true;
+  });
+  return byDate;
+}
 function existingSalesRowHashes_(outlet, transactionDate) {
-  const map = {}, sql = 'SELECT DISTINCT source_hash FROM ' + stockCardTable_() +
-    ' WHERE outlet = @outlet AND event_date = CAST(@eventDate AS DATE) AND movement_type = \'Sold\' AND source_hash IS NOT NULL';
-  cloudflareLedgerRows_({ outlet: outlet, from: transactionDate, to: transactionDate, movementTypes: ['Sold'] }).forEach(function (row) { if (row.source_hash) map[String(row.source_hash)] = true; });
-  return map;
+  return existingSalesRowHashesForPeriod_(outlet,transactionDate,transactionDate)[transactionDate]||{};
 }
 
 function prepareSalesCogsImport_(employee, payload, allowPending, options) {
@@ -11946,12 +11953,19 @@ function prepareSalesCogsImport_(employee, payload, allowPending, options) {
     if (!allowPending) throw new Error('Pemetaan item belum lengkap. Pilih Mapping lalu verifikasi ulang.');
     return { requiresMapping: true, fileName: fileName, mappingRequests: unresolvedRows, mappingOptions: catalogs, sourceItemCount: rows.length };
   }
-  const existingByScope = {}, duplicateRows = [], fresh = [];
-  resolved.forEach(function (row) {
-    if (includeExisting) { fresh.push(row); return; }
-    const scope = row.outlet + '|' + row.transactionDate;
-    if (!existingByScope[scope]) existingByScope[scope] = existingSalesRowHashes_(row.outlet, row.transactionDate);
-    if (existingByScope[scope][row.rowHash]) duplicateRows.push(row); else fresh.push(row);
+  const existingByOutlet = {}, duplicateRows = [], fresh = [];
+  if(!includeExisting){
+    const periods={};
+    resolved.forEach(function(row){
+      const period=periods[row.outlet]||(periods[row.outlet]={from:row.transactionDate,to:row.transactionDate});
+      if(row.transactionDate<period.from)period.from=row.transactionDate;
+      if(row.transactionDate>period.to)period.to=row.transactionDate;
+    });
+    Object.keys(periods).forEach(function(outlet){existingByOutlet[outlet]=existingSalesRowHashesForPeriod_(outlet,periods[outlet].from,periods[outlet].to)});
+  }
+  resolved.forEach(function(row){
+    const hashes=existingByOutlet[row.outlet]&&existingByOutlet[row.outlet][row.transactionDate];
+    if(!includeExisting&&hashes&&hashes[row.rowHash])duplicateRows.push(row);else fresh.push(row);
   });
   if (!fresh.length) throw new Error('Semua kombinasi Sales Number + Menu + Product + Unit sudah pernah tersimpan.');
   const masterByCode = {}, savedConversions = readStockUnitConversions_(), provided = payload.conversions || {}, conversionMap = {}, prepared = [], showcaseRows = [], mappingMap = {};
