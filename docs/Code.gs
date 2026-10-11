@@ -8208,7 +8208,7 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions, r
     if (!(duplicateRowMap[sourceItem.sourceRow] && requestedSkipRows[sourceItem.sourceRow])) remainingSourceRowMap[sourceItem.sourceRow] = true;
   });
   const filteredItems = items.filter(function (item) { return remainingSourceRowMap[item.sourceRow]; });
-  const expiryWarnings = applyGoodsReceiptFefoWarnings_(context.outlet, context.location, filteredItems);
+  const expiryWarnings = unresolvedDuplicates.length ? [] : applyGoodsReceiptFefoWarnings_(context.outlet, context.location, filteredItems);
   const remainingCodeMap = {};
   filteredItems.forEach(function (item) { remainingCodeMap[String(item.item.code || '').toUpperCase()] = true; });
   baseResult.requiresConversion = false;
@@ -8230,6 +8230,7 @@ function prepareGoodsReceiptImport_(context, payload, allowPendingConversions, r
 function applyGoodsReceiptFefoWarnings_(outlet, location, items) {
   const grouped = {}, warnings = [], histories = {};
   items.forEach(function (entry) {
+    if (!entry.expiryDate) return; // No incoming expiry means no FEFO warning to compare.
     const code = String(entry.item.code || '').toUpperCase();
     if (!grouped[code]) grouped[code] = { item: entry.item, entries: [] };
     grouped[code].entries.push(entry);
@@ -8304,7 +8305,7 @@ function findGoodsReceiptDuplicateRows_(outlet, sourceItems) {
     'AND event_date BETWEEN CAST(@startDate AS DATE) AND CAST(@endDate AS DATE) ' +
     'GROUP BY event_date, item_code, source_hash, source_file, source_row';
   const existingByKey = {};
-  cloudflareReceiptSourceGroups_(cloudflareLedgerRows_({outlet:outlet,from:dates[0],to:dates[dates.length-1],recordTypes:['MOVEMENT'],movementTypes:['Goods Receipt']})).forEach(function (row) {
+  cloudflareReceiptSourceGroups_(cloudflareLedgerRows_({outlet:outlet,from:dates[0],to:dates[dates.length-1],recordTypes:['MOVEMENT'],movementTypes:['Goods Receipt'],itemCodes:Array.from(new Set(sourceItems.map(function(item){return String(item.itemCode).toUpperCase()}))),resolveScope:true})).forEach(function (row) {
     const existing = {
       transactionDate: String(row.event_date || '').slice(0, 10), itemCode: String(row.item_code || ''),
       itemName: String(row.item_name || ''), qty: Number(row.qty || 0), unit: String(row.unit || ''),
@@ -19527,14 +19528,23 @@ function mppFormatRupiah_(num) {
 /** Native Cloudflare ledger reads. Never falls back to another datastore. */
 function cloudflareLedgerRows_(scope) {
   scope = scope || {};
-  if((scope.itemCodes||[]).length>80||encodeURIComponent((scope.itemCodes||[]).join('|')).length>1200){let combined=[];for(let offset=0;offset<scope.itemCodes.length;offset+=12)combined=combined.concat(cloudflareLedgerRows_(Object.assign({},scope,{itemCodes:scope.itemCodes.slice(offset,offset+12)})));return combined;}
+  // Pack each URL to its actual byte budget; long codes still stay below GAS URL limits.
+  const chunks = []; let chunk = [];
+  (scope.itemCodes || []).forEach(function(code) {
+    if(chunk.length && (chunk.length >= 80 || encodeURIComponent(chunk.concat([code]).join('|')).length > 1200)){chunks.push(chunk);chunk=[];}
+    chunk.push(code);
+  });
+  if(chunk.length)chunks.push(chunk);
+  if(chunks.length>1){let combined=[];chunks.forEach(function(codes){combined=combined.concat(cloudflareLedgerRows_(Object.assign({},scope,{itemCodes:codes})));});return combined;}
   const query = { raw: 1, outlet: scope.outlet || '', location: scope.location || '', record_type: (scope.recordTypes || []).length === 1 ? scope.recordTypes[0] : '',
     item_codes: (scope.itemCodes||[]).join('|'), item_key_code: scope.location==='Showcase'&&scope.itemName?'':scope.itemCode||'', item_key_name:scope.itemName||'', item_name:scope.location==='Showcase'?scope.itemName||'':'',
-    source_hash: scope.sourceHash || '', logical_id: scope.logicalId || '', transfer_id: scope.transferId || '', from: '', to: '' };
+    source_hash: scope.sourceHash || '', logical_id: scope.logicalId || '', transfer_id: scope.transferId || '',
+    resolve_scope:scope.resolveScope?1:'', movement_type:scope.resolveScope&&(scope.movementTypes||[]).length===1?scope.movementTypes[0]:'',
+    from:scope.resolveScope?scope.from||'':'', to:scope.resolveScope?scope.to||'':'' };
   const outlets = scope.outlet ? [scope.outlet] : (scope.outlets || readActiveOutlets_());
   let rows = [];
   outlets.forEach(function (outlet) {
-    rows = rows.concat(cloudflareReadAllPages_('/v1/movements', Object.assign({}, query, { outlet: outlet }), 1000, 100));
+    rows = rows.concat(cloudflareReadAllPages_('/v1/movements', Object.assign({}, query, { outlet: outlet }), scope.resolveScope?200:5000, 100));
   });
   const latest = {};
   rows.forEach(function (raw) {

@@ -933,6 +933,22 @@ async function listStockCard(url, env, requestId) {
   });
 }
 __name(listStockCard, "listStockCard");
+// Resolve candidate identities against every shard before applying date/type filters.
+// A correction may move a receipt outside the report period or to another item/outlet.
+async function resolveMovementCandidates(env, candidates) {
+  const ids = [...new Set(candidates.map(row => row.logical_id || row.record_id))];
+  const rows = [];
+  for (let offset = 0; offset < ids.length; offset += 40) {
+    const batch = ids.slice(offset, offset + 40), placeholders = batch.map(() => '?').join(',');
+    const where = `logical_id IN (${placeholders}) OR (COALESCE(logical_id,'')='' AND record_id IN (${placeholders}))`;
+    const results = await Promise.all([
+      env.OPERATIONS_DB.prepare(`SELECT * FROM stock_movements WHERE ${where}`).bind(...batch, ...batch).all(),
+      ...historyDatabaseEntries(env).map(entry => entry.database.prepare(`SELECT * FROM stock_movements_history WHERE ${where}`).bind(...batch, ...batch).all())
+    ]);
+    results.forEach(result => rows.push(...result.results));
+  }
+  return activeMovements(rows);
+}
 async function listMovements(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
@@ -946,7 +962,8 @@ async function listMovements(url, env, requestId) {
   const from = isoDate(url.searchParams.get("from")) || "0000-01-01";
   const to = isoDate(url.searchParams.get("to")) || "9999-12-31";
   const cursor = cleanText(url.searchParams.get("cursor"), 500);
-  const limit = positiveInt(url.searchParams.get("limit"), 500, 5e3);
+  const resolveScope = url.searchParams.get('resolve_scope') === '1';
+  const limit = positiveInt(url.searchParams.get("limit"), 500, resolveScope ? 200 : 5e3);
   const conditions = ["event_date BETWEEN ? AND ?"], bindings = [from, to];
   const add = /* @__PURE__ */ __name((condition, value) => {
     if (value) {
@@ -984,7 +1001,22 @@ async function listMovements(url, env, requestId) {
     historyDatabasesForRange(env, from, to),
     (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
   );
-  const rows = activeMovements([...operations.results, ...history]).sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id))).slice(0, limit);
+  const sortRows = (a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id));
+  const candidates = [...operations.results, ...history].sort(sortRows).slice(0, limit);
+  if (resolveScope) {
+    const resolved = await resolveMovementCandidates(env, candidates);
+    const rows = resolved.filter(row => row.outlet_code === outlet && (!location || row.location_code === location) &&
+      (!recordType || row.record_type === recordType) && (!movementType || row.movement_type === movementType) &&
+      (!itemCode || row.item_code === itemCode) && (!itemCodes.length || itemCodes.includes(row.item_code)) &&
+      (!itemName || String(row.item_name || '').toLowerCase() === itemName.toLowerCase()) &&
+      (!sourceHash || row.source_hash === sourceHash) && (!transferId || row.transfer_id === transferId) &&
+      (!logicalId || (row.logical_id || row.record_id) === logicalId) &&
+      (!keyCode || row.item_code === keyCode || (!row.item_code && String(row.item_name || '').toLowerCase() === keyName.toLowerCase())) &&
+      row.event_date >= from && row.event_date <= to).sort(sortRows);
+    const last = candidates.at(-1);
+    return responseJson({ok:true,data:rows,nextCursor:candidates.length===limit&&last?`${last.event_date}|${last.created_at}|${last.record_id}`:null,requestId});
+  }
+  const rows = activeMovements([...operations.results, ...history]).sort(sortRows).slice(0, limit);
   const last = rows.at(-1);
   return responseJson({
     ok: true,
