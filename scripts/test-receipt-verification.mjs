@@ -9,6 +9,7 @@ import worker from '../cloudflare/inventory-api/src/index.js';
 function database(table){
   const db=new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE ${table}(record_id TEXT PRIMARY KEY,logical_id TEXT,version INTEGER,outlet_code TEXT,location_code TEXT,item_code TEXT,item_name TEXT,record_type TEXT,movement_type TEXT,event_date TEXT,created_at TEXT,quantity REAL,direction TEXT,source_hash TEXT,transfer_id TEXT)`);
+  if(table==='stock_movements_history')db.exec(fs.readFileSync('cloudflare/migrations/0012_history_logical_lookup.sql','utf8'));
   return {db,prepare(sql){const statement=db.prepare(sql);let args=[];return {bind(...values){args=values;return this},async all(){return {results:statement.all(...args)}}}}};
 }
 const ops=database('stock_movements'),history=database('stock_movements_history'),later=database('stock_movements_history');
