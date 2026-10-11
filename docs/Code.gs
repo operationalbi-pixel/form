@@ -3668,9 +3668,10 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   const allItems = [], allAuditItems = [], outlets = [];
   let increaseCount = 0, decreaseCount = 0, unchangedCount = 0, conversionCount = 0;
   reportOutlets.forEach(function (outlet) {
-    const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate);
-    const currentBalance = readCurrentStockCodeQtyMap_(outlet, location);
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
+    const codes=Array.from(new Set(rows.map(function(row){return row.code;})));
+    const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
+    const currentBalance = readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
     const items = [], auditItems = [];
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
@@ -4105,7 +4106,7 @@ function prepareStockPositionImport_(context, payload, allowPendingExpiry) {
   if (stockPositionAlreadyImported_(context.outlet, context.location, sourceHash)) {
     throw new Error('File Stock Posisi yang sama sudah pernah di-upload ke ' + context.outlet + ' · ' + context.location + '.');
   }
-  const master = {}, current = readCurrentStockCodeQtyMap_(context.outlet, context.location);
+  const master = {}, current = readCurrentStockCodeQtyMapForItems_(context.outlet, context.location, report.rows.map(function(row){return row.code;}));
   readStockMaster_(true).forEach(function (item) { master[item.code.toUpperCase()] = item; });
   const expiryDates = payload.expiryDates && typeof payload.expiryDates === 'object' ? payload.expiryDates : {};
   const items = [], expiryRequests = [], missingExpiry = [];
@@ -4727,14 +4728,14 @@ function existingStockPositionRecordIds_(job, rows) {
   return found;
 }
 
-function processStockPositionJobItem_(job, prepared) {
+function processStockPositionJobItem_(job, prepared, availableLots) {
   const index = Number(job.processed || 0);
   const line = prepared.items[index];
   if (!line) throw new Error('Item Stock Posisi tidak ditemukan pada posisi ' + (index + 1) + '.');
   const recoveringPending = Boolean(job.pendingDriveId);
   if (!job.pendingDriveId) {
     const lots = line.delta > 0 ? [{ qty: line.delta, expiryDate: line.expiryDate }] :
-      allocateTransferLots_(job.outlet, job.location, line.item, Math.abs(line.delta));
+      (availableLots && Object.prototype.hasOwnProperty.call(availableLots,line.item.code)?allocateTransferLotsFromAvailable_(availableLots[line.item.code],Math.abs(line.delta)):allocateTransferLots_(job.outlet, job.location, line.item, Math.abs(line.delta)));
     const plannedQty = (lots || []).reduce(function (total, lot) {
       const qty = Number(lot.qty);
       if (!isFinite(qty) || qty <= 0) throw new Error('QTY lot Stock Posisi tidak valid untuk ' + line.item.code + '.');
@@ -4796,9 +4797,11 @@ function processStockPositionUploadJobs() {
       else {
         job.status = 'PROCESSING';
         const prepared = stockPositionJobJson_(job.preparedDriveId);
+        const lotItems=prepared.items.slice(Number(job.processed||0),Number(job.processed||0)+8).filter(function(line,index){return line.delta<0&&!(index===0&&job.pendingDriveId);}).map(function(line){return line.item;});
+        const availableLots=readTransferAvailableLotsBatch_(job.outlet,job.location,lotItems);
         const deadline = Date.now() + 45000;
         for (let count = 0; count < 8 && job.processed < job.total && Date.now() < deadline; count++) {
-          job = processStockPositionJobItem_(job, prepared);
+          job = processStockPositionJobItem_(job, prepared, availableLots);
         }
         if (job.processed >= job.total) {
           job.status = 'COMPLETE'; job.stage = 'Seluruh Stock Adjustment berhasil dicatat.'; job.progress = 100;
@@ -7791,6 +7794,37 @@ function cloudflarePreloadSalesFifoRows_(params) {
   return (body.data || []).map(cloudflareMovementToApp_);
 }
 
+/** Independent read requests only. Writes retain their sequential, atomic path. */
+function cloudflarePreloadSalesFifoRowsBatch_(requests) {
+  if (!requests.length) return [];
+  const config = cloudflareInventoryConfig_(), result = [];
+  // Bound concurrency so one large sales file cannot flood the inventory API.
+  for (let offset = 0; offset < requests.length; offset += 3) {
+    const chunk = requests.slice(offset, offset + 3);
+    let responses;
+    try {
+      responses = UrlFetchApp.fetchAll(chunk.map(function (payload) {
+        return { url: config.url + '/v1/movements/preload', method: 'post',
+          contentType: 'application/json', headers: { 'x-api-key': config.apiKey },
+          payload: JSON.stringify(payload), muteHttpExceptions: true };
+      }));
+    } catch (error) {
+      // A transport failure has no write side effects. Retry through the normal
+      // gateway, preserving its authentication and bounded retry policy.
+      responses = [];
+    }
+    chunk.forEach(function (payload, index) {
+      const response = responses[index];
+      let body;
+      try { body = response && JSON.parse(response.getContentText() || '{}'); } catch (error) {}
+      if (!response || response.getResponseCode() < 200 || response.getResponseCode() >= 300 || !body || body.ok !== true || !Array.isArray(body.data)) {
+        result.push(cloudflarePreloadSalesFifoRows_(payload));
+      } else result.push(body.data.map(cloudflareMovementToApp_));
+    });
+  }
+  return result;
+}
+
 function cloudflareWriteStockRows_(rows) {
   if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
   let accepted = 0, duplicates = 0;
@@ -8445,8 +8479,9 @@ function buildGoodsDeliveryPlan_(context, payload, report, preparedOverride) {
     totalByCode[delivery.item.code] = Number(totalByCode[delivery.item.code] || 0) + Number(delivery.qty || 0);
     itemByCode[delivery.item.code] = delivery.item;
   });
+  const availableLots=readTransferAvailableLotsBatch_(context.outlet,context.location,Object.keys(itemByCode).map(function(code){return itemByCode[code];}));
   Object.keys(totalByCode).forEach(function (code) {
-    lotQueues[code] = allocateTransferLots_(context.outlet, context.location, itemByCode[code], totalByCode[code]).map(function (lot) {
+    lotQueues[code] = allocateTransferLotsFromAvailable_(availableLots[code]||[],totalByCode[code]).map(function (lot) {
       return { qty: Number(lot.qty || 0), expiryDate: lot.expiryDate || '' };
     });
   });
@@ -8621,7 +8656,7 @@ function prepareGoodsDeliveryImport_(context, payload, allowPendingConversions, 
     filteredTotals[item.item.code] = Number(filteredTotals[item.item.code] || 0) + Number(item.qty || 0);
     transferGroupMap[item.gdNumber + '|' + item.destinationCode] = true;
   });
-  const currentMap = readCurrentStockCodeQtyMap_(context.outlet, context.location);
+  const currentMap = readCurrentStockCodeQtyMapForItems_(context.outlet, context.location, Object.keys(filteredTotals));
   let negativeItemCount = 0;
   Object.keys(filteredTotals).forEach(function (code) {
     if (Number(currentMap[code] || 0) - Number(filteredTotals[code] || 0) < -0.0000001) negativeItemCount++;
@@ -8811,14 +8846,10 @@ function findGoodsDeliveryDuplicateRows_(outlet, sourceItems) {
   if (!sourceItems || !sourceItems.length) return [];
   const dates = sourceItems.map(function (item) { return item.transactionDate; }).sort();
   const existingByHash = {}, transferEventMap = {};
-  cloudflareReadTransferEvents_({ outlet: outlet }).forEach(function (row) {
-    const transferId = String(row.transfer_id || '');
-    if (transferId) transferEventMap[transferId] = true;
-  });
-  cloudflareReadMovements_({
-    outlet: outlet, from: dates[0], to: dates[dates.length - 1],
-    record_type: 'MOVEMENT', movement_type: 'Transfer Out Antar Outlet'
-  }).forEach(function (row) {
+  cloudflareLedgerRows_({
+    outlet:outlet,from:dates[0],to:dates[dates.length-1],recordTypes:['MOVEMENT'],movementTypes:['Transfer Out Antar Outlet'],
+    itemCodes:Array.from(new Set(sourceItems.map(function(item){return item.itemCode;}))),resolveScope:true
+  }).map(cloudflareMovementToApp_).forEach(function (row) {
     const hash = String(row.sourceHash || '');
     if (!hash) return;
     if (!existingByHash[hash]) existingByHash[hash] = {
@@ -8830,6 +8861,12 @@ function findGoodsDeliveryDuplicateRows_(outlet, sourceItems) {
       itemCode: String(row.itemCode || ''), itemName: String(row.itemName || ''), category: String(row.category || ''), unit: String(row.unit || '')
     });
   });
+  const sourceHashes={};sourceItems.forEach(function(item){sourceHashes[item.rowHash||digest_(goodsDeliveryDuplicateKey_(item))]=true;});
+  const ids=[];
+  Object.keys(existingByHash).forEach(function(hash){if(sourceHashes[hash])existingByHash[hash].movements.forEach(function(movement){if(movement.transferId&&ids.indexOf(movement.transferId)<0)ids.push(movement.transferId);});});
+  for(let start=0;start<ids.length;start+=40){
+    cloudflareReadTransferEvents_({outlet:outlet,transfer_ids:ids.slice(start,start+40).join('|')}).forEach(function(row){if(row.transfer_id)transferEventMap[String(row.transfer_id)]=true;});
+  }
   const seenInFile = {}, duplicates = [];
   sourceItems.slice().sort(function (a, b) { return a.sourceRow - b.sourceRow; }).forEach(function (item) {
     const hash = item.rowHash || digest_(goodsDeliveryDuplicateKey_(item)), existing = existingByHash[hash], earlier = seenInFile[hash];
@@ -9710,7 +9747,8 @@ function readStockItemsWithQtyCached_(outlet, location) {
 }
 
 function invalidateStockItemCachesForRows_(rows) {
-  const keys = {}, monitorKeys = {};
+  const keys = {}, monitorKeys = {}, seenScopes = {};
+  const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry;
     if (!row || !row.outlet || !row.location) return;
@@ -9720,7 +9758,9 @@ function invalidateStockItemCachesForRows_(rows) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       monitorKeys['stock-upload-monitor-v2-' + date.slice(0, 7)] = true;
       const firstMonth = Number(row.version || 1) > 1 ? '2019-01' : date.slice(0, 7);
-      const currentMonth = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+      const scope = JSON.stringify([row.outlet, row.location, item.code, item.name, firstMonth]);
+      if (seenScopes[scope]) return;
+      seenScopes[scope] = true;
       let cursor = firstMonth, count = 0;
       while (/^\d{4}-\d{2}$/.test(cursor) && cursor <= currentMonth && count < 120) {
         keys[stockHistoryCacheKey_(row.outlet, row.location, item, cursor, false)] = true;
@@ -10778,7 +10818,25 @@ function readCurrentStockCodeQtyMap_(outlet, location) {
   const map = {}; readStockBalanceRows_(outlet, location).forEach(function (row) { if (row.item_code) map[String(row.item_code).toUpperCase()] = Number(row.current_qty || 0); }); return map;
 }
 
-function readStockCodeQtyMapAtDate_(outlet, location, eventDate) { return cloudflareBalanceAtDate_(outlet, location, eventDate); }
+function readCurrentStockCodeQtyMapForItems_(outlet, location, itemCodes) {
+  const codes=Array.from(new Set((itemCodes||[]).map(function(code){return String(code||'').toUpperCase();}).filter(Boolean))), map={};
+  const chunks=[];let chunk=[];codes.forEach(function(code){if(chunk.length&&(chunk.length>=40||encodeURIComponent(chunk.concat([code]).join('|')).length>1200)){chunks.push(chunk);chunk=[];}chunk.push(code);});if(chunk.length)chunks.push(chunk);
+  chunks.forEach(function(batch){
+    cloudflareReadAllPages_('/v1/balances',{outlet:outlet,location:location,item_codes:batch.join('|')},200,100).forEach(function(row){map[String(row.item_code).toUpperCase()]=Number(row.current_qty||0);});
+  });
+  return map;
+}
+
+function readTransferAvailableLotsBatch_(outlet, location, items) {
+  const codes=Array.from(new Set((items||[]).map(function(item){return String(item.code||'').toUpperCase();}).filter(Boolean))), grouped={}, result={};
+  if(!codes.length)return result;
+  codes.forEach(function(code){grouped[code]=[];result[code]=[];});
+  cloudflareLedgerRows_({outlet:outlet,location:location,itemCodes:codes,recordTypes:['MOVEMENT','OPNAME_DETAIL'],resolveScope:true}).forEach(function(row){const code=String(row.item_code||'').toUpperCase();if(grouped[code]){const mapped=mapStockHistoryQueryRow_(row);if(mapped.movementType==='Lot Balance Override')mapped.direction='LOT';grouped[code].push(mapped);}});
+  codes.forEach(function(code){const history=applyStockHistoryAuditRows_(grouped[code]), snapshots=calculateFifoSnapshots_(history), dates=Object.keys(snapshots).sort();result[code]=dates.length?snapshots[dates[dates.length-1]]:[];});
+  return result;
+}
+
+function readStockCodeQtyMapAtDate_(outlet, location, eventDate, itemCodes) { return cloudflareBalanceAtDate_(outlet, location, eventDate, [], itemCodes); }
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
   // Gunakan daftar saldo lengkap yang sudah di-cache. Sebagian versi Worker
@@ -12093,7 +12151,7 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
 function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes) {
   excludedSourceHashes = (excludedSourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
   const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
-  const byOutlet = {}, result = { __balances: {} }, chunkSize = 18;
+  const byOutlet = {}, result = { __balances: {} }, chunkSize = 30;
   refs.forEach(function (ref) {
     if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
     const code = String(ref.item.code || '').trim().toUpperCase();
@@ -12103,23 +12161,29 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
 
   Object.keys(byOutlet).forEach(function (outlet) {
     const entries = Object.keys(byOutlet[outlet]).map(function (code) { return byOutlet[outlet][code]; });
+    const requests = [];
+    for (let offset = 0; offset < entries.length; offset += chunkSize) {
+      const chunk = entries.slice(offset, offset + chunkSize);
+      const dates = chunk.reduce(function (all, entry) { return all.concat(Object.keys(entry.dates)); }, []).sort();
+      requests.push({ outlet: outlet, location: 'Store', to: dates[dates.length - 1],
+        itemCodes: chunk.map(function (entry) { return String(entry.item.code || '').trim().toUpperCase(); }),
+        itemNames: chunk.map(function (entry) { return String(entry.item.name || ''); }),
+        excludedSourceHashes: excludedSourceHashes, perItemLimit: 500 });
+    }
+    let loadedChunks = [];
     result[outlet] = {};
     result.__balances[outlet] = {};
     for (let offset = 0; offset < entries.length; offset += chunkSize) {
-      const chunk = entries.slice(offset, offset + chunkSize), codes = [], names = [], nameToCode = {}, histories = {};
-      let maxDate = '';
+      const chunkIndex = offset / chunkSize;
+      if (chunkIndex % 3 === 0) loadedChunks = cloudflarePreloadSalesFifoRowsBatch_(requests.slice(chunkIndex, chunkIndex + 3));
+      const chunk = entries.slice(offset, offset + chunkSize), nameToCode = {}, histories = {};
       chunk.forEach(function (entry) {
         const item = entry.item, code = String(item.code || '').trim().toUpperCase();
         if (!code) return;
-        codes.push(code); names.push(String(item.name || '')); nameToCode[normalizeStoreName_(item.name)] = code; histories[code] = [];
-        Object.keys(entry.dates).forEach(function (date) { if (!maxDate || date > maxDate) maxDate = date; });
+        nameToCode[normalizeStoreName_(item.name)] = code; histories[code] = [];
       });
-      if (!codes.length) continue;
 
-      cloudflarePreloadSalesFifoRows_({
-        outlet: outlet, location: 'Store', to: maxDate, itemCodes: codes, itemNames: names,
-        excludedSourceHashes: excludedSourceHashes, perItemLimit: 500
-      }).forEach(function (row) {
+      loadedChunks[chunkIndex % 3].forEach(function (row) {
         let code = String(row.itemCode || '').trim().toUpperCase();
         if (!histories[code]) code = nameToCode[normalizeStoreName_(row.itemName)] || '';
         if (!code || !histories[code]) return;
@@ -13167,12 +13231,17 @@ function processSalesCogsUploadJobs() {
     job.lastWorkedAt = new Date().toISOString();
     job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
     try {
-      const runtime = {}, deadline = Date.now() + 210000, maxSteps = 4;
-      let steps = 0;
+      const runtime = {}, deadline = Date.now() + 240000;
+      let lastStepMillis = 0;
       do {
+        const stepStartedAt = Date.now();
         job = processSalesCogsJobChunk_(job, runtime);
-        steps++;
-      } while (job.status !== 'COMPLETE' && steps < maxSteps && Date.now() < deadline);
+        lastStepMillis = Date.now() - stepStartedAt;
+        job.lastBatchMillis = lastStepMillis;
+        // Continue while the execution has room for another batch. Do not spend
+        // several trigger-delivery cycles on an arbitrary four-batch ceiling.
+        // Keep a margin for checkpointing and slower network responses.
+      } while (job.status !== 'COMPLETE' && Date.now() + Math.max(5000, lastStepMillis * 1.5) + 15000 < deadline);
       job.workerLeaseUntil = 0; writeSalesCogsJob_(job);
     }
     catch (error) {
@@ -13395,7 +13464,7 @@ function prepareItemJournalImport_(employee, payload, allowPending, options) {
   const fileName = cleanText_(payload.fileName, 180);
   const report = parseItemJournalReport_(String(payload.base64 || '').replace(/^data:[^,]+,/, ''), fileName);
   const directory = readStoreCodeDirectory_(), master = {}, saved = readStockUnitConversions_();
-  const provided = payload.conversions || {}, conversions = {}, rows = [], existingByScope = {};
+  const provided = payload.conversions || {}, conversions = {}, rows = [], candidates = [];
   let skipped = 0;
   readStockMaster_(true).forEach(function (item) { master[item.code] = item; });
   report.rows.forEach(function (row) {
@@ -13412,22 +13481,26 @@ function prepareItemJournalImport_(employee, payload, allowPending, options) {
     }
     row.outlet = outlet; row.item = item; row.qtyDefault = row.qty * factor;
     row.rowHash = digest_([outlet, row.transactionDate, row.journalNumber, row.code, row.unit, String(row.qty)].join('|'));
-    if (options.includeExisting) { rows.push(row); return; }
-    const scope = outlet + '|' + row.transactionDate;
-    if (!existingByScope[scope]) {
-      existingByScope[scope] = {};
-      const sql = 'SELECT DISTINCT source_hash FROM ' + stockCardTable_() + ' WHERE outlet=@outlet AND event_date=CAST(@date AS DATE) AND movement_type=\'Item Journal\' AND source_hash IS NOT NULL';
-      cloudflareLedgerRows_({ outlet: outlet, from: row.transactionDate, to: row.transactionDate, recordTypes: ['MOVEMENT'], movementTypes: ['Item Journal'] }).forEach(function (found) {
-        if (found.source_hash) existingByScope[scope][String(found.source_hash)] = true;
-      });
-    }
-    if (existingByScope[scope][row.rowHash]) skipped++; else rows.push(row);
+    candidates.push(row);
   });
   const missing = Object.keys(conversions).map(function (key) { return conversions[key]; });
   if (missing.length) {
     if (!allowPending) throw new Error('Lengkapi seluruh konversi unit Item Journal.');
     return { requiresConversion: true, conversions: missing };
   }
+  const periods={}, existingByOutlet={};
+  if(!options.includeExisting){
+    candidates.forEach(function(row){
+      const period=periods[row.outlet]||(periods[row.outlet]={from:row.transactionDate,to:row.transactionDate});
+      if(row.transactionDate<period.from)period.from=row.transactionDate;
+      if(row.transactionDate>period.to)period.to=row.transactionDate;
+    });
+    Object.keys(periods).forEach(function(outlet){
+      const hashes=existingByOutlet[outlet]={};
+      cloudflareLedgerRows_({outlet:outlet,from:periods[outlet].from,to:periods[outlet].to,recordTypes:['MOVEMENT'],movementTypes:['Item Journal'],resolveScope:true}).forEach(function(found){if(found.source_hash)hashes[String(found.source_hash)]=true;});
+    });
+  }
+  candidates.forEach(function(row){if(!options.includeExisting&&existingByOutlet[row.outlet]&&existingByOutlet[row.outlet][row.rowHash])skipped++;else rows.push(row);});
   if (!rows.length) throw new Error('Semua baris Authorized pada file ini sudah pernah disimpan.');
   return { fileName: fileName, rows: rows, duplicateRowsSkipped: skipped, unauthorizedRowsSkipped: report.unauthorizedRowsSkipped };
 }
@@ -19588,8 +19661,9 @@ function cloudflareLedgerRows_(scope) {
   }).sort(function (a,b) { return String(a.event_date || '').localeCompare(String(b.event_date || '')) || String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.record_id).localeCompare(String(b.record_id)); });
 }
 function cloudflareSourceExists_(scope) { return cloudflareLedgerRows_(scope).length > 0; }
-function cloudflareBalanceAtDate_(outlet, location, date, excludedIds) {
-  const rows = cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT', 'OPNAME_DETAIL'], to: date || '' }), grouped = {};
+function cloudflareBalanceAtDate_(outlet, location, date, excludedIds, itemCodes) {
+  if(itemCodes && !itemCodes.length)return {};
+  const rows = cloudflareLedgerRows_({ outlet: outlet, location: location, recordTypes: ['MOVEMENT', 'OPNAME_DETAIL'], to: date || '', itemCodes:itemCodes||[], resolveScope:Boolean(itemCodes) }), grouped = {};
   rows.forEach(function (row) {
     if ((excludedIds || []).indexOf(String(row.logical_id || row.record_id)) >= 0) return;
     const code = String(row.item_code || '').trim().toUpperCase(); if (!code) return;

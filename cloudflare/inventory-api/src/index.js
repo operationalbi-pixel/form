@@ -488,18 +488,19 @@ async function existingMovementState(env, rows) {
   const eventDates = rows.map((row) => row.event_date).filter(Boolean).sort();
   const historyEntries = historyDatabasesForRange(env, eventDates[0], eventDates.at(-1));
   const existing = [], duplicateIds = /* @__PURE__ */ new Set();
-  for (let index = 0; index < logicalIds.length; index += 50) {
-    const ids = logicalIds.slice(index, index + 50);
-    const placeholders = ids.map(() => "?").join(",");
-    const query = `SELECT * FROM stock_movements WHERE COALESCE(NULLIF(logical_id, ''), record_id) IN (${placeholders})`;
-    const historyQuery = `SELECT * FROM stock_movements_history WHERE COALESCE(NULLIF(logical_id, ''), record_id) IN (${placeholders})`;
-    const ops = await env.OPERATIONS_DB.prepare(query).bind(...ids).all();
-    existing.push(...ops.results);
-    for (const entry of historyEntries) {
-      const history = await entry.database.prepare(historyQuery).bind(...ids).all();
-      existing.push(...history.results);
-    }
-  }
+  const idChunks = [];
+  for (let index = 0; index < logicalIds.length; index += 50) idChunks.push(logicalIds.slice(index, index + 50));
+  // One read batch per database instead of one network round trip per 50 IDs.
+  // All history partitions in the event period still participate in duplicate
+  // and correction checks; only the transport is batched.
+  const sources = [
+    { database: env.OPERATIONS_DB, table: "stock_movements" },
+    ...historyEntries.map(entry => ({ database: entry.database, table: "stock_movements_history" }))
+  ];
+  const results = await Promise.all(sources.map(({ database, table }) => database.batch(idChunks.map(ids =>
+    database.prepare(`SELECT * FROM ${table} WHERE COALESCE(NULLIF(logical_id, ''), record_id) IN (${ids.map(() => "?").join(",")})`).bind(...ids)
+  ))));
+  for (const batches of results) for (const result of batches) existing.push(...result.results);
   for (const row of existing) if (recordIds.includes(String(row.record_id))) duplicateIds.add(String(row.record_id));
   const active = /* @__PURE__ */ new Map();
   for (const row of existing) {
@@ -673,7 +674,9 @@ async function listTransferEvents(url, env, requestId) {
   const transferId = cleanText(url.searchParams.get("transfer_id"), 160);
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   if (!transferId && !outlet) return apiError(400, "INVALID_FILTER", "transfer_id atau outlet wajib diisi.", requestId);
-  const result = transferId ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all() : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
+  const ids=[...new Set((url.searchParams.get("transfer_ids")||"").split("|").filter(Boolean))];
+  if(ids.length>40 || ids.some(id=>id.length>160))return apiError(400,"INVALID_TRANSFER_IDS","Maksimal 40 identitas transfer.",requestId);
+  const result = ids.length ? await env.OPERATIONS_DB.prepare(`SELECT DISTINCT transfer_id FROM stock_transfer_events WHERE transfer_id IN (${ids.map(()=>"?").join(",")}) AND (from_outlet = ? OR to_outlet = ?)`).bind(...ids,outlet,outlet).all() : transferId ? await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE transfer_id = ? ORDER BY created_at, status, item_name, expiry_date").bind(transferId).all() : await env.OPERATIONS_DB.prepare("SELECT * FROM stock_transfer_events WHERE from_outlet = ? OR to_outlet = ? ORDER BY created_at DESC LIMIT 5000").bind(outlet, outlet).all();
   return responseJson({ ok: true, data: result.results, requestId });
 }
 __name(listTransferEvents, "listTransferEvents");
@@ -882,13 +885,16 @@ async function listBalances(url, env, requestId) {
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
   const limit = positiveInt(url.searchParams.get("limit"), 100);
   if (!outlet || !location) return apiError(400, "INVALID_SCOPE", "Outlet dan lokasi wajib diisi.", requestId);
+  const codes=[...new Set((url.searchParams.get("item_codes")||"").split("|").map(code=>code.trim().toUpperCase()).filter(Boolean))];
+  if(codes.length>40 || codes.some(code=>code.length>80))return apiError(400,"INVALID_ITEM_CODES","Maksimal 40 kode item.",requestId);
+  const filter=codes.length?` AND item_code IN (${codes.map(()=>"?").join(",")})`:"";
   const result = await env.OPERATIONS_DB.prepare(
     `SELECT item_code, item_name, current_qty, unit, updated_at
        FROM stock_balances
-      WHERE outlet_code = ? AND location_code = ? AND item_code > ?
+      WHERE outlet_code = ? AND location_code = ? AND item_code > ?${filter}
       ORDER BY item_code
       LIMIT ?`
-  ).bind(outlet, location, cursor, limit + 1).all();
+  ).bind(outlet, location, cursor, ...codes, limit + 1).all();
   const rows = result.results.slice(0, limit);
   return responseJson({
     ok: true,
@@ -1429,11 +1435,14 @@ async function preloadMovements(request, env, requestId) {
       FROM latest
     )
     SELECT * FROM ranked WHERE item_rank <= ?`;
-    const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
-    const history = await queryHistoryDatabases(
-      historyDatabasesForRange(env, "0000-01-01", to),
-      (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
-    );
+    // Independent history shards can be read together; FIFO ordering and
+    // logical-version reconciliation happen below after every read completes.
+    const readResults = await Promise.all([
+      env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all(),
+      ...historyDatabasesForRange(env, "0000-01-01", to).map(entry =>
+        entry.database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings).all())
+    ]);
+    const operations = readResults[0], history = readResults.slice(1).flatMap(result => result.results);
     const grouped = /* @__PURE__ */ new Map();
     activeMovements([...operations.results, ...history]).forEach((row) => {
       if (excludedSourceHashes.has(cleanText(row.source_hash, 160))) return;
