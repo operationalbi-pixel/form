@@ -1,5 +1,21 @@
-/* Goods uploads run on the server after acceptance; this panel only reads status. */
+/* Uploads are durable on acceptance; this panel starts and recovers workers and reads status. */
 var GOODS_UPLOAD_PANEL = { timer: null, loading: false, jobs: [], generation: 0 };
+var STOCK_UPLOAD_STARTS = {};
+function startStockUploadWorkers(jobs) {
+  if (!APP.token) return;
+  var token = APP.token;
+  (jobs || []).forEach(function (job) {
+    if (!job || !job.jobId || ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || job.workerRunning) return;
+    var engine = job.engine || 'GOODS', key = token + '|' + engine, state = STOCK_UPLOAD_STARTS[key];
+    if (state && (state.running || Date.now() - state.at < 60000)) return;
+    state = STOCK_UPLOAD_STARTS[key] = { running: true, at: Date.now() };
+    // No await: acceptance and status remain responsive while the server works.
+    // A lost response never cancels an accepted job or resubmits the workbook.
+    Promise.resolve().then(function () { return BAKERZIN_API.call('startStockUploadWorker', [token, job.jobId, engine]); })
+      .catch(function () {})
+      .finally(function () { state.running = false; });
+  });
+}
 function goodsUploadRequestId(state) {
   if (!state.requestId) state.requestId = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : 'goods-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   return state.requestId;
@@ -17,6 +33,7 @@ function queueGoodsUploadFromForm(kind) {
   progress(10, 'Mengirim file ke proses background. Tunggu konfirmasi file diterima.', 'MENGIRIM');
   BAKERZIN_API.call('queueGoodsUpload', [APP.token, payload]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'File belum dapat diterima.');
+    startStockUploadWorkers([response.data]);
     state.uploading = false;
     progress(100, 'File diterima. Proses berjalan di background.', 'DITERIMA');
     if (delivery) closeGoodsDeliveryModal(); else closeGoodsReceiptModal();
@@ -69,6 +86,7 @@ function refreshGoodsUploadStatus() {
     if (!response || !response.ok) throw new Error(response && response.error || 'Status belum dapat dibaca.');
     var previous = GOODS_UPLOAD_PANEL.jobs;
     renderGoodsUploadStatus(response.data.jobs || []);
+    startStockUploadWorkers(GOODS_UPLOAD_PANEL.jobs);
     var completed = GOODS_UPLOAD_PANEL.jobs.some(function (job) { return job.status === 'COMPLETE' && previous.some(function (old) { return old.jobId === job.jobId && old.status !== 'COMPLETE'; }); });
     if (completed) {
       clearStockHistoryBrowserCache(); APP.locationCache = {};
@@ -127,6 +145,7 @@ function queueOtherStockUpload(kind) {
   toast('Mengirim file. Tunggu konfirmasi File diterima.');
   BAKERZIN_API.call('queueGoodsUpload', [APP.token, payload]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'Penerimaan file belum terkonfirmasi.');
+    startStockUploadWorkers([response.data]);
     state.uploading = false;
     if (key === 'wip') closeWipProductionModal(); else if (key === 'salesRepair') closeSalesRepairModal(); else if (key === 'itemJournal') closeItemJournalModal(); else if (key === 'stockOpname') closeStockOpnameModal(); else closeBihqBatchModal();
     toast('File diterima. Proses berjalan di background. Pantau Status Upload.'); refreshGoodsUploadStatus();

@@ -239,6 +239,7 @@ function apiActions_() {
     verifyGoodsDelivery: previewGoodsDeliveryUpload,
     queueGoodsUpload: queueGoodsUpload,
     goodsUploadStatus: listGoodsUploadStatus,
+    startStockUploadWorker: startStockUploadWorker,
     goodsUploadRequest: getGoodsUploadRequest,
     retryGoodsUpload: retryGoodsUpload,
     verifyStockPosition: previewStockPositionUpload,
@@ -3401,7 +3402,7 @@ function uploadSalesUsage(token, payload) {
 function previewStockOpnameUpload(token, payload) {
   return safe_(function () {
     payload = payload || {};
-    const prepared = prepareStockOpnameImport_(token, payload);
+    const prepared = prepareStockOpnameImport_(token, payload, { validationOnly: true });
     if (prepared.requiresConversion) {
       return {
         verified: false, requiresConversion: true, fileName: prepared.fileName,
@@ -3413,7 +3414,7 @@ function previewStockOpnameUpload(token, payload) {
       };
     }
     return {
-      verified: true, fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
+      verified: true, balancePending: Boolean(prepared.balancePending), fileName: prepared.fileName, eventDate: prepared.eventDate, effectiveDate: prepared.effectiveDate,
       outlet: prepared.outletCount === 1 ? prepared.outlets[0].outlet : '',
       location: prepared.location, outletCount: prepared.outletCount,
       sourceItemCount: prepared.sourceItemCount, adjustmentCount: prepared.items.length,
@@ -3633,12 +3634,13 @@ function addStockOpnameMasterItems_(items) {
   return additions.length;
 }
 
-function prepareStockOpnameImport_(token, payload) {
+function prepareStockOpnameImport_(token, payload, options) {
   const session = requireSession_(token);
-  return prepareStockOpnameForEmployee_(findEmployee_(session.nik), payload);
+  return prepareStockOpnameForEmployee_(findEmployee_(session.nik), payload, options);
 }
 
-function prepareStockOpnameForEmployee_(employee, payload) {
+function prepareStockOpnameForEmployee_(employee, payload, options) {
+  options = options || {};
   const fileName = cleanText_(payload.fileName, 180);
   const base64 = String(payload.base64 || '').replace(/^data:[^,]+,/, '').trim();
   const eventDate = normalizeDate_(payload.eventDate, false);
@@ -3657,7 +3659,9 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   if (unauthorized.length) throw new Error('Branch tidak aktif atau tidak dapat diakses akun ini: ' + unauthorized.join(', ') + '.');
   const invalidLocations = reportOutlets.filter(function (outlet) { return readStockLocations_(outlet).indexOf(location) < 0; });
   if (invalidLocations.length) throw new Error('Penyimpanan ' + location + ' tidak tersedia untuk: ' + invalidLocations.join(', ') + '.');
-  const duplicates = reportOutlets.filter(function (outlet) {
+  // Preview validates the workbook and access only. Duplicate and live balance
+  // checks remain mandatory when the durable background job builds its plan.
+  const duplicates = options.validationOnly ? [] : reportOutlets.filter(function (outlet) {
     return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
@@ -3670,8 +3674,8 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   reportOutlets.forEach(function (outlet) {
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
     const codes=Array.from(new Set(rows.map(function(row){return row.code;})));
-    const balanceAtDate = readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
-    const currentBalance = readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
+    const balanceAtDate = options.validationOnly ? {} : readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
+    const currentBalance = options.validationOnly ? {} : readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
     const items = [], auditItems = [];
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
     rows.forEach(function (row) {
@@ -3685,6 +3689,7 @@ function prepareStockOpnameForEmployee_(employee, payload) {
           oldUnit: masterUnit, newUnit: reportUnit, fromUnit: masterUnit, toUnit: reportUnit, suggestedFactor: suggestedFactor };
         return;
       }
+      if (options.validationOnly) return;
       const factor = 1, actualQty = row.actualQty;
       const cardQty = Number(balanceAtDate[row.code] || 0), delta = actualQty - cardQty;
       const auditLine = {
@@ -3717,6 +3722,7 @@ function prepareStockOpnameForEmployee_(employee, payload) {
   return {
     employee: employee, fileName: fileName, sourceHash: sourceHash, eventDate: eventDate, effectiveDate: effectiveDate,
     location: location, outletCount: outlets.length, outlets: outlets, newItems: masterPrepared.newItems,
+    balancePending: Boolean(options.validationOnly),
     sourceItemCount: report.rows.length, items: allItems, auditItems: allAuditItems, unchangedCount: unchangedCount,
     increaseCount: increaseCount, decreaseCount: decreaseCount, conversionCount: conversionCount,
     requiresConversion: false, conversionRequests: []
@@ -4336,7 +4342,7 @@ function goodsUploadJobs_(activeOnly,ownerNik) {
 }
 function goodsUploadJobView_(job) {
   return { requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
-    status: job.status, stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
+    status: job.status, workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
     total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
 }
 function goodsUploadOwner_(token, id) {
@@ -4400,11 +4406,45 @@ function queueGoodsUpload(token, payload) {
     return goodsUploadJobView_(job);
   });
 }
+/** Kick scheduled engines independently. The periodic watchdog must not spend
+ * its runtime processing an earlier engine before Sales gets a turn. */
+function recoverStockUploadWorkers_(jobs) {
+  const schedulers = { GOODS: scheduleGoodsUploadWorker_, USAGE: scheduleSalesCogsWorker_,
+    POSITION: scheduleStockPositionWorker_, EXPIRY: scheduleMissingExpiryWorker_ }, engines = {};
+  (jobs || []).forEach(function (job) {
+    if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || Number(job.workerLeaseUntil || 0) > Date.now()) return;
+    const engine = job.engine || 'GOODS';
+    if (Object.prototype.hasOwnProperty.call(schedulers, engine)) engines[engine] = true;
+  });
+  Object.keys(engines).forEach(function (engine) {
+    try { schedulers[engine](); } catch (error) { console.error('Pemulihan worker ' + engine + ': ' + error.message); }
+  });
+}
+function startStockUploadWorker(token, id, engine) {
+  return safe_(function () {
+    const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
+    engine = String(engine || 'GOODS'); id = cleanText_(id, 100);
+    const workers = { GOODS: processGoodsUploadJobs, USAGE: processSalesCogsUploadJobs,
+      POSITION: processStockPositionUploadJobs, EXPIRY: processMissingExpiryUploadJobs };
+    if (!Object.prototype.hasOwnProperty.call(workers, engine)) throw new Error('Jenis worker tidak valid.');
+    const job = engine === 'GOODS' ? readGoodsUploadJob_(id) : otherStockUploadJobs_().filter(function (candidate) { return candidate.jobId === id && candidate.engine === engine; })[0];
+    if (!job || job.ownerNik !== employee.nik) throw new Error('Upload tidak ditemukan atau bukan milik akun ini.');
+    if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || Number(job.workerLeaseUntil || 0) > Date.now()) return { started: false };
+    // This separate API request starts a worker without waiting for trigger delivery.
+    // Existing engine locks/leases still serialize execution; the UI does not await it.
+    try { workers[engine](); } catch (error) {
+      if (!stockUploadBusy_(error)) throw error;
+      recoverStockUploadWorkers_([job]); return { started: false };
+    }
+    return { started: true };
+  });
+}
 function listGoodsUploadStatus(token) {
   return safe_(function () {
     const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
-    return { jobs: goodsUploadJobs_(false,employee.nik).concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik && job.engine !== 'SALES'; })
-      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); }).map(goodsUploadJobView_) };
+    const jobs = goodsUploadJobs_(false, employee.nik).concat(otherStockUploadJobs_()).filter(function (job) { return job.ownerNik === employee.nik && job.engine !== 'SALES'; });
+    recoverStockUploadWorkers_(jobs);
+    return { jobs: jobs.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); }).map(goodsUploadJobView_) };
   });
 }
 function getGoodsUploadRequest(token, id) {
@@ -10658,16 +10698,12 @@ function maybeCompactStockSummaryTables_() {
 
 /** Refreshes compact balances in the background; the periodic run is a watchdog. */
 function refreshDirtyStockBalances() {
-  // Run upload queues first. Balance rebuilds can be expensive and previously
-  // consumed the whole trigger execution before Sales COGS got a turn.
-  try { processGoodsUploadJobs(); }
-  catch (goodsError) { console.error('Proses background Goods Upload: ' + goodsError.message); }
-  try { processStockPositionUploadJobs(); }
-  catch (positionError) { console.error('Gagal menjalankan proses background Stock Posisi: ' + positionError.message); }
-  try { processSalesCogsUploadJobs(); }
-  catch (salesError) { console.error('Gagal menjalankan proses background Sales COGS: ' + salesError.message); }
-  try { processMissingExpiryUploadJobs(); }
-  catch (expiryError) { console.error('Gagal menjalankan proses background Expired Date: ' + expiryError.message); }
+  // Schedule each active engine first; a long Goods/Position execution cannot
+  // consume the watchdog execution before the Sales engine is reached.
+  try { recoverStockUploadWorkers_(otherStockUploadJobs_()); }
+  catch (legacyError) { console.error('Pemulihan worker upload: ' + legacyError.message); }
+  try { recoverStockUploadWorkers_(goodsUploadJobs_(true)); }
+  catch (goodsError) { console.error('Pemulihan worker Goods: ' + goodsError.message); }
   try { processStockItemSummaryJobs(); }
   catch (summaryError) { console.error('Gagal menjalankan proses background ringkasan item: ' + summaryError.message); }
   try { maybeCompactStockSummaryTables_(); }

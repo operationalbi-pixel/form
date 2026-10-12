@@ -944,15 +944,17 @@ __name(listStockCard, "listStockCard");
 async function resolveMovementCandidates(env, candidates) {
   const ids = [...new Set(candidates.map(row => row.logical_id || row.record_id))];
   const rows = [];
-  for (let offset = 0; offset < ids.length; offset += 40) {
-    const batch = ids.slice(offset, offset + 40), placeholders = batch.map(() => '?').join(',');
+  if (!ids.length) return [];
+  const chunks = [];
+  for (let offset = 0; offset < ids.length; offset += 40) chunks.push(ids.slice(offset, offset + 40));
+  const sources = [{ database: env.OPERATIONS_DB, table: "stock_movements" },
+    ...historyDatabaseEntries(env).map(entry => ({ database: entry.database, table: "stock_movements_history" }))];
+  const results = await Promise.all(sources.map(({ database, table }) => database.batch(chunks.map(batch => {
+    const placeholders = batch.map(() => '?').join(',');
     const where = `(logical_id IS NOT NULL AND logical_id<>'' AND logical_id IN (${placeholders})) OR (COALESCE(logical_id,'')='' AND record_id IN (${placeholders}))`;
-    const results = await Promise.all([
-      env.OPERATIONS_DB.prepare(`SELECT * FROM stock_movements WHERE ${where}`).bind(...batch, ...batch).all(),
-      ...historyDatabaseEntries(env).map(entry => entry.database.prepare(`SELECT * FROM stock_movements_history WHERE ${where}`).bind(...batch, ...batch).all())
-    ]);
-    results.forEach(result => rows.push(...result.results));
-  }
+    return database.prepare(`SELECT * FROM ${table} WHERE ${where}`).bind(...batch, ...batch);
+  }))));
+  for (const batches of results) for (const result of batches) rows.push(...result.results);
   return activeMovements(rows);
 }
 async function listMovements(url, env, requestId) {
@@ -1002,11 +1004,12 @@ async function listMovements(url, env, requestId) {
   const sql = `SELECT * FROM __TABLE__ WHERE ${conditions.join(" AND ")}
                ORDER BY event_date DESC, created_at DESC, record_id DESC LIMIT ?`;
   bindings.push(Math.min(1e4, limit * 4 + 100));
-  const operations = await env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all();
-  const history = await queryHistoryDatabases(
-    historyDatabasesForRange(env, from, to),
-    (database) => database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings)
-  );
+  const readResults = await Promise.all([
+    env.OPERATIONS_DB.prepare(sql.replace("__TABLE__", "stock_movements")).bind(...bindings).all(),
+    ...historyDatabasesForRange(env, from, to).map(entry =>
+      entry.database.prepare(sql.replace("__TABLE__", "stock_movements_history")).bind(...bindings).all())
+  ]);
+  const operations = readResults[0], history = readResults.slice(1).flatMap(result => result.results);
   const sortRows = (a, b) => String(b.event_date).localeCompare(String(a.event_date)) || String(b.created_at).localeCompare(String(a.created_at)) || String(b.record_id).localeCompare(String(a.record_id));
   const candidates = [...operations.results, ...history].sort(sortRows).slice(0, limit);
   if (resolveScope) {

@@ -43,6 +43,7 @@
 
   function timeoutForAction(action) {
     action = String(action || '');
+    if (action === 'startStockUploadWorker') return 300000;
     if (action === 'chatBootstrap') return 20000;
     if (action === 'uploadUsage' || action === 'previewSalesRepair' || action === 'repairSalesUpload') return 540000;
     if (/^chat(?:Create|Update|Delete)Task$/.test(action)) return 300000;
