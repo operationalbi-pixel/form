@@ -5850,9 +5850,11 @@ function mapStockHistoryQueryRow_(r) {
   if (recordType === 'OPNAME_DETAIL') {
     try {
       const audit = JSON.parse(info || '{}');
-      const auditQty = Number(audit.actualQty);
-      if (isFinite(auditQty)) opnameBalance = auditQty;
-      opnameDate = String(audit.eventDate || audit.effectiveDate || r.event_date || '').slice(0, 10);
+      const value = audit.actualQty === undefined || audit.actualQty === null || audit.actualQty === ''
+        ? audit.stockOpnameBalance : audit.actualQty;
+      const auditQty = Number(value);
+      if ((typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && isFinite(auditQty)) opnameBalance = auditQty;
+      opnameDate = String(audit.eventDate || audit.effectiveDate || audit.stockOpnameDate || r.event_date || '').slice(0, 10);
     } catch (error) { /* legacy audit without JSON */ }
   }
   if (isStockOpname) {
@@ -7790,14 +7792,10 @@ function cloudflareReadAllPages_(path, params, pageLimit, maxPages) {
 
 function cloudflareMovementToApp_(row) {
   const recordType = String(row.record_type || 'MOVEMENT').toUpperCase();
-  let opnameBalance = null, opnameDate = '';
-  if (recordType === 'OPNAME_DETAIL') {
-    try {
-      const detail = JSON.parse(String(row.info || '{}'));
-      opnameBalance = detail.stockOpnameBalance === undefined ? null : Number(detail.stockOpnameBalance);
-      opnameDate = String(detail.stockOpnameDate || row.event_date || '');
-    } catch (error) {}
-  }
+  // Reuse the Stock Card audit parser: current SO records store actualQty /
+  // eventDate; legacy records may store stockOpnameBalance / stockOpnameDate.
+  const opname = mapStockHistoryQueryRow_(row);
+  const opnameBalance = opname.opnameBalance, opnameDate = opname.opnameDate;
   return {
     recordType: recordType,
     recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
@@ -12234,7 +12232,7 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
           const history = (histories[code] || []).filter(function (movement) {
             return String(movement.date || '').slice(0, 10) <= date;
           });
-          const movementHistory = history.filter(function (movement) { return movement.recordType === 'MOVEMENT'; });
+          const movementHistory = applyStockHistoryAuditRows_(history);
           const snapshots = calculateFifoSnapshots_(movementHistory), dates = Object.keys(snapshots).sort();
           result[outlet][code][date] = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
             return { qty: Number(lot.qty || 0), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
@@ -12249,8 +12247,10 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
 
 function salesHistoryBalanceAtDate_(history, date) {
   let checkpoint = null;
-  (history || []).forEach(function (row) {
-    if (row.recordType !== 'OPNAME_DETAIL' || row.opnameBalance === null || !isFinite(Number(row.opnameBalance))) return;
+  // Detailed audit quantities override rounded SO movement descriptions.
+  const checkpoints = applyStockHistoryAuditRows_(history).concat((history || []).filter(function (row) { return row.recordType === 'OPNAME_DETAIL'; }));
+  checkpoints.forEach(function (row) {
+    if ((row.recordType !== 'OPNAME_DETAIL' && !(row.recordType === 'MOVEMENT' && row.movementType === 'Stock Opname')) || row.opnameBalance === null || row.opnameBalance === undefined || !isFinite(Number(row.opnameBalance))) return;
     const checkpointDate = String(row.opnameDate || row.date || '').slice(0, 10);
     if (!checkpointDate || checkpointDate > date) return;
     const created = stockMovementCreatedMillis_(row);
@@ -12261,7 +12261,8 @@ function salesHistoryBalanceAtDate_(history, date) {
   return (history || []).reduce(function (balance, row) {
     if (row.recordType !== 'MOVEMENT') return balance;
     const movementDate = String(row.date || '').slice(0, 10);
-    if (!movementDate || movementDate > date || row.movementType === 'Stock Opname') return balance;
+    if (!movementDate || movementDate > date) return balance;
+    if (checkpoint && row.movementType === 'Stock Opname') return balance;
     if (checkpoint && movementDate <= checkpoint.date) return balance;
     if (row.direction === 'IN') return balance + Number(row.qty || 0);
     if (row.direction === 'OUT') return balance - Number(row.qty || 0);
