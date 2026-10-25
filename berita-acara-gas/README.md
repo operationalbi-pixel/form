@@ -54,10 +54,18 @@ Deployment otomatis tidak melakukan migrasi atau penghapusan data.
 
 Halaman memakai CSS Tailwind yang sudah dibangun pada `TailwindStyles.html`; tidak menjalankan compiler Tailwind CDN saat masuk. Setelah mengubah class di dashboard/form, jalankan `npm run build:ba-css` dan commit hasilnya. File ini harus ikut deployment Apps Script.
 
-Dashboard BI-Space menyiapkan sesi BA di latar belakang untuk pengguna yang memiliki tujuan Berita Acara. Jalur `prepareOnly=1` tetap memerlukan handoff/sesi sah, tetapi tidak membuka dashboard atau membaca riwayat. Sesi singkat disimpan di sessionStorage tab dan terikat pada hash token BI-Space. Pada kunjungan berikutnya, pembukaan sesi BA dan pemeriksaan karyawan berjalan paralel; halaman ditampilkan hanya setelah keduanya siap dan fingerprint identitas cocok. Perubahan identitas atau sesi BA yang tidak tersedia kembali memakai handoff baru.
+Persiapan sesi BA di latar belakang dinonaktifkan: kunjungan dashboard tidak membuat handoff atau iframe BA. Jalur `prepareOnly=1` tetap memerlukan handoff/sesi sah, tetapi tidak membuka dashboard atau membaca riwayat. Sesi disimpan selama paling lama 30 menit di sessionStorage tab dan terikat pada hash token BI-Space. Sesi server dan identitas karyawan tetap divalidasi setiap pembukaan. Pada kunjungan berikutnya, pembukaan sesi BA dan pemeriksaan karyawan berjalan paralel; halaman ditampilkan hanya setelah keduanya siap dan fingerprint identitas cocok. Perubahan identitas atau sesi BA yang tidak tersedia kembali memakai handoff baru.
 
 Pustaka PDF dimuat saat tombol PDF digunakan. Font dan ikon tidak menahan parsing halaman. Tidak ada perubahan pada data transaksi atau keputusan approval.
 
 Deploy bersama backend BI-Space, halaman `docs/berita-acara.html`, `docs/ba-entry.js`, `docs/index.html`, `docs/api-client.js`, serta seluruh file proyek BA yang berubah. Workflow deployment GAS pada `main` mengikutsertakan file HTML baru.
 
 Untuk mengukur produksi, buka Berita Acara lalu periksa `window.baEntryPerformance` di console halaman pembungkus: `entryMs` adalah waktu sampai dashboard siap dan akun lolos pemeriksaan; `historyMs` adalah waktu sampai riwayat pertama siap; `resumed` menandai jalur sesi yang digunakan kembali. Ukur setelah deployment selesai, baik tanpa sesi tersimpan maupun setelah persiapan latar belakang. Target 3 detik tidak dapat disahkan hanya dari tes lokal karena waktu jaringan dan cold start GAS belum diukur.
+
+## Pengurangan kuota URL Fetch (25 Oktober 2026)
+
+- Daftar metadata Cloudflare disimpan dalam cache terkompresi selama 15 detik, dipisahkan menurut endpoint, kredensial, outlet, dan versi data. Validasi sesi tetap dilakukan sebelum membaca cache.
+- Setiap write Cloudflare yang berhasil mengganti versi cache. Pembacaan untuk keputusan approval, detail, dan verifikasi pembayaran tidak memakai cache daftar.
+- Ukuran cache dibatasi; cache rusak, terlalu besar, atau tidak tersedia tidak menggagalkan permintaan data.
+- Backend BI-Space tidak mengulang panggilan yang sudah ditolak karena kuota harian URL Fetch.
+- Perubahan ini mengurangi konsumsi kuota; tidak mereset kuota yang sudah habis. Migrasi transport browser langsung ke Worker belum diaktifkan dan memerlukan akses ke akun Cloudflare pemilik Worker produksi.

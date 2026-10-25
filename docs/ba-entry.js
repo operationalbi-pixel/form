@@ -8,7 +8,7 @@
   var clock=()=>performance.now();
   function escapeHtml(value){return String(value||'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
   function clearEntry(){try{sessionStorage.removeItem(cacheKey)}catch(error){}}
-  function fail(message){if(current)clearTimeout(current.timer);current=null;clearEntry();frame.src='about:blank';frame.style.visibility='hidden';state.style.display='grid';state.innerHTML='<div class="card"><strong>Berita Acara belum dapat dibuka</strong><p>'+escapeHtml(message)+'</p><button class="retry" type="button" onclick="location.reload()">Coba Lagi</button></div>'}
+  function fail(message){if(current)clearTimeout(current.timer);current=null;clearEntry();frame.src='about:blank';frame.style.visibility='hidden';state.style.display='grid';var quota=/urlfetch/i.test(String(message))&&/too many times for (?:one )?day|terlalu sering.*hari yang sama/i.test(String(message));state.innerHTML='<div class="card"><strong>Berita Acara belum dapat dibuka</strong><p>'+escapeHtml(quota?'Batas pemakaian harian layanan sudah tercapai. Akses dapat dicoba kembali setelah kuota pulih. Muat ulang berulang kali tidak akan memulihkan kuota.':message)+'</p>'+(quota?'<a class="retry" style="display:inline-block;text-decoration:none" href="index.html" target="_top">Kembali ke Dashboard</a>':'<button class="retry" type="button" onclick="location.reload()">Coba Lagi</button>')+'</div>'}
   function readEntry(){try{var entry=JSON.parse(sessionStorage.getItem(cacheKey)||'null');return entry&&entry.owner===owner&&entry.expiresAt>Date.now()&&/^[a-f0-9]{64}$/i.test(entry.session)&&entry.identityKey?entry:null}catch(error){return null}}
   function nonce(){var bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('')}
   function navigate(request,params){
@@ -22,7 +22,7 @@
     request.shown=true;clearTimeout(request.timer);
     frame.style.visibility='visible';state.style.display='none';
     var entry=request.ready;
-    if(entry.identityKey&&/^[a-f0-9]{64}$/i.test(entry.session||''))try{sessionStorage.setItem(cacheKey,JSON.stringify({owner:owner,session:entry.session,identityKey:entry.identityKey,expiresAt:Date.now()+300000}))}catch(error){}
+    if(entry.identityKey&&/^[a-f0-9]{64}$/i.test(entry.session||''))try{sessionStorage.setItem(cacheKey,JSON.stringify({owner:owner,session:entry.session,identityKey:entry.identityKey,expiresAt:Date.now()+1800000}))}catch(error){}
     global.baEntryPerformance={entryMs:Math.round(clock()-request.started),historyMs:request.historyReadyAt?Math.round(request.historyReadyAt-request.started):null,resumed:request.resumed};
     console.info('BA entry ready',global.baEntryPerformance);
     if(prewarm && global.parent!==global)global.parent.postMessage({bakerzinBaPrewarmComplete:true},location.origin);

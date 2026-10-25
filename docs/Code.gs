@@ -6797,6 +6797,8 @@ function cloudflareInventoryRequest_(method, path, payload) {
       }
     } catch (error) {
       lastMessage = String(error && error.message || error || 'Tidak dapat terhubung ke Cloudflare.');
+      // A daily Apps Script quota cannot recover through immediate retries.
+      if (/urlfetch/i.test(lastMessage) && /too many times for (?:one )?day|terlalu sering.*hari yang sama/i.test(lastMessage)) throw error;
       if (attempt === maxAttempts - 1) {
         throw new Error('Cloudflare inventory gagal setelah dicoba ulang: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
       }

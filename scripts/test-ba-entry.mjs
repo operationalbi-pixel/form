@@ -73,20 +73,16 @@ const failed=loader.startLoadingPDFLibs();scripts[2].onerror();await assert.reje
 assert.equal(loader.window.baPdfLoadPromise,null,'failed lazy downloads can retry');
 const retry=loader.startLoadingPDFLibs();scripts[3].onload();await tick();scripts[4].onload();await retry;
 assert.ok(css.includes('.hidden')&&css.includes('.border-green-600')&&css.includes('.text-red-600'));
-// Intentional warmup starts only for users with a BA destination, after dashboard setup.
+// Dashboard visits must not consume BA handoffs or URL Fetch quota.
 const index=await readFile('docs/index.html','utf8');
 const start=index.indexOf('    function scheduleBeritaAcaraWarmup('),end=index.indexOf('    function removeAppCache()',start);
-const scheduled=[],warmListeners={};let removed=0;
-const warmFrame={style:{},setAttribute(){},contentWindow:{},remove:()=>removed++};
-const warm={window:{addEventListener:(n,f)=>warmListeners[n]=f,removeEventListener(){}},location:{origin:'https://app.test'},
- readStoredToken:()=>token,isBeritaAcaraTarget:v=>v==='berita-acara',
- setTimeout:fn=>{scheduled.push(fn);return scheduled.length;},clearTimeout(){},
- document:{createElement:()=>warmFrame,body:{appendChild(){}}}};
+let scheduled=0;
+const warm={setTimeout:()=>scheduled++,document:{createElement:()=>{throw Error('Unexpected background frame')}}};
 vm.createContext(warm);vm.runInContext(index.slice(start,end),warm);
-warm.scheduleBeritaAcaraWarmup({tasks:[]});assert.equal(scheduled.length,0);
-warm.scheduleBeritaAcaraWarmup({tasks:[{target:'berita-acara'}]});assert.equal(scheduled.length,1);
-scheduled[0]();assert.equal(warmFrame.src,'berita-acara.html?prewarm=1');
-warmListeners.message({source:{},origin:'https://app.test',data:{bakerzinBaPrewarmComplete:true}});assert.equal(removed,0);
-warmListeners.message({source:warmFrame.contentWindow,origin:'https://app.test',data:{bakerzinBaPrewarmComplete:true}});assert.equal(removed,1);
+warm.scheduleBeritaAcaraWarmup({tasks:[{target:'berita-acara'}]});assert.equal(scheduled,0);
+// Quota exhaustion offers an explanation instead of a futile reload loop.
+h=await harness();h.calls[0].reject(new Error('Layanan terlalu sering diminta di hari yang sama: urlfetch.'));await tick();
+assert.match(h.state.innerHTML,/Batas pemakaian harian/);assert.doesNotMatch(h.state.innerHTML,/location.reload/);
+assert.match(h.state.innerHTML,/Kembali ke Dashboard/);
 new vm.Script(source);
-console.log('OK: BA resumes safely while revalidating the account, rejects stale/forged replies, falls back from evicted sessions, and defers PDF downloads.');
+console.log('OK: BA resumes with identity revalidation, rejects forged replies, disables background handoffs and explains daily quotas.');
