@@ -162,21 +162,9 @@
     function readAppCache(){try{var data=JSON.parse(window.localStorage.getItem('bakerzin_app_cache')||'null');return data&&data.user&&Array.isArray(data.tasks)?data:null}catch(error){return null}}
     function saveAppCache(data){try{window.localStorage.setItem('bakerzin_app_cache',JSON.stringify({user:data.user,tasks:data.tasks||[],pages:data.pages||[],completions:data.completions||{},news:data.news||[],appUrl:data.appUrl||'',completionOutlet:data.completionOutlet||'',cachedAt:Date.now()}));window.dispatchEvent(new CustomEvent('bakerzin:user-ready',{detail:data.user||null}));scheduleBeritaAcaraWarmup(data)}catch(error){}}
     function scheduleBeritaAcaraWarmup(data){
-      if(window.baWarmupScheduled || !readStoredToken())return;
-      const entries=(data.tasks||[]).concat(data.pages||[]);
-      if(!entries.some(entry=>isBeritaAcaraTarget(entry.target||entry.url||'')))return;
-      window.baWarmupScheduled=true;
-      const token=readStoredToken();
-      setTimeout(function(){
-        if(readStoredToken()!==token)return;
-        const frame=document.createElement('iframe');
-        frame.style.display='none';frame.setAttribute('aria-hidden','true');frame.title='Menyiapkan Berita Acara';
-        const timer=setTimeout(cleanup,65000);
-        function cleanup(){clearTimeout(timer);window.removeEventListener('message',done);frame.remove()}
-        function done(event){if(event.source===frame.contentWindow&&event.origin===location.origin&&event.data&&event.data.bakerzinBaPrewarmComplete)cleanup()}
-        window.addEventListener('message',done);
-        frame.src='berita-acara.html?prewarm=1';document.body.appendChild(frame);
-      },1500);
+      // Open BA only after an explicit user action. Background handoffs consume
+      // the deployment owner's daily URL Fetch quota even without opening BA.
+      return;
     }
     function removeAppCache(){try{window.localStorage.removeItem('bakerzin_app_cache');window.localStorage.removeItem('bakerzin_outlet_progress_cache')}catch(error){}}
     function requestedPage(){try{var value=new URLSearchParams(location.search).get('page')||'';return ['DAILY','WEEKLY','MONTHLY','YEARLY'].indexOf(value)>-1||/^PAGE:[A-Za-z0-9_-]+$/.test(value)?value:'dashboard'}catch(error){return 'dashboard'}}

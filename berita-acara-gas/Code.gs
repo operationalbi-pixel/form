@@ -693,6 +693,18 @@ function baCloudflareRequest_(
       JSON.stringify(payload);
   }
 
+  // Cache only list metadata, after getAllSubmissions has validated the session.
+  // Approval decisions and payment verification always read Cloudflare directly.
+  const readCache = baListReadCache_(options.method, path, conn);
+  if (readCache) {
+    try {
+      const packed = CacheService.getScriptCache().get(readCache.key);
+      if (packed) return JSON.parse(Utilities.ungzip(
+        Utilities.newBlob(Utilities.base64Decode(packed))
+      ).getDataAsString());
+    } catch (ignore) { /* Cache eviction or corruption falls through to Cloudflare. */ }
+  }
+
   const response =
     UrlFetchApp.fetch(
       conn.url +
@@ -750,7 +762,37 @@ function baCloudflareRequest_(
     );
   }
 
+  if (options.method !== 'get') {
+    baInvalidateListCache_();
+  } else if (readCache) {
+    try {
+      const packed = Utilities.base64Encode(
+        Utilities.gzip(Utilities.newBlob(JSON.stringify(body))).getBytes()
+      );
+      if (packed.length < 90000) CacheService.getScriptCache().put(readCache.key, packed, 15);
+    } catch (ignore) { /* A cache failure must not fail a successful request. */ }
+  }
   return body;
+}
+
+function baListReadCache_(method, path, conn) {
+  if (method !== 'get' || !/^\/v1\/ba\/submissions\?/.test(path)) return null;
+  try {
+    const version = PropertiesService.getScriptProperties().getProperty('BA_LIST_CACHE_VERSION') || 'initial';
+    const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+      JSON.stringify([conn.url, conn.apiKey, path, version]));
+    const digest = bytes.map(function (byte) { return ('0' + ((byte + 256) % 256).toString(16)).slice(-2); }).join('');
+    return { key: 'ba-list-v1:' + digest };
+  } catch (ignore) { return null; }
+}
+
+function baInvalidateListCache_() {
+  try {
+    PropertiesService.getScriptProperties().setProperty('BA_LIST_CACHE_VERSION', Utilities.getUuid());
+  } catch (error) {
+    // Never report a committed write as failed (which could cause duplicate submissions).
+    console.warn('Invalidasi cache BA ditunda; cache kedaluwarsa dalam 15 detik.');
+  }
 }
 
 function baDefaultApprovalConfig_() {
