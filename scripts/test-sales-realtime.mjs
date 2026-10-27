@@ -42,3 +42,36 @@ sync.edit('d',request(1),false);await assert.rejects(sync.flush('d'),/expired/);
 const html=fs.readFileSync('docs/sales-analysis.html','utf8');assert.ok(!html.includes('SalesSaveOutbox')&&!html.includes('sales-save-jobs.js'),'production page does not load or call the queue');
 assert.ok(html.includes('applySavedDaily(snap,result)')&&html.includes('updateModalSalesConfirmation(request,result)'),'confirmed saves update the selected panel and HQ modal');
 console.log('Realtime Sales: debounced direct saves, latest edits, confirmed-only status, failures/reload, explicit zero, account isolation and no job queue.');
+
+// Bounded retries resend the current draft with its original field baseline.
+const retryWrites=[],retryStatuses=[],sleeps=[];let retryLive;
+retryLive=context.window.SalesRealtime.create({storage,key:'retry',onStatus:(...args)=>retryStatuses.push(args),onSaved(){},sleep:async delay=>{sleeps.push(delay);retryLive.edit('d',{...request(30),payload:{...request(30).payload,expected:{sales:0}}},false);},write:async sent=>{retryWrites.push(sent);if(retryWrites.length<3)throw Error('Network temporarily unavailable');return {ok:true,sales:sent.payload.sales};}});
+retryLive.edit('d',{...request(20),payload:{...request(20).payload,expected:{sales:0}}},false);await retryLive.flush('d');
+assert.equal(retryWrites.length,3);assert.equal(retryWrites[0].payload.sales,20);assert.equal(retryWrites[1].payload.sales,30);assert.equal(retryWrites[1].payload.expected.sales,0);assert.equal(retryLive.hasDrafts(),false);assert.equal(sleeps.length,2);
+let exhausted=0;
+const failures=context.window.SalesRealtime.create({storage,key:'exhausted',onStatus(){},onSaved(){},sleep:async()=>{},write:async()=>{exhausted++;throw Error('Network failed');}});
+failures.edit('d',{...request(20),payload:{...request(20).payload,expected:{sales:0}}},false);
+await assert.rejects(failures.flush('d'),/Network/);assert.equal(exhausted,3);assert.equal(failures.hasDrafts(),true,'failure after bounded attempts retains the latest draft');
+let connection=false,offlineWrites=0;
+const reconnect=context.window.SalesRealtime.create({storage,key:'offline',isOnline:()=>connection,onStatus(){},onSaved(){},write:async sent=>{offlineWrites++;return {ok:true,sales:sent.payload.sales};}});
+reconnect.edit('d',{...request(50),payload:{...request(50).payload,expected:{sales:0}}},false);await reconnect.flush('d');assert.equal(offlineWrites,0);assert.equal(reconnect.state('d').state,'offline');
+connection=true;reconnect.resume();await tick();assert.equal(offlineWrites,1);assert.equal(reconnect.hasDrafts(),false);
+let conflictCalls=0,conflictRefresh=0;
+const conflict=context.window.SalesRealtime.create({storage,key:'conflict',onStatus(){},onSaved(){},onConflict(){conflictRefresh++;},sleep:async()=>assert.fail('conflicts are never retried automatically'),write:async()=>{conflictCalls++;return {ok:false,error:'SAVE_CONFLICT: data changed'};}});
+conflict.edit('d',{...request(70),payload:{...request(70).payload,expected:{sales:0}}},false);await assert.rejects(conflict.flush('d'),/SAVE_CONFLICT/);assert.equal(conflictCalls,1);assert.equal(conflictRefresh,1);assert.equal(conflict.hasDrafts(),true);
+assert.ok(!html.includes('id="salesRealtimeStatus"'),'the floating save notification box is removed');
+assert.ok(html.includes('id="salesAmountStatus"')&&html.includes('data-hq-status'),'save feedback is inline next to the inputs');
+
+const apiSource=fs.readFileSync('docs/api-client.js','utf8');
+const timeoutContext={};vm.createContext(timeoutContext);vm.runInContext(apiSource.slice(apiSource.indexOf('  function timeoutForAction('),apiSource.indexOf('  function call(action,')),timeoutContext);
+assert.equal(timeoutContext.timeoutForAction('salesAnalysisSaveDaily'),30000);assert.equal(timeoutContext.timeoutForAction('salesAnalysisDashboard'),300000);assert.equal(timeoutContext.timeoutForAction('uploadUsage'),540000);
+
+const rebased=[];
+const relay=context.window.SalesRealtime.create({storage,key:'relay',onStatus(){},onSaved(){},write:request=>new Promise(resolve=>rebased.push({request,resolve}))});
+const guardedRequest=(sales,base)=>({...request(sales),payload:{...request(sales).payload,expected:{sales:base}}});
+relay.edit('d',guardedRequest(1,0),false);let relaySave=relay.flush('d');await tick();
+relay.edit('d',guardedRequest(2,99),false);assert.equal(relay.drafts()[0][1].payload.expected.sales,0,'automatic edits retain their original baseline');
+rebased[0].resolve({ok:true,sales:1});await relaySave;
+assert.equal(relay.drafts()[0][1].payload.expected.sales,1,'a confirmed response rebases the latest unsent field');
+relaySave=relay.flush('d');await tick();assert.equal(rebased[1].request.payload.expected.sales,1);
+rebased[1].resolve({ok:true,sales:2});await relaySave;

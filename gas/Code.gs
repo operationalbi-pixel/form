@@ -17896,15 +17896,21 @@ function salesSheetDailyRecord_(sheet, headers, outlet, date) {
   return {record:latest,cacheKey:cacheKey,unique:candidates.length<=1};
 }
 
-function bqSyncDaily_(oc,key,year,month,week,dow,sales,analisa,status,submittedBy){
+function bqSyncDaily_(oc,key,year,month,week,dow,sales,analisa,status,submittedBy,expected){
   return salesSheetWithLock_(function(){
     var sheet=salesSheetEnsure_('daily_sales');
     var headers=sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0].map(function(value){return String(value||'').trim().toLowerCase();});
     var lookup=salesSheetDailyRecord_(sheet,headers,oc,key);
     var previous=lookup.record || {};
+    expected=expected&&typeof expected==='object'?expected:{};
+    if(sales!==undefined && Object.prototype.hasOwnProperty.call(expected,'sales') && Number(previous.sales||0)!==Number(expected.sales) && Number(previous.sales||0)!==sales)
+      throw new Error('SAVE_CONFLICT: Sales sudah berubah di sesi lain. Muat ulang data dan periksa draf sebelum menyimpan lagi.');
+    if(analisa!==undefined && Object.prototype.hasOwnProperty.call(expected,'analisa') && String(previous.analisa_harian||'').trim()!==String(expected.analisa||'').trim() && String(previous.analisa_harian||'').trim()!==analisa)
+      throw new Error('SAVE_CONFLICT: Analisa sudah berubah di sesi lain. Muat ulang data dan periksa draf sebelum menyimpan lagi.');
     var savedSales = sales === undefined ? Number(previous.sales)||0 : sales;
     var savedAnalysis = analisa === undefined ? String(previous.analisa_harian||'') : analisa;
     var savedStatus = savedAnalysis.length >= (Number(readConfig_().min_analysis_chars)||20) ? 'done' : 'pending';
+    if(previous.__rowNumber && Number(previous.sales||0)===savedSales && String(previous.analisa_harian||'')===savedAnalysis) return {sales:savedSales,analisa:savedAnalysis,status:savedStatus};
     var now=new Date();
     var record={outlet_code:oc,date:key,year:year,month:month,week:week,day_of_week:dow,sales:savedSales,analisa_harian:savedAnalysis,analisa_status:savedStatus,submitted_by:submittedBy||oc,submitted_at:previous.submitted_at||now,updated_at:now};
     var rowNumber=previous.__rowNumber || sheet.getLastRow()+1;
@@ -17916,11 +17922,19 @@ function bqSyncDaily_(oc,key,year,month,week,dow,sales,analisa,status,submittedB
     return {sales:savedSales,analisa:savedAnalysis,status:savedStatus};
   });
 }
-function bqSyncWeekly_(oc,periodKey,year,month,week,periodStart,periodEnd,total,analisa,status,submittedBy){
-  salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('weekly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,week:week,period_start:periodStart,period_end:periodEnd,total_sales:total,analisa_mingguan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
+function salesSheetCheckAnalysis_(tab,periodKey,field,analisa,expected){
+  if(!expected||!Object.prototype.hasOwnProperty.call(expected,'analisa'))return;
+  var rows=salesSheetLatest_(salesSheetTable_(tab).rows,function(row){return String(row.period_key||'');});
+  var current=rows.filter(function(row){return row.period_key===periodKey;})[0];
+  var text=String(current&&current[field]||'').trim();
+  if(text!==String(expected.analisa||'').trim() && text!==analisa)
+    throw new Error('SAVE_CONFLICT: Analisa sudah berubah di sesi lain. Muat ulang data dan periksa draf sebelum menyimpan lagi.');
 }
-function bqSyncMonthly_(oc,periodKey,year,month,total,target,achievementPct,analisa,status,submittedBy){
-  salesSheetWithLock_(function(){salesSheetUpsertUnlocked_('monthly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,total_sales:total,target:target,achievement_pct:achievementPct,analisa_bulanan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
+function bqSyncWeekly_(oc,periodKey,year,month,week,periodStart,periodEnd,total,analisa,status,submittedBy,expected){
+  salesSheetWithLock_(function(){salesSheetCheckAnalysis_('weekly_analysis',periodKey,'analisa_mingguan',analisa,expected);salesSheetUpsertUnlocked_('weekly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,week:week,period_start:periodStart,period_end:periodEnd,total_sales:total,analisa_mingguan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
+}
+function bqSyncMonthly_(oc,periodKey,year,month,total,target,achievementPct,analisa,status,submittedBy,expected){
+  salesSheetWithLock_(function(){salesSheetCheckAnalysis_('monthly_analysis',periodKey,'analisa_bulanan',analisa,expected);salesSheetUpsertUnlocked_('monthly_analysis',function(row){return String(row.period_key||'');},{outlet_code:oc,period_key:periodKey,year:year,month:month,total_sales:total,target:target,achievement_pct:achievementPct,analisa_bulanan:analisa||'',status:status||'',submitted_by:submittedBy||oc});});
 }
 function bqSyncTarget_(oc,year,month,target){
   salesSheetWithLock_(function(){
@@ -18040,7 +18054,7 @@ function saveDaily(token, payload) {
   var saved;
 
   try {
-    saved = bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, '', sess.outlet_code);
+    saved = bqSyncDaily_(oc, key, dt.getFullYear(), dt.getMonth()+1, weekOfMonth_(dt), dowName_(dt.getDay()), sales, analisa, '', sess.outlet_code, payload.expected);
   } catch (e) {
     Logger.log('BQ save daily gagal: ' + e.message);
     return { ok:false, error:'Gagal simpan ke Google Sheets: ' + e.message };
@@ -18122,7 +18136,7 @@ function saveWeekly(token, payload) {
   var range = [summary.start, summary.end];
 
   try {
-    bqSyncWeekly_(oc, periodKey, year, month, week, range[0], range[1], total, analisa, status, sess.outlet_code);
+    bqSyncWeekly_(oc, periodKey, year, month, week, range[0], range[1], total, analisa, status, sess.outlet_code, payload.expected);
   } catch (e) {
     Logger.log('BQ save weekly gagal: ' + e.message);
     return { ok:false, error:'Gagal simpan analisa mingguan ke Google Sheets: ' + e.message };
@@ -18150,7 +18164,7 @@ function saveMonthly(token, payload) {
   var pct = summary.pct;
 
   try {
-    bqSyncMonthly_(oc, periodKey, year, month, total, target, pct, analisa, status, sess.outlet_code);
+    bqSyncMonthly_(oc, periodKey, year, month, total, target, pct, analisa, status, sess.outlet_code, payload.expected);
   } catch (e) {
     Logger.log('BQ save monthly gagal: ' + e.message);
     return { ok:false, error:'Gagal simpan analisa bulanan ke Google Sheets: ' + e.message };
@@ -18691,7 +18705,7 @@ function getSalesAnalysisBootstrap(token, year, month) {
     var result = context.session;
     result.boot = SALES_ANALYSIS.getBootstrap();
     result.boot.outlets = context.outlets;
-    result.realtimeSaveVersion = 1;
+    result.realtimeSaveVersion = 2;
     result.realtimeOwner = context.employee && context.employee.nik || '';
     if (year !== undefined && month !== undefined) {
       var y = Number(year), m = Number(month);
@@ -18748,6 +18762,7 @@ function getSalesAnalysisDailyReport(token, reportDate) {
 function saveSalesAnalysisDaily(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
     var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
     salesSaveDirectGuard_(outlet, 'DAILY', payload || {});
     return SALES_ANALYSIS.saveDaily(context.session.token, payload || {});
@@ -18757,6 +18772,7 @@ function saveSalesAnalysisDaily(token, payload) {
 function saveSalesAnalysisWeekly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
     var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
     salesSaveDirectGuard_(outlet, 'WEEKLY', payload || {});
     return SALES_ANALYSIS.saveWeekly(context.session.token, payload || {});
@@ -18766,6 +18782,7 @@ function saveSalesAnalysisWeekly(token, payload) {
 function saveSalesAnalysisMonthly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
     var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
     salesSaveDirectGuard_(outlet, 'MONTHLY', payload || {});
     return SALES_ANALYSIS.saveMonthly(context.session.token, payload || {});

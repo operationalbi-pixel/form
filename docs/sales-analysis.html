@@ -6,7 +6,7 @@
 <title>Bakerzin · Sales Analysis</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <script src="config.js"></script>
-<script src="api-client.js?v=20261001-sopi12"></script>
+<script src="api-client.js?v=20261027-sales-resilient2"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -603,6 +603,7 @@
           <input class="num mono" type="text" id="dayAmount" inputmode="numeric" autocomplete="off" placeholder="0" />
           <button class="save" id="saveDay">Simpan</button>
         </div>
+        <small id="salesAmountStatus" role="status" aria-live="polite" style="display:block;padding:0 12px 8px;color:var(--mute)"></small>
       </div>
 
       <div id="hqDetailPanel" class="card hq-detail" style="display:none">
@@ -634,7 +635,7 @@
             <textarea class="analisa" id="anaBox" maxlength="1000" placeholder="Tuliskan analisa atau klik + Template untuk auto-isi struktur…"></textarea>
           </div>
           <div class="actions">
-            <div class="left-act" id="savedAt">—</div>
+            <div class="left-act" id="savedAt" role="status" aria-live="polite">—</div>
             <button class="primary" id="submitBtn">Submit →</button>
           </div>
         </div>
@@ -683,7 +684,6 @@
 </div>
 
 <button id="salesLegacyCheck" type="button" hidden style="position:fixed;bottom:60px;right:90px;z-index:1400">Periksa simpan lama</button>
-<div id="salesRealtimeStatus" role="status" aria-live="polite" style="position:fixed;bottom:18px;right:90px;max-width:calc(100vw - 120px);pointer-events:none;z-index:1400;background:#fff;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:12px">Simpan otomatis aktif</div>
 <div class="toast" id="toast">Tersimpan</div>
 <div class="loader" id="loader"><div><div>Memuat…</div><div class="bar"></div></div></div>
 
@@ -721,7 +721,7 @@
 }());
 </script>
 
-<script src="sales-realtime.js?v=20261027-direct1"></script>
+<script src="sales-realtime.js?v=20261027-resilient2"></script>
 <script>
 const BOOT = {today:new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Jakarta'}),outlets:[],brand:'Bakerzin'};
 const ID_MONTHS_LONG = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
@@ -1157,6 +1157,7 @@ function render(){
   `;
 
   renderCalendar();
+  refreshSalesInlineStatus();
 }
 
 function setDelta(id, cur, prev, suffix){
@@ -1614,8 +1615,8 @@ document.getElementById('dayAmount').addEventListener('input', e=>{
   saveSalesEditor('sales');
 });
 
-document.getElementById('saveDay').addEventListener('click', ()=>saveSalesEditor('sales',true));
-document.getElementById('submitBtn').addEventListener('click', ()=>saveSalesEditor('analysis',true));
+document.getElementById('saveDay').addEventListener('click', ()=>saveSalesEditor('sales',true,true));
+document.getElementById('submitBtn').addEventListener('click', ()=>saveSalesEditor('analysis',true,true));
 
 /* Realtime save: a single latest draft for each outlet/date/scope. */
 let salesRealtime=null;
@@ -1625,20 +1626,27 @@ function salesRequestId(request){
   return [request.fn,p.outlet_code,p.date||[p.year,p.month,p.week||'month'].join('-')].join('|');
 }
 function updateSalesSaveStatus(id,status,message){
-  const el=document.getElementById('salesRealtimeStatus');
-  const otherDrafts=status==='saved'&&salesRealtime&&salesRealtime.hasDrafts();
-  el.textContent=otherDrafts?'Sebagian perubahan belum tersimpan':message;el.dataset.state=otherDrafts?'dirty':status;
   if(message.includes('penyimpanan lama'))document.getElementById('salesLegacyCheck').hidden=false;
-  if(status==='error')el.style.color='#b42318';else el.style.color=status==='saved'?'#18734a':'';
-  if(status==='saved' || status==='error')document.getElementById('savedAt').textContent=message;
+  const compact=status==='error'?(/SAVE_CONFLICT/.test(message)?'Data berubah · periksa lalu tekan Simpan':'Belum tersimpan · tekan Simpan untuk mencoba lagi'):message;
+  const paint=el=>{if(!el)return;el.textContent=compact;el.title=message;el.dataset.state=status;el.style.color=status==='error'?'#b42318':status==='saved'?'#18734a':'';};
+  const current=createSalesEditorRequest('analysis',false),sales=createSalesEditorRequest('sales',false);
+  if(!id || (current&&salesRequestId(current)===id))paint(document.getElementById('savedAt'));
+  if(!id || (sales&&salesRequestId(sales)===id))paint(document.getElementById('salesAmountStatus'));
+  document.querySelectorAll('[data-hq-record]').forEach(box=>{if(box.dataset.hqRecord===id)paint(box.querySelector('[data-hq-status]'));});
+}
+function refreshSalesInlineStatus(){
+  if(!salesRealtime)return;
+  for(const field of ['sales','analysis']){const request=createSalesEditorRequest(field,false);if(!request)continue;const id=salesRequestId(request),status=salesRealtime.state(id);if(status)updateSalesSaveStatus(id,status.state,status.message);}
 }
 function startSalesRealtime(mainToken,owner){
   salesDraftStorageKey='sales-editor-drafts-v2:'+(owner||mainToken);
   salesRealtime=SalesRealtime.create({storage:localStorage,key:salesDraftStorageKey,
     write:request=>{if(localStorage.getItem('bakerzin_session')!==mainToken)throw Error('Sesi akun berubah. Muat ulang sebelum menyimpan.');return call(request.fn,session.token,request.payload);},
+    isOnline:()=>navigator.onLine!==false,onConflict:()=>refreshMonthInBackground(),
     onStatus:updateSalesSaveStatus,onSaved:(request,result)=>{if(localStorage.getItem('bakerzin_session')===mainToken)applySalesConfirmation(request,result);}});
   for(const [,request] of salesRealtime.drafts())restoreSalesDraft(request);
   if(salesRealtime.hasDrafts())updateSalesSaveStatus('','dirty','Ada draf belum tersimpan. Buka tanggal/outlet terkait dan tekan Simpan.');
+  window.addEventListener('online',()=>salesRealtime.resume());
   window.addEventListener('beforeunload',event=>{if(salesRealtime.hasDrafts()||salesRealtime.busy()){event.preventDefault();event.returnValue='';}});
 }
 async function salesLegacyApi(action,args=[]){
@@ -1729,15 +1737,20 @@ function createSalesEditorRequest(field,manual){
     payload.sales=raw?Number(raw):'';
   }
   if(field==='analysis'||(manual&&snap.scope==='day'&&session.role!=='admin'))payload.analisa=snap.analysisInput;
+  const selected=state.dash.days[snap.day-1];
+  const period=day?null:snap.scope==='week'?state.dash.weeks.find(w=>w.w===snap.week):state.dash.month;
+  payload.expected={};
+  if(Object.hasOwn(payload,'sales'))payload.expected.sales=Number(selected&&selected.sales||0);
+  if(Object.hasOwn(payload,'analisa'))payload.expected.analisa=day?String(selected&&selected.daily&&selected.daily.text||''):String(period&&period.analysis||'');
   return {fn:day?'saveDaily':snap.scope==='week'?'saveWeekly':'saveMonthly',payload,snapshot:snap,valid};
 }
-function saveSalesEditor(field,manual=false){
+function saveSalesEditor(field,manual=false,review=false){
   if(!salesRealtime){if(manual)toast('Simpan otomatis belum siap. Muat ulang halaman.',true);return Promise.resolve();}
   const request=createSalesEditorRequest(field,manual);if(!request)return Promise.resolve();
-  const id=salesRequestId(request);salesRealtime.edit(id,request,!manual);
+  const id=salesRequestId(request);salesRealtime.edit(id,request,!manual,review);
   if(request.valid===false){updateSalesSaveStatus(id,'dirty','Isi nominal Sales; gunakan 0 jika tidak ada penjualan.');return Promise.resolve();}
   if(!manual)return Promise.resolve();
-  return salesRealtime.flush(id).catch(error=>toast(error.message||'Gagal menyimpan',true));
+  return salesRealtime.flush(id).catch(()=>{});
 }
 function applySalesConfirmation(request,result){
   const snap=request.snapshot,p=request.payload;
@@ -2018,7 +2031,7 @@ function renderOutletBox(o, c, day){
     </div>
     <div class="ob-diff ${dCls}">${diffText} vs ${prevLabel}</div>
     <div class="ob-ana">${escapeHtml(anaContent)}</div>
-    ${session.role==='admin'?`<div class="ob-hq-entry"><span class="rp">Rp</span><input type="text" inputmode="numeric" autocomplete="off" value="${fmtIDRInput(sales)}" aria-label="Sales Harian ${escapeHtml(o.code)}" data-hq-sales><button type="button" data-hq-save>Simpan</button></div>`:''}
+    ${session.role==='admin'?`<div class="ob-hq-entry"><span class="rp">Rp</span><input type="text" inputmode="numeric" autocomplete="off" value="${fmtIDRInput(sales)}" aria-label="Sales Harian ${escapeHtml(o.code)}" data-hq-sales><button type="button" data-hq-save>Simpan</button></div><small data-hq-status role="status" aria-live="polite"></small>`:''}
   `;
   if(session.role==='admin'){
     const input = box.querySelector('[data-hq-sales]');
@@ -2029,19 +2042,22 @@ function renderOutletBox(o, c, day){
     const id=salesRequestId({fn:'saveDaily',payload});box.dataset.hqRecord=id;
     const stored=salesRealtime&&salesRealtime.drafts().find(([key])=>key===id);
     if(stored)input.value=stored[1].snapshot.salesInput;
-    const save=(manual=false)=>{
+    const save=(manual=false,review=false)=>{
       formatIDRInputElement(input);
       const raw=input.value.replace(/[^\d]/g,'');
-      const request={fn:'saveDaily',payload:{...payload,sales:raw?Number(raw):''},snapshot:{...snap,salesInput:input.value},valid:!!raw};
+      const current=state.dash&&state.dash.days[snap.day-1];
+      const confirmed=state.dash.isAggregate?(current&&current.contributors||[]).find(c=>c.outlet===o.code):current;
+      const expectedSales=state.year===snap.year&&state.month===snap.month?Number(confirmed&&confirmed.sales||0):sales;
+      const request={fn:'saveDaily',payload:{...payload,sales:raw?Number(raw):'',expected:{sales:expectedSales}},snapshot:{...snap,salesInput:input.value},valid:!!raw};
       if(!salesRealtime)return;
       salesEditorDrafts.set(snap.salesKey,input.value);
-      salesRealtime.edit(id,request,!manual);
-      if(manual && raw)void salesRealtime.flush(id).catch(error=>toast(error.message,true));
+      salesRealtime.edit(id,request,!manual,review);
+      if(manual && raw)void salesRealtime.flush(id).catch(()=>{});
     };
     input.addEventListener('input',()=>save());
     input.addEventListener('blur',()=>{if(salesEditorDrafts.has(snap.salesKey))save(true);});
-    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();save(true);}});
-    button.addEventListener('click',()=>save(true));
+    input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();save(true,true);}});
+    button.addEventListener('click',()=>save(true,true));
   }
   return box;
 }
@@ -2411,7 +2427,7 @@ window.addEventListener('keydown', e=>{
   try{
     const res=await call('login',state.year,state.month);
     if(!res || !res.ok) throw new Error(res&&res.error||'Sesi BI-Space tidak dapat dipakai.');
-    if(res.realtimeSaveVersion!==1)throw new Error('Backend simpan langsung sedang diperbarui. Muat ulang beberapa saat lagi.');
+    if(res.realtimeSaveVersion!==2)throw new Error('Backend simpan langsung sedang diperbarui. Muat ulang beberapa saat lagi.');
     Object.assign(BOOT,res.boot||{});
     session.token='BI_SPACE_PROXY';
     session.outlet_code=res.outlet_code;
