@@ -70,10 +70,39 @@ remote[0]={...remote[0],status:'COMPLETE',result:{ok:true,sales:100}};await outb
 assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account')).length,0);
 console.log('Legacy Sales jobs remain recoverable; new queue acceptance is disabled.');
 
-// Direct writes fail closed while an older accepted job can still touch the outlet.
+// A legacy failure cannot block another date, scope or independent field in that outlet.
 let legacyJobs=[],guardQuery='';
-context.cloudflareQueryString_=query=>{guardQuery=query;return 'scope';};
-context.cloudflareInventoryRequest_=(method,path)=>{assert.equal(method,'GET');assert.equal(path,'/v1/application-records?scope');return {data:legacyJobs};};
-context.salesSaveDirectGuard_('BISS');assert.equal(guardQuery.outlet,'BISS');assert.equal(guardQuery.engine,'SALES');assert.equal(guardQuery.unresolved,1);
-legacyJobs=[{status:'PROCESSING'}];assert.throws(()=>context.salesSaveDirectGuard_('BISS'),/penyimpanan lama/);
-legacyJobs=[{status:'ACTION_REQUIRED'}];assert.throws(()=>context.salesSaveDirectGuard_('BISS'),/penyimpanan lama/);
+context.cloudflareReadAllPages_=(_path,query)=>{guardQuery=query;return legacyJobs;};
+const daily={date:'2026-10-26',sales:100};
+context.salesSaveDirectGuard_('BISS','DAILY',daily);
+assert.equal(guardQuery.outlet,'BISS');assert.equal(guardQuery.engine,'SALES');assert.equal(guardQuery.unresolved,1);
+legacyJobs=[{outlet:'BISS',type:'DAILY',status:'ACTION_REQUIRED',payload:{date:'2026-10-25',sales:50}}];
+context.salesSaveDirectGuard_('BISS','DAILY',daily);
+legacyJobs[0].payload.date='2026-10-26';
+assert.throws(()=>context.salesSaveDirectGuard_('BISS','DAILY',daily),/penyimpanan lama/);
+context.salesSaveDirectGuard_('BISS','DAILY',{date:'2026-10-26',analisa:'An independent field'});
+legacyJobs[0].payload.preserveSales=true;
+context.salesSaveDirectGuard_('BISS','DAILY',daily);
+legacyJobs=[{outlet:'BISS',type:'WEEKLY',status:'PROCESSING',payload:{year:2026,month:10,week:3}}];
+context.salesSaveDirectGuard_('BISS','DAILY',daily);
+context.salesSaveDirectGuard_('BISS','WEEKLY',{year:2026,month:10,week:4});
+assert.throws(()=>context.salesSaveDirectGuard_('BISS','WEEKLY',{year:2026,month:10,week:3}),/penyimpanan lama/);
+context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10});
+legacyJobs=[{outlet:'BISS',type:'MONTHLY',payload:{year:2026,month:9}}];
+context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10});
+legacyJobs[0].payload.month=10;assert.throws(()=>context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10}),/penyimpanan lama/);
+
+// Reproduce production: a HQ employee's queued DAILY job targets a store, not an admin outlet.
+data.clear();account.outlet='BIHQ';account.nik='N1';
+data.set('hq',{...job,jobId:'hq',role:'admin',spreadsheetId:'new-sheet',createdAt:'3',status:'QUEUED',payload:{outlet_code:'BISS',date:'2026-10-26',sales:350}});
+let directory=[];
+context.salesSaveJobs_=()=>[...data.values()].filter(j=>j.status!=='COMPLETE');
+context.SALES_ANALYSIS.syncOutlets=rows=>{directory=rows;};
+context.SALES_ANALYSIS.issueSession=(_code,_name,role)=>{assert.equal(role,'admin');return {token:'fresh-worker-token'};};
+context.SALES_ANALYSIS.saveDaily=(_token,payload)=>{
+ assert.ok(directory.some(o=>o.code===payload.outlet_code&&o.role==='store'),'HQ target must pass the real saveDaily outlet validation');
+ writes.push(payload.sales);return {ok:true,sales:payload.sales};
+};
+context.processSalesSaveJobs();assert.equal(data.get('hq').status,'COMPLETE');assert.equal(writes.at(-1),350);
+context.processSalesSaveJobs();assert.equal(writes.filter(value=>value===350).length,1,'repaired legacy job is not written twice');
+console.log('Sales legacy guard is scoped to matching records and fields; HQ recovery retains store outlet metadata.');

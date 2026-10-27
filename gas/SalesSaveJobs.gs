@@ -19,10 +19,22 @@ function queueSalesSave(token, input) {
     throw new Error('Penyimpanan antrean sudah dihentikan. Muat ulang Analisa Sales Harian untuk memakai simpan langsung. Draf Anda belum tersimpan di server.');
   });
 }
-// An older accepted write must finish before a direct save can replace its row.
-function salesSaveDirectGuard_(outlet) {
-  const response=cloudflareInventoryRequest_('GET','/v1/application-records?'+cloudflareQueryString_({table:'background_upload_jobs',engine:'SALES',unresolved:1,outlet:outlet,limit:1}));
-  if((response.data||[]).length)throw new Error('Ada penyimpanan lama untuk outlet ini yang belum selesai. Periksa Status Simpan Lama sebelum mencoba simpan langsung; draf tetap aman.');
+// Only an unresolved write to the same record and field can conflict.
+function salesSaveDirectGuard_(outlet, type, payload) {
+  payload=payload||{};
+  const jobs=cloudflareReadAllPages_('/v1/application-records',{table:'background_upload_jobs',engine:'SALES',unresolved:1,outlet:outlet},1000,100);
+  const writes=function(p,field){return p[field==='sales'?'preserveSales':'preserveAnalysis']!==true&&Object.prototype.hasOwnProperty.call(p,field);};
+  const conflict=jobs.some(function(job){
+    if(job.outlet!==outlet||job.type!==type)return false;
+    const old=job.payload||{};
+    if(type==='DAILY'){
+      if(String(old.date||'').slice(0,10)!==String(payload.date||'').slice(0,10))return false;
+      return ['sales','analisa'].some(function(field){return writes(old,field)&&writes(payload,field);});
+    }
+    return Number(old.year)===Number(payload.year)&&Number(old.month)===Number(payload.month)&&
+      (type!=='WEEKLY'||Number(old.week)===Number(payload.week));
+  });
+  if(conflict)throw new Error('Data ini masih memiliki penyimpanan lama yang belum selesai. Draf tetap aman; coba Simpan lagi setelah pemulihan selesai.');
 }
 function getSalesSaveJobs(token, requests) {
   return safe_(function(){const session=requireSession_(token),employee=salesAnalysisEmployee_(session.nik);assertEmployeeActive_(employee);
@@ -56,7 +68,8 @@ function processSalesSaveJobs() {
         if(role!==job.role||(role!=='admin'&&salesAnalysisCanonicalOutletCode_(employee.outlet)!==job.outlet))throw new Error('Hak akses outlet berubah. Periksa penyimpanan ini.');
         job.status='PROCESSING';writeGoodsUploadJob_(job);
         SALES_ANALYSIS.useDatabase(job.spreadsheetId);
-        SALES_ANALYSIS.syncOutlets([{code:job.outlet,name:job.outlet,role:role}]);
+        // The target is an outlet, even when the original submitting employee is HQ.
+        SALES_ANALYSIS.syncOutlets([{code:job.outlet,name:job.outlet,role:'store'}]);
         const session=SALES_ANALYSIS.issueSession(job.outlet,job.outlet,role);
         const method={DAILY:'saveDaily',WEEKLY:'saveWeekly',MONTHLY:'saveMonthly'}[job.type];
         const result=SALES_ANALYSIS[method](session.token,job.payload);
