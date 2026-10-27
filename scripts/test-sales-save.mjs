@@ -298,3 +298,7 @@ storage.clear();storage.set('sales-save-outbox-v1:account',JSON.stringify([legac
 client.BAKERZIN_API.call=async()=>({ok:true,data:{jobs:[{requestId:'old2',status:'COMPLETE'}]}});
 vm.runInContext("startSalesRealtime('account');",client);await client.recoverSalesLegacyDrafts('account');
 assert.equal(vm.runInContext('salesRealtime.hasDrafts()',client),false,'older local snapshots cannot resurrect over a newer completed legacy write');
+
+client.render();input('dayAmount','0');saving=click('saveDay');await tick();
+calls.at(-1).resolve({ok:true,sales:0,analisa:'Saved analysis with an explicit zero',status:'done'});await saving;
+assert.equal(element('dayAmount').value,'0','confirmed zero remains visible instead of looking like a cleared unsaved field');

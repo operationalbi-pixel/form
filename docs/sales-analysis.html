@@ -1090,7 +1090,8 @@ function render(){
     document.getElementById('inpMeta').textContent =
       ID_DOW_LONG[dt.getDay()]+' · '+pad2(day)+' '+ID_MONTHS_SHORT[month-1]+' · '+(session.role==='admin'?'BIHQ untuk '+state.outletFilter:(selDay&&selDay.daily.status==='done'?'tersimpan':'belum disimpan'));
     const salesKey=salesEditorKey('sales');
-    const amountValue=salesEditorDrafts.has(salesKey)?salesEditorDrafts.get(salesKey):dSales>0?fmtIDR(dSales):'';
+    const hasDailyRecord=!!(selDay&&selDay.daily&&selDay.daily.status&&selDay.daily.status!=='na');
+    const amountValue=salesEditorDrafts.has(salesKey)?salesEditorDrafts.get(salesKey):(dSales>0||hasDailyRecord)?fmtIDR(dSales):'';
     if(document.getElementById('dayAmount').value!==amountValue)document.getElementById('dayAmount').value=amountValue;
     document.getElementById('saveDay').disabled = false;
   }
