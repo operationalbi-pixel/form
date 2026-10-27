@@ -283,6 +283,9 @@ function apiActions_() {
     showcaseLogAging: getShowcaseLogAging,
     saveShowcaseLog: saveShowcaseLog,
     queueShowcaseLog: queueShowcaseLog,
+    queueShowcaseRow: queueShowcaseRow,
+    showcaseRealtimeGrant: getShowcaseRealtimeGrant,
+    showcaseResolveLegacy: resolveShowcaseLegacyRequest,
     complete: markTaskComplete
   });
 }
@@ -1200,7 +1203,8 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
     const snapshot = outlet ? readShowcaseLogSnapshot_(outlet, eventDate) : { totals: {}, aging: {}, progress: null };
     const totals = snapshot.totals, aging = eventDate === todayIso_() ? snapshot.aging : {};
-    const items = outlet ? readShowcaseItems_().map(function (item) {
+    const showcaseMasterItems=outlet?readShowcaseItems_():[];
+    const items = outlet ? showcaseMasterItems.map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
       const age = aging[String(item.code || '').trim().toUpperCase()] || aging['NAME|' + String(item.name || '').trim().toLowerCase()] || {};
       const emptyAging = { fresh: 0, green: 0, yellow: 0, red: 0 };
@@ -1222,9 +1226,11 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const completions = {};
     const selectedProgress = snapshot.progress && (snapshot.progress.days || []).filter(function (day) { return day.date === eventDate; })[0];
     if (task && selectedProgress && selectedProgress.complete) completions[task.id + '|' + eventDate] = true;
+    const directConfig=cloudflareInventoryConfig_(),grants={};showcaseMasterItems.forEach(function(item){grants[item.code]=showcaseDirectGrantForItem_(employee,outlet,item,directConfig);});
     return {
+      realtime:{url:directConfig.url+'/v1/showcase-direct',grants:grants},
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
-      items: items, progress: snapshot.progress, taskId: task ? task.id : '',
+      autosaveVersion: 2, items: items, progress: snapshot.progress, taskId: task ? task.id : '',
       tasks: tasks, pages: readPagesForEmployee_(employee), completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
@@ -4281,7 +4287,7 @@ function buildRepairUploadPlan_(context, payload) {
   return { stockRows: rows, pendingRows: [], masterChanges: [], batchEnds: batchEnds, result: { repaired: true, sourceRowsRepaired: plan.changedHashes.length } };
 }
 function buildBackgroundUploadPlan_(type, context, payload) {
-  if(type==='SHOWCASE_LOG')return buildShowcaseSavePlan_(context,payload);
+  if(type==='SHOWCASE_LOG')return payload.rowEdit ? buildShowcaseRowSavePlan_(context,payload) : buildShowcaseSavePlan_(context,payload);
   if (type === 'GOODS_DELIVERY') return buildGoodsDeliveryPlan_(context, payload);
   if (type === 'GOODS_RECEIPT') return buildGoodsReceiptPlan_(context, payload);
   if (type === 'WIP_PRODUCTION') return buildWipUploadPlan_(context, payload);
@@ -4341,7 +4347,7 @@ function goodsUploadJobs_(activeOnly,ownerNik) {
   Object.keys(all).filter(function(key){return key.indexOf('goods-upload-job-')===0}).forEach(function(key){try{const job=JSON.parse(all[key]);if(!known[job.jobId])jobs.push(job)}catch(error){console.error('Metadata upload tidak valid: '+key)}});return jobs.filter(function(job){return (!activeOnly||['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0)&&(!ownerNik||job.ownerNik===ownerNik)});
 }
 function goodsUploadJobView_(job) {
-  return { requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
+  return { rowEdit:job.rowEdit||null, requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
     status: job.status, workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
     total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
 }
@@ -4454,7 +4460,7 @@ function getGoodsUploadRequest(token, id) {
     const payload = stockPositionJobJson_(job.requestDriveId);
     if(job.sourceDriveId)payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
     payload.requestId = job.requestId; payload.type = job.type;
-    return { job: goodsUploadJobView_(job), payload: payload };
+    return { job: goodsUploadJobView_(job), payload: payload, rowState:job.rowEdit&&job.rowEdit.revision>1?readShowcaseRowEdit_(job.rowEdit.recordId+'-'+(job.rowEdit.revision-1)):null };
   });
 }
 function retryGoodsUpload(token, id) {
@@ -4529,6 +4535,7 @@ function processGoodsUploadJobs() {
     }
     job.workerLeaseUntil = 0;
     if (job.processed >= total) {
+      if(plan.showcaseRowCheckpoint)commitShowcaseRowCheckpoint_(plan.showcaseRowCheckpoint);
       job.result=plan.result||null;
       if(job.type==='SHOWCASE_LOG'){removeScriptCacheKeys_([showcaseAgingCacheKey_(job.outlet,job.eventDate)]);if(plan.result&&plan.result.completed)markShowcaseLogTaskComplete_(employee,job.outlet,job.eventDate);}
       job.status = 'COMPLETE'; job.progress = 100; job.stage = 'Upload selesai. Transaksi sudah tersimpan.'; job.error = '';
@@ -19783,7 +19790,7 @@ function cloudflareItemSummaryRows_(table,outlet,location,item,bounds) {
   });return Object.keys(latest).sort().map(function(key){return latest[key];});
 }
 
-function buildShowcaseSavePlan_(context, payload) {
+function buildShowcaseSavePlan_(context, payload, preparedSnapshot) {
   const employee=context.employee,outlet=context.outlet;
     const eventDate = normalizeDate_(payload.eventDate, true);
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
@@ -19792,7 +19799,7 @@ function buildShowcaseSavePlan_(context, payload) {
     const showcaseItems = readShowcaseItems_();
     const itemMap = {};
     showcaseItems.forEach(function (item) { itemMap[item.code.toUpperCase()] = item; });
-    const snapshot = readShowcaseLogSnapshot_(outlet, eventDate);
+    const snapshot = preparedSnapshot || readShowcaseLogSnapshot_(outlet, eventDate);
     const existingTotals = snapshot.totals;
     const entries = rawEntries.map(function (raw) {
       const item = itemMap[String(raw.itemCode || '').trim().toUpperCase()];
@@ -19966,5 +19973,133 @@ function queueShowcaseLog(token, payload) {
       if(previous){try{DriveApp.getFileById(previous).setTrashed(true);}catch(error){console.error(error);}}
     }finally{gate.releaseLock();}
     scheduleGoodsUploadWorker_();return goodsUploadJobView_(readGoodsUploadJob_(jobId));
+  });
+}
+
+// Versioned row edits keep autosave retries and later corrections distinct.
+function showcaseRowEditIdentity_(employee, outlet, eventDate, entry, edit) {
+  if (!edit || !/^[a-zA-Z0-9-]{16,64}$/.test(String(edit.id || '')) || !Number.isSafeInteger(edit.revision) || edit.revision < 1) throw new Error('Identitas revisi Showcase tidak valid.');
+  const itemCode = String(entry.itemCode || '').trim().toUpperCase();
+  if (!itemCode) throw new Error('Kode item Showcase diperlukan.');
+  return { id: String(edit.id), revision: edit.revision, itemCode: itemCode,
+    recordId: digest_([employee.nik, outlet, eventDate, itemCode, edit.id].join('|')),
+    requestId: 'row-' + edit.id + '-' + edit.revision };
+}
+function readShowcaseRowEdit_(recordId) {
+  const response = cloudflareInventoryRequest_('GET', '/v1/application-records?' + cloudflareQueryString_({table:'showcase_row_edits',record_id:recordId,limit:1}));
+  return (response.data || [])[0] || null;
+}
+function queueShowcaseRow(token, payload) {
+  return safe_(function () {
+    payload = payload || {};
+    const context = resolveStockContext_(token, payload.outlet, 'Showcase'), eventDate = normalizeDate_(payload.eventDate, true);
+    if (eventDate > todayIso_()) throw new Error('Tanggal Showcase tidak boleh melebihi hari ini.');
+    if (!Array.isArray(payload.entries) || payload.entries.length !== 1) throw new Error('Autosave harus berisi satu baris Showcase.');
+    const entry = payload.entries[0], edit = showcaseRowEditIdentity_(context.employee, context.outlet, eventDate, entry, payload.rowEdit);
+    if (payload.requestId !== edit.requestId) throw new Error('Identitas permintaan tidak sesuai revisi Showcase.');
+    const request = {outlet:context.outlet,location:'Showcase',eventDate:eventDate,entries:[entry],rowEdit:{id:edit.id,revision:edit.revision}};
+    const sourceHash = digest_(JSON.stringify(request)), jobId = digest_([context.employee.nik, edit.requestId].join('|'));
+    const gate = LockService.getUserLock(); gate.waitLock(30000);
+    let job;
+    try {
+      job = readGoodsUploadJob_(jobId);
+      if (job) {
+        if (job.ownerNik !== context.employee.nik || job.type !== 'SHOWCASE_LOG' || job.outlet !== context.outlet || job.eventDate !== eventDate || !job.rowEdit || job.rowEdit.recordId !== edit.recordId) throw new Error('Identitas autosave sudah digunakan untuk baris lain.');
+        if (job.status !== 'ACTION_REQUIRED') {
+          if (job.sourceHash !== sourceHash) throw new Error('Revisi ini sudah dikirim dari tab lain. Muat ulang untuk memeriksa hasilnya.');
+          scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job);
+        }
+        if (job.planDriveId || Number(job.processed || 0) > 0) throw new Error('Penyimpanan sebelumnya harus diselesaikan sebelum koreksi.');
+      }
+      ensureStockMaintenanceTrigger_();
+      const now = new Date().toISOString(), file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(request), 'application/json', 'TEMP_SHOWCASE_ROW_' + jobId + '.json'));
+      const previous = job && job.requestDriveId;
+      job = Object.assign(job || {}, {jobId:jobId,requestId:edit.requestId,ownerNik:context.employee.nik,type:'SHOWCASE_LOG',outlet:context.outlet,location:'Showcase',eventDate:eventDate,
+        rowEdit:edit,fileName:'Showcase ' + eventDate,sourceHash:sourceHash,requestDriveId:file.getId(),status:'QUEUED',stage:'Menyimpan baris Showcase.',createdAt:job && job.createdAt || now,
+        processed:0,total:0,progress:3,retryCount:0,error:'',workerLeaseUntil:0,planDriveId:''});
+      // Preserve the immutable request when a D1 acknowledgement is uncertain.
+      writeGoodsUploadJob_(job);
+      if (previous) { try { DriveApp.getFileById(previous).setTrashed(true); } catch (error) { console.error(error); } }
+    } finally { gate.releaseLock(); }
+    scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job);
+  });
+}
+function buildShowcaseRowSavePlan_(context, payload) {
+  const eventDate = normalizeDate_(payload.eventDate, true), raw = payload.entries[0];
+  const edit = showcaseRowEditIdentity_(context.employee, context.outlet, eventDate, raw, payload.rowEdit);
+  const previous = edit.revision > 1 ? readShowcaseRowEdit_(edit.recordId + '-' + (edit.revision - 1)) : null, version = Number(previous && previous.revision || 0);
+  const committed = readShowcaseRowEdit_(edit.recordId + '-' + edit.revision);
+  const sourceHash = digest_(JSON.stringify(payload));
+  if (committed && committed.sourceHash === sourceHash) return {stockRows:[],pendingRows:[],masterChanges:[],result:{saved:true,rowEdit:edit}};
+  if (committed || version !== edit.revision - 1) throw new Error('Urutan revisi Showcase berubah. Muat ulang dan periksa Status Simpan.');
+  const snapshot = readShowcaseLogSnapshot_(context.outlet, eventDate);
+  const item = readShowcaseItems_().filter(function(candidate) { return candidate.code.toUpperCase() === edit.itemCode; })[0];
+  if (!item) throw new Error('Item Showcase tidak ditemukan. Muat ulang halaman.');
+  const day = snapshot.totals[item.name.toLowerCase()] || {}, oldValues = previous && previous.values || {}, values = {}, translated = {itemCode:edit.itemCode};
+  [['inQty','inTotal','totalIn','hasInInput','hasInTotal'],['soldQty','soldTotal','totalSold','hasSoldInput','hasSoldTotal'],['wasteQty','wasteTotal','totalWaste','hasWasteInput','hasWasteTotal']].forEach(function(fields) {
+    const qty=fields[0], total=fields[1], hasQty=fields[3], hasTotal=fields[4];
+    values[qty] = Number(oldValues[qty] || 0);
+    if (!raw[hasQty] && !raw[hasTotal]) return;
+    const next = Number(raw[hasTotal] ? raw[total] : raw[qty]);
+    if (!isFinite(next) || next < 0) throw new Error(item.name + ': jumlah harus berupa angka 0 atau lebih.');
+    const delta = Math.round((next - values[qty]) * 1000000) / 1000000;
+    // Absolute day-total corrections reset this input contribution; later input starts from zero.
+    values[qty] = raw[hasTotal] ? 0 : next;
+    translated[hasTotal] = true;
+    translated[total] = raw[hasTotal] ? next : Math.round((Number(day[fields[2]] || 0) + delta) * 1000000) / 1000000;
+  });
+  const plan = buildShowcaseSavePlan_(context, {eventDate:eventDate,entries:[translated]}, snapshot);
+  plan.showcaseRowCheckpoint = {recordId:edit.recordId + '-' + edit.revision,id:edit.id,revision:edit.revision,itemCode:edit.itemCode,ownerNik:context.employee.nik,outlet:context.outlet,eventDate:eventDate,values:values,sourceHash:sourceHash};
+  plan.result.rowEdit = Object.assign({}, edit, {values:values});
+  return plan;
+}
+function commitShowcaseRowCheckpoint_(checkpoint) {
+  const previous = readShowcaseRowEdit_(checkpoint.recordId);
+  if (previous && Number(previous.revision) === checkpoint.revision && previous.sourceHash !== checkpoint.sourceHash) throw new Error('Konflik revisi Showcase. Hubungi administrator.');
+  if (previous) return;
+  cloudflareStoreApplicationRecords_('showcase_row_edits', [{insertId:checkpoint.recordId,json:checkpoint}]);
+}
+
+function showcaseDirectGrantForItem_(employee,outlet,item,config) {
+  const issued=Math.floor(Date.now()/1000),claims={aud:'showcase-direct-v1',iat:issued,exp:issued+300,owner:employee.nik,outlet:outlet,
+    item:{code:item.code,name:item.name,category:item.category,unit:item.unit,productName:item.productName,productUnit:item.productUnit,productQty:item.productQty}};
+  const encoded=Utilities.base64EncodeWebSafe(JSON.stringify(claims),Utilities.Charset.UTF_8).replace(/=+$/,'');
+  const signature=Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature('showcase-direct-v1.'+encoded,config.apiKey,Utilities.Charset.UTF_8)).replace(/=+$/,'');
+  return {token:encoded+'.'+signature,expiresAt:claims.exp*1000};
+}
+function getShowcaseRealtimeGrant(token,requestedOutlet,itemCode) {
+  return safe_(function(){
+    const context=resolveStockContext_(token,requestedOutlet,'Showcase'),config=cloudflareInventoryConfig_();
+    const item=readShowcaseItems_().filter(function(row){return row.code===String(itemCode||'');})[0];
+    if(!item)throw new Error('Item Showcase tidak ditemukan. Muat ulang halaman.');
+    return Object.assign({url:config.url+'/v1/showcase-direct',outlet:context.outlet,itemCode:item.code},showcaseDirectGrantForItem_(context.employee,context.outlet,item,config));
+  });
+}
+
+// Retire an uncommitted legacy request under its original acceptance lock before
+// recovering its inputs into direct row saves. Accepted/partially written work is never cancelled.
+function resolveShowcaseLegacyRequest(token,payload) {
+  return safe_(function(){
+    payload=payload||{};const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const id=payload.jobId?String(payload.jobId):digest_([employee.nik,String(payload.requestId||'')].join('|'));
+    const gate=LockService.getUserLock();gate.waitLock(30000);
+    try{
+      let job=readGoodsUploadJob_(id),request;
+      if(job){
+        if(job.ownerNik!==employee.nik||job.type!=='SHOWCASE_LOG')throw new Error('Permintaan Showcase bukan milik akun ini.');
+        if(job.status==='MIGRATED_TO_DIRECT')return {job:goodsUploadJobView_(job),payload:job.migrationPayload,migrated:true};
+        if(job.status!=='ACTION_REQUIRED'||job.planDriveId||Number(job.processed||0)>0)return {job:goodsUploadJobView_(job),migrated:false};
+        request=stockPositionJobJson_(job.requestDriveId);request.requestId=job.requestId;
+      }else{
+        if(!/^[a-zA-Z0-9-]{16,100}$/.test(String(payload.requestId||''))||!Array.isArray(payload.entries)||!payload.entries.length)throw new Error('Data pemulihan Showcase tidak valid.');
+        const context=resolveStockContext_(token,payload.outlet,'Showcase'),eventDate=normalizeDate_(payload.eventDate,true);
+        request={outlet:context.outlet,location:'Showcase',eventDate:eventDate,entries:payload.entries,requestId:payload.requestId};
+        const acceptedShape={outlet:request.outlet,location:'Showcase',eventDate:eventDate,entries:request.entries},now=new Date().toISOString();
+        job={jobId:id,requestId:request.requestId,ownerNik:employee.nik,type:'SHOWCASE_LOG',outlet:request.outlet,location:'Showcase',eventDate:eventDate,sourceHash:digest_(JSON.stringify(acceptedShape)),createdAt:now,processed:0,total:0,progress:0,workerLeaseUntil:0,planDriveId:''};
+      }
+      if(employee.outlet!=='BIHQ'&&employee.outlet!==job.outlet)throw new Error('Akses outlet sudah berubah.');
+      job.status='MIGRATED_TO_DIRECT';job.stage='Input dipulihkan untuk penyimpanan langsung.';job.error='';job.migrationPayload=request;writeGoodsUploadJob_(job);
+      return {job:goodsUploadJobView_(job),payload:request,migrated:true};
+    }finally{gate.releaseLock();}
   });
 }

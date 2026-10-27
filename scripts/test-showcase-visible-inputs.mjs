@@ -14,9 +14,10 @@ const ctx={STATE:{token:'token',user:{nik:'N1'},outlet:'BISS',items:[item],draft
   BAKERZIN_API:{call:async(name,args)=>{calls.push({name,args});return replies.shift();}}};
 vm.createContext(ctx);
 vm.runInContext(slice('    function collectEntries(){','    var SHOWCASE_SAVES='),ctx);
+vm.runInContext(slice('    function draftQty(', '    function showcaseAgingVisible('),ctx);
 vm.runInContext(slice('    var SHOWCASE_SAVES=','    byId(\'eventDate\').value=today()'),ctx);
 vm.runInContext(slice('    function inputHtml(', '    function actorInfoHtml('),ctx);
-ctx.refreshShowcaseSaves=()=>{};
+ctx.refreshShowcaseSaves=()=>{};ctx.startShowcaseWorkers=()=>{};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 // Consolidated #229 behavior: confirmed busy acceptance retries the same request.
 replies=Array.from({length:20},()=>({ok:false,error:'Batas waktu penguncian habis: proses lain menahan kunci terlalu lama.'}));
@@ -52,7 +53,7 @@ ctx.STATE.saving=true;replies=[{ok:false,error:'read failed'}];ctx.call('read',[
 vm.runInContext(slice('    function refreshShowcaseSaves(){','    function retryShowcaseSave('),ctx);
 ctx.STATE.saving=false;ctx.STATE.user={nik:'N1'};ctx.STATE.outlet='BISS';ctx.STATE.items=[item];ctx.STATE.drafts={0:{soldQty:'4'}};
 ctx.SHOWCASE_SAVES.jobs=[];let freshReads=0;
-ctx.applyShowcaseData=()=>{freshReads++;};ctx.writeShowcaseCache=()=>{};
+ctx.applyShowcaseData=data=>{const drafts=ctx.showcaseDraftsByCode();ctx.STATE.items=data.items;ctx.restoreShowcaseDrafts('2026-10-08',drafts);freshReads++;};ctx.writeShowcaseCache=()=>{};
 const completed={jobId:'JOB',requestId:id,type:'SHOWCASE_LOG',status:'COMPLETE',outlet:'BISS',eventDate:'2026-10-08'};
 calls=[];replies=[{ok:true,data:{jobs:[completed]}},{ok:true,data:{items:[{code:'OTHER'},item]}}];
 ctx.refreshShowcaseSaves();await tick();
