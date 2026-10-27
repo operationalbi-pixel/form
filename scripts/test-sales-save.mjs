@@ -327,3 +327,11 @@ const gateway={safe_:fn=>{try{return {ok:true,data:fn()};}catch(error){return {o
 vm.createContext(gateway);vm.runInContext(between(backend,'function saveSalesAnalysisDaily(', 'function saveSalesAnalysisGlobal('),gateway);
 assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1}).ok,false,'old unguarded clients must reload before writing');
 assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1,expected:{sales:0}}).ok,true);
+
+// A retired, globally drained legacy queue needs no network lookup during draft recovery.
+storage.clear();const acceptedOld={...legacyEntry('accepted',{sales:100}),jobId:'confirmed-old-job'};
+storage.set('sales-save-outbox-v1:account',JSON.stringify([acceptedOld,legacyEntry('local-only',{sales:200})]));
+client.BAKERZIN_API.call=async()=>assert.fail('retired legacy recovery must not invoke UrlFetch');
+vm.runInContext("startSalesRealtime('account',undefined,true);",client);await client.recoverSalesLegacyDrafts('account');
+assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account:retired-backup')).length,2,'original old requests remain archived before migration');
+assert.equal(vm.runInContext('salesRealtime.drafts()[0][1].payload.sales',client),200,'only the unaccepted local draft needs review');

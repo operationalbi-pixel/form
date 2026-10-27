@@ -18706,6 +18706,7 @@ function getSalesAnalysisBootstrap(token, year, month) {
     result.boot = SALES_ANALYSIS.getBootstrap();
     result.boot.outlets = context.outlets;
     result.realtimeSaveVersion = 2;
+    result.legacyQueueRetired = true;
     result.realtimeOwner = context.employee && context.employee.nik || '';
     if (year !== undefined && month !== undefined) {
       var y = Number(year), m = Number(month);
