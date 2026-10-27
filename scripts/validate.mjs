@@ -1245,7 +1245,7 @@ if (salesAnalysisHtml.includes('Done Report <b>') || salesAnalysisHtml.includes(
 if (!salesAnalysisHtml.includes('id="dayAmount" inputmode="numeric"') || !salesAnalysisHtml.includes("dayAmount').addEventListener('input'") || !salesAnalysisHtml.includes('const fmtIDRInput = value =>')) {
   failures.push('Input Sales Harian belum memformat pemisah ribuan secara realtime');
 }
-if (!salesAnalysisHtml.includes('outlet_code:targetOutlet') || !salesAnalysisHtml.includes('data-hq-sales') || !salesAnalysisHtml.includes('function saveHqDailyFromModal(')) {
+if (!salesAnalysisHtml.includes('outlet_code:outlet') || !salesAnalysisHtml.includes('data-hq-sales') || !salesAnalysisHtml.includes('updateModalSalesConfirmation(request,result)')) {
   failures.push('BIHQ belum dapat menyimpan Sales Harian untuk outlet terpilih dan dari modal harian');
 }
 if (!backend.includes("oc = String(payload.outlet_code || '').trim().toUpperCase()") || !backend.includes("outlet.role !== 'admin' && outlet.code === oc")) {

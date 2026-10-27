@@ -66,7 +66,7 @@ assert.throws(()=>boot.getSalesAnalysisBootstrap('session',2026,13),/Periode/);
 // New dashboard responses eliminate the separate targets request; old servers fall back.
 const calls=[];
 const elements=new Map();
-const ui={state:{year:2026,month:10,outletFilter:'BISS',targetsCache:{}},session:{token:'session'},salesSavePending:false,monthLoadId:0,
+const ui={state:{year:2026,month:10,outletFilter:'BISS',targetsCache:{}},session:{token:'session'},salesSavePending:false,monthLoadId:0,salesViewVersions:new Map(),salesViewKey:(y,m,o)=>[y,m,o].join('|'),
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,{classList:{add(){},remove(){}},textContent:''});return elements.get(id);}},
   pad2:v=>String(v).padStart(2,'0'),showLoader(){},render(){},toast(){},
   call:async fn=>{calls.push(fn);return fn==='getMonthDashboard'?{targets:{BISS:1200},defaultTarget:1000}:{targets:{BISS:1300},defaultTarget:1000};}};

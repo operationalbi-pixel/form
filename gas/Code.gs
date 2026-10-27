@@ -18130,7 +18130,7 @@ function saveWeekly(token, payload) {
 
   audit_(oc, sess.outlet_code, 'save_weekly', 'week', periodKey, payload);
   clearDashboardCache_();
-  return { ok:true, period:periodKey, status:status, total:total, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
+  return { ok:true, period:periodKey, status:status, total:total, analisa:analisa, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
 }
 
 function saveMonthly(token, payload) {
@@ -18158,7 +18158,7 @@ function saveMonthly(token, payload) {
 
   audit_(oc, sess.outlet_code, 'save_monthly', 'month', periodKey, payload);
   clearDashboardCache_();
-  return { ok:true, period:periodKey, status:status, total:total, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
+  return { ok:true, period:periodKey, status:status, total:total, analisa:analisa, syncedTo:'Google Sheets', dataSource:'Google Sheets' };
 }
 
 /* ============================================================
@@ -18691,6 +18691,8 @@ function getSalesAnalysisBootstrap(token, year, month) {
     var result = context.session;
     result.boot = SALES_ANALYSIS.getBootstrap();
     result.boot.outlets = context.outlets;
+    result.realtimeSaveVersion = 1;
+    result.realtimeOwner = context.employee && context.employee.nik || '';
     if (year !== undefined && month !== undefined) {
       var y = Number(year), m = Number(month);
       if (!Number.isInteger(y) || y < 2000 || y > 2100 || !Number.isInteger(m) || m < 1 || m > 12) throw new Error('Periode analisa tidak valid.');
@@ -18746,6 +18748,8 @@ function getSalesAnalysisDailyReport(token, reportDate) {
 function saveSalesAnalysisDaily(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
+    salesSaveDirectGuard_(outlet);
     return SALES_ANALYSIS.saveDaily(context.session.token, payload || {});
   });
 }
@@ -18753,6 +18757,8 @@ function saveSalesAnalysisDaily(token, payload) {
 function saveSalesAnalysisWeekly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
+    salesSaveDirectGuard_(outlet);
     return SALES_ANALYSIS.saveWeekly(context.session.token, payload || {});
   });
 }
@@ -18760,6 +18766,8 @@ function saveSalesAnalysisWeekly(token, payload) {
 function saveSalesAnalysisMonthly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
+    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
+    salesSaveDirectGuard_(outlet);
     return SALES_ANALYSIS.saveMonthly(context.session.token, payload || {});
   });
 }

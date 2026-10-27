@@ -150,15 +150,21 @@ function dashboard() {
 const elements = new Map();
 const handlers = new Map();
 function element(id) {
-  if (!elements.has(id)) elements.set(id, { value:'', style:{}, classList:{add(){},remove(){},toggle(){}},
+  if (!elements.has(id)) elements.set(id, { value:'', style:{}, dataset:{}, classList:{add(){},remove(){},toggle(){}},
     addEventListener(type, callback) { handlers.set(`${id}:${type}`, callback); } });
   return elements.get(id);
 }
 const calls = [];
 const messages = [];
+const storage=new Map();
+const timers=new Map();let timerId=0;
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const client = {
-  console, Map,
-  document: { getElementById: element },
+  console, Map, Object, JSON, Promise,
+  window:{addEventListener(){}},
+  localStorage:{getItem:key=>key==='bakerzin_session'?'account':storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
+  setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
+  document: { getElementById: element,querySelectorAll:()=>[] },
   state: {year:2026,month:10,day:6,scope:'day',outletFilter:'BISS',dash:dashboard(),targetsCache:{'2026-10':{}},defaultTarget:0},
   session: {role:'store',outlet_code:'BISS',token:'session'},
   pad2: value => String(value).padStart(2,'0'),
@@ -172,15 +178,17 @@ const client = {
   call: (fn, ...args) => { const pending=deferred(); calls.push({fn,args,...pending}); return pending.promise; }
 };
 vm.createContext(client);
+vm.runInContext(await readFile('docs/sales-realtime.js','utf8'),client);client.SalesRealtime=client.window.SalesRealtime;
 vm.runInContext(
   between(html, 'let monthLoadId =', 'const fmtIDR =') +
   between(html, 'async function loadMonth(', '/* target cache helpers */') +
   between(html, 'function render(){', 'function setDelta(') +
   between(html, 'function getAnalisaTextForCurrent(){', 'function renderStatement(') +
-  between(html, "document.getElementById('anaBox').addEventListener('input'", '/* ============= DAY DETAIL MODAL'), client
+  between(html, "document.getElementById('anaBox').addEventListener('input'", '/* ============= DAY DETAIL MODAL') +
+  between(html,'function updateModalSalesConfirmation(', 'function escapeHtml('), client
 );
-vm.runInContext('refreshMonthInBackground = function(){};', client);
-const click = id => handlers.get(`${id}:click`)();
+vm.runInContext("refreshMonthInBackground = function(){}; startSalesRealtime('account');", client);
+const click = async id => {const operation=handlers.get(`${id}:click`)();await tick();return operation;};
 function input(id, value) {
   element(id).value=value;
   handlers.get(`${id}:input`)({target:element(id)});
@@ -188,10 +196,10 @@ function input(id, value) {
 client.render();
 input('anaBox', analysis);
 input('dayAmount', '1250');
-let saving = click('saveDay');
+let saving = click('saveDay');await tick();
 assert.equal(calls[0].args[1].analisa, analysis, 'Simpan persists the visible daily analysis');
 assert.equal(calls[0].args[1].sales, 1250);
-await click('saveDay');
+void click('saveDay');await tick();
 assert.equal(calls.length, 1, 'repeated clicks do not create another save');
 calls[0].resolve({ok:true,sales:1250,analisa:analysis,status:'done'});
 await saving;
@@ -201,28 +209,32 @@ assert.equal(client.state.dash.weeks[0].total, 1250);
 assert.equal(client.state.dash.month.total, 1250);
 
 input('anaBox', 'Draft that must survive a failed save');
-saving = click('saveDay');
+saving = click('saveDay');await tick();
 calls.at(-1).reject(new Error('Database temporarily unavailable'));
 await saving;
 client.render();
 assert.equal(element('anaBox').value, 'Draft that must survive a failed save');
 assert.match(messages.at(-1).message, /Database temporarily unavailable/, 'show the actual save error');
 
+input('anaBox',analysis);
+saving=click('saveDay');await tick();
+calls.at(-1).resolve({ok:true,sales:1250,analisa:analysis,status:'done'});await saving;
+
 client.state.scope='week';
 client.render();
 input('anaBox', 'Unsubmitted weekly analysis must remain');
 input('dayAmount', '1500');
-saving = click('saveDay');
-assert.equal(calls.at(-1).args[1].preserveAnalysis, true, 'weekly text must not overwrite daily analysis');
-assert.equal(calls.at(-1).args[1].analisa, analysis, 'older GAS deployments receive the saved daily text');
+saving = click('saveDay');await tick();
+assert.equal(calls.at(-1).args[1].analisa, undefined, 'weekly text must not overwrite daily analysis');
+assert.equal(calls.at(-1).args[1].sales,1500,'sales-only save sends only the edited field');
 calls.at(-1).resolve({ok:true,sales:1500,analisa:analysis,status:'done'});
 await saving;
 assert.equal(element('anaBox').value, 'Unsubmitted weekly analysis must remain');
 
 client.state.scope='day'; client.render();
 input('anaBox', analysis);
-saving=click('submitBtn');
-assert.equal(calls.at(-1).args[1].preserveSales, true, 'analysis submit must not overwrite concurrent sales with the dashboard value');
+saving=click('submitBtn');await tick();
+assert.equal(calls.at(-1).args[1].sales, undefined, 'analysis submit must not overwrite concurrent sales with the dashboard value');
 calls.at(-1).resolve({ok:true,sales:2000,analisa:analysis,status:'done'});
 await saving;
 assert.equal(element('dayAmount').value, '2000');
@@ -231,7 +243,7 @@ assert.equal(element('dayAmount').value, '2000');
 const olderLoad=client.loadMonth(2026,10,true);
 const olderCall=calls.at(-1);
 input('anaBox', 'Analysis written while an earlier refresh is running');
-saving=click('saveDay');
+saving=click('saveDay');await tick();
 const saveCall=calls.at(-1);
 saveCall.resolve({ok:true,sales:2000,analisa:'Analysis written while an earlier refresh is running',status:'done'});
 await saving;
@@ -251,3 +263,38 @@ const refresh=client.loadMonth(2026,10,true);
 calls.at(-1).resolve(dashboard()); await refresh;
 assert.equal(element('anaBox').value, 'Unsaved draft during background refresh');
 console.log('OK: Sales saves persist visible input, preserve partial fields and drafts, flush under lock, and ignore stale refreshes.');
+
+// New text typed during a slow acknowledgement remains visible and unconfirmed.
+input('anaBox','First text sent to the server');
+saving=click('submitBtn');await tick();const firstTextCall=calls.at(-1);
+input('anaBox','Latest text typed during the request');
+firstTextCall.resolve({ok:true,sales:2000,analisa:'First text sent to the server',status:'done'});await saving;
+assert.equal(element('anaBox').value,'Latest text typed during the request');
+assert.equal(client.state.dash.days[5].daily.text,'First text sent to the server','panel model contains only confirmed text');
+// No mouse click is needed: the debounce sends the latest draft, never the intermediate one.
+const callbacks=[...timers.values()];timers.clear();for(const fn of callbacks)fn();await tick();
+const automaticCall=calls.find(call=>call.fn==='saveDaily'&&call.args[1].analisa==='Latest text typed during the request');
+assert.ok(automaticCall,'latest daily draft is automatically saved');
+automaticCall.resolve({ok:true,sales:2000,analisa:'Latest text typed during the request',status:'done'});await tick();
+assert.equal(client.state.dash.days[5].daily.text,'Latest text typed during the request');
+
+// Old outbox entries become reviewed drafts, never another queue or silent replay.
+client.fmtIDRInput=value=>String(value??'');
+client.BAKERZIN_API={call:async(action,args)=>{assert.equal(action,'salesSaveJobs');return {ok:true,data:{jobs:[]}};}};
+const oldSnapshot={year:2026,month:10,day:6,outlet:'ALL',scope:'day'};
+const legacyEntry=(id,payload)=>({requestId:id,fn:'saveDaily',payload:{outlet_code:'BISS',date:'2026-10-06',...payload},snapshot:oldSnapshot});
+storage.clear();
+storage.set('sales-save-outbox-v1:account',JSON.stringify([
+  legacyEntry('old1',{sales:100}),legacyEntry('old2',{sales:200,analisa:'Old text'}),legacyEntry('old3',{analisa:'Newest text',preserveSales:true})
+]));
+vm.runInContext("startSalesRealtime('account');",client);
+await client.recoverSalesLegacyDrafts('account');
+let recovered=JSON.parse(storage.get('sales-editor-drafts-v2:account'));
+assert.equal(recovered.length,1);assert.equal(recovered[0][1].payload.sales,200);assert.equal(recovered[0][1].payload.analisa,'Newest text');
+assert.equal(recovered[0][1].snapshot.outlet,'BISS','HQ modal drafts retain their actual target outlet');
+assert.equal(recovered[0][1].snapshot.salesInput,'200');assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account')).length,0);
+assert.equal(vm.runInContext('salesRealtime.busy()',client),false,'recovered drafts are not submitted without review');
+storage.clear();storage.set('sales-save-outbox-v1:account',JSON.stringify([legacyEntry('old1',{sales:100}),legacyEntry('old2',{sales:200})]));
+client.BAKERZIN_API.call=async()=>({ok:true,data:{jobs:[{requestId:'old2',status:'COMPLETE'}]}});
+vm.runInContext("startSalesRealtime('account');",client);await client.recoverSalesLegacyDrafts('account');
+assert.equal(vm.runInContext('salesRealtime.hasDrafts()',client),false,'older local snapshots cannot resurrect over a newer completed legacy write');
