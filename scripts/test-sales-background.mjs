@@ -92,17 +92,25 @@ legacyJobs=[{outlet:'BISS',type:'MONTHLY',payload:{year:2026,month:9}}];
 context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10});
 legacyJobs[0].payload.month=10;assert.throws(()=>context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10}),/penyimpanan lama/);
 
-// Reproduce production: a HQ employee's queued DAILY job targets a store, not an admin outlet.
+// Reproduce the production failure with the real session/directory/save implementation.
+const backend=fs.readFileSync('gas/Code.gs','utf8'),cache=new Map();
+const extract=(start,end)=>backend.slice(backend.indexOf(start),backend.indexOf(end,backend.indexOf(start)+start.length));
+const engine={Date,OUTLETS:[{code:'BIHQ',role:'admin'},{code:'BISS',role:'store'}],APP_CONFIG:{},
+ Utilities:{getUuid:()=>randomUUID()},CacheService:{getScriptCache:()=>({put:(k,v)=>cache.set(k,v),get:k=>cache.get(k)})},
+ parseDateKey_:value=>new Date(value+'T00:00:00Z'),dateKey_:date=>date.toISOString().slice(0,10),weekOfMonth_:()=>5,dowName_:()=> 'Sen',
+ audit_(){},Logger:{log(){}},bqSyncDaily_:(outlet,date,y,m,w,d,sales,analisa)=>{writes.push(sales);return {sales,analisa:analisa||'',status:'done'};}};
+vm.createContext(engine);
+vm.runInContext(extract('function syncOutlets_(records)','return Object.freeze({')+extract('function validateSession_(token)','/* ============================================================')+extract('function saveDaily(token, payload)','function saveGlobalDailyAnalysis(token, payload)'),engine);
+const badSession=engine.issueBiSpaceSession_('BISS','BISS','admin');
+assert.equal(engine.saveDaily(badSession.token,{outlet_code:'BISS',date:'2026-10-26',sales:350}).ok,false,'old HQ session reproduces the production validation failure');
+engine.syncOutlets_([{code:'BISS',role:'store'}]);
 data.clear();account.outlet='BIHQ';account.nik='N1';
 data.set('hq',{...job,jobId:'hq',role:'admin',spreadsheetId:'new-sheet',createdAt:'3',status:'QUEUED',payload:{outlet_code:'BISS',date:'2026-10-26',sales:350}});
-let directory=[];
 context.salesSaveJobs_=()=>[...data.values()].filter(j=>j.status!=='COMPLETE');
-context.SALES_ANALYSIS.syncOutlets=rows=>{directory=rows;};
-context.SALES_ANALYSIS.issueSession=(_code,_name,role)=>{assert.equal(role,'admin');return {token:'fresh-worker-token'};};
-context.SALES_ANALYSIS.saveDaily=(_token,payload)=>{
- assert.ok(directory.some(o=>o.code===payload.outlet_code&&o.role==='store'),'HQ target must pass the real saveDaily outlet validation');
- writes.push(payload.sales);return {ok:true,sales:payload.sales};
-};
+context.SALES_ANALYSIS.syncOutlets=engine.syncOutlets_;
+context.SALES_ANALYSIS.issueSession=engine.issueBiSpaceSession_;
+context.SALES_ANALYSIS.saveDaily=engine.saveDaily;
 context.processSalesSaveJobs();assert.equal(data.get('hq').status,'COMPLETE');assert.equal(writes.at(-1),350);
+assert.equal(engine.OUTLETS.find(o=>o.code==='BISS').role,'store','target remains a store after session issuance');
 context.processSalesSaveJobs();assert.equal(writes.filter(value=>value===350).length,1,'repaired legacy job is not written twice');
-console.log('Sales legacy guard is scoped to matching records and fields; HQ recovery retains store outlet metadata.');
+console.log('Sales legacy guard is scoped to matching records and fields; real HQ session recovery retains store outlet metadata.');

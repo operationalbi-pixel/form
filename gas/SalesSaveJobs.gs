@@ -70,7 +70,8 @@ function processSalesSaveJobs() {
         SALES_ANALYSIS.useDatabase(job.spreadsheetId);
         // The target is an outlet, even when the original submitting employee is HQ.
         SALES_ANALYSIS.syncOutlets([{code:job.outlet,name:job.outlet,role:'store'}]);
-        const session=SALES_ANALYSIS.issueSession(job.outlet,job.outlet,role);
+        const sessionOutlet=role==='admin'?'BIHQ':job.outlet;
+        const session=SALES_ANALYSIS.issueSession(sessionOutlet,sessionOutlet,role);
         const method={DAILY:'saveDaily',WEEKLY:'saveWeekly',MONTHLY:'saveMonthly'}[job.type];
         const result=SALES_ANALYSIS[method](session.token,job.payload);
         if(!result||!result.ok)throw new Error(result&&result.error||'Penulisan Sales belum berhasil.');
