@@ -160,7 +160,7 @@ const storage=new Map();
 const timers=new Map();let timerId=0;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const client = {
-  console, Map, Object, JSON, Promise,
+  console, Map, Object, JSON, Promise,navigator:{onLine:true},
   window:{addEventListener(){}},
   localStorage:{getItem:key=>key==='bakerzin_session'?'account':storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
   setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
@@ -210,11 +210,11 @@ assert.equal(client.state.dash.month.total, 1250);
 
 input('anaBox', 'Draft that must survive a failed save');
 saving = click('saveDay');await tick();
-calls.at(-1).reject(new Error('Database temporarily unavailable'));
+calls.at(-1).reject(new Error('Database permission denied'));
 await saving;
 client.render();
 assert.equal(element('anaBox').value, 'Draft that must survive a failed save');
-assert.match(messages.at(-1).message, /Database temporarily unavailable/, 'show the actual save error');
+assert.match(element('savedAt').title, /Database permission denied/, 'retain error details on the inline status');
 
 input('anaBox',analysis);
 saving=click('saveDay');await tick();
@@ -302,3 +302,28 @@ assert.equal(vm.runInContext('salesRealtime.hasDrafts()',client),false,'older lo
 client.render();input('dayAmount','0');saving=click('saveDay');await tick();
 calls.at(-1).resolve({ok:true,sales:0,analisa:'Saved analysis with an explicit zero',status:'done'});await saving;
 assert.equal(element('dayAmount').value,'0','confirmed zero remains visible instead of looking like a cleared unsaved field');
+
+// A lost reply can be retried, while an older tab cannot overwrite a newer value.
+let guardResult=server.saveDaily('session',{date:'2026-10-06',sales:3100,expected:{sales:3000}});
+assert.equal(guardResult.ok,true);
+server.saveDaily('session',{date:'2026-10-06',sales:3200});
+let writeCount=events.filter(e=>e==='write').length;
+guardResult=server.saveDaily('session',{date:'2026-10-06',sales:3100,expected:{sales:3000}});
+assert.equal(guardResult.ok,false);assert.match(guardResult.error,/SAVE_CONFLICT/);assert.equal(events.filter(e=>e==='write').length,writeCount);
+guardResult=server.saveDaily('session',{date:'2026-10-06',sales:3300,expected:{sales:3200}});assert.equal(guardResult.ok,true);
+writeCount=events.filter(e=>e==='write').length;
+guardResult=server.saveDaily('session',{date:'2026-10-06',sales:3300,expected:{sales:3200}});
+assert.equal(guardResult.ok,true,'lost acknowledgement confirms an already committed absolute value');assert.equal(events.filter(e=>e==='write').length,writeCount,'same-value retry does not write a duplicate');
+const analysisBefore=guardResult.analisa;
+guardResult=server.saveDaily('session',{date:'2026-10-06',analisa:'Independent new analysis',expected:{analisa:analysisBefore,sales:100}});
+assert.equal(guardResult.ok,true,'concurrent sales changes do not block an analysis-only edit');assert.equal(guardResult.sales,3300);
+const periodGuard={salesSheetLatest_:rows=>rows,salesSheetTable_:()=>({rows:[{period_key:'period',analisa_mingguan:'Newer week',analisa_bulanan:'Newer month'}]})};
+vm.createContext(periodGuard);vm.runInContext(between(backend,'function salesSheetCheckAnalysis_(', 'function bqSyncWeekly_(oc,periodKey'),periodGuard);
+assert.throws(()=>periodGuard.salesSheetCheckAnalysis_('weekly_analysis','period','analisa_mingguan','My week',{analisa:'Old week'}),/SAVE_CONFLICT/);
+periodGuard.salesSheetCheckAnalysis_('weekly_analysis','period','analisa_mingguan','Newer week',{analisa:'Old week'});
+assert.throws(()=>periodGuard.salesSheetCheckAnalysis_('monthly_analysis','period','analisa_bulanan','My month',{analisa:'Old month'}),/SAVE_CONFLICT/);
+
+const gateway={safe_:fn=>{try{return {ok:true,data:fn()};}catch(error){return {ok:false,error:error.message};}},salesAnalysisContext_:()=>({session:{role:'store',outlet_code:'BISS',token:'internal'}}),salesSaveDirectGuard_(){},SALES_ANALYSIS:{saveDaily:()=>({ok:true}),saveWeekly:()=>({ok:true}),saveMonthly:()=>({ok:true})}};
+vm.createContext(gateway);vm.runInContext(between(backend,'function saveSalesAnalysisDaily(', 'function saveSalesAnalysisGlobal('),gateway);
+assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1}).ok,false,'old unguarded clients must reload before writing');
+assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1,expected:{sales:0}}).ok,true);

@@ -45,6 +45,7 @@
     action = String(action || '');
     if (action === 'startStockUploadWorker') return 300000;
     if (action === 'chatBootstrap') return 20000;
+    if (/^salesAnalysisSave(?:Daily|Weekly|Monthly)$/.test(action)) return 30000;
     if (action === 'uploadUsage' || action === 'previewSalesRepair' || action === 'repairSalesUpload') return 540000;
     if (/^chat(?:Create|Update|Delete)Task$/.test(action)) return 300000;
     return /^(verify|upload|salesAnalysis)|^lostFound(?:Save|Update|Process)$/.test(action) ? 300000 : 90000;
@@ -102,7 +103,8 @@
         if (finished) return;
         finished = true;
         cleanup();
-        reject(new Error('Server tidak merespons dalam ' + Math.round(timeoutMs / 60000) + ' menit. Periksa deployment GAS dan coba lagi.'));
+        var waitLabel = timeoutMs < 60000 ? Math.round(timeoutMs / 1000) + ' detik' : Math.round(timeoutMs / 60000) + ' menit';
+        reject(new Error('Server tidak merespons dalam ' + waitLabel + '. Periksa koneksi dan coba lagi.'));
       }, timeoutMs);
 
       messageTargets.forEach(function (target) {
