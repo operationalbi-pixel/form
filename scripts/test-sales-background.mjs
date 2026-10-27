@@ -35,7 +35,8 @@ const context={Date,JSON,Number,String,Object,Array,Error,console,
   SALES_ANALYSIS:{spreadsheetId:()=> 'new-sheet',useDatabase:id=>sheet=id,syncOutlets(){},issueSession:()=>({token:'fresh-worker-token'}),saveDaily:(_token,p)=>{assert.equal(sheet,'new-sheet');if(fail)throw Error(fail);writes.push(p.sales);return {ok:true,sales:p.sales};}}
 };
 vm.createContext(context);vm.runInContext(fs.readFileSync('gas/SalesSaveJobs.gs','utf8'),context);
-assert.equal(context.queueSalesSave('token',{requestId:randomUUID(),type:'DAILY',payload:{date:'2026-10-08',sales:100}}).ok,true);
+assert.equal(context.queueSalesSave('token',{requestId:randomUUID(),type:'DAILY',payload:{date:'2026-10-08',sales:100}}).ok,false,'retired endpoint rejects new queued saves');
+assert.equal(data.size,0,'old tabs cannot create new jobs');
 assert.equal(writes.length,0,'acceptance must not open/write the Sheet');
 data.clear();
 for(const [id,created,sales] of [['first','1',100],['second','2',200]])data.set(id,{...job,jobId:id,role:'store',spreadsheetId:'new-sheet',createdAt:created,status:'QUEUED',payload:{sales}});
@@ -67,4 +68,12 @@ remote=[{jobId:'server',requestId:accepted.requestId,status:'PROCESSING'}];
 apiResolve({ok:true,data:{accepted:true,job:remote[0]}});await new Promise(r=>setImmediate(r));assert.equal(committed,0);
 remote[0]={...remote[0],status:'COMPLETE',result:{ok:true,sales:100}};await outbox.poll();assert.equal(committed,1);
 assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account')).length,0);
-console.log('Sales background acceptance is durable/idempotent; busy writes retry in order; only confirmed Sheet completion clears drafts.');
+console.log('Legacy Sales jobs remain recoverable; new queue acceptance is disabled.');
+
+// Direct writes fail closed while an older accepted job can still touch the outlet.
+let legacyJobs=[],guardQuery='';
+context.cloudflareQueryString_=query=>{guardQuery=query;return 'scope';};
+context.cloudflareInventoryRequest_=(method,path)=>{assert.equal(method,'GET');assert.equal(path,'/v1/application-records?scope');return {data:legacyJobs};};
+context.salesSaveDirectGuard_('BISS');assert.equal(guardQuery.outlet,'BISS');assert.equal(guardQuery.engine,'SALES');assert.equal(guardQuery.unresolved,1);
+legacyJobs=[{status:'PROCESSING'}];assert.throws(()=>context.salesSaveDirectGuard_('BISS'),/penyimpanan lama/);
+legacyJobs=[{status:'ACTION_REQUIRED'}];assert.throws(()=>context.salesSaveDirectGuard_('BISS'),/penyimpanan lama/);

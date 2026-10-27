@@ -15,34 +15,14 @@ function ensureSalesSaveWorker_() {
 }
 function queueSalesSave(token, input) {
   return safe_(function(){
-    input=input||{};
-    if(['DAILY','WEEKLY','MONTHLY'].indexOf(input.type)<0)throw new Error('Jenis penyimpanan Sales tidak valid.');
-    const main=requireSession_(token),employee=salesAnalysisEmployee_(main.nik);assertEmployeeActive_(employee);
-    const role=employee.outlet==='BIHQ'?'admin':'store';
-    if(role==='admin'&&input.type!=='DAILY')throw new Error('Akun HQ tidak boleh input analisa outlet.');
-    const payload=JSON.parse(JSON.stringify(input.payload||{}));
-    const outlet=role==='admin'?salesAnalysisCanonicalOutletCode_(payload.outlet_code):salesAnalysisCanonicalOutletCode_(employee.outlet);
-    if(!outlet||outlet==='ALL'||outlet==='BIHQ')throw new Error('Pilih outlet yang valid sebelum menyimpan Sales.');
-    if(role==='admin'&&!salesAnalysisOutletDirectory_().some(function(row){return row.code===outlet&&row.role!=='admin';}))throw new Error('Outlet tidak valid.');
-    payload.outlet_code=outlet;
-    if(input.type==='DAILY'){
-      payload.date=normalizeDate_(payload.date,true);
-      if(payload.preserveSales!==true&&payload.sales!==undefined&&(!Number.isFinite(Number(payload.sales))||Number(payload.sales)<0))throw new Error('Nominal Sales tidak valid.');
-    }else{
-      payload.year=Number(payload.year);payload.month=Number(payload.month);
-      if(!Number.isInteger(payload.year)||payload.year<2000||payload.year>2100||!Number.isInteger(payload.month)||payload.month<1||payload.month>12)throw new Error('Periode analisa tidak valid.');
-      if(input.type==='WEEKLY'&&(!Number.isInteger(Number(payload.week))||Number(payload.week)<1||Number(payload.week)>6))throw new Error('Minggu analisa tidak valid.');
-    }
-    if(String(payload.analisa||'').length>40000)throw new Error('Analisa terlalu panjang.');
-    const requestId=String(input.requestId||'');if(!/^[a-zA-Z0-9-]{16,100}$/.test(requestId))throw new Error('Identitas penyimpanan tidak valid.');
-    const spreadsheetId=SALES_ANALYSIS.spreadsheetId();
-    const job={jobId:digest_('sales-save|'+employee.nik+'|'+requestId),requestId:requestId,ownerNik:employee.nik,
-      engine:'SALES',type:input.type,outlet:outlet,role:role,spreadsheetId:spreadsheetId,payload:payload,
-      sourceHash:digest_(JSON.stringify({type:input.type,payload:payload}))};
-    ensureSalesSaveWorker_();
-    const result=cloudflareInventoryRequest_('POST','/v1/sales-save-jobs',{job:job});
-    return {ok:true,accepted:true,job:salesSaveJobView_(result.job)};
+    const session=requireSession_(token),employee=salesAnalysisEmployee_(session.nik);assertEmployeeActive_(employee);
+    throw new Error('Penyimpanan antrean sudah dihentikan. Muat ulang Analisa Sales Harian untuk memakai simpan langsung. Draf Anda belum tersimpan di server.');
   });
+}
+// An older accepted write must finish before a direct save can replace its row.
+function salesSaveDirectGuard_(outlet) {
+  const response=cloudflareInventoryRequest_('GET','/v1/application-records?'+cloudflareQueryString_({table:'background_upload_jobs',engine:'SALES',unresolved:1,outlet:outlet,limit:1}));
+  if((response.data||[]).length)throw new Error('Ada penyimpanan lama untuk outlet ini yang belum selesai. Periksa Status Simpan Lama sebelum mencoba simpan langsung; draf tetap aman.');
 }
 function getSalesSaveJobs(token, requests) {
   return safe_(function(){const session=requireSession_(token),employee=salesAnalysisEmployee_(session.nik);assertEmployeeActive_(employee);

@@ -1,0 +1,11 @@
+# Analisa Sales: direct autosave
+
+The Sales Analysis page sends edited daily sales and analysis directly to the existing authenticated GAS save APIs. The same request writes and flushes Google Sheets before returning success. New saves never use `queueSalesSave`, job records, background processing, or status polling. This change retains Google Sheets as the database; it does not migrate Sales data to D1.
+
+Typing pauses of 800 ms trigger autosave. Blur and the existing Save/Submit controls flush immediately. Each record has one mutable draft and at most one request in flight: further edits replace the draft, and only the latest remaining fields are sent after the response. An acknowledgement updates the calendar, totals, right panel and HQ sales modal locally, without waiting for a dashboard reload. It cannot clear newer input or apply an older refresh over confirmed values. Short analyses are saved as pending until the existing minimum length is met.
+
+The page distinguishes unsaved, saving, saved and failed input. Drafts are backed up per authenticated employee and are restored after reload or a new login. Restored drafts require user review/Save; failures are not silently replayed or looped. A blank sales field is retained as a draft; zero must be entered explicitly. Losing a reply may leave a committed value shown as unconfirmed; review/retry uses absolute values and preserves unrelated fields. There is no guarantee of network availability or zero write latency.
+
+The backend advertises its direct-save version. The page fails closed against an older backend. `queueSalesSave` rejects new requests, including old tabs. Previously accepted jobs and their processor remain recoverable; direct writes are refused while an unresolved legacy job can still write to that outlet. The optional legacy status panel shows that account's accepted jobs and can explicitly retry an existing failed job. Unaccepted old browser requests are recovered as latest editable fields after checking their identities; intermediate values are not replayed.
+
+Validation covers direct acknowledgement and partial fields, typing during a save, stale dashboard responses, rapid edits, duplicate Save clicks, failures/reload, explicit zero, legacy fencing and rejection of new job acceptance. No fabricated production sales are submitted for verification.
