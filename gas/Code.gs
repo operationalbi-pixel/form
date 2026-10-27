@@ -284,6 +284,8 @@ function apiActions_() {
     saveShowcaseLog: saveShowcaseLog,
     queueShowcaseLog: queueShowcaseLog,
     queueShowcaseRow: queueShowcaseRow,
+    showcaseRealtimeGrant: getShowcaseRealtimeGrant,
+    showcaseResolveLegacy: resolveShowcaseLegacyRequest,
     complete: markTaskComplete
   });
 }
@@ -1201,7 +1203,8 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     if (eventDate > todayIso_()) throw new Error('Tanggal Showcase Log tidak boleh melebihi hari ini.');
     const snapshot = outlet ? readShowcaseLogSnapshot_(outlet, eventDate) : { totals: {}, aging: {}, progress: null };
     const totals = snapshot.totals, aging = eventDate === todayIso_() ? snapshot.aging : {};
-    const items = outlet ? readShowcaseItems_().map(function (item) {
+    const showcaseMasterItems=outlet?readShowcaseItems_():[];
+    const items = outlet ? showcaseMasterItems.map(function (item) {
       const day = totals[item.name.toLowerCase()] || {};
       const age = aging[String(item.code || '').trim().toUpperCase()] || aging['NAME|' + String(item.name || '').trim().toLowerCase()] || {};
       const emptyAging = { fresh: 0, green: 0, yellow: 0, red: 0 };
@@ -1223,9 +1226,11 @@ function getShowcaseLogBootstrap(token, requestedOutlet, requestedDate) {
     const completions = {};
     const selectedProgress = snapshot.progress && (snapshot.progress.days || []).filter(function (day) { return day.date === eventDate; })[0];
     if (task && selectedProgress && selectedProgress.complete) completions[task.id + '|' + eventDate] = true;
+    const directConfig=cloudflareInventoryConfig_(),grants={};showcaseMasterItems.forEach(function(item){grants[item.code]=showcaseDirectGrantForItem_(employee,outlet,item,directConfig);});
     return {
+      realtime:{url:directConfig.url+'/v1/showcase-direct',grants:grants},
       user: userView_(employee), outlets: outlets, selectedOutlet: outlet, eventDate: eventDate,
-      autosaveVersion: 1, items: items, progress: snapshot.progress, taskId: task ? task.id : '',
+      autosaveVersion: 2, items: items, progress: snapshot.progress, taskId: task ? task.id : '',
       tasks: tasks, pages: readPagesForEmployee_(employee), completions: completions,
       appUrl: ScriptApp.getService().getUrl()
     };
@@ -20053,4 +20058,48 @@ function commitShowcaseRowCheckpoint_(checkpoint) {
   if (previous && Number(previous.revision) === checkpoint.revision && previous.sourceHash !== checkpoint.sourceHash) throw new Error('Konflik revisi Showcase. Hubungi administrator.');
   if (previous) return;
   cloudflareStoreApplicationRecords_('showcase_row_edits', [{insertId:checkpoint.recordId,json:checkpoint}]);
+}
+
+function showcaseDirectGrantForItem_(employee,outlet,item,config) {
+  const issued=Math.floor(Date.now()/1000),claims={aud:'showcase-direct-v1',iat:issued,exp:issued+300,owner:employee.nik,outlet:outlet,
+    item:{code:item.code,name:item.name,category:item.category,unit:item.unit,productName:item.productName,productUnit:item.productUnit,productQty:item.productQty}};
+  const encoded=Utilities.base64EncodeWebSafe(JSON.stringify(claims),Utilities.Charset.UTF_8).replace(/=+$/,'');
+  const signature=Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature('showcase-direct-v1.'+encoded,config.apiKey,Utilities.Charset.UTF_8)).replace(/=+$/,'');
+  return {token:encoded+'.'+signature,expiresAt:claims.exp*1000};
+}
+function getShowcaseRealtimeGrant(token,requestedOutlet,itemCode) {
+  return safe_(function(){
+    const context=resolveStockContext_(token,requestedOutlet,'Showcase'),config=cloudflareInventoryConfig_();
+    const item=readShowcaseItems_().filter(function(row){return row.code===String(itemCode||'');})[0];
+    if(!item)throw new Error('Item Showcase tidak ditemukan. Muat ulang halaman.');
+    return Object.assign({url:config.url+'/v1/showcase-direct',outlet:context.outlet,itemCode:item.code},showcaseDirectGrantForItem_(context.employee,context.outlet,item,config));
+  });
+}
+
+// Retire an uncommitted legacy request under its original acceptance lock before
+// recovering its inputs into direct row saves. Accepted/partially written work is never cancelled.
+function resolveShowcaseLegacyRequest(token,payload) {
+  return safe_(function(){
+    payload=payload||{};const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const id=payload.jobId?String(payload.jobId):digest_([employee.nik,String(payload.requestId||'')].join('|'));
+    const gate=LockService.getUserLock();gate.waitLock(30000);
+    try{
+      let job=readGoodsUploadJob_(id),request;
+      if(job){
+        if(job.ownerNik!==employee.nik||job.type!=='SHOWCASE_LOG')throw new Error('Permintaan Showcase bukan milik akun ini.');
+        if(job.status==='MIGRATED_TO_DIRECT')return {job:goodsUploadJobView_(job),payload:job.migrationPayload,migrated:true};
+        if(job.status!=='ACTION_REQUIRED'||job.planDriveId||Number(job.processed||0)>0)return {job:goodsUploadJobView_(job),migrated:false};
+        request=stockPositionJobJson_(job.requestDriveId);request.requestId=job.requestId;
+      }else{
+        if(!/^[a-zA-Z0-9-]{16,100}$/.test(String(payload.requestId||''))||!Array.isArray(payload.entries)||!payload.entries.length)throw new Error('Data pemulihan Showcase tidak valid.');
+        const context=resolveStockContext_(token,payload.outlet,'Showcase'),eventDate=normalizeDate_(payload.eventDate,true);
+        request={outlet:context.outlet,location:'Showcase',eventDate:eventDate,entries:payload.entries,requestId:payload.requestId};
+        const acceptedShape={outlet:request.outlet,location:'Showcase',eventDate:eventDate,entries:request.entries},now=new Date().toISOString();
+        job={jobId:id,requestId:request.requestId,ownerNik:employee.nik,type:'SHOWCASE_LOG',outlet:request.outlet,location:'Showcase',eventDate:eventDate,sourceHash:digest_(JSON.stringify(acceptedShape)),createdAt:now,processed:0,total:0,progress:0,workerLeaseUntil:0,planDriveId:''};
+      }
+      if(employee.outlet!=='BIHQ'&&employee.outlet!==job.outlet)throw new Error('Akses outlet sudah berubah.');
+      job.status='MIGRATED_TO_DIRECT';job.stage='Input dipulihkan untuk penyimpanan langsung.';job.error='';job.migrationPayload=request;writeGoodsUploadJob_(job);
+      return {job:goodsUploadJobView_(job),payload:request,migrated:true};
+    }finally{gate.releaseLock();}
+  });
 }

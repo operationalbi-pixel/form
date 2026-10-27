@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash,createHmac,randomUUID} from 'node:crypto';
 const source=fs.readFileSync('docs/Code.gs','utf8');
 const server=vm.createContext({console});vm.runInContext(source,server);
 const checkpoints=new Map(),jobs=new Map(),files=new Map();let snapshot={totals:{cake:{balance:20,totalIn:5,totalSold:2,totalWaste:0}},progress:{days:[{date:'2026-10-27'}]}};
@@ -57,6 +57,21 @@ assert.notEqual(server.showcaseRowEditIdentity_(another.employee,'BISS','2026-10
   w.processGoodsUploadJobs();assert.equal(commits,0);assert.equal(active.status,'QUEUED');assert.equal(active.processed,0);
   w.processGoodsUploadJobs();assert.equal(commits,1);assert.equal(active.status,'COMPLETE');assert.equal(ids.size,p1.stockRows.length);
 }
+// Grants expose only a signed, expiring row scope. Legacy unaccepted work is fenced before recovery.
+{
+  server.Utilities.Charset={UTF_8:'utf8'};
+  server.Utilities.base64EncodeWebSafe=value=>Buffer.from(Array.isArray(value)?value:Buffer.from(String(value))).toString('base64url');
+  server.Utilities.computeHmacSha256Signature=(text,key)=>Array.from(createHmac('sha256',key).update(text).digest());
+  const grant=server.showcaseDirectGrantForItem_(employee,'BISS',{...item,productName:'Product',productUnit:'PCS',productQty:1},{apiKey:'test-secret'});
+  const [claims,signature]=grant.token.split('.'),decoded=JSON.parse(Buffer.from(claims,'base64url'));
+  assert.equal(decoded.owner,employee.nik);assert.equal(decoded.outlet,'BISS');assert.equal(decoded.item.code,'CAKE');assert.equal(decoded.exp-decoded.iat,300);
+  assert.equal(signature,createHmac('sha256','test-secret').update('showcase-direct-v1.'+claims).digest('base64url'));
+  Object.assign(server,{requireSession_:()=>({nik:employee.nik}),findEmployee_:()=>employee,assertEmployeeActive_(){}});
+  const legacy={requestId:'legacy-request-'+randomUUID(),outlet:'BISS',eventDate:'2026-10-27',entries:[{itemCode:'CAKE',soldQty:1,hasSoldInput:true}]};
+  const recovered=server.resolveShowcaseLegacyRequest('token',legacy);assert.equal(recovered.migrated,true);assert.equal(recovered.job.status,'MIGRATED_TO_DIRECT');
+  const count=files.size;const delayedOldBrowser=server.queueShowcaseLog('token',legacy);
+  assert.equal(delayedOldBrowser.status,'MIGRATED_TO_DIRECT');assert.equal(files.size,count,'late legacy acceptance must not create files or queue stock writes');
+}
 console.log('Autosave server revisions preserve 2 -> 3 deltas, reverse corrections, concurrent-user totals, checkpoints and immutable retries.');
 
 const html=fs.readFileSync('docs/showcaselog.html','utf8');
@@ -67,9 +82,9 @@ function browser(sharedStorage=new Map()){
   const requests=[],events={},globalEvents={},timers=[],nodes=new Map();
   const classList={toggle(){},add(){},remove(){},contains:()=>false};
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:id==='eventDate'?'2026-10-27':'',classList,textContent:'',innerHTML:'',addEventListener:(name,fn)=>{events[id+':'+name]=fn;}});return nodes.get(id);};
-  const c={console,crypto:{randomUUID},navigator:{onLine:true},document:{getElementById:node,querySelector:()=>null,querySelectorAll:()=>[]},localStorage:{getItem:k=>sharedStorage.get(k)||null,setItem:(k,v)=>sharedStorage.set(k,v),removeItem:k=>sharedStorage.delete(k)},setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},addEventListener:(name,fn)=>globalEvents[name]=fn,BAKERZIN_API:{call:(name,args)=>new Promise((resolve,reject)=>requests.push({name,args,resolve,reject}))}};
+  const c={console,TextEncoder,AbortController,fetch:(url,options)=>new Promise((resolve,reject)=>requests.push({name:"showcaseDirect",args:[null,JSON.parse(options.body)],resolve:result=>resolve({ok:result.ok!==false,status:result.httpStatus||(result.ok===false?422:200),json:async()=>result}),reject})),crypto:{randomUUID,subtle:globalThis.crypto.subtle},navigator:{onLine:true},document:{getElementById:node,querySelector:()=>null,querySelectorAll:()=>[]},localStorage:{getItem:k=>sharedStorage.get(k)||null,setItem:(k,v)=>sharedStorage.set(k,v),removeItem:k=>sharedStorage.delete(k)},setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},addEventListener:(name,fn)=>globalEvents[name]=fn,BAKERZIN_API:{call:(name,args)=>new Promise((resolve,reject)=>requests.push({name,args,resolve,reject}))}};
   c.window=c;vm.createContext(c);vm.runInContext(main,c);
-  Object.assign(c.STATE,{token:'token',user:{nik:'N1'},outlet:'BISS',items:[{...item,balance:20,totalIn:5,totalSold:2,totalWaste:0}],drafts:{},autosaveReady:true,autosaveVersion:1});
+  Object.assign(c.STATE,{token:'token',user:{nik:'N1'},outlet:'BISS',items:[{...item,balance:20,totalIn:5,totalSold:2,totalWaste:0}],drafts:{},autosaveReady:true,autosaveVersion:2,realtime:{url:'https://inventory.test/v1/showcase-direct',grants:{CAKE:{token:'test-capability',expiresAt:Date.now()+300000}}}});
   for(const name of ['renderItems','renderHeader','renderShowcaseAdminFilters','setShowcaseOutletSelectionState','renderProgress','loadShowcaseAging','loadShowcaseMonitoring','restoreShowcasePending','updateDraftBalance','toast','refreshShowcaseSaves','startShowcaseWorkers'])c[name]=()=>{};
   vm.runInContext(client,c);
   function change(field,value){if(!c.STATE.drafts[0])c.STATE.drafts[0]={};c.STATE.drafts[0][field]=value;c.SHOWCASE_AUTOSAVE.observe(0,field,value);}
@@ -81,38 +96,59 @@ function browser(sharedStorage=new Map()){
   const {c,requests,change,row,events}=browser();change('soldQty','2');assert.equal(requests.length,0);
   const tr={contains:target=>target==='same-row'},input={dataset:{index:'0'},matches:()=>true,closest:()=>tr};
   events['itemRows:focusout']({target:input,relatedTarget:'same-row'});assert.equal(requests.length,0);
-  events['itemRows:focusout']({target:input,relatedTarget:null});assert.equal(requests.length,1);
-  assert.equal(requests[0].name,'queueShowcaseRow');const sentId=requests[0].args[1].requestId;
+  events['itemRows:focusout']({target:input,relatedTarget:null});await tick();assert.equal(requests.length,1);
+  assert.equal(requests[0].name,'showcaseDirect');const sentId=requests[0].args[1].requestId;
   change('soldQty','3');c.SHOWCASE_AUTOSAVE.flush();assert.equal(requests.length,1,'new edit waits for confirmed predecessor');
-  requests[0].resolve({ok:true,data:{jobId:'J1',requestId:sentId,status:'QUEUED'}});await tick();assert.equal(row().outbox.status,'QUEUED');
-  c.SHOWCASE_AUTOSAVE.status([{jobId:'J1',requestId:sentId,status:'COMPLETE'}]);assert.equal(row().revision,1);assert.equal(row().confirmed.values.soldQty,2);
-  c.STATE.items[0].balance=18;c.STATE.items[0].totalSold=4;c.SHOWCASE_AUTOSAVE.hydrate('2026-10-27',false);
+  requests[0].resolve({ok:true,data:{requestId:sentId,status:'COMPLETE',item:{balance:18,previous_balance:20,total_in:5,total_sold:4,total_waste:0}}});await tick();assert.equal(row().revision,1);assert.equal(row().confirmed.values.soldQty,2);
   assert.equal(requests.length,2);assert.equal(requests[1].args[1].entries[0].soldQty,3);assert.equal(requests[1].args[1].rowEdit.revision,2);
   assert.equal(c.projectedBalance(0,c.STATE.items[0]),17);
 }
 // Offline reconnect retries the same immutable request, even after reload and further editing.
 {
-  const f=browser();f.change('soldQty','2');f.c.SHOWCASE_AUTOSAVE.flush();const first=f.requests[0].args[1];
+  const f=browser();f.change('soldQty','2');f.c.SHOWCASE_AUTOSAVE.flush();await tick();const first=f.requests[0].args[1];
   f.requests[0].reject(new Error('offline'));await tick();assert.equal(f.row().outbox.status,'UNCERTAIN');
-  f.change('soldQty','3');f.globalEvents.online();assert.equal(f.requests.length,2);assert.equal(f.requests[1].args[1].requestId,first.requestId);assert.equal(f.requests[1].args[1].entries[0].soldQty,2);
-  const restored=browser(f.storage);assert.equal(restored.requests.length,1);assert.equal(restored.requests[0].args[1].requestId,first.requestId);
+  f.change('soldQty','3');f.globalEvents.online();await tick();assert.equal(f.requests.length,2);assert.equal(f.requests[1].args[1].requestId,first.requestId);assert.equal(f.requests[1].args[1].entries[0].soldQty,2);
+  const restored=browser(f.storage);await tick();assert.equal(restored.requests.length,1);assert.equal(restored.requests[0].args[1].requestId,first.requestId);
   assert.equal(restored.row().desired.values.soldQty,'3');
 }
 // Two tabs share the row identity, allowing the server to reject conflicting same-revision edits.
 {
-  const f=browser(),g=browser(f.storage);f.change('soldQty','2');g.change('soldQty','3');f.c.SHOWCASE_AUTOSAVE.flush();g.c.SHOWCASE_AUTOSAVE.flush();
+  const f=browser(),g=browser(f.storage);f.change('soldQty','2');g.change('soldQty','3');f.c.SHOWCASE_AUTOSAVE.flush();g.c.SHOWCASE_AUTOSAVE.flush();await tick();
   assert.equal(f.requests[0].args[1].requestId,g.requests[0].args[1].requestId);
 }
 // A bad baris is kept for correction; Total and Input cannot submit competing edits.
 {
   const f=browser();f.change('soldQty','30');f.c.SHOWCASE_AUTOSAVE.flush();assert.equal(f.requests.length,0);assert.match(f.row().error,/Balance/);
   f.change('soldQty','2');f.change('soldTotal','5');assert.equal(f.c.STATE.drafts[0].soldQty,undefined);
-  f.c.SHOWCASE_AUTOSAVE.flush();assert.equal(f.requests[0].args[1].entries[0].soldQty,0);assert.equal(f.requests[0].args[1].entries[0].soldTotal,5);
-  f.requests[0].resolve({ok:true,data:{jobId:'BAD',requestId:f.requests[0].args[1].requestId,status:'ACTION_REQUIRED',error:'Saldo berubah'}});await tick();
-  f.change('soldTotal','4');f.c.SHOWCASE_AUTOSAVE.flush();assert.equal(f.requests.length,2);assert.equal(f.requests[1].args[1].requestId,f.requests[0].args[1].requestId);
+  f.c.SHOWCASE_AUTOSAVE.flush();await tick();assert.equal(f.requests[0].args[1].entries[0].soldQty,0);assert.equal(f.requests[0].args[1].entries[0].soldTotal,5);
+  f.requests[0].resolve({ok:false,error:{message:'Saldo berubah',code:'INSUFFICIENT_BALANCE',retryable:false}});await tick();
+  f.change('soldTotal','4');f.c.SHOWCASE_AUTOSAVE.flush();await tick();assert.equal(f.requests.length,2);assert.equal(f.requests[1].args[1].requestId,f.requests[0].args[1].requestId);
 }
 // Frontend remains gated until a fresh backend advertises the autosave contract.
 {
   const f=browser();f.c.STATE.autosaveVersion=0;f.c.SHOWCASE_AUTOSAVE.hydrate('2026-10-27',false);f.change('soldQty','2');f.c.SHOWCASE_AUTOSAVE.flush();assert.equal(f.requests.length,0);
+}
+// Expired grants are refreshed once; the immutable row request still goes straight to Cloudflare.
+{
+  const f=browser();f.change('soldQty','2');f.c.SHOWCASE_AUTOSAVE.flush();await tick();const request=f.requests[0].args[1];
+  f.requests[0].resolve({ok:false,httpStatus:401,error:{code:'SESSION_EXPIRED',message:'expired'}});await tick();
+  assert.equal(f.requests[1].name,'showcaseRealtimeGrant');f.requests[1].resolve({ok:true,data:{url:'https://inventory.test/v1/showcase-direct',token:'new-grant',expiresAt:Date.now()+300000}});await tick();
+  assert.equal(f.requests[2].name,'showcaseDirect');assert.equal(f.requests[2].args[1].requestId,request.requestId);
+}
+// An acknowledged competing tab can be reviewed and corrected using the next revision, without a retry loop.
+{
+  const f=browser();f.change('soldQty','3');f.c.SHOWCASE_AUTOSAVE.flush();await tick();const id=f.requests[0].args[1].rowEdit.id;
+  f.requests[0].resolve({ok:false,httpStatus:409,error:{code:'REVISION_CONFLICT',message:'Periksa angka dari tab lain.'},confirmed:{result:{rowEdit:{id,revision:1,values:{inQty:0,soldQty:2,wasteQty:0},touched:{soldQty:true}}},item:{balance:18,previous_balance:20,total_in:5,total_sold:4,total_waste:0}}});await tick();
+  assert.equal(f.row().revision,1);assert.equal(f.row().outbox,null);assert.equal(f.row().desired.values.soldQty,'3');
+  f.c.SHOWCASE_AUTOSAVE.flush();await tick();assert.equal(f.requests[1].args[1].rowEdit.revision,2);
+}
+// A pending pre-upgrade request is retired under its acceptance identity before its draft is recovered.
+{
+  const f=browser(),pending={requestId:'legacy-'+randomUUID(),outlet:'BISS',eventDate:'2026-10-27',entries:[{itemCode:'CAKE',soldQty:2,hasSoldInput:true}]};
+  f.c.SHOWCASE_SAVES.pending=pending;f.c.SHOWCASE_AUTOSAVE.flush();assert.equal(f.requests[0].name,'showcaseResolveLegacy');
+  f.requests[0].resolve({ok:true,data:{migrated:true,job:{requestId:pending.requestId,outlet:'BISS',status:'MIGRATED_TO_DIRECT'},payload:pending}});
+  for(let i=0;i<100&&f.c.SHOWCASE_SAVES.pending;i++)await new Promise(resolve=>setTimeout(resolve,1));
+  assert.equal(f.c.SHOWCASE_SAVES.pending,null,f.node('showcaseAutosaveStatus').textContent);assert.equal(f.row().desired.values.soldQty,2);
+  assert.ok(f.requests.every(r=>!['queueShowcaseLog','queueShowcaseRow'].includes(r.name)));
 }
 console.log('Autosave client row boundaries, manual Save, offline replay, refresh recovery, multi-tab identity and validation passed.');
