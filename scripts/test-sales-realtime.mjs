@@ -75,3 +75,7 @@ rebased[0].resolve({ok:true,sales:1});await relaySave;
 assert.equal(relay.drafts()[0][1].payload.expected.sales,1,'a confirmed response rebases the latest unsent field');
 relaySave=relay.flush('d');await tick();assert.equal(rebased[1].request.payload.expected.sales,1);
 rebased[1].resolve({ok:true,sales:2});await relaySave;
+
+let quotaCalls=0;
+const dailyQuota=context.window.SalesRealtime.create({storage,key:'quota',onStatus(){},onSaved(){},sleep:async()=>assert.fail('a daily quota cannot recover by retrying'),write:async()=>{quotaCalls++;throw Error('Service invoked too many times for one day: urlfetch.');}});
+dailyQuota.edit('d',guardedRequest(1,0),false);await assert.rejects(dailyQuota.flush('d'),/urlfetch/);assert.equal(quotaCalls,1);assert.equal(dailyQuota.hasDrafts(),true);

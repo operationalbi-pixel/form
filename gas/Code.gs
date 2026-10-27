@@ -18763,8 +18763,6 @@ function saveSalesAnalysisDaily(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
     if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
-    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
-    salesSaveDirectGuard_(outlet, 'DAILY', payload || {});
     return SALES_ANALYSIS.saveDaily(context.session.token, payload || {});
   });
 }
@@ -18773,8 +18771,6 @@ function saveSalesAnalysisWeekly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
     if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
-    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
-    salesSaveDirectGuard_(outlet, 'WEEKLY', payload || {});
     return SALES_ANALYSIS.saveWeekly(context.session.token, payload || {});
   });
 }
@@ -18783,8 +18779,6 @@ function saveSalesAnalysisMonthly(token, payload) {
   return safe_(function () {
     var context = salesAnalysisContext_(token, true);
     if(!payload||!payload.expected||typeof payload.expected!=='object')throw new Error('Muat ulang Analisa Sales untuk mengaktifkan perlindungan simpan terbaru. Draf tetap aman.');
-    var outlet=context.session.role==='admin'?salesAnalysisCanonicalOutletCode_((payload||{}).outlet_code):context.session.outlet_code;
-    salesSaveDirectGuard_(outlet, 'MONTHLY', payload || {});
     return SALES_ANALYSIS.saveMonthly(context.session.token, payload || {});
   });
 }

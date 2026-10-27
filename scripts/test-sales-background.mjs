@@ -19,98 +19,28 @@ assert.equal((await post({...job,sourceHash:'other'})).status,409);
 const unauthorized=await worker.fetch(new Request('https://test/v1/sales-save-jobs',{method:'POST',body:'{}'}),env);
 assert.equal(unauthorized.status,401);
 
-// Worker ordering, busy-lock recovery, permission failures and account ownership.
-const data=new Map();let writes=[],fail='',sheet='';
-const account={nik:'N1',outlet:'BISS',status:'active'};
+// The legacy entry point cannot create or revive jobs, even during UrlFetch exhaustion.
+let networkCalls=0;
+const employee={nik:'N1',outlet:'BIHQ',status:'active'};
+const triggers=[{getHandlerFunction:()=> 'processSalesSaveJobs'},{getHandlerFunction:()=> 'processGoodsUploadJobs'}],deleted=[];
 const context={Date,JSON,Number,String,Object,Array,Error,console,
-  safe_:fn=>{try{return {ok:true,data:fn()};}catch(e){return {ok:false,error:e.message};}},
-  requireSession_:()=>({nik:account.nik}),salesAnalysisEmployee_:nik=>({...account,nik}),assertEmployeeActive_:e=>{if(e.status!=='active')throw Error('Tidak aktif');},
-  salesAnalysisCanonicalOutletCode_:v=>v,salesAnalysisOutletDirectory_:()=>[{code:'BISS',role:'store'}],normalizeDate_:v=>v,
-  digest_:v=>createHash('sha256').update(v).digest('hex'),
-  CacheService:{getScriptCache:()=>({get:()=> 'ready'})},
-  LockService:{getUserLock:()=>({tryLock:()=>true,releaseLock(){}})},
-  cloudflareInventoryRequest_:(method,path,body)=>{assert.equal(path,'/v1/sales-save-jobs');const j=body.job; if(!data.has(j.jobId))data.set(j.jobId,{...j,createdAt:'2026-10-08',status:'QUEUED'});return {job:data.get(j.jobId)};},
-  cloudflareReadAllPages_:(_path,q)=>[...data.values()].filter(j=>j.engine===q.engine&&(!q.owner_nik||j.ownerNik===q.owner_nik)&&(!q.unresolved||j.status!=='COMPLETE')),
-  readGoodsUploadJob_:id=>data.get(id),writeGoodsUploadJob_:j=>{data.set(j.jobId,structuredClone(j));},
-  SALES_ANALYSIS:{spreadsheetId:()=> 'new-sheet',useDatabase:id=>sheet=id,syncOutlets(){},issueSession:()=>({token:'fresh-worker-token'}),saveDaily:(_token,p)=>{assert.equal(sheet,'new-sheet');if(fail)throw Error(fail);writes.push(p.sales);return {ok:true,sales:p.sales};}}
+ safe_:fn=>{try{return {ok:true,data:fn()};}catch(error){return {ok:false,error:error.message};}},
+ requireSession_:()=>({nik:'N1'}),salesAnalysisEmployee_:()=>employee,assertEmployeeActive_(){},
+ cloudflareInventoryRequest_:()=>{networkCalls++;throw Error('Service invoked too many times for one day: urlfetch.');},
+ ScriptApp:{getProjectTriggers:()=>triggers,deleteTrigger:trigger=>deleted.push(trigger.getHandlerFunction())},
+ digest_:value=>createHash('sha256').update(value).digest('hex'),cloudflareQueryString_:query=>JSON.stringify(query)
 };
 vm.createContext(context);vm.runInContext(fs.readFileSync('gas/SalesSaveJobs.gs','utf8'),context);
-assert.equal(context.queueSalesSave('token',{requestId:randomUUID(),type:'DAILY',payload:{date:'2026-10-08',sales:100}}).ok,false,'retired endpoint rejects new queued saves');
-assert.equal(data.size,0,'old tabs cannot create new jobs');
-assert.equal(writes.length,0,'acceptance must not open/write the Sheet');
-data.clear();
-for(const [id,created,sales] of [['first','1',100],['second','2',200]])data.set(id,{...job,jobId:id,role:'store',spreadsheetId:'new-sheet',createdAt:created,status:'QUEUED',payload:{sales}});
-fail='Batas waktu penguncian habis';context.processSalesSaveJobs();assert.equal(data.get('first').status,'QUEUED');assert.equal(writes.length,0);
-data.get('first').nextAttemptAt=0;fail='Anda tidak memiliki izin untuk mengakses dokumen';context.processSalesSaveJobs();assert.equal(data.get('first').status,'ACTION_REQUIRED');
-fail='';context.processSalesSaveJobs();assert.equal(writes.length,0,'later edits cannot pass an unresolved earlier write');
-context.retrySalesSave('token','first');context.processSalesSaveJobs();assert.deepEqual(writes,[100,200]);
-context.processSalesSaveJobs();assert.deepEqual(writes,[100,200]);assert.equal(data.get('second').status,'COMPLETE');
-assert.equal(sheet,'','per-job Sheet pin is cleared');
-account.nik='OTHER';assert.equal(context.retrySalesSave('token','first').ok,false);account.nik='N1';
-
-// UI response is immediate while the network acknowledgement is unresolved.
-let apiResolve,remote=[];const storage=new Map();let apiCalls=[];
-function node(){return {style:{},append(){},replaceChildren(){}};}
-const panel=node();
-const ui={window:{},crypto:webcrypto,Set,JSON,Error,Date,Promise,console,
-  document:{getElementById:()=>panel,createElement:()=>node(),body:{append(){}}},
-  localStorage:{getItem:k=>k==='bakerzin_session'?'account':storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},
-  setInterval:()=>1,clearInterval(){},
-  BAKERZIN_API:{call:(action,args)=>{apiCalls.push([action,args]);if(action==='queueSalesSave')return new Promise(resolve=>apiResolve=resolve);return Promise.resolve({ok:true,data:{jobs:remote}});}}
-};
-vm.createContext(ui);const script=fs.readFileSync('docs/sales-save-jobs.js','utf8');vm.runInContext(script,ui);
-let committed=0;const outbox=ui.window.SalesSaveOutbox;outbox.start(()=>committed++);await new Promise(r=>setImmediate(r));
-const accepted=outbox.enqueue('saveDaily',{date:'2026-10-08',sales:100},{});
-assert.equal(accepted.local,true);assert.equal(committed,0);
-const persisted=JSON.parse(storage.get('sales-save-outbox-v1:account'));assert.equal(persisted.length,1);
-assert.ok(apiResolve,'network still unresolved when the button response returns');
-remote=[{jobId:'server',requestId:accepted.requestId,status:'PROCESSING'}];
-apiResolve({ok:true,data:{accepted:true,job:remote[0]}});await new Promise(r=>setImmediate(r));assert.equal(committed,0);
-remote[0]={...remote[0],status:'COMPLETE',result:{ok:true,sales:100}};await outbox.poll();assert.equal(committed,1);
-assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account')).length,0);
-console.log('Legacy Sales jobs remain recoverable; new queue acceptance is disabled.');
-
-// A legacy failure cannot block another date, scope or independent field in that outlet.
-let legacyJobs=[],guardQuery='';
-context.cloudflareReadAllPages_=(_path,query)=>{guardQuery=query;return legacyJobs;};
-const daily={date:'2026-10-26',sales:100};
-context.salesSaveDirectGuard_('BISS','DAILY',daily);
-assert.equal(guardQuery.outlet,'BISS');assert.equal(guardQuery.engine,'SALES');assert.equal(guardQuery.unresolved,1);
-legacyJobs=[{outlet:'BISS',type:'DAILY',status:'ACTION_REQUIRED',payload:{date:'2026-10-25',sales:50}}];
-context.salesSaveDirectGuard_('BISS','DAILY',daily);
-legacyJobs[0].payload.date='2026-10-26';
-assert.throws(()=>context.salesSaveDirectGuard_('BISS','DAILY',daily),/penyimpanan lama/);
-context.salesSaveDirectGuard_('BISS','DAILY',{date:'2026-10-26',analisa:'An independent field'});
-legacyJobs[0].payload.preserveSales=true;
-context.salesSaveDirectGuard_('BISS','DAILY',daily);
-legacyJobs=[{outlet:'BISS',type:'WEEKLY',status:'PROCESSING',payload:{year:2026,month:10,week:3}}];
-context.salesSaveDirectGuard_('BISS','DAILY',daily);
-context.salesSaveDirectGuard_('BISS','WEEKLY',{year:2026,month:10,week:4});
-assert.throws(()=>context.salesSaveDirectGuard_('BISS','WEEKLY',{year:2026,month:10,week:3}),/penyimpanan lama/);
-context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10});
-legacyJobs=[{outlet:'BISS',type:'MONTHLY',payload:{year:2026,month:9}}];
-context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10});
-legacyJobs[0].payload.month=10;assert.throws(()=>context.salesSaveDirectGuard_('BISS','MONTHLY',{year:2026,month:10}),/penyimpanan lama/);
-
-// Reproduce the production failure with the real session/directory/save implementation.
-const backend=fs.readFileSync('gas/Code.gs','utf8'),cache=new Map();
-const extract=(start,end)=>backend.slice(backend.indexOf(start),backend.indexOf(end,backend.indexOf(start)+start.length));
-const engine={Date,OUTLETS:[{code:'BIHQ',role:'admin'},{code:'BISS',role:'store'}],APP_CONFIG:{},
- Utilities:{getUuid:()=>randomUUID()},CacheService:{getScriptCache:()=>({put:(k,v)=>cache.set(k,v),get:k=>cache.get(k)})},
- parseDateKey_:value=>new Date(value+'T00:00:00Z'),dateKey_:date=>date.toISOString().slice(0,10),weekOfMonth_:()=>5,dowName_:()=> 'Sen',
- audit_(){},Logger:{log(){}},bqSyncDaily_:(outlet,date,y,m,w,d,sales,analisa)=>{writes.push(sales);return {sales,analisa:analisa||'',status:'done'};}};
-vm.createContext(engine);
-vm.runInContext(extract('function syncOutlets_(records)','return Object.freeze({')+extract('function validateSession_(token)','/* ============================================================')+extract('function saveDaily(token, payload)','function saveGlobalDailyAnalysis(token, payload)'),engine);
-const badSession=engine.issueBiSpaceSession_('BISS','BISS','admin');
-assert.equal(engine.saveDaily(badSession.token,{outlet_code:'BISS',date:'2026-10-26',sales:350}).ok,false,'old HQ session reproduces the production validation failure');
-engine.syncOutlets_([{code:'BISS',role:'store'}]);
-data.clear();account.outlet='BIHQ';account.nik='N1';
-data.set('hq',{...job,jobId:'hq',role:'admin',spreadsheetId:'new-sheet',createdAt:'3',status:'QUEUED',payload:{outlet_code:'BISS',date:'2026-10-26',sales:350}});
-context.salesSaveJobs_=()=>[...data.values()].filter(j=>j.status!=='COMPLETE');
-context.SALES_ANALYSIS.syncOutlets=engine.syncOutlets_;
-context.SALES_ANALYSIS.issueSession=engine.issueBiSpaceSession_;
-context.SALES_ANALYSIS.saveDaily=engine.saveDaily;
-context.processSalesSaveJobs();assert.equal(data.get('hq').status,'COMPLETE');assert.equal(writes.at(-1),350);
-assert.equal(engine.OUTLETS.find(o=>o.code==='BISS').role,'store','target remains a store after session issuance');
-context.processSalesSaveJobs();assert.equal(writes.filter(value=>value===350).length,1,'repaired legacy job is not written twice');
-console.log('Sales legacy guard is scoped to matching records and fields; real HQ session recovery retains store outlet metadata.');
+assert.equal(context.queueSalesSave('token',{requestId:randomUUID(),type:'DAILY',payload:{date:'2026-10-26',sales:100}}).ok,false);
+assert.equal(context.retrySalesSave('token','old-job').ok,false);
+assert.equal(context.processSalesSaveJobs().retired,true);
+assert.deepEqual(deleted,['processSalesSaveJobs'],'retirement never deletes another operational trigger');
+assert.equal(networkCalls,0,'retired queue paths make no UrlFetch calls');
+context.cloudflareInventoryRequest_=()=>({data:[{jobId:'legacy',requestId:'request',type:'DAILY',outlet:'BISS',status:'COMPLETE',result:{ok:true,sales:100}}]});
+assert.equal(context.getSalesSaveJobs('token').data.jobs[0].status,'COMPLETE','accepted historical receipts stay available for explicit inspection');
+const source=fs.readFileSync('gas/Code.gs','utf8');
+for(const scope of ['Daily','Weekly','Monthly']){
+ const start=source.indexOf('function saveSalesAnalysis'+scope+'('),end=source.indexOf('\nfunction ',start+10),wrapper=source.slice(start,end);
+ assert.ok(!wrapper.includes('salesSaveDirectGuard_')&&!wrapper.includes('cloudflare'),'normal Sheet saves do not query retired D1 queues');
+}
+console.log('Sales queue fully retired: no new jobs, no retries/background writes, only its own trigger removed, history retained; direct writes avoid legacy UrlFetch.');
