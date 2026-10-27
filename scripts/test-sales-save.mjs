@@ -323,7 +323,15 @@ assert.throws(()=>periodGuard.salesSheetCheckAnalysis_('weekly_analysis','period
 periodGuard.salesSheetCheckAnalysis_('weekly_analysis','period','analisa_mingguan','Newer week',{analisa:'Old week'});
 assert.throws(()=>periodGuard.salesSheetCheckAnalysis_('monthly_analysis','period','analisa_bulanan','My month',{analisa:'Old month'}),/SAVE_CONFLICT/);
 
-const gateway={safe_:fn=>{try{return {ok:true,data:fn()};}catch(error){return {ok:false,error:error.message};}},salesAnalysisContext_:()=>({session:{role:'store',outlet_code:'BISS',token:'internal'}}),salesSaveDirectGuard_(){},SALES_ANALYSIS:{saveDaily:()=>({ok:true}),saveWeekly:()=>({ok:true}),saveMonthly:()=>({ok:true})}};
+const gateway={safe_:fn=>{try{return {ok:true,data:fn()};}catch(error){return {ok:false,error:error.message};}},salesAnalysisContext_:()=>({session:{role:'store',outlet_code:'BISS',token:'internal'}}),salesSaveDirectGuard_(){throw Error('Legacy UrlFetch must not run');},SALES_ANALYSIS:{saveDaily:()=>({ok:true}),saveWeekly:()=>({ok:true}),saveMonthly:()=>({ok:true})}};
 vm.createContext(gateway);vm.runInContext(between(backend,'function saveSalesAnalysisDaily(', 'function saveSalesAnalysisGlobal('),gateway);
 assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1}).ok,false,'old unguarded clients must reload before writing');
 assert.equal(gateway.saveSalesAnalysisDaily('token',{sales:1,expected:{sales:0}}).ok,true);
+
+// A retired, globally drained legacy queue needs no network lookup during draft recovery.
+storage.clear();const acceptedOld={...legacyEntry('accepted',{sales:100}),jobId:'confirmed-old-job'};
+storage.set('sales-save-outbox-v1:account',JSON.stringify([acceptedOld,legacyEntry('local-only',{sales:200})]));
+client.BAKERZIN_API.call=async()=>assert.fail('retired legacy recovery must not invoke UrlFetch');
+vm.runInContext("startSalesRealtime('account',undefined,true);",client);await client.recoverSalesLegacyDrafts('account');
+assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account:retired-backup')).length,2,'original old requests remain archived before migration');
+assert.equal(vm.runInContext('salesRealtime.drafts()[0][1].payload.sales',client),200,'only the unaccepted local draft needs review');

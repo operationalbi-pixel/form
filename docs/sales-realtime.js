@@ -26,7 +26,7 @@
       return value;
     }
     function guarded(request){return ['sales','analisa'].filter(field=>Object.hasOwn(request.payload,field)).every(field=>Object.hasOwn(request.payload.expected||{},field));}
-    function transient(error){return !/SAVE_CONFLICT|sesi|session|unauthorized|kredensial|izin|tidak valid/i.test(error.message||'') && /network|fetch|offline|koneksi|timeout|timed out|tidak merespons|sementara|temporar|too many|quota|kuota|HTTP 5|penguncian|lock|service unavailable/i.test(error.message||'');}
+    function transient(error){return !/too many times for (?:one )?day|daily quota|kuota harian|SAVE_CONFLICT|sesi|session|unauthorized|kredensial|izin|tidak valid/i.test(error.message||'') && /network|fetch|offline|koneksi|timeout|timed out|tidak merespons|sementara|temporar|too many|quota|kuota|HTTP 5|penguncian|lock|service unavailable/i.test(error.message||'');}
     function online(){return !options.isOnline || options.isOnline();}
     async function flush(id){
       cancel(id);
