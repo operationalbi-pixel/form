@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   root.SalesRealtime={create:function(options){
-    const drafts=new Map(),running=new Map(),timers=new Map(),states=new Map();
+    const drafts=new Map(),running=new Map(),timers=new Map(),states=new Map(),confirmed=new Map();
     let generation=0,storageHealthy=true;
     try{for(const [id,value] of JSON.parse(options.storage.getItem(options.key)||'[]')){drafts.set(id,value);generation=Math.max(generation,Number(value.revision)||0);}}
     catch(error){storageHealthy=false;options.onStatus('','error','Draf perangkat tidak dapat dibaca.');}
@@ -36,9 +36,10 @@
       const operation=(async()=>{
         let sent;
         try{
+          const latest=drafts.get(id);if(!latest||latest.valid===false)return null;
+          // Retry the same absolute write: a timed-out attempt may already be committed.
+          sent=JSON.parse(JSON.stringify(latest));
           for(let attempt=0;;attempt++){
-            const latest=drafts.get(id);if(!latest||latest.valid===false)return null;
-            sent=JSON.parse(JSON.stringify(latest));
             status(id,attempt?'retrying':'saving',attempt?'Mencoba menyimpan kembali…':'Menyimpan…');
             try{
               const result=await Promise.resolve().then(()=>options.write(sent));
@@ -52,7 +53,9 @@
                 }
                 if(!Object.hasOwn(latest.payload,'sales')&&!Object.hasOwn(latest.payload,'analisa'))drafts.delete(id);
               }
-              persist();options.onSaved(sent,result);
+              confirmed.set(id,sent.revision);
+              persist();
+              try{options.onSaved(sent,result);}catch(error){if(root.console)root.console.error('Sales tersimpan; tampilan belum diperbarui.',error);}
               status(id,drafts.has(id)?'dirty':'saved',drafts.has(id)?'Perubahan terbaru belum tersimpan':'Tersimpan');
               return result;
             }catch(error){
@@ -71,7 +74,21 @@
       running.set(id,operation);
       try{const result=await operation;if(result&&drafts.has(id))schedule(id);return result;}catch(error){cancel(id);throw error;}
     }
-    return {edit,flush,drafts:()=>[...drafts],state:id=>states.get(id),busy:()=>running.size>0,hasDrafts:()=>drafts.size>0,
+    async function save(id){
+      // A click covers the draft visible now, even when an older autosave is in flight.
+      const target=drafts.get(id)?.revision;
+      if(target===undefined)return running.has(id)?running.get(id):null;
+      let result=null;
+      while(drafts.has(id) && (confirmed.get(id)||0)<target){
+        cancel(id);
+        if(drafts.get(id).valid===false)return null;
+        if(running.has(id))status(id,'saving','Menyimpan…');
+        result=await flush(id);
+        if(!result)return null;
+      }
+      return result;
+    }
+    return {edit,flush,save,drafts:()=>[...drafts],state:id=>states.get(id),busy:()=>running.size>0,hasDrafts:()=>drafts.size>0,
       resume(){for(const [id,state] of states)if(state.state==='offline'&&drafts.has(id))void flush(id).catch(()=>{});}};
   }};
 })(typeof window==='undefined'?globalThis:window);
