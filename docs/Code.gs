@@ -18513,8 +18513,6 @@ function getDailyReport(token, reportDate, outletRows) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return { ok:false, error:'Tanggal laporan tidak valid.' };
   var date = parseDateKey_(key);
   if (!date || dateKey_(date) !== key) return { ok:false, error:'Tanggal laporan tidak valid.' };
-  var todayKey = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
-  if (key >= todayKey) return { ok:false, error:'Daily Report hanya dapat dibuat sampai H-1.' };
   if (!bqIsAvailable_()) return { ok:false, error:'Database Google Sheets Sales Analysis tidak dapat dibuka.' };
 
   try {
@@ -18533,7 +18531,9 @@ function getDailyReport(token, reportDate, outletRows) {
       return salesAnalysisCanonicalOutletCode_(outlet.code);
     });
     if (!reportOutlets.length) {
-      return { ok:false, error:'Belum ada target harian yang di-upload untuk bulan ini.' };
+      // A selected date without uploaded targets can still be copied with zero targets.
+      reportOutlets = outlets;
+      excludedOutlets = [];
     }
     // Outlets may open/reopen mid-month. Sum available targets; missing earlier days do not block copying.
 
@@ -18541,7 +18541,7 @@ function getDailyReport(token, reportDate, outletRows) {
       var code = salesAnalysisCanonicalOutletCode_(outlet.code);
       var sales = salesMap[code] || { dailySales:0, mtdSales:0 };
       var monthlyTarget = Number(monthlyTargets[code]) || 0;
-      var mtdTarget = Number(targetProgress[code].mtdTarget) || 0;
+      var mtdTarget = Number((targetProgress[code] || {}).mtdTarget) || 0;
       return {
         outlet:code,
         reported:sales.reported === true,
@@ -18553,7 +18553,7 @@ function getDailyReport(token, reportDate, outletRows) {
         mtdTarget:mtdTarget
       };
     }).sort(function (a, b) {
-      return Number(b.reported) - Number(a.reported) || b.dailySales - a.dailySales || a.outlet.localeCompare(b.outlet);
+      return b.dailySales - a.dailySales || a.outlet.localeCompare(b.outlet);
     });
 
     var total = rows.reduce(function (sum, row) {
@@ -18566,7 +18566,7 @@ function getDailyReport(token, reportDate, outletRows) {
 
     var lines = ['*Sales Bakerzin ' + reportDateId_(key) + '*'];
     rows.forEach(function (row, index) {
-      lines.push('*' + (index + 1) + ' ' + row.outlet + ' ' + (row.reported ? reportIntegerId_(row.dailySales) : 'Belum input sales') + '*');
+      lines.push('*' + (index + 1) + ' ' + row.outlet + ' ' + reportIntegerId_(row.dailySales) + '*');
       lines.push('MTD ' + reportMillionsId_(row.mtdSales, 1) + '/' + reportMillionsId_(row.monthlyTarget, 0) + '/' +
         reportPercentId_(row.achievementPct, false) + '/' + reportPercentId_(row.variancePct, true));
     });
