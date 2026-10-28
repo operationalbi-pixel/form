@@ -18535,15 +18535,7 @@ function getDailyReport(token, reportDate, outletRows) {
     if (!reportOutlets.length) {
       return { ok:false, error:'Belum ada target harian yang di-upload untuk bulan ini.' };
     }
-    var incompleteOutlets = reportOutlets.map(function (outlet) {
-      return salesAnalysisCanonicalOutletCode_(outlet.code);
-    }).filter(function (code) {
-      var progress = targetProgress[code];
-      return !monthlyTargets[code] || progress.targetDays !== day;
-    });
-    if (incompleteOutlets.length) {
-      return { ok:false, error:'Target harian belum lengkap sampai tanggal ' + day + ' untuk: ' + incompleteOutlets.join(', ') + '.', incompleteOutlets:incompleteOutlets };
-    }
+    // Outlets may open/reopen mid-month. Sum available targets; missing earlier days do not block copying.
 
     var rows = reportOutlets.map(function (outlet) {
       var code = salesAnalysisCanonicalOutletCode_(outlet.code);
