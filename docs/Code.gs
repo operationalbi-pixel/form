@@ -18010,7 +18010,7 @@ function bqSaveDailyTargetUpdates_(key,updates,submittedBy){
 function bqGetDailyReportSales_(outletCodes,reportDate){
   var allowed={};(outletCodes||[]).forEach(function(code){allowed[String(code).toUpperCase()]=true;});var monthStart=String(reportDate).slice(0,8)+'01',out={};
   var rows=salesSheetLatest_(salesSheetTable_('daily_sales').rows.filter(function(row){var key=salesSheetDateKey_(row.date);return allowed[String(row.outlet_code||'').toUpperCase()]&&key>=monthStart&&key<=reportDate;}),function(row){return String(row.outlet_code||'').toUpperCase()+'|'+salesSheetDateKey_(row.date);});
-  rows.forEach(function(row){var code=String(row.outlet_code||'').toUpperCase(),key=salesSheetDateKey_(row.date),sales=Number(row.sales)||0;if(!out[code])out[code]={dailySales:0,mtdSales:0};out[code].mtdSales+=sales;if(key===reportDate)out[code].dailySales+=sales;});return out;
+  rows.forEach(function(row){var code=String(row.outlet_code||'').toUpperCase(),key=salesSheetDateKey_(row.date),sales=Number(row.sales)||0;if(!out[code])out[code]={dailySales:0,mtdSales:0,reported:false};out[code].mtdSales+=sales;if(key===reportDate){out[code].dailySales+=sales;out[code].reported=true;}});return out;
 }
 
 /* ============================================================
@@ -18552,6 +18552,7 @@ function getDailyReport(token, reportDate, outletRows) {
       var mtdTarget = Number(targetProgress[code].mtdTarget) || 0;
       return {
         outlet:code,
+        reported:sales.reported === true,
         dailySales:Number(sales.dailySales) || 0,
         mtdSales:Number(sales.mtdSales) || 0,
         monthlyTarget:monthlyTarget,
@@ -18560,7 +18561,7 @@ function getDailyReport(token, reportDate, outletRows) {
         mtdTarget:mtdTarget
       };
     }).sort(function (a, b) {
-      return b.dailySales - a.dailySales || a.outlet.localeCompare(b.outlet);
+      return Number(b.reported) - Number(a.reported) || b.dailySales - a.dailySales || a.outlet.localeCompare(b.outlet);
     });
 
     var total = rows.reduce(function (sum, row) {
@@ -18573,7 +18574,7 @@ function getDailyReport(token, reportDate, outletRows) {
 
     var lines = ['*Sales Bakerzin ' + reportDateId_(key) + '*'];
     rows.forEach(function (row, index) {
-      lines.push('*' + (index + 1) + ' ' + row.outlet + ' ' + reportIntegerId_(row.dailySales) + '*');
+      lines.push('*' + (index + 1) + ' ' + row.outlet + ' ' + (row.reported ? reportIntegerId_(row.dailySales) : 'Belum input sales') + '*');
       lines.push('MTD ' + reportMillionsId_(row.mtdSales, 1) + '/' + reportMillionsId_(row.monthlyTarget, 0) + '/' +
         reportPercentId_(row.achievementPct, false) + '/' + reportPercentId_(row.variancePct, true));
     });
@@ -18582,7 +18583,8 @@ function getDailyReport(token, reportDate, outletRows) {
     lines.push('MTD ' + reportMillionsId_(total.mtdSales, 0) + '/' + reportMillionsId_(total.monthlyTarget, 0) + '/' +
       reportPercentId_(total.achievementPct, false) + '/' + reportPercentId_(total.variancePct, true));
 
-    return { ok:true, date:key, text:lines.join('\n'), rows:rows, total:total, excludedOutlets:excludedOutlets, dataSource:'Google Sheets' };
+    var missingSalesOutlets = rows.filter(function(row){return !row.reported;}).map(function(row){return row.outlet;});
+    return { ok:true, date:key, text:lines.join('\n'), rows:rows, total:total, missingSalesOutlets:missingSalesOutlets, excludedOutlets:excludedOutlets, dataSource:'Google Sheets' };
   } catch (e) {
     Logger.log('Daily Report gagal: ' + e.message);
     return { ok:false, error:'Gagal membuat Daily Report: ' + e.message };

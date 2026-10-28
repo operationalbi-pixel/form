@@ -43,11 +43,12 @@ const html=fs.readFileSync('docs/sales-analysis.html','utf8');assert.ok(!html.in
 assert.ok(html.includes('applySavedDaily(snap,result)')&&html.includes('updateModalSalesConfirmation(request,result)'),'confirmed saves update the selected panel and HQ modal');
 console.log('Realtime Sales: debounced direct saves, latest edits, confirmed-only status, failures/reload, explicit zero, account isolation and no job queue.');
 
-// Bounded retries resend the current draft with its original field baseline.
+// Bounded retries repeat the same write before rebasing the latest draft.
 const retryWrites=[],retryStatuses=[],sleeps=[];let retryLive;
 retryLive=context.window.SalesRealtime.create({storage,key:'retry',onStatus:(...args)=>retryStatuses.push(args),onSaved(){},sleep:async delay=>{sleeps.push(delay);retryLive.edit('d',{...request(30),payload:{...request(30).payload,expected:{sales:0}}},false);},write:async sent=>{retryWrites.push(sent);if(retryWrites.length<3)throw Error('Network temporarily unavailable');return {ok:true,sales:sent.payload.sales};}});
 retryLive.edit('d',{...request(20),payload:{...request(20).payload,expected:{sales:0}}},false);await retryLive.flush('d');
-assert.equal(retryWrites.length,3);assert.equal(retryWrites[0].payload.sales,20);assert.equal(retryWrites[1].payload.sales,30);assert.equal(retryWrites[1].payload.expected.sales,0);assert.equal(retryLive.hasDrafts(),false);assert.equal(sleeps.length,2);
+assert.equal(retryWrites.length,3);assert.equal(retryWrites[0].payload.sales,20);assert.equal(retryWrites[1].payload.sales,20);assert.equal(retryWrites[1].payload.expected.sales,0);assert.equal(retryLive.hasDrafts(),true);assert.equal(sleeps.length,2);
+await retryLive.save('d');assert.equal(retryWrites.at(-1).payload.sales,30);assert.equal(retryWrites.at(-1).payload.expected.sales,20);assert.equal(retryLive.hasDrafts(),false);
 let exhausted=0;
 const failures=context.window.SalesRealtime.create({storage,key:'exhausted',onStatus(){},onSaved(){},sleep:async()=>{},write:async()=>{exhausted++;throw Error('Network failed');}});
 failures.edit('d',{...request(20),payload:{...request(20).payload,expected:{sales:0}}},false);
@@ -79,3 +80,47 @@ rebased[1].resolve({ok:true,sales:2});await relaySave;
 let quotaCalls=0;
 const dailyQuota=context.window.SalesRealtime.create({storage,key:'quota',onStatus(){},onSaved(){},sleep:async()=>assert.fail('a daily quota cannot recover by retrying'),write:async()=>{quotaCalls++;throw Error('Service invoked too many times for one day: urlfetch.');}});
 dailyQuota.edit('d',guardedRequest(1,0),false);await assert.rejects(dailyQuota.flush('d'),/urlfetch/);assert.equal(quotaCalls,1);assert.equal(dailyQuota.hasDrafts(),true);
+
+// A Save click must confirm its latest visible revision, not only an older autosave.
+scheduled.clear();
+const clickWrites=[],clickStates=[];
+const explicit=context.window.SalesRealtime.create({storage,key:'click-latest',onStatus:(_id,state)=>clickStates.push(state),onSaved(){},write:request=>new Promise((resolve,reject)=>clickWrites.push({request,resolve,reject}))});
+explicit.edit('d',guardedRequest(100,0),false);const olderAutosave=explicit.flush('d');await tick();
+explicit.edit('d',guardedRequest(200,0),false);
+let clickFinished=false;
+const saveLatest=explicit.save('d').then(result=>{clickFinished=true;return result;});
+const duplicateClick=explicit.save('d');
+clickWrites[0].resolve({ok:true,sales:100});await olderAutosave;await tick();
+assert.equal(clickFinished,false,'the click cannot complete with an older value');
+assert.equal(clickWrites.length,2,'latest draft starts immediately without a debounce timer');
+assert.equal(clickWrites[1].request.payload.sales,200);assert.equal(clickWrites[1].request.payload.expected.sales,100);
+assert.notEqual(explicit.state('d').state,'saved');
+clickWrites[1].resolve({ok:true,sales:200});await saveLatest;await duplicateClick;
+assert.equal(clickWrites.length,2,'double-clicks share the same latest write');assert.equal(explicit.hasDrafts(),false);assert.equal(scheduled.size,0);
+// An old network timeout may conceal a committed Sheet write. Confirm it first.
+let databaseValue=0,releaseRetry;const lostWrites=[];
+const lost=context.window.SalesRealtime.create({storage,key:'lost-latest',onStatus(){},onSaved(){},
+ sleep:()=>new Promise(resolve=>releaseRetry=resolve),write:async sent=>{
+  lostWrites.push(sent.payload.sales);
+  if(databaseValue!==sent.payload.expected.sales && databaseValue!==sent.payload.sales)throw Error('SAVE_CONFLICT');
+  databaseValue=sent.payload.sales;
+  if(lostWrites.length===1)throw Error('Network timeout after commit');
+  return {ok:true,sales:databaseValue};
+ }});
+lost.edit('d',guardedRequest(100,0),false);const lostOlder=lost.flush('d');await tick();
+lost.edit('d',guardedRequest(200,0),false);const lostClick=lost.save('d');
+releaseRetry();await lostOlder;await lostClick;
+assert.deepEqual(lostWrites,[100,100,200]);assert.equal(databaseValue,200);assert.equal(lost.hasDrafts(),false);
+// UI rendering errors must never retry or relabel an acknowledged write as failed.
+let observerWrites=0;
+const observer=context.window.SalesRealtime.create({storage,key:'observer',onStatus(){},onSaved(){throw Error('Display refresh failed');},write:async()=>{observerWrites++;return {ok:true,sales:1};}});
+observer.edit('d',guardedRequest(1,0),false);await observer.save('d');assert.equal(observerWrites,1);assert.equal(observer.state('d').state,'saved');
+console.log('Explicit Save confirms the clicked revision immediately after an older write; retries preserve lost acknowledgements and UI errors cannot replay a committed save.');
+// A failed older write keeps the latest clicked input for an explicit retry.
+const failedWrites=[];
+const failedClick=context.window.SalesRealtime.create({storage,key:'failed-click',onStatus(){},onSaved(){},write:request=>new Promise((resolve,reject)=>failedWrites.push({request,resolve,reject}))});
+failedClick.edit('d',guardedRequest(1,0),false);const failedOld=failedClick.flush('d');await tick();
+failedClick.edit('d',guardedRequest(2,0),false);const failedLatest=failedClick.save('d');
+const rejection=Promise.all([assert.rejects(failedOld,/izin/),assert.rejects(failedLatest,/izin/)]);
+failedWrites[0].reject(Error('Tidak memiliki izin'));await rejection;
+assert.equal(failedClick.drafts()[0][1].payload.sales,2);assert.equal(failedClick.state('d').state,'error');assert.equal(failedWrites.length,1);

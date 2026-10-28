@@ -160,7 +160,7 @@ const storage=new Map();
 const timers=new Map();let timerId=0;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const client = {
-  console, Map, Object, JSON, Promise,navigator:{onLine:true},
+  dailyReportCopyCache:new Map(),dailyReportDataVersion:0,console, Map, Object, JSON, Promise,navigator:{onLine:true},
   window:{addEventListener(){}},
   localStorage:{getItem:key=>key==='bakerzin_session'?'account':storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
   setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
@@ -336,3 +336,92 @@ client.BAKERZIN_API.call=async()=>assert.fail('retired legacy recovery must not 
 vm.runInContext("startSalesRealtime('account',undefined,true);",client);await client.recoverSalesLegacyDrafts('account');
 assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account:retired-backup')).length,2,'original old requests remain archived before migration');
 assert.equal(vm.runInContext('salesRealtime.drafts()[0][1].payload.sales',client),200,'only the unaccepted local draft needs review');
+
+// Reproduce typing a new sales value while blur/autosave is still in flight.
+storage.clear();timers.clear();client.state.dash=dashboard();client.state.scope='day';
+client.state.year=2026;client.state.month=10;client.state.day=6;client.state.outletFilter='BISS';
+client.state.dash.perOutlet=[{code:'BISS',total:100},{code:'BILW',total:900}];
+vm.runInContext("salesEditorDrafts.clear(); startSalesRealtime('account');",client);client.render();
+const firstCallIndex=calls.length;
+input('dayAmount','400');handlers.get('dayAmount:blur')();await tick();
+assert.equal(calls[firstCallIndex].args[1].analisa,undefined,'sales-only Save cannot overwrite untouched analysis');
+input('dayAmount','500');let clickedDone=false;
+const clicked=click('saveDay').then(()=>{clickedDone=true;});await tick();
+calls[firstCallIndex].resolve({ok:true,sales:400,analisa:'Old saved analysis',status:'pending'});await tick();
+assert.equal(clickedDone,false);assert.equal(calls.length,firstCallIndex+2);
+assert.equal(calls.at(-1).args[1].sales,500);assert.equal(calls.at(-1).args[1].expected.sales,400);
+assert.equal(element('dayAmount').value,'500','older confirmation never replaces the new input');
+assert.equal(element('saveDay').textContent,'Menyimpan…');
+client.dailyReportCopyCache.set('2026-10-07','Old MTD');
+calls.at(-1).resolve({ok:true,sales:500,analisa:'Old saved analysis',status:'pending'});await clicked;
+assert.equal(client.state.dash.month.total,500);assert.equal(client.state.dash.perOutlet.find(r=>r.code==='BISS').total,500);
+assert.equal(element('salesAmountStatus').textContent,'Tersimpan');assert.equal(element('saveDay').textContent,'Simpan');
+assert.equal(client.dailyReportCopyCache.size,0,'previously copied MTD reports are invalidated after a saved amount');
+console.log('UI Save waits for the latest visible amount, updates totals/ranking, preserves untouched analysis and clears stale copied reports.');
+
+// A report already loading before a save cannot repopulate the stale MTD cache.
+const reportWaits=[],reportCache=new Map();
+const reportButton={dataset:{reportDate:'2026-10-07'},classList:{remove(){}},removeAttribute(){},disabled:false,textContent:''};
+const reportUi={dailyReportPrepareId:0,dailyReportDataVersion:0,dailyReportCopyCache:reportCache,session:{token:'session'},
+ document:{getElementById:()=>reportButton},call:()=>new Promise(resolve=>reportWaits.push(resolve)),setDailyReportUnavailable(){assert.fail('valid report should not fail');}};
+vm.createContext(reportUi);vm.runInContext(between(html,'async function prepareDailyReport(', 'function setDailyReportUnavailable('),reportUi);
+const oldReport=reportUi.prepareDailyReport('2026-10-07');reportUi.dailyReportDataVersion++;
+reportWaits[0]({ok:true,text:'Old MTD'});await oldReport;assert.equal(reportCache.size,0);
+const currentReport=reportUi.prepareDailyReport('2026-10-07');reportWaits[1]({ok:true,text:'New MTD'});await currentReport;
+assert.equal(reportCache.get('2026-10-07'),'New MTD');
+
+// HQ's per-outlet modal uses the same explicit Save path as the store editor.
+storage.clear();timers.clear();
+const hqEvents=new Map();
+const hqInput={value:'100',addEventListener:(name,fn)=>hqEvents.set('input:'+name,fn)};
+const hqButton={textContent:'Simpan',addEventListener:(name,fn)=>hqEvents.set('button:'+name,fn)};
+const hqStatus={style:{},dataset:{},textContent:''},hqSales={textContent:''};
+const hqNodes={'[data-hq-sales]':hqInput,'[data-hq-save]':hqButton,'[data-hq-status]':hqStatus,'.ob-sales':hqSales};
+const hqBox={dataset:{},querySelector:key=>hqNodes[key]};
+client.document.createElement=()=>hqBox;client.document.querySelectorAll=()=>[hqBox];client.escapeHtml=String;client.render=()=>{};
+client.session.role='admin';client.session.outlet_code='BIHQ';client.state.outletFilter='ALL';
+client.state.dash=dashboard();client.state.dash.isAggregate=true;client.state.dash.days[5].contributors=[{outlet:'BISS',sales:100,text:'',status:'pending'}];
+vm.runInContext("salesEditorDrafts.clear(); startSalesRealtime('account');",client);
+vm.runInContext(between(html,'function renderOutletBox(', 'function updateModalSalesConfirmation('),client);
+client.renderOutletBox({code:'BISS',name:'Senayan Park'},client.state.dash.days[5].contributors[0],6);
+const hqFirst=calls.length;
+hqInput.value='600';hqEvents.get('input:input')();hqEvents.get('input:blur')();await tick();
+hqInput.value='700';hqEvents.get('input:input')();hqEvents.get('button:click')();await tick();
+calls[hqFirst].resolve({ok:true,sales:600,analisa:'',status:'pending'});await tick();
+assert.equal(calls.length,hqFirst+2);assert.equal(calls.at(-1).args[1].sales,700);assert.equal(hqInput.value,'700');
+calls.at(-1).resolve({ok:true,sales:700,analisa:'',status:'pending'});await tick();
+assert.equal(hqStatus.textContent,'Tersimpan');assert.equal(hqSales.textContent,'Rp 700');assert.equal(client.state.dash.month.total,700);
+console.log('HQ per-outlet modal Save also confirms the latest clicked amount without another click or refresh.');
+
+// Partial reports remain copyable; a missing entry differs from an entered zero.
+let reportRecords=[{outlet_code:'BISS',date:'2026-10-26',sales:100},{outlet_code:'BILW',date:'2026-10-25',sales:50},{outlet_code:'BICP',date:'2026-10-26',sales:0}];
+const reportOutlets=['BISS','BILW','BICP'].map(code=>({code,role:'store'}));
+const reportBackend={Date,TZ:'Asia/Jakarta',OUTLETS:reportOutlets,validateSession_:()=>({role:'admin'}),bqIsAvailable_:()=>true,
+ parseDateKey_:key=>{const [y,m,d]=key.split('-').map(Number);return new Date(y,m-1,d);},dateKey_:date=>[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-'),
+ Utilities:{formatDate:()=> '2026-10-28'},salesAnalysisCanonicalOutletCode_:code=>code,salesAnalysisPeriodOutlets_:rows=>rows.filter(o=>o.role!=='admin'),
+ salesSheetLatest_:rows=>rows,salesSheetTable_:()=>({rows:reportRecords}),salesSheetDateKey_:value=>value,
+ bqGetTargetsMap_:()=>({BISS:1000,BILW:1000,BICP:1000}),bqGetDailyTargetProgress_:codes=>Object.fromEntries(codes.map(code=>[code,{mtdTarget:260,targetDays:26}])),Logger:{log(){}}};
+vm.createContext(reportBackend);
+vm.runInContext(between(backend,'function bqGetDailyReportSales_(outletCodes,reportDate){','/* ============================================================\n *  SAVE APIs')+between(backend,'function reportIntegerId_(', 'function syncOutlets_('),reportBackend);
+const partial=reportBackend.getDailyReport('token','2026-10-26');
+assert.equal(partial.ok,true,partial.error);assert.equal(partial.total.dailySales,100);assert.equal(partial.total.mtdSales,150);
+assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW Belum input sales/);assert.match(partial.text,/BICP 0/);assert.ok(!partial.text.includes('Total sementara'));assert.ok(!partial.text.includes('_Belum input sales:'));
+reportRecords=[];
+const emptyReport=reportBackend.getDailyReport('token','2026-10-26');assert.equal(emptyReport.ok,true);assert.equal(emptyReport.missingSalesOutlets.length,3);
+reportRecords=reportOutlets.map((o,index)=>({outlet_code:o.code,date:'2026-10-26',sales:index*100}));
+const complete=reportBackend.getDailyReport('token','2026-10-26');assert.equal(complete.ok,true);assert.equal(complete.missingSalesOutlets.length,0);assert.ok(!complete.text.includes('Total sementara'));
+// A report fetch error stays retryable and cannot masquerade as missing sales.
+const retryButton={dataset:{reportDate:'2026-10-26'},classList:{remove(){}},removeAttribute(){},disabled:true};
+reportUi.document.getElementById=()=>retryButton;
+vm.runInContext(between(html,'function setDailyReportUnavailable(', "document.getElementById('btnUploadDailyTargets')"),reportUi);
+reportUi.setDailyReportUnavailable(retryButton,'Koneksi terputus');
+assert.equal(retryButton.disabled,false);assert.equal(retryButton.dataset.unavailable,undefined);assert.equal(retryButton.textContent,'Coba Salin Lagi');assert.equal(retryButton.title,'Koneksi terputus');
+console.log('Daily Report copies partial or empty sales with missing-entry labels, distinguishes explicit zero, preserves MTD and lets users retry loading.');
+// One click copies either the prepared partial report or the just-fetched report.
+let copyHandler;const copiedReports=[];
+const copyUi={dailyReportCopyCache:new Map([['2026-10-26',partial.text]]),prepareDailyReport:async()=>emptyReport.text,copyPlainText:async text=>{copiedReports.push(text);return true;},toast(){},
+ document:{getElementById:()=>({addEventListener:(_name,handler)=>copyHandler=handler})}};
+vm.createContext(copyUi);vm.runInContext(between(html,"document.getElementById('btnCopyDailyReport').addEventListener",'/* ENTER APP */'),copyUi);
+const copyEvent={currentTarget:{dataset:{reportDate:'2026-10-26'}}};
+await copyHandler(copyEvent);assert.equal(copiedReports[0],partial.text);
+copyUi.dailyReportCopyCache.clear();await copyHandler(copyEvent);assert.equal(copiedReports[1],emptyReport.text);
