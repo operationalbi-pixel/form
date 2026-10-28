@@ -721,7 +721,7 @@
 }());
 </script>
 
-<script src="sales-realtime.js?v=20261027-resilient3"></script>
+<script src="sales-realtime.js?v=20261028-save-current"></script>
 <script>
 const BOOT = {today:new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Jakarta'}),outlets:[],brand:'Bakerzin'};
 const ID_MONTHS_LONG = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
@@ -745,6 +745,7 @@ const state = {
 };
 const dailyReportCopyCache = new Map();
 let dailyReportPrepareId = 0;
+let dailyReportDataVersion = 0;
 let monthLoadId = 0;
 const salesViewVersions=new Map();
 const salesViewKey=(year,month,outlet)=>[year,month,outlet].join('|');
@@ -784,6 +785,8 @@ function applySavedDaily(snapshot, result){
     d.sales=Number(d.sales||0)+delta;
   }else {d.sales=Number(result.sales);d.daily={text:result.analisa||'',status:result.status};}
   d.reported=true;
+  const ranked=(state.dash.perOutlet||[]).find(row=>row.code===snapshot.outlet);
+  if(ranked){ranked.total=Number(ranked.total||0)+delta;state.dash.perOutlet.sort((a,b)=>b.total-a.total);}
   const week=state.dash.weeks.find(w=>w.w===d.week);
   if(week) week.total=Number(week.total||0)+delta;
   if(state.dash.month){
@@ -870,6 +873,7 @@ async function copyPlainText(text){
 async function prepareDailyReport(reportDate){
   const button=document.getElementById('btnCopyDailyReport');
   const requestId=++dailyReportPrepareId;
+  const dataVersion=dailyReportDataVersion;
   button.classList.remove('unavailable');
   button.removeAttribute('aria-disabled');
   delete button.dataset.unavailable;
@@ -879,13 +883,13 @@ async function prepareDailyReport(reportDate){
   try{
     const result=await call('getDailyReport',session.token,reportDate);
     if(!result || !result.ok || !result.text) throw new Error(result&&result.error||'Daily Report gagal dibuat.');
-    dailyReportCopyCache.set(reportDate,String(result.text));
+    if(dataVersion===dailyReportDataVersion)dailyReportCopyCache.set(reportDate,String(result.text));
     if(requestId===dailyReportPrepareId && button.dataset.reportDate===reportDate){
       button.disabled=false;
       button.textContent='Salin Daily Report';
     }
   }catch(error){
-    dailyReportCopyCache.delete(reportDate);
+    if(dataVersion===dailyReportDataVersion)dailyReportCopyCache.delete(reportDate);
     if(requestId===dailyReportPrepareId){
       setDailyReportUnavailable(button);
     }
@@ -1632,8 +1636,8 @@ function updateSalesSaveStatus(id,status,message){
   const paint=el=>{if(!el)return;el.textContent=compact;el.title=message;el.dataset.state=status;el.style.color=status==='error'?'#b42318':status==='saved'?'#18734a':'';};
   const current=createSalesEditorRequest('analysis',false),sales=createSalesEditorRequest('sales',false);
   if(!id || (current&&salesRequestId(current)===id))paint(document.getElementById('savedAt'));
-  if(!id || (sales&&salesRequestId(sales)===id))paint(document.getElementById('salesAmountStatus'));
-  document.querySelectorAll('[data-hq-record]').forEach(box=>{if(box.dataset.hqRecord===id)paint(box.querySelector('[data-hq-status]'));});
+  if(!id || (sales&&salesRequestId(sales)===id)){paint(document.getElementById('salesAmountStatus'));document.getElementById('saveDay').textContent=['saving','retrying'].includes(status)?'Menyimpan…':'Simpan';}
+  document.querySelectorAll('[data-hq-record]').forEach(box=>{if(box.dataset.hqRecord===id){paint(box.querySelector('[data-hq-status]'));box.querySelector('[data-hq-save]').textContent=['saving','retrying'].includes(status)?'Menyimpan…':'Simpan';}});
 }
 function refreshSalesInlineStatus(){
   if(!salesRealtime)return;
@@ -1739,7 +1743,7 @@ function createSalesEditorRequest(field,manual){
     if(!raw)valid=false;
     payload.sales=raw?Number(raw):'';
   }
-  if(field==='analysis'||(manual&&snap.scope==='day'&&session.role!=='admin'))payload.analisa=snap.analysisInput;
+  if(field==='analysis'||(manual&&snap.scope==='day'&&session.role!=='admin'&&salesEditorDrafts.has(snap.analysisKey)))payload.analisa=snap.analysisInput;
   const selected=state.dash.days[snap.day-1];
   const period=day?null:snap.scope==='week'?state.dash.weeks.find(w=>w.w===snap.week):state.dash.month;
   payload.expected={};
@@ -1753,10 +1757,12 @@ function saveSalesEditor(field,manual=false,review=false){
   const id=salesRequestId(request);salesRealtime.edit(id,request,!manual,review);
   if(request.valid===false){updateSalesSaveStatus(id,'dirty','Isi nominal Sales; gunakan 0 jika tidak ada penjualan.');return Promise.resolve();}
   if(!manual)return Promise.resolve();
-  return salesRealtime.flush(id).catch(()=>{});
+  return (review?salesRealtime.save(id):salesRealtime.flush(id)).catch(()=>{});
 }
 function applySalesConfirmation(request,result){
   const snap=request.snapshot,p=request.payload;
+  // Daily Report includes MTD; invalidate even if the user navigated during saving.
+  if(Object.hasOwn(p,'sales')){dailyReportCopyCache.clear();dailyReportDataVersion+=1;}
   for(const outlet of new Set([snap.outlet,'ALL'])){
     const key=salesViewKey(snap.year,snap.month,outlet);salesViewVersions.set(key,(salesViewVersions.get(key)||0)+1);
   }
@@ -2055,7 +2061,7 @@ function renderOutletBox(o, c, day){
       if(!salesRealtime)return;
       salesEditorDrafts.set(snap.salesKey,input.value);
       salesRealtime.edit(id,request,!manual,review);
-      if(manual && raw)void salesRealtime.flush(id).catch(()=>{});
+      if(manual && raw)void (review?salesRealtime.save(id):salesRealtime.flush(id)).catch(()=>{});
     };
     input.addEventListener('input',()=>save());
     input.addEventListener('blur',()=>{if(salesEditorDrafts.has(snap.salesKey))save(true);});
