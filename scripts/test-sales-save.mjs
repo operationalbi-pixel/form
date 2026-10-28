@@ -405,7 +405,7 @@ vm.createContext(reportBackend);
 vm.runInContext(between(backend,'function bqGetDailyReportSales_(outletCodes,reportDate){','/* ============================================================\n *  SAVE APIs')+between(backend,'function reportIntegerId_(', 'function syncOutlets_('),reportBackend);
 const partial=reportBackend.getDailyReport('token','2026-10-26');
 assert.equal(partial.ok,true,partial.error);assert.equal(partial.total.dailySales,100);assert.equal(partial.total.mtdSales,150);
-assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW Belum input sales/);assert.match(partial.text,/BICP 0/);assert.ok(!partial.text.includes('Total sementara'));assert.ok(!partial.text.includes('_Belum input sales:'));
+assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW 0/);assert.ok(!partial.text.includes('Belum input sales'));assert.match(partial.text,/BICP 0/);assert.ok(!partial.text.includes('Total sementara'));assert.ok(!partial.text.includes('_Belum input sales:'));
 reportRecords=[];
 const emptyReport=reportBackend.getDailyReport('token','2026-10-26');assert.equal(emptyReport.ok,true);assert.equal(emptyReport.missingSalesOutlets.length,3);
 reportRecords=reportOutlets.map((o,index)=>({outlet_code:o.code,date:'2026-10-26',sales:index*100}));
@@ -416,7 +416,7 @@ reportUi.document.getElementById=()=>retryButton;
 vm.runInContext(between(html,'function setDailyReportUnavailable(', "document.getElementById('btnUploadDailyTargets')"),reportUi);
 reportUi.setDailyReportUnavailable(retryButton,'Koneksi terputus');
 assert.equal(retryButton.disabled,false);assert.equal(retryButton.dataset.unavailable,undefined);assert.equal(retryButton.textContent,'Coba Salin Lagi');assert.equal(retryButton.title,'Koneksi terputus');
-console.log('Daily Report copies partial or empty sales with missing-entry labels, distinguishes explicit zero, preserves MTD and lets users retry loading.');
+console.log('Daily Report copies partial or empty sales, preserves MTD and lets users retry loading.');
 // One click copies either the prepared partial report or the just-fetched report.
 let copyHandler;const copiedReports=[];
 const copyUi={dailyReportCopyCache:new Map([['2026-10-26',partial.text]]),prepareDailyReport:async()=>emptyReport.text,copyPlainText:async text=>{copiedReports.push(text);return true;},toast(){},
@@ -443,3 +443,26 @@ assert.ok(!reopened.text.includes('Total sementara'));
 const beforeReopening=reportBackend.getDailyReport('token','2026-10-24');assert.equal(beforeReopening.ok,true);assert.ok(!beforeReopening.rows.some(row=>row.outlet==='BIKK'));
 reportBackend.validateSession_=()=>({role:'store'});assert.equal(reportBackend.getDailyReport('token','2026-10-27').ok,false,'HQ authorization is unchanged');
 console.log('BIKK reopening: 25–27 October targets permit copying the 27 October report without requiring closed-day targets.');
+
+// Today and future dates are valid report dates; missing Sales use the usual numeric zero.
+reportBackend.validateSession_=()=>({role:'admin'});
+for(const date of ['2026-10-28','2026-10-29']){
+ const anyDateReport=reportBackend.getDailyReport('token',date);
+ assert.equal(anyDateReport.ok,true,anyDateReport.error);
+ assert.ok(anyDateReport.rows.every(row=>row.dailySales===0));
+ assert.ok(!anyDateReport.text.includes('Belum input sales'));
+ assert.ok(!anyDateReport.text.includes('Total sementara'));
+ assert.match(anyDateReport.text,/BIKK 0/);
+}
+assert.equal(reportBackend.getDailyReport('token','2026-02-30').ok,false,'invalid calendar dates are still rejected');
+console.log('Daily Reports accept today and future dates and show missing Sales as 0 in the standard report format.');
+
+// A date in a month with no targets yet can still be copied in the usual format.
+reportBackend.bqGetTargetsMap_=(year,month)=>year===2026&&month===10?{BIKK:700,BISS:310}:{};
+for(const date of ['2026-11-01','2027-01-01']){
+ const noTargets=reportBackend.getDailyReport('token',date);
+ assert.equal(noTargets.ok,true,noTargets.error);
+ assert.equal(noTargets.rows.length,2);assert.equal(noTargets.total.dailySales,0);
+ assert.equal(noTargets.total.monthlyTarget,0);assert.equal(noTargets.total.mtdTarget,0);
+ assert.match(noTargets.text,/BIKK 0/);assert.ok(!noTargets.text.includes('Total sementara'));
+}
