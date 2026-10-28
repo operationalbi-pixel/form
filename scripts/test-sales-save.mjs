@@ -391,3 +391,36 @@ assert.equal(calls.length,hqFirst+2);assert.equal(calls.at(-1).args[1].sales,700
 calls.at(-1).resolve({ok:true,sales:700,analisa:'',status:'pending'});await tick();
 assert.equal(hqStatus.textContent,'Tersimpan');assert.equal(hqSales.textContent,'Rp 700');assert.equal(client.state.dash.month.total,700);
 console.log('HQ per-outlet modal Save also confirms the latest clicked amount without another click or refresh.');
+
+// Partial reports remain copyable; a missing entry differs from an entered zero.
+let reportRecords=[{outlet_code:'BISS',date:'2026-10-26',sales:100},{outlet_code:'BILW',date:'2026-10-25',sales:50},{outlet_code:'BICP',date:'2026-10-26',sales:0}];
+const reportOutlets=['BISS','BILW','BICP'].map(code=>({code,role:'store'}));
+const reportBackend={Date,TZ:'Asia/Jakarta',OUTLETS:reportOutlets,validateSession_:()=>({role:'admin'}),bqIsAvailable_:()=>true,
+ parseDateKey_:key=>{const [y,m,d]=key.split('-').map(Number);return new Date(y,m-1,d);},dateKey_:date=>[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-'),
+ Utilities:{formatDate:()=> '2026-10-28'},salesAnalysisCanonicalOutletCode_:code=>code,salesAnalysisPeriodOutlets_:rows=>rows.filter(o=>o.role!=='admin'),
+ salesSheetLatest_:rows=>rows,salesSheetTable_:()=>({rows:reportRecords}),salesSheetDateKey_:value=>value,
+ bqGetTargetsMap_:()=>({BISS:1000,BILW:1000,BICP:1000}),bqGetDailyTargetProgress_:codes=>Object.fromEntries(codes.map(code=>[code,{mtdTarget:260,targetDays:26}])),Logger:{log(){}}};
+vm.createContext(reportBackend);
+vm.runInContext(between(backend,'function bqGetDailyReportSales_(outletCodes,reportDate){','/* ============================================================\n *  SAVE APIs')+between(backend,'function reportIntegerId_(', 'function syncOutlets_('),reportBackend);
+const partial=reportBackend.getDailyReport('token','2026-10-26');
+assert.equal(partial.ok,true,partial.error);assert.equal(partial.total.dailySales,100);assert.equal(partial.total.mtdSales,150);
+assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW Belum input sales/);assert.match(partial.text,/BICP 0/);assert.match(partial.text,/Total sementara/);
+reportRecords=[];
+const emptyReport=reportBackend.getDailyReport('token','2026-10-26');assert.equal(emptyReport.ok,true);assert.equal(emptyReport.missingSalesOutlets.length,3);
+reportRecords=reportOutlets.map((o,index)=>({outlet_code:o.code,date:'2026-10-26',sales:index*100}));
+const complete=reportBackend.getDailyReport('token','2026-10-26');assert.equal(complete.ok,true);assert.equal(complete.missingSalesOutlets.length,0);assert.ok(!complete.text.includes('Total sementara'));
+// A report fetch error stays retryable and cannot masquerade as missing sales.
+const retryButton={dataset:{reportDate:'2026-10-26'},classList:{remove(){}},removeAttribute(){},disabled:true};
+reportUi.document.getElementById=()=>retryButton;
+vm.runInContext(between(html,'function setDailyReportUnavailable(', "document.getElementById('btnUploadDailyTargets')"),reportUi);
+reportUi.setDailyReportUnavailable(retryButton,'Koneksi terputus');
+assert.equal(retryButton.disabled,false);assert.equal(retryButton.dataset.unavailable,undefined);assert.equal(retryButton.textContent,'Coba Salin Lagi');assert.equal(retryButton.title,'Koneksi terputus');
+console.log('Daily Report copies partial or empty sales with missing-entry labels, distinguishes explicit zero, preserves MTD and lets users retry loading.');
+// One click copies either the prepared partial report or the just-fetched report.
+let copyHandler;const copiedReports=[];
+const copyUi={dailyReportCopyCache:new Map([['2026-10-26',partial.text]]),prepareDailyReport:async()=>emptyReport.text,copyPlainText:async text=>{copiedReports.push(text);return true;},toast(){},
+ document:{getElementById:()=>({addEventListener:(_name,handler)=>copyHandler=handler})}};
+vm.createContext(copyUi);vm.runInContext(between(html,"document.getElementById('btnCopyDailyReport').addEventListener",'/* ENTER APP */'),copyUi);
+const copyEvent={currentTarget:{dataset:{reportDate:'2026-10-26'}}};
+await copyHandler(copyEvent);assert.equal(copiedReports[0],partial.text);
+copyUi.dailyReportCopyCache.clear();await copyHandler(copyEvent);assert.equal(copiedReports[1],emptyReport.text);
