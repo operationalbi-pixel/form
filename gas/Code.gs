@@ -18556,7 +18556,6 @@ function getDailyReport(token, reportDate, outletRows) {
       reportPercentId_(total.achievementPct, false) + '/' + reportPercentId_(total.variancePct, true));
 
     var missingSalesOutlets = rows.filter(function(row){return !row.reported;}).map(function(row){return row.outlet;});
-    if(missingSalesOutlets.length)lines.push('', '_Belum input sales: ' + missingSalesOutlets.join(', ') + '. Total sementara._');
     return { ok:true, date:key, text:lines.join('\n'), rows:rows, total:total, missingSalesOutlets:missingSalesOutlets, excludedOutlets:excludedOutlets, dataSource:'Google Sheets' };
   } catch (e) {
     Logger.log('Daily Report gagal: ' + e.message);
