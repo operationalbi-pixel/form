@@ -160,7 +160,7 @@ const storage=new Map();
 const timers=new Map();let timerId=0;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const client = {
-  console, Map, Object, JSON, Promise,navigator:{onLine:true},
+  dailyReportCopyCache:new Map(),dailyReportDataVersion:0,console, Map, Object, JSON, Promise,navigator:{onLine:true},
   window:{addEventListener(){}},
   localStorage:{getItem:key=>key==='bakerzin_session'?'account':storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
   setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
@@ -335,3 +335,59 @@ client.BAKERZIN_API.call=async()=>assert.fail('retired legacy recovery must not 
 vm.runInContext("startSalesRealtime('account',undefined,true);",client);await client.recoverSalesLegacyDrafts('account');
 assert.equal(JSON.parse(storage.get('sales-save-outbox-v1:account:retired-backup')).length,2,'original old requests remain archived before migration');
 assert.equal(vm.runInContext('salesRealtime.drafts()[0][1].payload.sales',client),200,'only the unaccepted local draft needs review');
+
+// Reproduce typing a new sales value while blur/autosave is still in flight.
+storage.clear();timers.clear();client.state.dash=dashboard();client.state.scope='day';
+client.state.year=2026;client.state.month=10;client.state.day=6;client.state.outletFilter='BISS';
+client.state.dash.perOutlet=[{code:'BISS',total:100},{code:'BILW',total:900}];
+vm.runInContext("salesEditorDrafts.clear(); startSalesRealtime('account');",client);client.render();
+const firstCallIndex=calls.length;
+input('dayAmount','400');handlers.get('dayAmount:blur')();await tick();
+assert.equal(calls[firstCallIndex].args[1].analisa,undefined,'sales-only Save cannot overwrite untouched analysis');
+input('dayAmount','500');let clickedDone=false;
+const clicked=click('saveDay').then(()=>{clickedDone=true;});await tick();
+calls[firstCallIndex].resolve({ok:true,sales:400,analisa:'Old saved analysis',status:'pending'});await tick();
+assert.equal(clickedDone,false);assert.equal(calls.length,firstCallIndex+2);
+assert.equal(calls.at(-1).args[1].sales,500);assert.equal(calls.at(-1).args[1].expected.sales,400);
+assert.equal(element('dayAmount').value,'500','older confirmation never replaces the new input');
+assert.equal(element('saveDay').textContent,'Menyimpan…');
+client.dailyReportCopyCache.set('2026-10-07','Old MTD');
+calls.at(-1).resolve({ok:true,sales:500,analisa:'Old saved analysis',status:'pending'});await clicked;
+assert.equal(client.state.dash.month.total,500);assert.equal(client.state.dash.perOutlet.find(r=>r.code==='BISS').total,500);
+assert.equal(element('salesAmountStatus').textContent,'Tersimpan');assert.equal(element('saveDay').textContent,'Simpan');
+assert.equal(client.dailyReportCopyCache.size,0,'previously copied MTD reports are invalidated after a saved amount');
+console.log('UI Save waits for the latest visible amount, updates totals/ranking, preserves untouched analysis and clears stale copied reports.');
+
+// A report already loading before a save cannot repopulate the stale MTD cache.
+const reportWaits=[],reportCache=new Map();
+const reportButton={dataset:{reportDate:'2026-10-07'},classList:{remove(){}},removeAttribute(){},disabled:false,textContent:''};
+const reportUi={dailyReportPrepareId:0,dailyReportDataVersion:0,dailyReportCopyCache:reportCache,session:{token:'session'},
+ document:{getElementById:()=>reportButton},call:()=>new Promise(resolve=>reportWaits.push(resolve)),setDailyReportUnavailable(){assert.fail('valid report should not fail');}};
+vm.createContext(reportUi);vm.runInContext(between(html,'async function prepareDailyReport(', 'function setDailyReportUnavailable('),reportUi);
+const oldReport=reportUi.prepareDailyReport('2026-10-07');reportUi.dailyReportDataVersion++;
+reportWaits[0]({ok:true,text:'Old MTD'});await oldReport;assert.equal(reportCache.size,0);
+const currentReport=reportUi.prepareDailyReport('2026-10-07');reportWaits[1]({ok:true,text:'New MTD'});await currentReport;
+assert.equal(reportCache.get('2026-10-07'),'New MTD');
+
+// HQ's per-outlet modal uses the same explicit Save path as the store editor.
+storage.clear();timers.clear();
+const hqEvents=new Map();
+const hqInput={value:'100',addEventListener:(name,fn)=>hqEvents.set('input:'+name,fn)};
+const hqButton={textContent:'Simpan',addEventListener:(name,fn)=>hqEvents.set('button:'+name,fn)};
+const hqStatus={style:{},dataset:{},textContent:''},hqSales={textContent:''};
+const hqNodes={'[data-hq-sales]':hqInput,'[data-hq-save]':hqButton,'[data-hq-status]':hqStatus,'.ob-sales':hqSales};
+const hqBox={dataset:{},querySelector:key=>hqNodes[key]};
+client.document.createElement=()=>hqBox;client.document.querySelectorAll=()=>[hqBox];client.escapeHtml=String;client.render=()=>{};
+client.session.role='admin';client.session.outlet_code='BIHQ';client.state.outletFilter='ALL';
+client.state.dash=dashboard();client.state.dash.isAggregate=true;client.state.dash.days[5].contributors=[{outlet:'BISS',sales:100,text:'',status:'pending'}];
+vm.runInContext("salesEditorDrafts.clear(); startSalesRealtime('account');",client);
+vm.runInContext(between(html,'function renderOutletBox(', 'function updateModalSalesConfirmation('),client);
+client.renderOutletBox({code:'BISS',name:'Senayan Park'},client.state.dash.days[5].contributors[0],6);
+const hqFirst=calls.length;
+hqInput.value='600';hqEvents.get('input:input')();hqEvents.get('input:blur')();await tick();
+hqInput.value='700';hqEvents.get('input:input')();hqEvents.get('button:click')();await tick();
+calls[hqFirst].resolve({ok:true,sales:600,analisa:'',status:'pending'});await tick();
+assert.equal(calls.length,hqFirst+2);assert.equal(calls.at(-1).args[1].sales,700);assert.equal(hqInput.value,'700');
+calls.at(-1).resolve({ok:true,sales:700,analisa:'',status:'pending'});await tick();
+assert.equal(hqStatus.textContent,'Tersimpan');assert.equal(hqSales.textContent,'Rp 700');assert.equal(client.state.dash.month.total,700);
+console.log('HQ per-outlet modal Save also confirms the latest clicked amount without another click or refresh.');
