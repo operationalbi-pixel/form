@@ -945,6 +945,22 @@ document.getElementById('btnCopyDailyReport').addEventListener('click', async ev
   }catch(error){ toast(error.message||'Daily Report gagal disalin', true); }
 });
 
+function salesOutlets(year=state.year,month=state.month){
+  const period=Number(year)*100+Number(month);
+  return BOOT.outlets.filter(o=>o.role!=='admin' && (!o.closedFrom || period<Number(o.closedFrom.slice(0,4))*100+Number(o.closedFrom.slice(5,7))));
+}
+function refreshSalesOutletPickers(year=state.year,month=state.month){
+  if(session.role!=='admin')return;
+  const outlets=salesOutlets(year,month);
+  if(state.outletFilter!=='ALL' && !outlets.some(o=>o.code===state.outletFilter))state.outletFilter='ALL';
+  if(!outlets.some(o=>o.code===state.hqOutletAna))state.hqOutletAna=(outlets[0]||{}).code||'';
+  const sel=document.getElementById('outletFilter');
+  sel.replaceChildren();
+  const all=document.createElement('option');all.value='ALL';all.textContent='ALL · Semua Outlet';sel.append(all);
+  outlets.forEach(o=>{const opt=document.createElement('option');opt.value=o.code;opt.textContent=o.code+' · '+o.name;sel.append(opt);});
+  sel.value=state.outletFilter;
+}
+
 /* ENTER APP */
 function enterApp(initialDashboard){
   document.getElementById('appView').style.display='grid';
@@ -960,14 +976,14 @@ function enterApp(initialDashboard){
     document.getElementById('filterItem').style.display='';
     const sel = document.getElementById('outletFilter');
     sel.innerHTML='<option value="ALL">ALL · Semua Outlet</option>';
-    BOOT.outlets.filter(o=>o.role!=='admin').forEach(o=>{
+    salesOutlets().forEach(o=>{
       const opt = document.createElement('option');
       opt.value = o.code; opt.textContent = o.code+' · '+o.name;
       sel.append(opt);
     });
     sel.addEventListener('change', e=>{ state.outletFilter=e.target.value; loadMonth(state.year,state.month); });
     state.outletFilter='ALL';
-    state.hqOutletAna = BOOT.outlets.find(o=>o.role!=='admin').code;
+    state.hqOutletAna = (salesOutlets()[0]||{}).code||'';
   } else {
     state.outletFilter = session.outlet_code;
   }
@@ -982,6 +998,7 @@ function enterApp(initialDashboard){
 
 async function loadMonth(year, month, silent){
   if(salesSavePending) return;
+  refreshSalesOutletPickers(year,month);
   const requestId=++monthLoadId;
   const outlet=state.outletFilter;
   const versionKey=salesViewKey(year,month,outlet),version=salesViewVersions.get(versionKey)||0;
@@ -1105,8 +1122,9 @@ function render(){
   if (isHQ){
     // outlet picker
     const sel = document.getElementById('anaOutletPick');
-    if (!sel.options.length){
-      BOOT.outlets.filter(o=>o.role!=='admin').forEach(o=>{
+    sel.replaceChildren();
+    {
+      salesOutlets().forEach(o=>{
         const opt=document.createElement('option');
         opt.value=o.code; opt.textContent=o.code;
         sel.append(opt);
@@ -1286,7 +1304,7 @@ function renderHQDetail(){
     contributors = dash.month.contributors||[];
   }
 
-  const allOutlets = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allOutlets = salesOutlets();
   let done = 0;
   allOutlets.forEach(o=>{
     const c = contributors.find(x=>x.outlet===o.code);
@@ -1318,7 +1336,7 @@ function renderCalendar(){
   const prevDim = new Date(year, month-1, 0).getDate();
   const totalCells = Math.ceil((dim+offset)/7)*7;
   const weeksNeeded = totalCells/7;
-  const allOutlets = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allOutlets = salesOutlets();
 
   for(let w=0; w<weeksNeeded; w++){
     let weekFound = null;
@@ -1849,7 +1867,7 @@ function openDayModal(day){
   // body
   const body = document.getElementById('dmBody');
   body.innerHTML = '';
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets();
   if (isHQ){
     body.append(renderGlobalDailyPanel(selDay, day));
     const grid = document.createElement('div'); grid.className='ob-grid';
@@ -2091,7 +2109,7 @@ function updateTargetIndicators(){
   const {year, month, outletFilter, defaultTarget} = state;
   const isHQ = state.dash && state.dash.isAggregate;
   const isAdmin = session.role==='admin';
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets();
   const targetVal = document.getElementById('targetVal');
   const banner = document.getElementById('targetBanner');
 
@@ -2244,7 +2262,7 @@ function renderModalTable(){
   const m = parseInt(document.getElementById('modalMonth').value,10);
   const body = document.getElementById('modalTbody');
   body.innerHTML = '';
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets(y,m);
   allStores.forEach(o=>{
     const tr = document.createElement('tr');
     const isCustom = isTargetCustom(o.code, y, m);
@@ -2287,7 +2305,7 @@ document.getElementById('targetModal').addEventListener('click', e=>{ if(e.targe
 document.getElementById('bulkApply').addEventListener('click', ()=>{
   const v = parseInt(document.getElementById('bulkInput').value||'0',10);
   if (!v) { toast('Isi nilai dulu', true); return; }
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets(Number(document.getElementById('modalYear').value),Number(document.getElementById('modalMonth').value));
   allStores.forEach(o=>{ modalDraft[o.code] = v; });
   renderModalTable();
 });
@@ -2300,7 +2318,7 @@ document.getElementById('copyPrev').addEventListener('click', async ()=>{
     try { const r = await call('getTargets', session.token, y, m); state.targetsCache[k]=r.targets||{}; }
     catch(e){ toast('Gagal load bulan lalu', true); return; }
   }
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets(Number(document.getElementById('modalYear').value),Number(document.getElementById('modalMonth').value));
   allStores.forEach(o=>{
     const prev = getCustomTarget(o.code, y, m);
     if (prev != null) modalDraft[o.code] = prev;
@@ -2311,7 +2329,7 @@ document.getElementById('copyPrev').addEventListener('click', async ()=>{
 document.getElementById('resetDefault').addEventListener('click', ()=>{
   const y = parseInt(document.getElementById('modalYear').value,10);
   const m = parseInt(document.getElementById('modalMonth').value,10);
-  const allStores = BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores = salesOutlets(Number(document.getElementById('modalYear').value),Number(document.getElementById('modalMonth').value));
   allStores.forEach(o=>{
     if (isTargetCustom(o.code, y, m)) modalDraft[o.code] = 'RESET';
   });
@@ -2345,7 +2363,7 @@ function openDailyTargetModal(day){
 function renderDailyTargetModal(){
   const dayInfo=state.dash.days[dailyTargetModalDay-1]||{};
   const targetMap=dayInfo.targetsByOutlet||{};
-  const allStores=BOOT.outlets.filter(o=>o.role!=='admin');
+  const allStores=salesOutlets();
   const stores=state.dash.isAggregate?allStores:allStores.filter(o=>o.code===state.outletFilter);
   const body=document.getElementById('modalTbody');
   body.innerHTML='';
