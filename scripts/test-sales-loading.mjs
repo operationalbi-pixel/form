@@ -70,7 +70,7 @@ const ui={state:{year:2026,month:10,outletFilter:'BISS',targetsCache:{}},session
   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,{classList:{add(){},remove(){}},textContent:''});return elements.get(id);}},
   pad2:v=>String(v).padStart(2,'0'),showLoader(){},render(){},toast(){},
   call:async fn=>{calls.push(fn);return fn==='getMonthDashboard'?{targets:{BISS:1200},defaultTarget:1000}:{targets:{BISS:1300},defaultTarget:1000};}};
-vm.createContext(ui);vm.runInContext(between(html,'async function loadMonth(','function refreshMonthInBackground('),ui);
+vm.createContext(ui);vm.runInContext(between(html,'function salesOutlets(', '/* ENTER APP */')+between(html,'async function loadMonth(','function refreshMonthInBackground('),ui);
 await ui.loadMonth(2026,10);
 assert.deepEqual(calls,['getMonthDashboard']);assert.equal(ui.state.targetsCache['2026-10'].BISS,1200);
 ui.state.targetsCache={};calls.length=0;

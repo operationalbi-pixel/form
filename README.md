@@ -137,3 +137,9 @@ Deploy Worker yang menyediakan `/v1/sales-save-jobs` **sebelum** merge GAS/front
 Password general yang diminta pemilik tersedia sebagai hash bersalt pada backend dan diterima bersama NIK melalui login biasa. Password asli di EMP_LIST tidak ditimpa ketika jalur general digunakan, termasuk akun yang belum membuat password. Status karyawan dan pembatasan login tetap diperiksa. Log mencatat `GENERAL_POV_LOGIN` dengan NIK dan waktu tanpa password.
 
 Script Property `GENERAL_PASSWORD_HASH` dapat mengganti default dengan hasil `hashPassword_(passwordBaru)` atau diisi `DISABLED` untuk menonaktifkan jalur general. Password personal tetap bekerja saat jalur general dinonaktifkan. Jangan menaruh password general dalam frontend atau konfigurasi publik.
+
+## Outlet tutup di Analisa Sales
+
+BILW tidak ditampilkan mulai periode November 2026 (tutup efektif 1 November 2026). Periode Oktober 2026 dan sebelumnya tetap menampilkan BILW. Aturan periode diterapkan pada filter outlet, analisa harian/mingguan/bulanan, jumlah kelengkapan, ranking, target, total bulanan, dan Daily Report. Kolom BILW pada template target bulan setelah tutup diabaikan; tidak dianggap sebagai target yang belum lengkap.
+
+Tanggal tutup diatur pada `salesAnalysisOutletClosures_` di `docs/Code.gs`. Master outlet dan histori transaksi tidak dihapus. Total YTD mempertahankan penjualan BILW sebelum tutup, sedangkan transaksi bertanggal setelah tutup tidak masuk perbandingan. Deploy GAS dan Pages dari perubahan yang sama agar metadata tanggal tutup tersedia di tampilan.

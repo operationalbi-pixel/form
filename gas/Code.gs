@@ -16395,6 +16395,31 @@ function getSocializationUserReport(token) {
 // ---------- Analisa Sales ----------
 // Modul asli ditempatkan dalam scope tersendiri agar helper dan konfigurasi
 // database-nya tidak bertabrakan dengan backend utama BI-Space.
+// Exclusive closing date; keep outlet masters and historical records intact.
+function salesAnalysisOutletClosures_() {
+  return { BILW: '2026-11-01' };
+}
+
+function salesAnalysisOutletActive_(code, year, month) {
+  var closedFrom = salesAnalysisOutletClosures_()[String(code || '').trim().toUpperCase()];
+  var period = Number(year) * 100 + Number(month);
+  return !closedFrom || period < Number(closedFrom.slice(0,4)) * 100 + Number(closedFrom.slice(5,7));
+}
+
+function salesAnalysisPeriodOutlets_(rows, year, month) {
+  return (rows || []).filter(function(row) {
+    return row.role !== 'admin' && salesAnalysisOutletActive_(row.code, year, month);
+  });
+}
+
+function salesAnalysisPeriodTargets_(targets, year, month) {
+  var result = {};
+  Object.keys(targets || {}).forEach(function(code) {
+    if (salesAnalysisOutletActive_(code, year, month)) result[code] = targets[code];
+  });
+  return result;
+}
+
 const SALES_ANALYSIS = (function () {
 /**
  * ============================================================
@@ -16746,7 +16771,7 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   outletFilter = (outletFilter || sess.outlet_code).toUpperCase();
   if (sess.role !== 'admin') outletFilter = sess.outlet_code;
 
-  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V12_' + salesSpreadsheetId_();
+  var cacheKey = cacheKeyDashboard_(sess, year, month, outletFilter) + '_SHEETS_V13_CLOSURES_' + salesSpreadsheetId_();
   var cached = getCacheJson_(cacheKey);
   if (cached) {
     cached.fromCache = true;
@@ -16761,8 +16786,8 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   var daysInMonth = new Date(year, month, 0).getDate();
 
   var outletList = (outletFilter === 'ALL')
-    ? OUTLETS.filter(function(o){ return o.role !== 'admin'; }).map(function(o){ return o.code; })
-    : [outletFilter];
+    ? salesAnalysisPeriodOutlets_(OUTLETS, year, month).map(function(o){ return o.code; })
+    : (salesAnalysisOutletActive_(outletFilter, year, month) ? [outletFilter] : []);
 
   var firstDayDt = new Date(year, month-1, 1);
   var lastDayDt  = new Date(year, month-1, daysInMonth);
@@ -16778,9 +16803,10 @@ function getMonthDashboardBigQuery_(token, year, month, outletFilter) {
   var dailyRows = bqFetchDailyRows_(outletList, prevWeekStart, lastRowEnd);
   var weeklyRows = bqFetchWeeklyRows_(outletList, year, month);
   var monthlyRows = bqFetchMonthlyRows_(outletList, year, month);
-  var targetsMap = bqGetTargetsMap_(year, month);
+  var targetsMap = salesAnalysisPeriodTargets_(bqGetTargetsMap_(year, month), year, month);
   var dailyTargetsByDate = bqGetDailyTargetsByDate_(outletList, year, month);
-  var comparison = bqFetchComparisonSums_(outletList, year, month);
+  var comparisonOutlets = outletFilter === 'ALL' ? OUTLETS.filter(function(o){ return o.role !== 'admin'; }).map(function(o){ return o.code; }) : [outletFilter];
+  var comparison = bqFetchComparisonSums_(comparisonOutlets, year, month);
   var globalRows = bqFetchGlobalDailyRows_(firstRowStart, lastRowEnd);
 
   var globalByDate = {};
@@ -17799,6 +17825,7 @@ function bqFetchComparisonSums_(outletList, year, month) {
   var ytdStart = year + '-01-01', prevYtdStart = (year-1) + '-01-01', prevMonthStart = (year-1) + '-' + pad2_(month) + '-01';
   return rows.reduce(function(out, row){
     var key = salesSheetDateKey_(row.date), sales = Number(row.sales)||0;
+    if (!salesAnalysisOutletActive_(row.outlet_code, Number(key.slice(0,4)), Number(key.slice(5,7)))) return out;
     if (key >= ytdStart && key <= currentEnd) out.ytdTotal += sales;
     if (key >= prevYtdStart && key <= prevEnd) out.prevYtdTotal += sales;
     if (key >= prevMonthStart && key <= prevEnd) out.prevMonthTotal += sales;
@@ -18294,7 +18321,7 @@ function getTargets(token, year, month) {
   year = Number(year); month = Number(month);
   var defaultTarget = Number(readConfig_().monthly_target) || 0;
   if (!bqIsAvailable_()) return { defaultTarget: defaultTarget, targets: {}, dataSource:'GoogleSheetsUnavailable' };
-  return { defaultTarget: defaultTarget, targets: bqGetTargetsMap_(year, month), dataSource:'Google Sheets' };
+  return { defaultTarget: defaultTarget, targets: salesAnalysisPeriodTargets_(bqGetTargetsMap_(year, month), year, month), dataSource:'Google Sheets' };
 }
 
 /**
@@ -18352,6 +18379,7 @@ function parseDailyTargetWorkbook_(base64, fileName, year, month, outletRows) {
     if (!rawCode) continue;
     var code = salesAnalysisCanonicalOutletCode_(rawCode);
     if (!validOutlets[code]) throw new Error('Kode outlet ' + rawCode + ' pada kolom ' + column + ' tidak terdaftar di master outlet Analisa Sales.');
+    if (!salesAnalysisOutletActive_(code, year, month)) continue;
     if (seen[code]) throw new Error('Outlet ' + code + ' muncul lebih dari satu kali di file.');
     seen[code] = true;
 
@@ -18381,7 +18409,7 @@ function parseDailyTargetWorkbook_(base64, fileName, year, month, outletRows) {
   }
 
   if (!uploadedOutlets.length) throw new Error('Tidak ada kolom outlet yang dapat dibaca dari file.');
-  var masterOutlets = Object.keys(validOutlets).sort();
+  var masterOutlets = Object.keys(validOutlets).filter(function(code){ return salesAnalysisOutletActive_(code, year, month); }).sort();
   var missingOutlets = masterOutlets.filter(function (code) { return !seen[code]; });
   return {
     rows: dailyRows,
@@ -18490,7 +18518,7 @@ function getDailyReport(token, reportDate, outletRows) {
   if (!bqIsAvailable_()) return { ok:false, error:'Database Google Sheets Sales Analysis tidak dapat dibuka.' };
 
   try {
-    var outlets = (outletRows || OUTLETS).filter(function (row) { return row.role !== 'admin'; });
+    var outlets = salesAnalysisPeriodOutlets_(outletRows || OUTLETS, date.getFullYear(), date.getMonth() + 1);
     var outletCodes = outlets.map(function (row) { return salesAnalysisCanonicalOutletCode_(row.code); });
     var year = date.getFullYear(), month = date.getMonth() + 1, day = date.getDate();
     var salesMap = bqGetDailyReportSales_(outletCodes, key);
@@ -18648,7 +18676,7 @@ function salesAnalysisOutletDirectory_() {
   Object.keys(entries).sort().forEach(function (code) {
     if (!code || code === 'BIHQ') return;
     var entry = entries[code];
-    rows.push({ code: code, name: entry && entry.name ? entry.name : code, role: 'store' });
+    rows.push({ code: code, name: entry && entry.name ? entry.name : code, role: 'store', closedFrom: salesAnalysisOutletClosures_()[code] || '' });
   });
   return rows;
 }
