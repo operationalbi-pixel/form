@@ -424,3 +424,21 @@ vm.createContext(copyUi);vm.runInContext(between(html,"document.getElementById('
 const copyEvent={currentTarget:{dataset:{reportDate:'2026-10-26'}}};
 await copyHandler(copyEvent);assert.equal(copiedReports[0],partial.text);
 copyUi.dailyReportCopyCache.clear();await copyHandler(copyEvent);assert.equal(copiedReports[1],emptyReport.text);
+
+// BIKK reopened on 25 October: three target days must not block the 27 October report.
+const reopeningTargets=[25,26,27,28].map((day,index)=>({outlet_code:'BIKK',date:`2026-10-${day}`,year:2026,month:10,day,daily_target:100+index*50}));
+for(let day=1;day<=31;day++)reopeningTargets.push({outlet_code:'BISS',date:`2026-10-${String(day).padStart(2,'0')}`,year:2026,month:10,day,daily_target:10});
+reportRecords=[{outlet_code:'BIKK',date:'2026-10-27',sales:400},{outlet_code:'BISS',date:'2026-10-27',sales:300}];
+reportBackend.OUTLETS=[{code:'BIKK',role:'store'},{code:'BISS',role:'store'}];
+reportBackend.salesSheetTable_=name=>({rows:name==='daily_targets'?reopeningTargets:reportRecords});
+reportBackend.bqGetTargetsMap_=()=>({BIKK:700,BISS:310});
+vm.runInContext(between(backend,'function bqGetDailyTargetProgress_(outletCodes,year,month,throughDay){','function bqGetDailyTargetsByDate_(outletCodes,year,month){'),reportBackend);
+const reopened=reportBackend.getDailyReport('token','2026-10-27');
+assert.equal(reopened.ok,true,reopened.error);
+const bikkReport=reopened.rows.find(row=>row.outlet==='BIKK');
+assert.equal(bikkReport.mtdTarget,450,'only targets on 25, 26 and 27 count; future targets do not');
+assert.equal(bikkReport.monthlyTarget,700);assert.equal(reopened.total.dailySales,700);assert.equal(reopened.total.mtdTarget,720);
+assert.ok(!reopened.text.includes('Total sementara'));
+const beforeReopening=reportBackend.getDailyReport('token','2026-10-24');assert.equal(beforeReopening.ok,true);assert.ok(!beforeReopening.rows.some(row=>row.outlet==='BIKK'));
+reportBackend.validateSession_=()=>({role:'store'});assert.equal(reportBackend.getDailyReport('token','2026-10-27').ok,false,'HQ authorization is unchanged');
+console.log('BIKK reopening: 25–27 October targets permit copying the 27 October report without requiring closed-day targets.');
