@@ -888,22 +888,24 @@ async function prepareDailyReport(reportDate){
       button.disabled=false;
       button.textContent='Salin Daily Report';
     }
+    return dataVersion===dailyReportDataVersion ? String(result.text) : null;
   }catch(error){
     if(dataVersion===dailyReportDataVersion)dailyReportCopyCache.delete(reportDate);
     if(requestId===dailyReportPrepareId){
-      setDailyReportUnavailable(button);
+      setDailyReportUnavailable(button,error.message);
     }
   }
 }
 
-function setDailyReportUnavailable(button){
+function setDailyReportUnavailable(button,message){
   dailyReportPrepareId+=1;
   if(button.dataset.reportDate) dailyReportCopyCache.delete(button.dataset.reportDate);
   button.disabled=false;
-  button.classList.add('unavailable');
-  button.setAttribute('aria-disabled','true');
-  button.dataset.unavailable='true';
-  button.textContent='Sales Belum Diisi';
+  button.classList.remove('unavailable');
+  button.removeAttribute('aria-disabled');
+  delete button.dataset.unavailable;
+  button.title=message||'Laporan belum dapat dimuat. Klik untuk mencoba lagi.';
+  button.textContent='Coba Salin Lagi';
 }
 
 document.getElementById('btnUploadDailyTargets').addEventListener('click', ()=>{
@@ -935,14 +937,10 @@ document.getElementById('dailyTargetFile').addEventListener('change', async even
 
 document.getElementById('btnCopyDailyReport').addEventListener('click', async event=>{
   const button = event.currentTarget;
-  if(button.dataset.unavailable==='true'){
-    toast('Sales Belum Diisi',true);
-    return;
-  }
   const reportDate = button.dataset.reportDate;
   if(!reportDate){ toast('Tanggal laporan belum tersedia', true); return; }
-  const reportText=dailyReportCopyCache.get(reportDate);
-  if(!reportText){ prepareDailyReport(reportDate); return; }
+  const reportText=dailyReportCopyCache.get(reportDate)||await prepareDailyReport(reportDate);
+  if(!reportText){toast(button.title||'Laporan belum dapat disalin. Silakan coba lagi.',true);return;}
   try{
     const copied=await copyPlainText(reportText);
     toast(copied?'Daily Report tersalin — siap ditempel di WhatsApp':'Clipboard tidak diizinkan oleh aplikasi',!copied);
@@ -1800,8 +1798,7 @@ function openDayModal(day){
   copyButton.style.display = showCopyButton ? '' : 'none';
   copyButton.dataset.reportDate = showCopyButton ? reportDate : '';
   if(showCopyButton){
-    if(selDay && Number(selDay.sales)>0) prepareDailyReport(reportDate);
-    else setDailyReportUnavailable(copyButton);
+    prepareDailyReport(reportDate);
   }
   document.getElementById('dmTitle').textContent =
     `Detail Harian · ${ID_DOW_LONG[dt.getDay()]}, ${pad2(day)} ${ID_MONTHS_SHORT[month-1]} ${year}`;
