@@ -181,6 +181,7 @@ vm.createContext(client);
 vm.runInContext(await readFile('docs/sales-realtime.js','utf8'),client);client.SalesRealtime=client.window.SalesRealtime;
 vm.runInContext(
   between(html, 'let monthLoadId =', 'const fmtIDR =') +
+  between(html, 'function salesOutlets(', '/* ENTER APP */') +
   between(html, 'async function loadMonth(', '/* target cache helpers */') +
   between(html, 'function render(){', 'function setDelta(') +
   between(html, 'function getAnalisaTextForCurrent(){', 'function renderStatement(') +
