@@ -404,7 +404,7 @@ vm.createContext(reportBackend);
 vm.runInContext(between(backend,'function bqGetDailyReportSales_(outletCodes,reportDate){','/* ============================================================\n *  SAVE APIs')+between(backend,'function reportIntegerId_(', 'function syncOutlets_('),reportBackend);
 const partial=reportBackend.getDailyReport('token','2026-10-26');
 assert.equal(partial.ok,true,partial.error);assert.equal(partial.total.dailySales,100);assert.equal(partial.total.mtdSales,150);
-assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW Belum input sales/);assert.match(partial.text,/BICP 0/);assert.match(partial.text,/Total sementara/);
+assert.deepEqual(Array.from(partial.missingSalesOutlets),['BILW']);assert.match(partial.text,/BILW Belum input sales/);assert.match(partial.text,/BICP 0/);assert.ok(!partial.text.includes('Total sementara'));assert.ok(!partial.text.includes('_Belum input sales:'));
 reportRecords=[];
 const emptyReport=reportBackend.getDailyReport('token','2026-10-26');assert.equal(emptyReport.ok,true);assert.equal(emptyReport.missingSalesOutlets.length,3);
 reportRecords=reportOutlets.map((o,index)=>({outlet_code:o.code,date:'2026-10-26',sales:index*100}));
