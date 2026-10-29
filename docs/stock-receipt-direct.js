@@ -17,6 +17,7 @@
  function call(action,args){args=args||[];var app=global.APP||{};
   if(action==='bootstrap'||action==='data')return stockContext(args[0],args[1]||'',args[2]||'');
   if(action==='supplementary')return stockSupplementary(args[0],args[1]||'',args[2]||'');
+  if(action==='history'){var history=args[1]||{},historyScope={outlet:history.outlet||app.outlet||'',location:history.location||app.location||'Store'};return stockDirect(args[0],historyScope,'history',history);}
   if(action==='verifyGoodsReceipt')return direct(args[0],'verify',args[1]);
   if(action==='queueGoodsUpload'&&args[1]&&args[1].type==='GOODS_RECEIPT')return direct(args[0],'accept',args[1]).then(function(r){if(r&&r.ok)jobScopes[r.data.jobId]={outlet:r.data.outlet,location:r.data.location};return r;});
   if(action==='saveConversions'&&app.goodsReceipt&&app.goodsReceipt.savingConversions)return base.call('saveConversions',args).then(function(r){return r&&r.ok?direct(args[0],'conversions',args[1]):r;});
