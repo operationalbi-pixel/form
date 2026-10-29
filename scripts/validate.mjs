@@ -553,7 +553,7 @@ if (!backend.includes('queueStockPosition: queueStockPositionUpload') ||
     !backend.includes('findStockPositionUpload: findStockPositionUpload') ||
     !backend.includes('stockPositionUploadStatus: getStockPositionUploadStatus') ||
     !backend.includes('retryStockPositionUpload: retryStockPositionUpload') ||
-    !backend.includes('function processStockPositionJobItem_(job, prepared, availableLots)') ||
+    !backend.includes('function processStockPositionJobItem_(job, prepared, availableLots, scopeAlreadyHeld)') ||
     !backend.includes('existingStockPositionRecordIds_(job, rows)') ||
     !backend.includes('cloudflareBalanceAtDate_(outlet, location')) {
   failures.push('Stock Posisi belum diproses bertahap dengan pemulihan per item dan query saldo terbatas outlet');
@@ -669,12 +669,19 @@ try {
   backgroundContext.writePreparedSalesCogsChunk_ = chunk => {
     const size = chunk.rows.length + chunk.showcaseRows.length;
     batchSizes.push(size);
-    return { movementRows: size, autoWipProductionCount: 0 };
+    return { stockRows: [], movementRows: size, autoWipProductionCount: 0 };
   };
+  const pendingPlans=new Map();let pendingSequence=0;
+  const readPrepared=backgroundContext.readSalesCogsJobJson_;
+  backgroundContext.readSalesCogsJobJson_=id=>pendingPlans.has(id)?pendingPlans.get(id):readPrepared(id);
+  backgroundContext.Utilities={newBlob:value=>({value})};
+  backgroundContext.DriveApp={createFile:blob=>{const id='PENDING-'+(++pendingSequence);pendingPlans.set(id,JSON.parse(blob.value));return{getId:()=>id};},getFileById:id=>({setTrashed:()=>pendingPlans.delete(id)})};
+  backgroundContext.stockUploadJobEmployee_=()=>({nik:'HQ-1',outlet:'BIHQ'});
+  backgroundContext.acquireStockUploadLock_=()=>({releaseLock(){}});
   backgroundContext.writeSalesCogsJob_ = job => job;
   backgroundContext.markStockTaskCompleteFromUploads_ = () => { completed++; };
   backgroundContext.cleanupSalesCogsJobFiles_ = () => {};
-  const job = { jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 764, batchSize: 500,
+  const job = { writePlanVersion:2, jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 764, batchSize: 500,
     itemCount: 501, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
     ownerNik: 'HQ-1', ownerName: 'HQ', ownerOutlet: 'BIHQ' };
   backgroundContext.processSalesCogsJobChunk_(job);
