@@ -2173,9 +2173,11 @@ function changeStockItemDefaultUnit(token, payload) {
     if (!isFinite(factor) || factor <= 0) throw new Error('Masukkan faktor: 1 ' + oldUnit + ' setara dengan berapa ' + newUnit + '.');
 
     ensureStockCardInfrastructure_();
-    const lock = acquireStockWriteLock_();
+    const conversionLock = acquireStockScopeLock_('stock-unit-conversions', 30000);
+    let lock;
     let converted = false;
     try {
+      lock = acquireStockWriteLock_();
       const contexts = cloudflareDistinctContexts_(cloudflareLedgerRows_({itemCode:itemCode,itemName:itemName,recordTypes:['MOVEMENT']}));
       const result = convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor, oldUnit);
       converted = true;
@@ -2219,7 +2221,8 @@ function changeStockItemDefaultUnit(token, payload) {
       if (converted) console.error('Konversi Unit Default sudah menyentuh Cloudflare sebelum error: ' + error.message);
       throw error;
     } finally {
-      lock.releaseLock();
+      if(lock)lock.releaseLock();
+      conversionLock.releaseLock();
     }
   });
 }
@@ -3174,11 +3177,8 @@ function processMissingExpiryJobChunk_(job) {
   });
   job.stage = 'Menyimpan item ' + (startIndex + 1) + '-' + (startIndex + batch.length) + ' dari ' + requests.length + '.';
   writeMissingExpiryJob_(job);
-  if (rows.length) {
-    const lock = acquireStockWriteLock_();
-    try { insertStockCardRows_(rows); }
-    finally { lock.releaseLock(); }
-  }
+  if (rows.length) insertStockCardRows_(rows);
+
   job.processed = startIndex + batch.length;
   job.saved = Number(job.saved || 0) + batchSaved;
   job.skipped = Number(job.skipped || 0) + batchSkipped;
@@ -3308,7 +3308,7 @@ function saveStockUnitConversions(token, payload) {
       return { key: stockConversionKey_(itemCode, fromUnit, toUnit), itemCode: itemCode, itemName: itemName, fromUnit: fromUnit, toUnit: toUnit, factor: factor };
     });
 
-    const lock = acquireStockWriteLock_();
+    const lock = acquireStockScopeLock_('stock-unit-conversions', 30000);
     try {
       const sheet = ensureStockConversionSheet_();
       const existing = {};
@@ -3318,8 +3318,14 @@ function saveStockUnitConversions(token, payload) {
           if (key) existing[key] = index + 2;
         });
       }
+      const unique = {};
+      normalized.forEach(function(entry){
+        if(unique[entry.key] && Math.abs(unique[entry.key].factor-entry.factor)>0.000000001)throw new Error(entry.itemCode+' · Pasangan unit memiliki nilai konversi yang berbeda.');
+        unique[entry.key]=entry;
+        if(existing[entry.key]&&!isAdmin && Math.abs(Number(sheet.getRange(existing[entry.key],5).getValue())-entry.factor)>0.000000001)throw new Error(entry.itemCode+' · Konversi ini sudah tersimpan. Perubahan nilai hanya dapat dilakukan oleh BIHQ.');
+      });
       const now = new Date(), additions = [];
-      normalized.forEach(function (entry) {
+      Object.keys(unique).map(function(key){return unique[key];}).forEach(function (entry) {
         const values = [entry.itemCode, entry.itemName, entry.fromUnit, entry.toUnit, entry.factor, true, employee.nik, now];
         if (existing[entry.key]) {
           const currentFactor = Number(sheet.getRange(existing[entry.key], 5).getValue());
@@ -4858,10 +4864,7 @@ function processStockPositionJobItem_(job, prepared, availableLots, scopeAlready
   const rows = stockPositionJobJson_(job.pendingDriveId);
   const existing = recoveringPending ? existingStockPositionRecordIds_(job, rows) : {};
   const missing = rows.filter(function (row) { return !existing[row.json.record_id]; });
-  if (missing.length) {
-    const lock = acquireStockWriteLock_();
-    try { insertStockCardRows_(missing); } finally { lock.releaseLock(); }
-  }
+  if (missing.length) insertStockCardRows_(missing);
   const pendingId = job.pendingDriveId;
   job.processed = index + 1; job.movementCount = Number(job.movementCount || 0) + rows.length;
   job.pendingDriveId = ''; job.retryCount = 0;
@@ -13304,10 +13307,7 @@ function processSalesCogsJobChunk_(job, runtime) {
     const file=DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan),'application/json','TEMP_SALES_COGS_PENDING_'+job.jobId+'_'+start+'.json'));
     job.pendingDriveId=file.getId();writeSalesCogsJob_(job);
   }
-  if(plan.stockRows.length){
-    const lock=acquireStockWriteLock_();
-    try{insertStockCardRows_(plan.stockRows);}finally{lock.releaseLock();}
-  }
+  if(plan.stockRows.length)insertStockCardRows_(plan.stockRows);
   const pendingId=job.pendingDriveId;
   job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
   job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(plan.autoWipProductionCount || 0);
