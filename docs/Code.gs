@@ -242,6 +242,7 @@ function apiActions_() {
     startStockUploadWorker: startStockUploadWorker,
     goodsUploadRequest: getGoodsUploadRequest,
     retryGoodsUpload: retryGoodsUpload,
+    retryStockUpload: retryStockUpload,
     verifyStockPosition: previewStockPositionUpload,
     queueStockPosition: queueStockPositionUpload,
     findStockPositionUpload: findStockPositionUpload,
@@ -3185,12 +3186,14 @@ function processMissingExpiryJobChunk_(job) {
   writeMissingExpiryJob_(job);
   if (job.processed >= requests.length) {
     job.status = 'COMPLETE'; job.stage = 'Semua item berhasil diproses.'; job.progress = 100;
-    cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
+    writeMissingExpiryJob_(job);
+    try{cleanupMissingExpiryJobFiles_(job);writeMissingExpiryJob_(job);}catch(cleanupError){console.error('Expired Date selesai; pembersihan metadata ditunda: '+cleanupError.message);}
   }
   return job;
 }
 
 function processMissingExpiryUploadJobs() {
+  const workerLock=acquireStockScopeLock_('expiry-background-worker',1000);
   try {
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processMissingExpiryUploadJobs'; })
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
@@ -3198,30 +3201,40 @@ function processMissingExpiryUploadJobs() {
     Object.keys(all).filter(function (key) { return key.indexOf('expiry-upload-job-') === 0; }).forEach(function (key) {
       try {
         const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
-        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 86400000) properties.deleteProperty(key);
+        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 86400000) {cleanupMissingExpiryJobFiles_(job);properties.deleteProperty(key);}
         else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
       } catch (error) { properties.deleteProperty(key); }
     });
     jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
     if (!jobs.length) return { processed: false };
     let job = jobs[0];
-    try { job = processMissingExpiryJobChunk_(job); }
+    try {
+      stockUploadJobEmployee_(job);
+      job.workerLeaseUntil=Date.now()+8*60000;writeMissingExpiryJob_(job);
+      const inventoryLock=acquireStockUploadLock_(job);
+      try{
+      const deadline=Date.now()+180000;let lastStep=0;
+      do{const started=Date.now();job=processMissingExpiryJobChunk_(job);lastStep=Date.now()-started;}while(job.status!=='COMPLETE'&&Date.now()+Math.max(5000,lastStep*1.5)+15000<deadline);
+      }finally{inventoryLock.releaseLock();}
+    }
     catch (error) {
       job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu/i.test(String(error.message || error)))) {
+      if (stockUploadBusy_(error) || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu/i.test(String(error.message || error)))) {
         job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeMissingExpiryJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses berhenti pada item ' + (job.processed + 1) + '.'; job.error = String(error.message || error);
-        cleanupMissingExpiryJobFiles_(job); writeMissingExpiryJob_(job);
+        writeMissingExpiryJob_(job);
       }
     }
+    job.workerLeaseUntil=0;
+    if(job.status==='COMPLETE'){try{writeMissingExpiryJob_(job);}catch(error){console.error('Konfirmasi lease selesai ditunda: '+error.message);}}else writeMissingExpiryJob_(job);
     const pending = PropertiesService.getScriptProperties().getProperties();
     if (Object.keys(pending).some(function (key) { if (key.indexOf('expiry-upload-job-') !== 0) return false; try { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(JSON.parse(pending[key]).status) >= 0; } catch (error) { return false; } })) scheduleMissingExpiryWorker_();
     return { processed: true, jobId: job.jobId, status: job.status };
   } catch (error) {
     console.error('Worker upload Expired Date gagal: ' + error.message);
     return { processed: false, error: error.message };
-  }
+  }finally{workerLock.releaseLock();}
 }
 
 /**
@@ -4200,6 +4213,24 @@ function stockPositionAlreadyImported_(outlet, location, sourceHash) {
 function stockUploadBusy_(error) {
   return /sedang menyimpan transaksi lain|batas waktu penguncian|penyimpanan sedang sibuk|lock timeout|could not acquire.*lock/i.test(String(error && error.message || error || ''));
 }
+function stockUploadJobEmployee_(job) {
+  const employee=findEmployee_(job.ownerNik);assertEmployeeActive_(employee);
+  if(job.ownerOutlet && employee.outlet!==job.ownerOutlet)throw new Error('Akses outlet pemilik upload sudah berubah.');
+  const outlets=job.outlets&&job.outlets.length?job.outlets:String(job.outlet||'').split(',').map(function(value){return value.trim();}).filter(Boolean);
+  if(employee.outlet!=='BIHQ'&&outlets.some(function(outlet){return outlet!==employee.outlet;}))throw new Error('Akses outlet pemilik upload sudah berubah.');
+  return employee;
+}
+function acquireStockUploadLock_(job) {
+  let outlets=job.outlets&&job.outlets.length?job.outlets:String(job.outlet||job.ownerOutlet||'').split(',').map(function(value){return value.trim();}).filter(Boolean);
+  if(outlets.indexOf('BIHQ')>=0)outlets=readActiveOutlets_().concat(['BIHQ']);
+  if(!outlets.length)throw new Error('Outlet upload belum dapat ditentukan.');
+  const locations=String(job.location||'Store')==='Showcase'?['Showcase','Store']:[job.location||'Store'];
+  const scopes=[];outlets.forEach(function(outlet){locations.forEach(function(location){scopes.push('inventory|'+outlet+'|'+normalizeLocation_(location));});});
+  const locks=[];
+  try{scopes.filter(function(scope,index,all){return all.indexOf(scope)===index;}).sort().forEach(function(scope){locks.push(acquireStockScopeLock_(scope,1000));});}
+  catch(error){locks.reverse().forEach(function(lock){lock.releaseLock();});throw error;}
+  return {releaseLock:function(){locks.reverse().forEach(function(lock){lock.releaseLock();});}};
+}
 function resolveBackgroundUploadContext_(token, payload) {
   if (['GOODS_DELIVERY', 'GOODS_RECEIPT', 'WIP_PRODUCTION'].indexOf(payload.type) >= 0) return resolveStockContext_(token, payload.outlet, payload.location);
   const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
@@ -4342,13 +4373,13 @@ function deleteGoodsUploadJob_(id) {
   PropertiesService.getScriptProperties().deleteProperty(goodsUploadJobKey_(id));
 }
 function goodsUploadJobs_(activeOnly,ownerNik) {
-  const jobs=cloudflareReadAllPages_('/v1/application-records',{table:'background_upload_jobs',active:activeOnly?1:'',owner_nik:ownerNik||''},1000,100),known={};jobs.forEach(function(job){known[job.jobId]=true});
+  const jobs=cloudflareReadAllPages_('/v1/application-records',{table:'background_upload_jobs',active:activeOnly?1:'',owner_nik:ownerNik||'',status_view:!activeOnly&&ownerNik?1:''},1000,100),known={};jobs.forEach(function(job){known[job.jobId]=true});
   const all=PropertiesService.getScriptProperties().getProperties();
   Object.keys(all).filter(function(key){return key.indexOf('goods-upload-job-')===0}).forEach(function(key){try{const job=JSON.parse(all[key]);if(!known[job.jobId])jobs.push(job)}catch(error){console.error('Metadata upload tidak valid: '+key)}});return jobs.filter(function(job){return (!activeOnly||['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0)&&(!ownerNik||job.ownerNik===ownerNik)});
 }
 function goodsUploadJobView_(job) {
   return { rowEdit:job.rowEdit||null, requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
-    status: job.status, workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
+    status: job.status, canRetry:Boolean(job.planDriveId||job.preparedDriveId||job.pendingDriveId||job.sourceDriveId), workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
     total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
 }
 function goodsUploadOwner_(token, id) {
@@ -4476,6 +4507,23 @@ function retryGoodsUpload(token, id) {
     scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job);
   });
 }
+function retryStockUpload(token, id, engine) {
+  return safe_(function(){
+    const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const engines={USAGE:{prefix:'sales-cogs-upload-job-',write:writeSalesCogsJob_,schedule:scheduleSalesCogsWorker_},POSITION:{prefix:'stock-position-upload-job-',write:writeStockPositionJob_,schedule:scheduleStockPositionWorker_},EXPIRY:{prefix:'expiry-upload-job-',write:writeMissingExpiryJob_,schedule:scheduleMissingExpiryWorker_}};
+    if(!Object.prototype.hasOwnProperty.call(engines,engine))throw new Error('Jenis worker tidak valid.');
+    const gate=LockService.getUserLock();gate.waitLock(30000);
+    try{
+      const config=engines[engine],raw=PropertiesService.getScriptProperties().getProperty(config.prefix+cleanText_(id,100)),job=raw?JSON.parse(raw):null;
+      if(!job||job.ownerNik!==employee.nik)throw new Error('Upload tidak ditemukan atau bukan milik akun ini.');
+      stockUploadJobEmployee_(job);
+      if(job.status!=='FAILED'||Number(job.workerLeaseUntil||0)>Date.now())throw new Error('Upload ini belum dapat dicoba ulang.');
+      if(!job.preparedDriveId&&!job.pendingDriveId&&!job.sourceDriveId)throw new Error('File pemulihan lama sudah tidak tersedia. Pilih ulang file dan verifikasi.');
+      job.status='QUEUED';job.error='';job.retryCount=0;job.workerLeaseUntil=0;job.stage='Melanjutkan bagian terakhir yang belum terkonfirmasi.';
+      config.write(job);config.schedule();return goodsUploadJobView_(Object.assign({},job,{engine:engine}));
+    }finally{gate.releaseLock();}
+  });
+}
 function scheduleGoodsUploadWorker_() {
   try {
     const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; });
@@ -4485,31 +4533,35 @@ function scheduleGoodsUploadWorker_() {
 }
 function processGoodsUploadJobs() {
   const gate = LockService.getUserLock(); if (!gate.tryLock(1000)) return;
-  let job;
+  let job, dispatchMore=false;
   try {
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; })
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
     const jobs = goodsUploadJobs_(true).filter(function(candidate){return candidate.engine!=='SALES';});
-    if (jobs.some(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > Date.now(); })) return;
-    job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0; })
+    if (jobs.filter(function(candidate){return Number(candidate.workerLeaseUntil||0)>Date.now();}).length>=3)return;
+    job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0 && Number(candidate.workerLeaseUntil||0)<=Date.now(); })
+      .filter(function(candidate){return !jobs.some(function(other){return other.jobId!==candidate.jobId&&Number(other.workerLeaseUntil||0)>Date.now()&&(other.outlet===candidate.outlet||other.outlet==='BIHQ'||candidate.outlet==='BIHQ');});})
       .filter(function(candidate){return candidate.type!=='SHOWCASE_LOG'||!jobs.some(function(earlier){return earlier.type==='SHOWCASE_LOG'&&earlier.outlet===candidate.outlet&&earlier.location===candidate.location&&earlier.jobId!==candidate.jobId&&String(earlier.createdAt)+'|'+earlier.jobId<String(candidate.createdAt)+'|'+candidate.jobId;});})
       .sort(function (a, b) { return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt)); })[0];
     if (!job) return;
     job.workerLeaseUntil = Date.now() + 8 * 60000; job.lastWorkedAt = new Date().toISOString();
     job.status = job.planDriveId ? 'PROCESSING' : 'PREPARING'; job.stage = 'Memeriksa data untuk pembaruan stok.';
     writeGoodsUploadJob_(job);
+    dispatchMore=job.outlet!=='BIHQ'&&jobs.some(function(candidate){return candidate.jobId!==job.jobId&&candidate.outlet!==job.outlet&&candidate.outlet!=='BIHQ'&&Number(candidate.workerLeaseUntil||0)<=Date.now();});
   } finally { gate.releaseLock(); }
+  if(dispatchMore)scheduleGoodsUploadWorker_();
   let lock;
   const deadline = Date.now() + 240000;
   try {
-    lock = acquireStockWriteLock_();
-    const employee = findEmployee_(job.ownerNik); assertEmployeeActive_(employee);
+    lock = acquireStockUploadLock_(job);
+    const employee = stockUploadJobEmployee_(job);
     if (employee.outlet !== 'BIHQ' && employee.outlet !== job.outlet) throw new Error('Akses outlet pemilik upload sudah berubah.');
     if (['GOODS_DELIVERY', 'GOODS_RECEIPT', 'WIP_PRODUCTION'].indexOf(job.type) >= 0 && readStockLocations_(job.outlet).indexOf(job.location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
     const context = { employee: employee, outlet: job.outlet, location: job.location };
     let plan;
     if (job.planDriveId) plan = stockPositionJobJson_(job.planDriveId);
     else {
+      if(!job.requestDriveId)throw new Error('File permintaan upload lama sudah tidak tersedia. Pilih ulang file untuk melanjutkan.');
       const payload = stockPositionJobJson_(job.requestDriveId);
       if(job.sourceDriveId)payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
       plan = buildBackgroundUploadPlan_(job.type, context, payload);
@@ -4522,13 +4574,16 @@ function processGoodsUploadJobs() {
     appendOrActivateStockMasterItems_(plan.masterChanges);
     if (plan.opnameMasterItems) addStockOpnameMasterItems_(plan.opnameMasterItems);
     const total = plan.stockRows.length + plan.pendingRows.length;
-    while (job.processed < total && Date.now() < deadline) {
+    while (job.processed < total && Date.now()+Math.max(5000,Number(job.lastBatchMillis||0)*1.5)+15000 < deadline) {
       const cursor = Number(job.processed || 0), stockPhase = cursor < plan.stockRows.length;
       const start = stockPhase ? cursor : cursor - plan.stockRows.length;
-      const end = stockPhase && plan.batchEnds && plan.batchEnds.length ? (plan.batchEnds.filter(function (boundary) { return boundary >= start + 100; })[0] || plan.stockRows.length) : start + 100;
+      const size=Math.max(50,Math.min(400,Number(job.batchSize||200)));
+      const end = stockPhase && plan.batchEnds && plan.batchEnds.length ? (plan.batchEnds.filter(function (boundary) { return boundary >= start + size; })[0] || plan.stockRows.length) : start + size;
       const batch = (stockPhase ? plan.stockRows : plan.pendingRows).slice(start, end);
       // Reuse the saved record_id/event_id after a timeout or worker restart; Cloudflare rejects duplicate IDs.
+      const batchStarted=Date.now();
       if (stockPhase) insertStockCardRows_(batch); else cloudflareWriteTransferEvents_(batch);
+      job.lastBatchMillis=Date.now()-batchStarted;job.batchSize=job.lastBatchMillis>15000?Math.max(50,Math.floor(size/2)):job.lastBatchMillis<3000?Math.min(400,size*2):size;
       job.processed = cursor + batch.length; job.total = total; job.retryCount = 0;
       job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, total) * 83));
       job.stage = 'Menyimpan ' + job.processed + ' dari ' + total + ' baris.'; writeGoodsUploadJob_(job);
@@ -4541,12 +4596,12 @@ function processGoodsUploadJobs() {
       job.status = 'COMPLETE'; job.progress = 100; job.stage = 'Upload selesai. Transaksi sudah tersimpan.'; job.error = '';
       writeGoodsUploadJob_(job);
       try { notifyPendingStockTransfers_(plan.pendingRows); } catch (error) { console.error('Notifikasi upload: ' + error.message); }
-      cleanupGoodsUploadFiles_(job); writeGoodsUploadJob_(job);
+      try{cleanupGoodsUploadFiles_(job);writeGoodsUploadJob_(job);}catch(cleanupError){console.error('Upload selesai; pembersihan metadata ditunda: '+cleanupError.message);}
     } else { job.status = 'QUEUED'; job.stage = 'Melanjutkan bagian berikutnya di background.'; writeGoodsUploadJob_(job); }
   } catch (error) {
     job.workerLeaseUntil = 0; job.error = String(error.message || error);
     const busy = stockUploadBusy_(job.error);
-    const transient = /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
+    const transient = error.retryable !== false && /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
     if (busy || (transient && Number(job.retryCount || 0) < 5)) {
       if(busy)job.error='';
       job.status = 'QUEUED'; job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
@@ -4775,7 +4830,9 @@ function existingStockPositionRecordIds_(job, rows) {
   return found;
 }
 
-function processStockPositionJobItem_(job, prepared, availableLots) {
+function processStockPositionJobItem_(job, prepared, availableLots, scopeAlreadyHeld) {
+  const scope=scopeAlreadyHeld?{releaseLock:function(){}}:acquireStockUploadLock_(job);
+  try {
   const index = Number(job.processed || 0);
   const line = prepared.items[index];
   if (!line) throw new Error('Item Stock Posisi tidak ditemukan pada posisi ' + (index + 1) + '.');
@@ -4812,6 +4869,7 @@ function processStockPositionJobItem_(job, prepared, availableLots) {
   writeStockPositionJob_(job);
   try { DriveApp.getFileById(pendingId).setTrashed(true); } catch (error) {}
   return job;
+  }finally{scope.releaseLock();}
 }
 
 function processStockPositionUploadJobs() {
@@ -4840,26 +4898,27 @@ function processStockPositionUploadJobs() {
     job.workerLeaseUntil = Date.now() + 7 * 60 * 1000;
     writeStockPositionJob_(job);
     try {
-      if (!job.preparedDriveId) job = prepareStockPositionJob_(job);
-      else {
-        job.status = 'PROCESSING';
-        const prepared = stockPositionJobJson_(job.preparedDriveId);
-        const lotItems=prepared.items.slice(Number(job.processed||0),Number(job.processed||0)+8).filter(function(line,index){return line.delta<0&&!(index===0&&job.pendingDriveId);}).map(function(line){return line.item;});
+      stockUploadJobEmployee_(job);
+      const deadline=Date.now()+180000;
+      if(!job.preparedDriveId)job=prepareStockPositionJob_(job);
+      const prepared=stockPositionJobJson_(job.preparedDriveId);
+      job.status='PROCESSING';let lastStepMillis=0;
+      while(job.processed<job.total && Date.now()+Math.max(5000,lastStepMillis*1.5)+15000<deadline){
+        const windowEnd=Math.min(prepared.items.length,Number(job.processed||0)+8);
+        const lotItems=prepared.items.slice(Number(job.processed||0),windowEnd).filter(function(line,index){return line.delta<0&&!(index===0&&job.pendingDriveId);}).map(function(line){return line.item;});
+        const inventoryScope=acquireStockUploadLock_(job);
+        try {
         const availableLots=readTransferAvailableLotsBatch_(job.outlet,job.location,lotItems);
-        const deadline = Date.now() + 45000;
-        for (let count = 0; count < 8 && job.processed < job.total && Date.now() < deadline; count++) {
-          job = processStockPositionJobItem_(job, prepared, availableLots);
+        while(job.processed<windowEnd && Date.now()+Math.max(5000,lastStepMillis*1.5)+15000<deadline){
+          const started=Date.now();job=processStockPositionJobItem_(job,prepared,availableLots,true);lastStepMillis=Date.now()-started;job.lastBatchMillis=lastStepMillis;
         }
-        if (job.processed >= job.total) {
-          job.status = 'COMPLETE'; job.stage = 'Seluruh Stock Adjustment berhasil dicatat.'; job.progress = 100;
-          job.workerLeaseUntil = 0; writeStockPositionJob_(job);
-          cleanupStockPositionJobFiles_(job);
-        }
+        } finally {inventoryScope.releaseLock();}
       }
-      job.workerLeaseUntil = 0; writeStockPositionJob_(job);
+      if(job.processed>=job.total){job.status='COMPLETE';job.stage='Seluruh Stock Adjustment berhasil dicatat.';job.progress=100;job.workerLeaseUntil=0;writeStockPositionJob_(job);try{cleanupStockPositionJobFiles_(job);writeStockPositionJob_(job);}catch(cleanupError){console.error('Stock Posisi selesai; pembersihan metadata ditunda: '+cleanupError.message);}}
+      if(job.status!=='COMPLETE'){job.workerLeaseUntil = 0; writeStockPositionJob_(job);}
     } catch (error) {
       job.workerLeaseUntil = 0; job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
+      if (stockUploadBusy_(error) || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
         job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Mencoba kembali item yang belum selesai (' + job.retryCount + '/3).';
         job.error = '';
       } else {
@@ -6800,12 +6859,14 @@ function cloudflareInventoryRequest_(method, path, payload) {
       lastMessage = String(body && body.error && body.error.message || ('HTTP ' + status));
       const retryable = status === 408 || status === 429 || status >= 500;
       if (!retryable || attempt === maxAttempts - 1) {
-        throw new Error(lastMessage + (requestId ? ' (Ref: ' + requestId + ')' : ''));
+        const failure = new Error(lastMessage + (requestId ? ' (Ref: ' + requestId + ')' : ''));
+        failure.retryable = retryable; failure.httpStatus = status; throw failure;
       }
     } catch (error) {
       lastMessage = String(error && error.message || error || 'Tidak dapat terhubung ke Cloudflare.');
-      // A daily Apps Script quota cannot recover through immediate retries.
-      if (/urlfetch/i.test(lastMessage) && /too many times for (?:one )?day|terlalu sering.*hari yang sama/i.test(lastMessage)) throw error;
+      if(error.retryable === false)throw error;
+      // Daily quotas cannot recover by immediately replaying the same upload.
+      if (/too many times for (?:one )?day|daily quota|kuota harian|terlalu sering.*hari yang sama/i.test(lastMessage)) {error.retryable=false;throw error;}
       if (attempt === maxAttempts - 1) {
         throw new Error('Cloudflare inventory gagal setelah dicoba ulang: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
       }
@@ -11548,7 +11609,7 @@ function acquireStockScopeLock_(scope, waitMs) {
       try {
         const raw = properties.getProperty(key), lease = raw ? JSON.parse(raw) : null;
         if (!lease || Number(lease.expiresAt || 0) <= Date.now()) {
-          properties.setProperty(key, JSON.stringify({ token: token, scope: String(scope || ''), expiresAt: Date.now() + 180000 }));
+          properties.setProperty(key, JSON.stringify({ token: token, scope: String(scope || ''), expiresAt: Date.now() + 8 * 60000 }));
           return {
             releaseLock: function () {
               const releaseGate = LockService.getScriptLock();
@@ -13044,7 +13105,7 @@ function queueSalesCogsUpload(token, payload) {
     const job = {
       jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
       sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
-      status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 500,
+      writePlanVersion:2, status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 500,
       processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
       outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
     };
@@ -13109,10 +13170,10 @@ function readSalesCogsJobJson_(driveId) {
 }
 
 function cleanupSalesCogsJobFiles_(job) {
-  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId].filter(Boolean).forEach(function (id) {
+  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId, job.pendingDriveId].filter(Boolean).forEach(function (id) {
     try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
   });
-  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = '';
+  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = '';
 }
 
 function prepareSalesCogsJob_(job) {
@@ -13122,7 +13183,7 @@ function prepareSalesCogsJob_(job) {
   const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
   const prepared = prepareSalesCogsImport_(employee, request, false);
   const preparedFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(prepared), 'application/json', 'TEMP_SALES_COGS_PREPARED_' + job.jobId + '.json'));
-  job.preparedDriveId = preparedFile.getId(); job.total = prepared.rows.length + prepared.showcaseRows.length;
+  job.preparedDriveId = preparedFile.getId(); job.writePlanVersion=2;job.total = prepared.rows.length + prepared.showcaseRows.length;
   job.itemCount = prepared.rows.length; job.showcaseRowsSkipped = prepared.showcaseRows.length;
   job.outlets = prepared.outlets || []; job.outlet = job.outlets.join(', ');
   job.transactionDates = prepared.dates || []; job.transactionDate = job.transactionDates[0] || '';
@@ -13202,6 +13263,7 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
       source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: 'SALE|' + sale.rowHash
     }});
   });
+  if (runtime && runtime.planOnly) return { stockRows: rows, movementRows: rows.length, autoWipProductionCount: autoWipCount };
   if (rows.length) {
     const lock = acquireStockWriteLock_();
     try { insertStockCardRows_(rows); } finally { lock.releaseLock(); }
@@ -13210,6 +13272,7 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
 }
 
 function processSalesCogsJobChunk_(job, runtime) {
+  stockUploadJobEmployee_(job);
   if (!job.preparedDriveId) return prepareSalesCogsJob_(job);
   runtime = runtime || {};
   const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
@@ -13224,18 +13287,43 @@ function processSalesCogsJobChunk_(job, runtime) {
   job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
   job.progress = Math.min(96, 15 + Math.round(start / Math.max(1, job.total) * 81)); writeSalesCogsJob_(job);
   const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
-  const result = writePreparedSalesCogsChunk_({ fileName: prepared.fileName, rows: rows, showcaseRows: showcaseRows }, employee, request, runtime);
-  job.processed = start + count; job.movementRows = Number(job.movementRows || 0) + Number(result.movementRows || 0);
-  job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(result.autoWipProductionCount || 0);
-  job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83)); writeSalesCogsJob_(job);
+  const scope=acquireStockUploadLock_({outlets:job.outlets,outlet:job.outlet,ownerOutlet:job.ownerOutlet,location:'Store'});
+  try {
+  let plan;
+  if (job.pendingDriveId) {
+    plan = readSalesCogsJobJson_(job.pendingDriveId);
+    if (Number(plan.start) !== start) throw new Error('Checkpoint batch Usage tidak cocok. Hubungi BIHQ; jangan upload ulang.');
+  } else {
+    if(job.writePlanVersion!==2){
+      const periods={};rows.forEach(function(row){const p=periods[row.outlet]||(periods[row.outlet]={from:row.transactionDate,to:row.transactionDate,hashes:[]});p.from=p.from<row.transactionDate?p.from:row.transactionDate;p.to=p.to>row.transactionDate?p.to:row.transactionDate;p.hashes.push(row.rowHash);});
+      Object.keys(periods).forEach(function(outlet){const p=periods[outlet],existing=existingSalesRowHashesForPeriod_(outlet,p.from,p.to);if(Object.keys(existing).some(function(date){return p.hashes.some(function(hash){return Boolean(existing[date][hash]);});}))throw new Error('Batch Usage lama memiliki transaksi yang sudah tercatat tetapi belum terkonfirmasi. Perlu verifikasi BIHQ sebelum melanjutkan; jangan upload ulang.');});
+      job.writePlanVersion=2;writeSalesCogsJob_(job);
+    }
+    plan = writePreparedSalesCogsChunk_({fileName:prepared.fileName,rows:rows,showcaseRows:showcaseRows}, employee, request, Object.assign(runtime,{planOnly:true}));
+    plan.start=start;plan.count=count;
+    const file=DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan),'application/json','TEMP_SALES_COGS_PENDING_'+job.jobId+'_'+start+'.json'));
+    job.pendingDriveId=file.getId();writeSalesCogsJob_(job);
+  }
+  if(plan.stockRows.length){
+    const lock=acquireStockWriteLock_();
+    try{insertStockCardRows_(plan.stockRows);}finally{lock.releaseLock();}
+  }
+  const pendingId=job.pendingDriveId;
+  job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
+  job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(plan.autoWipProductionCount || 0);
+  job.pendingDriveId='';job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83));
+  writeSalesCogsJob_(job);
+  try{DriveApp.getFileById(pendingId).setTrashed(true);}catch(error){}
   if (job.processed >= job.total) {
     (job.outlets || []).forEach(function (outlet) { (job.transactionDates || []).forEach(function (date) {
       markStockTaskCompleteFromUploads_({ outlet: outlet, location: 'Store', employee: employee }, date, 'Sold');
     }); });
     job.status = 'COMPLETE'; job.stage = 'Seluruh transaksi Sales COGS berhasil disimpan.'; job.progress = 100;
-    cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
+    writeSalesCogsJob_(job);
+    try{cleanupSalesCogsJobFiles_(job);writeSalesCogsJob_(job);}catch(cleanupError){console.error('Usage selesai; pembersihan metadata ditunda: '+cleanupError.message);}
   }
   return job;
+  }finally{scope.releaseLock();}
 }
 
 function reduceSalesCogsBatchSize_(job) {
@@ -13253,7 +13341,7 @@ function processSalesCogsUploadJobs() {
     Object.keys(all).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; }).forEach(function (key) {
       try {
         const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
-        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 7 * 86400000) properties.deleteProperty(key);
+        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 7 * 86400000) {cleanupSalesCogsJobFiles_(job);properties.deleteProperty(key);}
         else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
       } catch (error) { properties.deleteProperty(key); }
     });
@@ -13293,12 +13381,12 @@ function processSalesCogsUploadJobs() {
     catch (error) {
       job.workerLeaseUntil = 0;
       job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      if (stockUploadBusy_(error) || (job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
+      if (stockUploadBusy_(error) || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
         if (/timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
         job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
-        job.error = String(error.message || error); cleanupSalesCogsJobFiles_(job); writeSalesCogsJob_(job);
+        job.error = String(error.message || error); writeSalesCogsJob_(job);
       }
     }
     const pending = PropertiesService.getScriptProperties().getProperties();
@@ -19703,17 +19791,19 @@ function mppFormatRupiah_(num) {
 /** Native Cloudflare ledger reads. Never falls back to another datastore. */
 function cloudflareLedgerRows_(scope) {
   scope = scope || {};
+  // Source identity lookups must not scan every movement in the outlet.
+  if((scope.sourceHashes||[]).length>12){let found=[];for(let i=0;i<scope.sourceHashes.length;i+=12)found=found.concat(cloudflareLedgerRows_(Object.assign({},scope,{sourceHashes:scope.sourceHashes.slice(i,i+12)})));return found;}
   // Pack each URL to its actual byte budget; long codes still stay below GAS URL limits.
   const chunks = []; let chunk = [];
   (scope.itemCodes || []).forEach(function(code) {
-    if(chunk.length && (chunk.length >= 80 || encodeURIComponent(chunk.concat([code]).join('|')).length > 1200)){chunks.push(chunk);chunk=[];}
+    if(chunk.length && (chunk.length >= (scope.resolveScope?10:80) || encodeURIComponent(chunk.concat([code]).join('|')).length > 1200)){chunks.push(chunk);chunk=[];}
     chunk.push(code);
   });
   if(chunk.length)chunks.push(chunk);
   if(chunks.length>1){let combined=[];chunks.forEach(function(codes){combined=combined.concat(cloudflareLedgerRows_(Object.assign({},scope,{itemCodes:codes})));});return combined;}
   const query = { raw: 1, outlet: scope.outlet || '', location: scope.location || '', record_type: (scope.recordTypes || []).length === 1 ? scope.recordTypes[0] : '',
     item_codes: (scope.itemCodes||[]).join('|'), item_key_code: scope.location==='Showcase'&&scope.itemName?'':scope.itemCode||'', item_key_name:scope.itemName||'', item_name:scope.location==='Showcase'?scope.itemName||'':'',
-    source_hash: scope.sourceHash || '', logical_id: scope.logicalId || '', transfer_id: scope.transferId || '',
+    source_hash: scope.sourceHash || '', source_hashes:(scope.sourceHashes||[]).join('|'), logical_id: scope.logicalId || '', transfer_id: scope.transferId || '',
     resolve_scope:scope.resolveScope?1:'', movement_type:scope.resolveScope&&(scope.movementTypes||[]).length===1?scope.movementTypes[0]:'',
     from:scope.resolveScope?scope.from||'':'', to:scope.resolveScope?scope.to||'':'' };
   const outlets = scope.outlet ? [scope.outlet] : (scope.outlets || readActiveOutlets_());
