@@ -487,7 +487,7 @@ async function existingMovementState(env, rows) {
   const logicalIds = [...new Set(rows.map((row) => row.logical_id || row.record_id))];
   const recordIds = [...new Set(rows.map((row) => row.record_id))];
   const eventDates = rows.map((row) => row.event_date).filter(Boolean).sort();
-  const historyEntries = historyDatabasesForRange(env, eventDates[0], eventDates.at(-1));
+  const historyEntries = rows.some(row=>row.version>1) ? historyDatabaseEntries(env).filter(entry=>entry.database) : historyDatabasesForRange(env, eventDates[0], eventDates.at(-1));
   const existing = [], duplicateIds = /* @__PURE__ */ new Set();
   const idChunks = [];
   for (let index = 0; index < logicalIds.length; index += 50) idChunks.push(logicalIds.slice(index, index + 50));
@@ -511,6 +511,33 @@ async function existingMovementState(env, rows) {
   return { active, duplicateIds };
 }
 __name(existingMovementState, "existingMovementState");
+function movementBalanceStatement(database, row, prior) {
+  const old = prior || {record_id:'',version:0,created_at:'',record_type:'',direction:'',quantity:0};
+  const identity = row.logical_id || row.record_id;
+  return database.prepare(`
+    WITH previous AS (
+      SELECT * FROM (
+        SELECT record_id,version,created_at,record_type,direction,quantity
+        FROM stock_movements WHERE logical_id = ? OR ((logical_id IS NULL OR logical_id = '') AND record_id = ?)
+        UNION ALL SELECT ?,?,?,?,?,? WHERE ? = 1
+      ) ORDER BY version DESC,created_at DESC,record_id DESC LIMIT 1
+    ), effect AS (
+      SELECT ? - COALESCE((SELECT CASE WHEN record_type != 'MOVEMENT' THEN 0
+        WHEN direction = 'IN' THEN quantity WHEN direction = 'OUT' THEN -quantity ELSE 0 END FROM previous),0) AS delta
+    )
+    INSERT INTO stock_balances(outlet_code,location_code,item_code,item_name,current_qty,unit,updated_at)
+    SELECT ?,?,?,?,delta,?,? FROM effect
+    WHERE ABS(delta) > 0.000000001
+      AND NOT EXISTS(SELECT 1 FROM stock_movements WHERE record_id = ?)
+      AND NOT EXISTS(SELECT 1 FROM previous WHERE version > ? OR
+        (version = ? AND (created_at > ? OR (created_at = ? AND record_id >= ?))))
+    ON CONFLICT(outlet_code,location_code,item_code) DO UPDATE SET
+      item_name=excluded.item_name,current_qty=stock_balances.current_qty+excluded.current_qty,
+      unit=excluded.unit,updated_at=excluded.updated_at
+  `).bind(identity,identity,old.record_id,old.version,old.created_at,old.record_type,old.direction,old.quantity,prior?1:0,
+    signedMovement(row),row.outlet_code,row.location_code,row.item_code,row.item_name,row.unit,row.created_at,row.record_id,
+    row.version,row.version,row.created_at,row.created_at,row.record_id);
+}
 async function writeStockMovements(request, env, requestId) {
   let payload;
   try {
@@ -526,46 +553,28 @@ async function writeStockMovements(request, env, requestId) {
   try {
     const rows = input.map(normalizeMovement);
     const state = await existingMovementState(env, rows);
-    const accepted = [], balanceDeltas = /* @__PURE__ */ new Map();
-    rows.sort((a, b) => a.version - b.version || a.created_at.localeCompare(b.created_at));
+    const accepted = [], seen = new Set(), statements2 = [];
+    rows.sort((a, b) => a.version - b.version || a.created_at.localeCompare(b.created_at) || a.record_id.localeCompare(b.record_id));
     for (const row of rows) {
-      if (state.duplicateIds.has(row.record_id)) continue;
+      if (state.duplicateIds.has(row.record_id) || seen.has(row.record_id)) continue;
+      seen.add(row.record_id);
       accepted.push(row);
-      const logicalId = row.logical_id || row.record_id;
-      const previous = state.active.get(logicalId);
-      if (newerMovement(row, previous)) {
-        const delta = signedMovement(row) - (previous ? signedMovement(previous) : 0);
-        const key = `${row.outlet_code}${row.location_code}${row.item_code}`;
-        const current = balanceDeltas.get(key) || { row, delta: 0 };
-        current.row = row;
-        current.delta += delta;
-        balanceDeltas.set(key, current);
-        state.active.set(logicalId, row);
-      }
+      // Recheck identity and latest version INSIDE the write transaction. A
+      // preflight read is not a lock: another request may commit before batch().
+      const previous = state.active.get(row.logical_id || row.record_id);
+      statements2.push(movementBalanceStatement(env.OPERATIONS_DB, row, previous));
+      statements2.push(movementInsertStatement(env.OPERATIONS_DB, row));
     }
-    const statements2 = accepted.map((row) => movementInsertStatement(env.OPERATIONS_DB, row));
-    for (const { row, delta } of balanceDeltas.values()) {
-      if (Math.abs(delta) < 1e-9) continue;
-      statements2.push(env.OPERATIONS_DB.prepare(
-        `INSERT INTO stock_balances(outlet_code, location_code, item_code, item_name, current_qty, unit, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(outlet_code, location_code, item_code) DO UPDATE SET
-           item_name = excluded.item_name,
-           current_qty = stock_balances.current_qty + excluded.current_qty,
-           unit = excluded.unit, updated_at = excluded.updated_at`
-      ).bind(row.outlet_code, row.location_code, row.item_code, row.item_name, delta, row.unit, row.created_at));
-    }
-    // Keep movement rows and their balance deltas atomic. With the GAS caller
-    // capped at 400 rows this remains below the paid Workers per-request D1
-    // query allowance even when every row creates a distinct balance update.
     const batchResults = statements2.length ? await env.OPERATIONS_DB.batch(statements2) : [];
+    const inserted = batchResults.reduce((sum, result, index) => sum + (index % 2 ? Number(result.meta?.changes || 0) : 0), 0);
     const written = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
-    console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: accepted.length, written, requestId }));
-    return responseJson({ ok: true, received: rows.length, accepted: accepted.length, duplicates: rows.length - accepted.length, written, requestId });
+    console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: inserted, written, requestId }));
+    return responseJson({ ok: true, received: rows.length, accepted: inserted, duplicates: rows.length - inserted, written, requestId });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ event: "stock_movement_write_failed", message, requestId }));
-    return apiError(400, "STOCK_MOVEMENT_WRITE_FAILED", message, requestId);
+    const retryable=/overloaded|SQLITE_BUSY|database.*locked|temporar|timeout|timed out|network|unavailable|internal error/i.test(message);
+    return apiError(retryable?503:400, "STOCK_MOVEMENT_WRITE_FAILED", message, requestId);
   }
 }
 __name(writeStockMovements, "writeStockMovements");
@@ -994,6 +1003,9 @@ async function listMovements(url, env, requestId) {
   add("record_type = ?", recordType);
   add("movement_type = ?", movementType);
   add("source_hash = ?", sourceHash);
+  const sourceHashes=cleanText(url.searchParams.get('source_hashes'),10000).split('|').filter(Boolean);
+  if(sourceHashes.length>40)return apiError(400,'INVALID_SOURCES','Terlalu banyak identitas sumber.',requestId);
+  if(sourceHashes.length){conditions.push('source_hash IN ('+sourceHashes.map(()=>'?').join(',')+')');bindings.push(...sourceHashes);}
   add("transfer_id = ?", transferId);
   if (cursor) {
     const parts = cursor.split("|");
@@ -1019,7 +1031,7 @@ async function listMovements(url, env, requestId) {
       (!recordType || row.record_type === recordType) && (!movementType || row.movement_type === movementType) &&
       (!itemCode || row.item_code === itemCode) && (!itemCodes.length || itemCodes.includes(row.item_code)) &&
       (!itemName || String(row.item_name || '').toLowerCase() === itemName.toLowerCase()) &&
-      (!sourceHash || row.source_hash === sourceHash) && (!transferId || row.transfer_id === transferId) &&
+      (!sourceHash || row.source_hash === sourceHash) && (!sourceHashes.length || sourceHashes.includes(row.source_hash)) && (!transferId || row.transfer_id === transferId) &&
       (!logicalId || (row.logical_id || row.record_id) === logicalId) &&
       (!keyCode || row.item_code === keyCode || (!row.item_code && String(row.item_name || '').toLowerCase() === keyName.toLowerCase())) &&
       row.event_date >= from && row.event_date <= to).sort(sortRows);
@@ -3969,6 +3981,7 @@ async function applicationRecords(request, url, env, requestId) {
     const engine=cleanText(url.searchParams.get('engine'),30);if(engine){where+=" AND json_extract(payload_json,'$.engine')=?";bindings.push(engine);}
     if(url.searchParams.get('unresolved')==='1')where+=" AND json_extract(payload_json,'$.status') IN ('QUEUED','PREPARING','PROCESSING','ACTION_REQUIRED')";
     if(url.searchParams.get('active')==='1')where+=" AND json_extract(payload_json,'$.status') IN ('QUEUED','PREPARING','PROCESSING')";
+    if(url.searchParams.get('status_view')==='1')where+=" AND (json_extract(payload_json,'$.status')!='COMPLETE' OR created_at>=strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 days'))";
     const owner=cleanText(url.searchParams.get('owner_nik'),100);if(owner){where+=" AND json_extract(payload_json,'$.ownerNik')=?";bindings.push(owner);}
   }
   if (outlet) { where += ' AND outlet_code=?'; bindings.push(outlet); }
