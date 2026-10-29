@@ -9,7 +9,7 @@ const ledger=new Map();
 Object.assign(c,{stockUploadJobEmployee_:()=>({nik:'N',outlet:'BISS'}),acquireStockUploadLock_:()=>noopLock,
  readSalesCogsJobJson_:file=>files.has(file)?JSON.parse(files.get(file)):file==='request'?{}:prepared,
  writeSalesCogsJob_:job=>{stored.push(JSON.parse(JSON.stringify(job)));return job;},salesCogsReferenceData_:()=>({wipCatalog:{},savedConversions:{},salesMappings:{},masterByCode:{}}),preloadSalesFifoLots_:()=>{builds++;return{};},salesTargetIsWip_:()=>false,salesConsumeInventoryLots_:()=>[{qty:5}],
- Utilities:{getUuid:()=>String(++id),newBlob:value=>({value})},DriveApp:{createFile:blob=>{const key='file-'+(++id);files.set(key,blob.value);return{getId:()=>key};},getFileById:key=>({setTrashed:()=>files.delete(key)})},salesUploadCreatedAt_:()=>1,cleanText_:v=>v,acquireStockWriteLock_:()=>noopLock,
+ Utilities:{getUuid:()=>String(++id),newBlob:value=>({value})},DriveApp:{createFile:blob=>{const key='file-'+(++id);files.set(key,blob.value);return{getId:()=>key};},getFileById:key=>({setTrashed:()=>files.delete(key)})},salesUploadCreatedAt_:()=>1,cleanText_:v=>v,acquireStockWriteLock_:()=>assert.fail('background Usage must not hold the global stock lock'),
  insertStockCardRows_:rows=>{assert.ok(stored.some(j=>j.pendingDriveId),'plan durable before writing');for(const r of rows)ledger.set(r.json.record_id,r);if(first){first=false;throw Error('timeout after commit');}},cleanupSalesCogsJobFiles_(){}});
 const job={writePlanVersion:2,jobId:'J',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:1,ownerNik:'N',ownerOutlet:'BISS',outlets:[],transactionDates:[]};
 assert.throws(()=>c.processSalesCogsJobChunk_(job,{}),/timeout/);const pending=job.pendingDriveId;assert.ok(pending);assert.equal(job.processed,0);
@@ -40,3 +40,25 @@ const ui={APP:{token:'T',outlet:'BISS',location:'Store'},GOODS_UPLOAD_PANEL:{loa
 vm.createContext(ui);vm.runInContext(uiSource.slice(a,b),ui);ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.equal(loads,1);ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.equal(loads,1,'completion only refreshes once');
 responseJobs=[{jobId:'next',status:'QUEUED'}];ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.ok(timers.length>0,'closed status panel still monitors active work');
 console.log('Upload reliability: durable Usage replay, permanent/transient failures, disjoint Goods jobs, adaptive Position execution, live access, scoped locks and background UI refresh passed.');
+
+// Unit conversions have a separate lease from stock writes and validate before mutation.
+const conversion=make();let sheetRows=[],scopeNames=[],mutationCount=0;
+const sheet={getLastRow:()=>sheetRows.length+1,getRange:(row,col,count,width)=>({getValues:()=>sheetRows.map(r=>r.slice()),getValue:()=>sheetRows[row-2][col-1],setValues:values=>{mutationCount++;values.forEach((r,i)=>sheetRows[row-2+i]=r);}})};
+Object.assign(conversion,{requireSession_:()=>({nik:'N'}),findEmployee_:()=>({nik:'N',outlet:'BISS'}),assertEmployeeActive_(){},cleanText_:v=>String(v),acquireStockWriteLock_:()=>assert.fail('conversion cannot acquire the inventory write lock'),acquireStockScopeLock_:name=>{scopeNames.push(name);return noopLock},ensureStockConversionSheet_:()=>sheet,SpreadsheetApp:{flush(){}},removeScriptCacheKeys_(){}});
+const entry={itemCode:'A',itemName:'A',fromUnit:'PCS',toUnit:'BOX',factor:0.007};
+assert.equal(conversion.saveStockUnitConversions('T',{conversions:[entry,entry]}).ok,true);assert.equal(sheetRows.length,1);assert.deepEqual(scopeNames,['stock-unit-conversions']);
+const before=mutationCount;assert.equal(conversion.saveStockUnitConversions('T',{conversions:[{...entry,itemCode:'B'}, {...entry,factor:2}]}).ok,false);assert.equal(mutationCount,before,'a later conflict cannot partially persist preceding entries');
+// Pausing keeps the file, exact typed factors and original upload scope without blocking the screen.
+const html=fs.readFileSync('docs/stock-card.html','utf8'),elements=new Map();
+const element=id=>{if(!elements.has(id)){const flags=new Set();elements.set(id,{classList:{add:v=>flags.add(v),remove:v=>flags.delete(v),contains:v=>flags.has(v)},querySelectorAll:()=>[{value:'0,007',getAttribute:()=> 'A|PCS|BOX'}]});}return elements.get(id)};
+const receipt={fileName:'receipt.xlsx',base64:'file',conversions:{'A|PCS|BOX':0.007},pendingConversions:[entry],backgroundContext:{outlet:'BISS',location:'Store'}};let popups=0;
+const modal={APP:{token:'T',outlet:'BICP',location:'Showcase',goodsReceipt:receipt},byId:element,toast(){},openGoodsReceiptConversionPopup:()=>popups++};vm.createContext(modal);
+vm.runInContext(html.slice(html.indexOf('    function pauseGoodsReceiptVerification()'),html.indexOf('    function continueGoodsReceiptConversion()')),modal);
+modal.pauseGoodsReceiptVerification();assert.ok(element('goodsReceiptModal').classList.contains('hidden'));assert.ok(element('goodsReceiptConversionModal').classList.contains('hidden'));assert.equal(receipt.conversionDraft['A|PCS|BOX'],'0,007');assert.equal(receipt.conversions['A|PCS|BOX'],0.007);assert.equal(receipt.base64,'file');
+modal.resumeGoodsReceiptVerification();assert.equal(element('goodsReceiptOutlet').textContent,'BISS');assert.equal(popups,1);modal.APP.token='OTHER';modal.resumeGoodsReceiptVerification();assert.equal(popups,1,'draft cannot resume under another account');
+// A delayed save must not operate on a newly selected file or changed account.
+let callback,verifications=0;
+Object.assign(modal,{parseLocaleNumber:()=>0.007,setGoodsReceiptProgress(){},server:(name,args,done)=>callback=done,closeGoodsReceiptConversionModal(){},requestGoodsReceiptVerification:()=>verifications++});modal.APP.token='T';
+vm.runInContext(html.slice(html.indexOf('    function continueGoodsReceiptConversion()'),html.indexOf('\n',html.indexOf('    function continueGoodsReceiptConversion()'))),modal);
+modal.continueGoodsReceiptConversion();modal.APP.goodsReceipt={};callback();assert.equal(verifications,0);
+console.log('Conversion saves use a separate lease; paused Goods Receipt keeps file, decimal draft, owner and stock scope; stale callbacks ignored.');
