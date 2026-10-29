@@ -256,6 +256,7 @@ function apiActions_() {
     saveConversions: saveStockUnitConversions,
     receiptDirectGrant: getReceiptDirectGrant,
     localStockUploadStatus: getLocalStockUploadStatus,
+    localStockContext: getLocalStockContext,
     getConversions: getStockUnitConversions,
     defaultUnitOptions: getStockDefaultUnitOptions,
     changeDefaultUnit: changeStockItemDefaultUnit,
@@ -20255,4 +20256,16 @@ function getReceiptDirectGrant(token,requestedOutlet,requestedLocation){
 }
 function getLocalStockUploadStatus(token){
   return safe_(function(){const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);return{jobs:otherStockUploadJobs_().filter(function(job){return job.ownerNik===employee.nik;}).map(goodsUploadJobView_)};});
+}
+
+function getLocalStockContext(token,requestedOutlet,requestedLocation){
+  return safe_(function(){
+    const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const isAdmin=employee.outlet==='BIHQ',outlets=isAdmin?readActiveOutlets_():[employee.outlet];
+    const outlet=isAdmin&&!requestedOutlet?'':String(isAdmin?requestedOutlet:employee.outlet).trim().toUpperCase();
+    if(outlet&&outlets.indexOf(outlet)<0)throw new Error('Akses outlet tidak sesuai.');
+    const locations=outlet?readStockLocations_(outlet):[],location=outlet?(normalizeLocation_(requestedLocation||locations[0]||'Store')):'';
+    if(outlet&&locations.indexOf(location)<0)throw new Error('Lokasi tidak valid.');
+    return{user:userView_(employee),outlets:outlets,selectedOutlet:outlet,outlet:outlet,selectedLocation:location,location:location,locations:locations,items:[],expiryAlerts:{missingExpiry:[],nearExpiry:[],fifoFefoIssues:[]},navigationTasks:readTasksForEmployee_(employee),navigationPages:readPagesForEmployee_(employee),completions:{},appUrl:ScriptApp.getService().getUrl(),uploadProgress:null,inventoryUnavailable:true};
+  });
 }
