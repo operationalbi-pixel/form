@@ -25,6 +25,7 @@ const context = {
   writeStockPositionJob_: state => state,
   DriveApp: { getFileById: () => ({ setTrashed() {} }) },
   acquireStockWriteLock_: () => ({ releaseLock() {} }),
+  acquireStockUploadLock_: () => ({ releaseLock() {} }),
   stockPositionJobJson_: () => [],
   existingStockPositionRecordIds_: () => ({}),
   insertStockCardRows_: () => {},
