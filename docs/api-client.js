@@ -95,6 +95,10 @@
         if (finished || !message || message.bakerzinApi !== true || message.requestId !== id) return;
         finished = true;
         cleanup();
+        var hint=message.response&&message.response.outboundHint;
+        if(hint&&/^https:\/\/bakerzin-inventory-api\.operational-bi\.workers\.dev\/v1\/app-outbound$/.test(hint.url)&&typeof hint.token==='string'&&global.fetch){
+          global.fetch(hint.url,{method:'POST',headers:{Authorization:'Bearer '+hint.token,'Content-Type':'application/json'},body:'{}'}).catch(function(){});
+        }
         resolve(message.response);
       }
 
