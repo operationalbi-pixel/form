@@ -1,3 +1,4 @@
+import {handleReceiptDirect,processReceiptQueue} from './receipt-direct.js';
 import {handleShowcaseDirect} from './showcase-direct.js';
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
@@ -4001,6 +4002,7 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/v1/sopi/image") return sopiImage(url, env, requestId);
   if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   if (url.pathname === "/v1/showcase-direct") return handleShowcaseDirect(request,env,requestId,{activeMovements,historyDatabasesForRange,readJsonWithLimit,ensureApplicationRecords,normalizeMovement,movementInsertStatement});
+  if(url.pathname==='/v1/receipt-direct')return handleReceiptDirect(request,env,{listMovements,writeStockMovements,ensureApplicationRecords,readJsonWithLimit});
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sales-save-jobs") return acceptSalesSaveJob(request,env,requestId);
@@ -4069,6 +4071,7 @@ async function route(request, env) {
 }
 __name(route, "route");
 var index_default = {
+  async queue(batch,env){await processReceiptQueue(batch,env,{listMovements,writeStockMovements,ensureApplicationRecords,readJsonWithLimit});},
   async fetch(request, env) {
     try {
       return await route(request, env);
