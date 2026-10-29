@@ -87,6 +87,7 @@ function doPost(e) {
   try {
     const raw = isMobileRequest ? e.parameter.mobilePayload : e && e.parameter && e.parameter.payload || e && e.postData && e.postData.contents || '{}';
     request = JSON.parse(String(raw));
+    if(request.service==='cloudflare-outbound-v1')return mobileJsonOutput_(cloudflareOutboundService_(request));
     const actions = apiActions_();
     const action = String(request.action || '');
     if (!Object.prototype.hasOwnProperty.call(actions, action)) {
@@ -94,7 +95,8 @@ function doPost(e) {
       return isMobileRequest ? mobileJsonOutput_(denied) : htmlBridgeOutput_(request.requestId, denied);
     }
     const args = Array.isArray(request.args) ? request.args : [];
-    const response = actions[action].apply(null, args);
+    let response = actions[action].apply(null, args);
+    if(typeof attachCloudflareOutboundHint_==='function')response=attachCloudflareOutboundHint_(response);
     return isMobileRequest ? mobileJsonOutput_(response) : htmlBridgeOutput_(request.requestId, response);
   } catch (error) {
     const response = { ok: false, error: error && error.message ? error.message : String(error) };
@@ -116,6 +118,8 @@ function apiActions_() {
     getAppData: getAppData,
     mobileNotifications: getMobileNotifications,
     registerPushToken: registerMobilePushToken,
+    appOutboundStatus: getCloudflareOutboxStatus,
+    appOutboundRetry: retryCloudflareOutbound,
     chatSetup: setupChatDatabase,
     chatBootstrap: getChatBootstrap,
     chatCreateRoom: createChatRoom,
@@ -311,12 +315,6 @@ function authorizeProjectServices() {
   SpreadsheetApp.openById(CONFIG.CHAT_SPREADSHEET_ID).getName();
   DriveApp.getRootFolder().getName();
   cloudflareInventoryConfig_();
-  // Memaksa layar otorisasi meminta scope script.external_request yang
-  // dibutuhkan untuk mengambil hasil export XLSX dari Google Sheets.
-  UrlFetchApp.fetch('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest', {
-    method: 'get',
-    muteHttpExceptions: true
-  });
   return true;
 }
 
@@ -751,45 +749,6 @@ function mobilePushConfig_() {
   return projectId && clientEmail && privateKey ? { projectId: projectId, clientEmail: clientEmail, privateKey: privateKey } : null;
 }
 
-function mobilePushAccessToken_() {
-  const cache = CacheService.getScriptCache();
-  const cached = cache.get('fcm-oauth-access-token-v1');
-  if (cached) return cached;
-  const config = mobilePushConfig_();
-  if (!config) return '';
-  const now = Math.floor(Date.now() / 1000);
-  const encode = function (value) {
-    return Utilities.base64EncodeWebSafe(typeof value === 'string' ? value : JSON.stringify(value)).replace(/=+$/g, '');
-  };
-  const header = encode({ alg: 'RS256', typ: 'JWT' });
-  const claim = encode({
-    iss: config.clientEmail,
-    scope: 'https://www.googleapis.com/auth/firebase.messaging',
-    aud: 'https://oauth2.googleapis.com/token',
-    iat: now,
-    exp: now + 3600
-  });
-  const unsigned = header + '.' + claim;
-  const signature = Utilities.base64EncodeWebSafe(
-    Utilities.computeRsaSha256Signature(unsigned, config.privateKey)).replace(/=+$/g, '');
-  const response = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
-    method: 'post',
-    contentType: 'application/x-www-form-urlencoded',
-    payload: {
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: unsigned + '.' + signature
-    },
-    muteHttpExceptions: true
-  });
-  if (response.getResponseCode() !== 200) {
-    console.error('FCM OAuth gagal: ' + response.getContentText());
-    return '';
-  }
-  const accessToken = String(JSON.parse(response.getContentText() || '{}').access_token || '');
-  if (accessToken) cache.put('fcm-oauth-access-token-v1', accessToken, 3300);
-  return accessToken;
-}
-
 function readMobilePushTokens_(filter) {
   filter = filter || {};
   const sheet = ensureMobilePushTokenSheet_();
@@ -867,44 +826,13 @@ function registeredMobilePushNiksForPositions_(positions) {
 
 function sendRealtimeMobilePush_(filter, notification) {
   try {
-    const config = mobilePushConfig_(), accessToken = mobilePushAccessToken_();
-    if (!config || !accessToken) return { configured: false, sent: 0 };
-    const tokens = readMobilePushTokens_(filter);
-    if (!tokens.length) return { configured: true, sent: 0 };
-    notification = notification || {};
-    const data = {
-      id: String(notification.id || Utilities.getUuid()),
-      type: String(notification.type || 'SYSTEM'),
-      title: String(notification.title || 'BI-Space'),
-      body: String(notification.body || ''),
-      url: String(notification.url || 'https://operationalbi-pixel.github.io/form/'),
-      createdAt: String(notification.createdAt || new Date().toISOString())
-    };
-    const endpoint = 'https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(config.projectId) + '/messages:send';
-    const requests = tokens.slice(0, 500).map(function (deviceToken) {
-      return {
-        url: endpoint,
-        method: 'post',
-        contentType: 'application/json',
-        headers: { Authorization: 'Bearer ' + accessToken },
-        payload: JSON.stringify({ message: {
-          token: deviceToken,
-          data: data,
-          android: { priority: 'HIGH' }
-        }}),
-        muteHttpExceptions: true
-      };
-    });
-    const responses = UrlFetchApp.fetchAll(requests);
-    const sent = responses.filter(function (response) { return response.getResponseCode() >= 200 && response.getResponseCode() < 300; }).length;
-    responses.forEach(function (response) {
-      if (response.getResponseCode() >= 400) console.error('FCM send gagal ' + response.getResponseCode() + ': ' + response.getContentText());
-    });
-    return { configured: true, sent: sent, attempted: requests.length };
-  } catch (error) {
-    console.error('Push realtime gagal; polling Android tetap aktif: ' + error.message);
-    return { configured: Boolean(mobilePushConfig_()), sent: 0, error: error.message };
-  }
+    const config=mobilePushConfig_();if(!config)return{configured:false,sent:0};
+    const tokens=readMobilePushTokens_(filter).slice(0,500);if(!tokens.length)return{configured:true,sent:0};
+    notification=notification||{};
+    const data={id:String(notification.id||Utilities.getUuid()),type:String(notification.type||'SYSTEM'),title:String(notification.title||'BI-Space'),body:String(notification.body||''),url:String(notification.url||'https://operationalbi-pixel.github.io/form/'),createdAt:String(notification.createdAt||new Date().toISOString())};
+    const queued=enqueueCloudflareOutbound_('FCM',{tokens:tokens,data:data});
+    return{configured:true,queued:true,jobId:queued.id,sent:0,attempted:tokens.length};
+  }catch(error){console.error('Push belum dapat dimasukkan ke outbox: '+error.message);return{configured:Boolean(mobilePushConfig_()),sent:0,error:error.message};}
 }
 
 function notifyPendingStockTransfers_(pendingRows) {
