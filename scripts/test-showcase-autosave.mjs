@@ -51,7 +51,7 @@ assert.notEqual(server.showcaseRowEditIdentity_(another.employee,'BISS','2026-10
   let lostAck=true,commits=0;const ids=new Set();
   Object.assign(w,{LockService:{getUserLock:()=>({tryLock:()=>true,releaseLock(){}})},ScriptApp:{getProjectTriggers:()=>[]},
     goodsUploadJobs_:()=>['QUEUED','PREPARING','PROCESSING'].includes(active.status)?[active]:[],writeGoodsUploadJob_:job=>Object.assign(active,job),
-    acquireStockWriteLock_:()=>({releaseLock(){}}),findEmployee_:()=>employee,assertEmployeeActive_(){},stockPositionJobJson_:()=>p1,
+    acquireStockUploadLock_:()=>({releaseLock(){}}),acquireStockWriteLock_:()=>({releaseLock(){}}),findEmployee_:()=>employee,assertEmployeeActive_(){},stockPositionJobJson_:()=>p1,
     appendOrActivateStockMasterItems_(){},insertStockCardRows_:batch=>{batch.forEach(row=>ids.add(row.json.record_id));if(lostAck){lostAck=false;throw Error('Cloudflare inventory gagal HTTP 503');}},
     commitShowcaseRowCheckpoint_:()=>commits++,removeScriptCacheKeys_(){},showcaseAgingCacheKey_:()=>'',markShowcaseLogTaskComplete_(){},notifyPendingStockTransfers_(){},cleanupGoodsUploadFiles_(){},scheduleGoodsUploadWorker_(){}});
   w.processGoodsUploadJobs();assert.equal(commits,0);assert.equal(active.status,'QUEUED');assert.equal(active.processed,0);

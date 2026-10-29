@@ -28,6 +28,7 @@ Object.assign(context, {
   Utilities: { base64Decode: () => [80, 75, 10], base64Encode: () => 'UEsK', newBlob: (value, type, name) => ({ value, type, name, getBytes:()=>Array.from(Buffer.from(String(value))) }) },
   DriveApp: { createFile: blob => { const id = 'f' + ++fileSequence; const file = driveFile(id, blob); files.set(id, file); return file; }, getFileById: id => { assert.ok(files.has(id), 'Durable file exists'); return files.get(id); } },
   ScriptApp: { getProjectTriggers: () => [], newTrigger: () => ({ timeBased() { return this; }, after() { return this; }, create() {} }), deleteTrigger() {} },
+  acquireStockUploadLock_: () => { if(busy)throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.');return lock; },
   acquireStockWriteLock_: () => { if (busy) throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.'); return lock; },
   appendOrActivateStockMasterItems_() {}, notifyPendingStockTransfers_() {},
   buildGoodsDeliveryPlan_: () => {

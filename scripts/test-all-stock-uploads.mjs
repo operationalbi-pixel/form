@@ -39,10 +39,11 @@ for (const [prefix, worker, chunk] of [
   const workerCtx = vm.createContext({ console }); vm.runInContext(source, workerCtx);
   let cleaned = 0;
   Object.assign(workerCtx, {
+    stockUploadJobEmployee_:()=>({nik:'N1',outlet:'BIMC'}),acquireStockUploadLock_:()=>({releaseLock(){}}),
     cloudflareReadAllPages_: () => [],
     PropertiesService: { getScriptProperties: () => properties },
     ScriptApp: { getProjectTriggers: () => [] },
-    acquireStockScopeLock_: () => ({ releaseLock() {} }),
+    acquireStockUploadLock_:()=>({releaseLock(){}}),acquireStockScopeLock_: () => ({ releaseLock() {} }),
     scheduleSalesCogsWorker_() {}, scheduleStockPositionWorker_() {}, scheduleMissingExpiryWorker_() {},
     cleanupSalesCogsJobFiles_: () => cleaned++, cleanupStockPositionJobFiles_: () => cleaned++, cleanupMissingExpiryJobFiles_: () => cleaned++,
     [chunk]: () => { throw new Error('Sistem sedang menyimpan transaksi lain. Silakan coba lagi; data Anda belum disimpan.'); }

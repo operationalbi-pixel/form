@@ -1,5 +1,5 @@
 /* Uploads are durable on acceptance; this panel starts and recovers workers and reads status. */
-var GOODS_UPLOAD_PANEL = { timer: null, loading: false, jobs: [], generation: 0 };
+var GOODS_UPLOAD_PANEL = { timer: null, loading: false, jobs: [], generation: 0, ownerToken: null, completed: {} };
 var STOCK_UPLOAD_STARTS = {};
 function startStockUploadWorkers(jobs) {
   if (!APP.token) return;
@@ -57,6 +57,7 @@ function openGoodsUploadStatus() {
 function closeGoodsUploadStatus() {
   byId('goodsUploadStatusModal').classList.add('hidden'); clearTimeout(GOODS_UPLOAD_PANEL.timer);
   byId('goodsUploadStatusButton').focus();
+  if(GOODS_UPLOAD_PANEL.jobs.some(function(job){return ['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0;}))refreshGoodsUploadStatus();
 }
 function goodsUploadStatusLabel(status) {
   return { QUEUED: 'Diproses', PREPARING: 'Memeriksa', PROCESSING: 'Diproses', COMPLETE: 'Selesai', ACTION_REQUIRED: 'Perlu Tindakan', FAILED: 'Gagal' }[status] || status;
@@ -69,8 +70,8 @@ function renderGoodsUploadStatus(jobs) {
   byId('goodsUploadStatusBadge').classList.toggle('hidden', !active && !attention);
   byId('goodsUploadStatusRows').innerHTML = jobs.length ? jobs.map(function (job) {
     var progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
-    var action = job.engine && job.engine !== 'GOODS' && job.status === 'FAILED' ? '<button class="btn btn-light btn-small" data-stock-open="' + escapeAttr(job.type) + '">Pilih Ulang File</button>' : job.status === 'ACTION_REQUIRED' ? '<button class="btn btn-light btn-small" data-goods-review="' + escapeAttr(job.jobId) + '">Tinjau</button>' :
-      job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '">Coba Lagi</button>' : '';
+    var action = job.engine && job.engine !== 'GOODS' && job.status === 'FAILED' && !job.canRetry ? '<button class="btn btn-light btn-small" data-stock-open="' + escapeAttr(job.type) + '">Pilih Ulang File</button>' : job.status === 'ACTION_REQUIRED' ? '<button class="btn btn-light btn-small" data-goods-review="' + escapeAttr(job.jobId) + '">Tinjau</button>' :
+      job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="'+escapeAttr(job.engine||'GOODS')+'">Coba Lagi</button>' : '';
     return '<article class="goods-job"><div class="goods-job-heading"><strong>' + escapeHtml(job.fileName) + '</strong><span class="goods-job-status ' + (job.status === 'COMPLETE' ? 'done' : '') + '">' + escapeHtml(goodsUploadStatusLabel(job.status)) + '</span></div>' +
       '<p>' + ({WIP_PRODUCTION:'Produksi WIP',TRANSACTION_REPAIR:'Repair Upload Lama',GOODS_DELIVERY:'Goods Delivery',GOODS_RECEIPT:'Goods Receipt',ITEM_JOURNAL:'Item Journal',STOCK_OPNAME:'Stock Opname',BIHQ_GOODS_DELIVERY:'Batch Goods Delivery',BIHQ_GOODS_RECEIPT:'Batch Goods Receipt',SALES_USAGE:'Usage Penjualan',STOCK_POSITION:'Stock Posisi',EXPIRY:'Expired Date'}[job.type] || job.type) + ' · ' + escapeHtml(job.outlet) + ' · ' + escapeHtml(job.location) + '</p>' +
       '<div class="goods-job-progress" role="progressbar" aria-label="Progres upload" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + progress + '"><span style="width:' + progress + '%"></span></div>' +
@@ -81,27 +82,31 @@ function renderGoodsUploadStatus(jobs) {
 function refreshGoodsUploadStatus() {
   if (!APP.token || GOODS_UPLOAD_PANEL.loading) return;
   clearTimeout(GOODS_UPLOAD_PANEL.timer); GOODS_UPLOAD_PANEL.loading = true;
+  var token=APP.token;
+  if(GOODS_UPLOAD_PANEL.ownerToken!==token){GOODS_UPLOAD_PANEL.ownerToken=token;GOODS_UPLOAD_PANEL.jobs=[];GOODS_UPLOAD_PANEL.completed={};}
   byId('goodsUploadStatusMessage').textContent = 'Memuat status...';
-  BAKERZIN_API.call('goodsUploadStatus', [APP.token]).then(function (response) {
+  BAKERZIN_API.call('goodsUploadStatus', [token]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'Status belum dapat dibaca.');
-    var previous = GOODS_UPLOAD_PANEL.jobs;
+    if(APP.token!==token)return;
     renderGoodsUploadStatus(response.data.jobs || []);
     startStockUploadWorkers(GOODS_UPLOAD_PANEL.jobs);
-    var completed = GOODS_UPLOAD_PANEL.jobs.some(function (job) { return job.status === 'COMPLETE' && previous.some(function (old) { return old.jobId === job.jobId && old.status !== 'COMPLETE'; }); });
+    var completed=false;
+    GOODS_UPLOAD_PANEL.jobs.forEach(function(job){if(job.status==='COMPLETE'&&!GOODS_UPLOAD_PANEL.completed[job.jobId]){GOODS_UPLOAD_PANEL.completed[job.jobId]=true;completed=true;}});
     if (completed) {
-      clearStockHistoryBrowserCache(); APP.locationCache = {};
+      clearStockDataCaches();
       if (APP.outlet) loadData(APP.location);
       toast('Upload background selesai. Stock Card diperbarui.');
     }
     byId('goodsUploadStatusMessage').textContent = 'Status tersimpan di server. Proses tetap berjalan ketika halaman ditutup.';
-  }).catch(function (error) { byId('goodsUploadStatusMessage').textContent = error.message + ' Klik Perbarui untuk mencoba lagi. Proses server tetap berjalan.'; })
+  }).catch(function (error) { if(APP.token!==token)return;byId('goodsUploadStatusMessage').textContent = error.message + ' Klik Perbarui untuk mencoba lagi. Proses server tetap berjalan.'; })
     .finally(function () {
       GOODS_UPLOAD_PANEL.loading = false;
-      if (!byId('goodsUploadStatusModal').classList.contains('hidden')) GOODS_UPLOAD_PANEL.timer = setTimeout(refreshGoodsUploadStatus, 15000);
+      if(APP.token!==token){refreshGoodsUploadStatus();return;}
+      if (!byId('goodsUploadStatusModal').classList.contains('hidden')||GOODS_UPLOAD_PANEL.jobs.some(function(job){return ['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0;})) GOODS_UPLOAD_PANEL.timer = setTimeout(refreshGoodsUploadStatus, 15000);
     });
 }
-function retryGoodsUploadJob(id) {
-  BAKERZIN_API.call('retryGoodsUpload', [APP.token, id]).then(function (response) {
+function retryGoodsUploadJob(id,engine) {
+  BAKERZIN_API.call(engine&&engine!=='GOODS'?'retryStockUpload':'retryGoodsUpload', engine&&engine!=='GOODS'?[APP.token,id,engine]:[APP.token,id]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'Upload belum dapat dilanjutkan.');
     toast('Upload kembali masuk proses background.'); refreshGoodsUploadStatus();
   }).catch(function (error) { toast(error.message, true); });
@@ -126,7 +131,7 @@ function reviewGoodsUploadJob(id) {
 }
 byId('goodsUploadStatusRows').addEventListener('click', function (event) {
   var retry = event.target.closest('[data-goods-retry]'), review = event.target.closest('[data-goods-review]');
-  if (retry) retryGoodsUploadJob(retry.getAttribute('data-goods-retry'));
+  if (retry) retryGoodsUploadJob(retry.getAttribute('data-goods-retry'),retry.getAttribute('data-engine'));
   if (review) reviewGoodsUploadJob(review.getAttribute('data-goods-review'));
   var open = event.target.closest('[data-stock-open]'); if (open) openExistingUploadForm(open.getAttribute('data-stock-open'));
 });

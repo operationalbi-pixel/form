@@ -41,7 +41,7 @@ class ClockDate extends RealDate{constructor(...args){super(...(args.length?args
 const job={jobId:'job',outlet:'BICP',location:'Store',status:'PROCESSING',preparedDriveId:'prepared',processed:0,total:2,createdAt:'2026-10-11T00:00:00Z',updatedAt:'2026-10-11T00:00:00Z'};
 const properties={['stock-position-upload-job-job']:JSON.stringify(job)};
 const saved={Date:c.Date,PropertiesService:c.PropertiesService};
-Object.assign(c,{Date:ClockDate,PropertiesService:{getScriptProperties:()=>({getProperties:()=>({...properties}),deleteProperty:key=>delete properties[key]})},ScriptApp:{getProjectTriggers:()=>[]},acquireStockScopeLock_:()=>({releaseLock(){}}),writeStockPositionJob_:j=>{properties['stock-position-upload-job-job']=JSON.stringify(j);return j},stockPositionJobJson_:()=>({items:[{delta:-1,item:{code:'A'}},{delta:1,item:{code:'B'}}]}),readTransferAvailableLotsBatch_:()=>{clock+=60000;return{A:[]}},processStockPositionJobItem_:j=>{j.processed++;return j},cleanupStockPositionJobFiles_(){},scheduleStockPositionWorker_(){}});
+Object.assign(c,{stockUploadJobEmployee_:()=>({nik:'N',outlet:'BICP'}),Date:ClockDate,PropertiesService:{getScriptProperties:()=>({getProperties:()=>({...properties}),deleteProperty:key=>delete properties[key]})},ScriptApp:{getProjectTriggers:()=>[]},acquireStockUploadLock_:()=>({releaseLock(){}}),acquireStockScopeLock_:()=>({releaseLock(){}}),writeStockPositionJob_:j=>{properties['stock-position-upload-job-job']=JSON.stringify(j);return j},stockPositionJobJson_:()=>({items:[{delta:-1,item:{code:'A'}},{delta:1,item:{code:'B'}}]}),readTransferAvailableLotsBatch_:()=>{clock+=60000;return{A:[]}},processStockPositionJobItem_:j=>{j.processed++;return j},cleanupStockPositionJobFiles_(){},scheduleStockPositionWorker_(){}});
 assert.equal(c.processStockPositionUploadJobs().status,'COMPLETE','a 60-second lot preload still leaves time to persist the slice');
 c.Date=saved.Date;c.PropertiesService=saved.PropertiesService;
 
@@ -59,3 +59,6 @@ for(const key of ['itemJournal','goodsDelivery','stockPosition','stockOpname']){
  const replaced=ui.beginFileVerification(key,['upload'],()=>{},40,'Memeriksa.');ui.APP[key].base64='new';assert.equal(replaced.finish(),false);assert.equal(timers.size,0);
 }
 console.log('All four uploads scope duplicate/balance reads, batch complete FIFO history, preserve transfer/SO recovery, and ignore stale verification replies.');
+
+queries=[];c.cloudflareReadAllPages_=(path,params)=>{queries.push({path,params});return []};c.cloudflareLedgerRows_({outlet:'BICP',sourceHashes:Array.from({length:25},(_,i)=>'hash'+i)});assert.equal(queries.length,3);assert.ok(queries.every(q=>q.params.source_hashes&&q.params.source_hashes.split('|').length<=12));
+queries=[];c.cloudflareLedgerRows_({outlet:'BICP',location:'Store',resolveScope:true,itemCodes:Array.from({length:25},(_,i)=>'P'+i)});assert.equal(queries.length,3);assert.ok(queries.every(q=>q.params.item_codes.split('|').length<=10));
