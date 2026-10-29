@@ -255,6 +255,8 @@ function apiActions_() {
     stockOpnameCorrectionApply: applyStockOpnameDateCorrection,
     saveConversions: saveStockUnitConversions,
     receiptDirectGrant: getReceiptDirectGrant,
+    stockDirectGrant: getStockDirectGrant,
+    localStockSupplementary: getLocalStockSupplementary,
     localStockUploadStatus: getLocalStockUploadStatus,
     localStockContext: getLocalStockContext,
     getConversions: getStockUnitConversions,
@@ -20254,8 +20256,29 @@ function getReceiptDirectGrant(token,requestedOutlet,requestedLocation){
     return {url:config.url+'/v1/receipt-direct',token:encoded+'.'+signature,expiresAt:claims.exp*1000,outlet:outlet,location:location};
   });
 }
+function getStockDirectGrant(token,requestedOutlet,requestedLocation){
+  return safe_(function(){
+    const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const isAdmin=employee.outlet==='BIHQ',outlets=isAdmin?readActiveOutlets_():[employee.outlet];
+    const outlet=String(isAdmin?(requestedOutlet||''):employee.outlet).trim().toUpperCase();
+    if(!outlet||outlets.indexOf(outlet)<0)throw new Error('Akses outlet tidak sesuai.');
+    const location=normalizeLocation_(requestedLocation||'Store');if(readStockLocations_(outlet).indexOf(location)<0)throw new Error('Lokasi tidak valid.');
+    const config=cloudflareInventoryConfig_(),issued=Math.floor(Date.now()/1000),claims={aud:'stock-direct-v1',iat:issued,exp:issued+300,owner:employee.nik,outlet:outlet,location:location};
+    const encoded=Utilities.base64EncodeWebSafe(JSON.stringify(claims),Utilities.Charset.UTF_8).replace(/=+$/,'');
+    const signature=Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature('stock-direct-v1.'+encoded,config.apiKey,Utilities.Charset.UTF_8)).replace(/=+$/,'');
+    return{url:config.url+'/v1/stock-direct',token:encoded+'.'+signature,expiresAt:claims.exp*1000,outlet:outlet,location:location};
+  });
+}
 function getLocalStockUploadStatus(token){
   return safe_(function(){const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);return{jobs:otherStockUploadJobs_().filter(function(job){return job.ownerNik===employee.nik;}).map(goodsUploadJobView_)};});
+}
+
+function getLocalStockSupplementary(token,requestedOutlet,taskId){
+  return safe_(function(){
+    const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const allowed=employee.outlet==='BIHQ'?readActiveOutlets_():[employee.outlet],outlet=resolveStockOutlet_(employee,requestedOutlet,allowed);
+    return{outlet:outlet,taskCompleted:false,uploadProgress:null,pendingTransfers:[],completions:{}};
+  });
 }
 
 function getLocalStockContext(token,requestedOutlet,requestedLocation){
@@ -20266,6 +20289,8 @@ function getLocalStockContext(token,requestedOutlet,requestedLocation){
     if(outlet&&outlets.indexOf(outlet)<0)throw new Error('Akses outlet tidak sesuai.');
     const locations=outlet?readStockLocations_(outlet):[],location=outlet?(normalizeLocation_(requestedLocation||locations[0]||'Store')):'';
     if(outlet&&locations.indexOf(location)<0)throw new Error('Lokasi tidak valid.');
-    return{user:userView_(employee),outlets:outlets,selectedOutlet:outlet,outlet:outlet,selectedLocation:location,location:location,locations:locations,items:[],expiryAlerts:{missingExpiry:[],nearExpiry:[],fifoFefoIssues:[]},navigationTasks:readTasksForEmployee_(employee),navigationPages:readPagesForEmployee_(employee),completions:{},appUrl:ScriptApp.getService().getUrl(),uploadProgress:null,inventoryUnavailable:true};
+    const master=outlet&&isShowcaseLocation_(location)?readShowcaseItems_():[],hidden=outlet&&isShowcaseLocation_(location)?readStockHiddenMap_(outlet,location):{};
+    const items=master.map(function(item){return{code:item.code,category:item.category,name:item.name,unit:item.unit,qty:0,hidden:Boolean(hidden[item.code]),showcase:Boolean(item.showcase),productName:item.productName||'',productUnit:item.productUnit||'',productQty:Number(item.productQty||0)};});
+    return{user:userView_(employee),outlets:outlets,selectedOutlet:outlet,outlet:outlet,selectedLocation:location,location:location,locations:locations,items:items,expiryAlerts:{missingExpiry:[],nearExpiry:[],fifoFefoIssues:[]},navigationTasks:readTasksForEmployee_(employee),navigationPages:readPagesForEmployee_(employee),completions:{},appUrl:ScriptApp.getService().getUrl(),taskId:'',taskCompleted:false,uploadProgress:null,supplementaryPending:true,inventoryUnavailable:false};
   });
 }

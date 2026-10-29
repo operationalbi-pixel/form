@@ -1,4 +1,5 @@
 import {handleReceiptDirect,processReceiptQueue} from './receipt-direct.js';
+import {handleStockDirect} from '../lib/stock-direct.mjs';
 import {handleShowcaseDirect} from './showcase-direct.js';
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
@@ -4003,6 +4004,7 @@ async function route(request, env) {
   if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/sopi/file-content") return sopiFileContent(request, url, env, requestId);
   if (url.pathname === "/v1/showcase-direct") return handleShowcaseDirect(request,env,requestId,{activeMovements,historyDatabasesForRange,readJsonWithLimit,ensureApplicationRecords,normalizeMovement,movementInsertStatement});
   if(url.pathname==='/v1/receipt-direct')return handleReceiptDirect(request,env,{listMovements,writeStockMovements,ensureApplicationRecords,readJsonWithLimit});
+  if(url.pathname==='/v1/stock-direct')return handleStockDirect(request,env,{listUploadProgress});
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
   if (request.method === "POST" && url.pathname === "/v1/sales-save-jobs") return acceptSalesSaveJob(request,env,requestId);
