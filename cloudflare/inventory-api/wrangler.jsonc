@@ -22,7 +22,8 @@
     "DOKU_ENVIRONMENT": "production",
     "SOPI_MODEL": "@cf/openai/gpt-oss-120b",
     "SOPI_FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
-    "SOPI_LANGUAGE_MODEL": "@cf/aisingapore/gemma-sea-lion-v4-27b-it"
+    "SOPI_LANGUAGE_MODEL": "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+    "APP_GAS_URL": "https://script.google.com/macros/s/AKfycbw2_tBBWOn9Ld6QcCJBorJyZ06Lh1ZB_gEnIEqc76N7D2WWOv3trlGVqtIAqYml060_/exec"
   },
   "ai": {
     "binding": "AI"
@@ -94,6 +95,10 @@
       {
         "binding": "RECEIPT_UPLOAD_QUEUE",
         "queue": "bakerzin-receipt-uploads"
+      },
+      {
+        "binding": "APP_OUTBOUND_QUEUE",
+        "queue": "bakerzin-app-outbound"
       }
     ],
     "consumers": [
@@ -104,7 +109,21 @@
         "max_retries": 5,
         "max_concurrency": 1,
         "dead_letter_queue": "bakerzin-receipt-uploads-dlq"
+      },
+      {
+        "queue": "bakerzin-app-outbound",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 3,
+        "retry_delay": 30,
+        "dead_letter_queue": "bakerzin-app-outbound-dlq"
       }
+    ]
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
     ]
   }
 }
