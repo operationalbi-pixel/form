@@ -3,7 +3,9 @@
   "name": "bakerzin-inventory-api",
   "main": "src/index.js",
   "compatibility_date": "2026-09-30",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true,
     "logs": {
@@ -88,6 +90,20 @@
       {
         "binding": "JOBS_QUEUE",
         "queue": "bakerzin-inventory-jobs"
+      },
+      {
+        "binding": "RECEIPT_UPLOAD_QUEUE",
+        "queue": "bakerzin-receipt-uploads"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "bakerzin-receipt-uploads",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "dead_letter_queue": "bakerzin-receipt-uploads-dlq"
       }
     ]
   }

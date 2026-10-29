@@ -8,9 +8,15 @@
     "deploy": "wrangler deploy",
     "sopi:build-seed": "node scripts/build-sopi-seed.mjs",
     "sopi:migrate": "wrangler d1 execute bakerzin-inventory-master --remote --file ../migrations/0006_sopi_knowledge.sql",
-    "sopi:seed": "node scripts/build-sopi-seed.mjs && wrangler d1 execute bakerzin-inventory-master --remote --file data/sopi-seed.sql"
+    "sopi:seed": "node scripts/build-sopi-seed.mjs && wrangler d1 execute bakerzin-inventory-master --remote --file data/sopi-seed.sql",
+    "build:receipt": "esbuild lib/receipt-direct.mjs --bundle --format=esm --platform=browser --target=es2022 --outfile=src/receipt-direct.js --minify --legal-comments=eof"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "fast-xml-parser": "5.11.2"
   }
 }

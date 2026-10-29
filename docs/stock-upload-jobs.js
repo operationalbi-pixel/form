@@ -6,6 +6,7 @@ function startStockUploadWorkers(jobs) {
   var token = APP.token;
   (jobs || []).forEach(function (job) {
     if (!job || !job.jobId || ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || job.workerRunning) return;
+    if(job.engine==='RECEIPT_CF')return;
     var engine = job.engine || 'GOODS', key = token + '|' + engine, state = STOCK_UPLOAD_STARTS[key];
     if (state && (state.running || Date.now() - state.at < 60000)) return;
     state = STOCK_UPLOAD_STARTS[key] = { running: true, at: Date.now() };
@@ -183,7 +184,7 @@ function reviewOtherStockUpload(data) {
 }
 function openExistingUploadForm(type) {
   closeGoodsUploadStatus();
-  if (type === 'SALES_USAGE') openUsageModal(); else if (type === 'STOCK_POSITION') openStockPositionModal(); else openExpiryAlertModal('MISSING');
+  if(type==='GOODS_RECEIPT')openGoodsReceiptModal();else if (type === 'SALES_USAGE') openUsageModal(); else if (type === 'STOCK_POSITION') openStockPositionModal(); else openExpiryAlertModal('MISSING');
 }
 
 function queueWipFileUpload() {

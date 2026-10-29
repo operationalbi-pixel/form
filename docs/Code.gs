@@ -254,6 +254,8 @@ function apiActions_() {
     stockOpnameCorrectionPreview: previewStockOpnameDateCorrection,
     stockOpnameCorrectionApply: applyStockOpnameDateCorrection,
     saveConversions: saveStockUnitConversions,
+    receiptDirectGrant: getReceiptDirectGrant,
+    localStockUploadStatus: getLocalStockUploadStatus,
     getConversions: getStockUnitConversions,
     defaultUnitOptions: getStockDefaultUnitOptions,
     changeDefaultUnit: changeStockItemDefaultUnit,
@@ -20234,4 +20236,23 @@ function resolveShowcaseLegacyRequest(token,payload) {
       return {job:goodsUploadJobView_(job),payload:request,migrated:true};
     }finally{gate.releaseLock();}
   });
+}
+
+// Sheet-backed identity checks issue a short scoped capability without UrlFetch.
+function getReceiptDirectGrant(token,requestedOutlet,requestedLocation){
+  return safe_(function(){
+    const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);
+    const outlet=String(employee.outlet==='BIHQ'?(requestedOutlet||'BIHQ'):employee.outlet).trim().toUpperCase();
+    if(employee.outlet!=='BIHQ'&&requestedOutlet&&requestedOutlet!==outlet)throw new Error('Akses outlet tidak sesuai.');
+    if(employee.outlet==='BIHQ'&&outlet!=='BIHQ'&&readActiveOutlets_().indexOf(outlet)<0)throw new Error('Outlet tidak aktif.');
+    const location=normalizeLocation_(requestedLocation||'Store');if(readStockLocations_(outlet).indexOf(location)<0)throw new Error('Lokasi tidak valid.');
+    const directory=readStoreCodeDirectory_(),entry=directory.byCode[outlet];if(!entry)throw new Error('Nama outlet belum terdaftar pada STORE CODE.');
+    const config=cloudflareInventoryConfig_(),issued=Math.floor(Date.now()/1000),claims={aud:'receipt-direct-v1',iat:issued,exp:issued+300,owner:employee.nik,outlet:outlet,location:location,outletNames:[entry.name]};
+    const encoded=Utilities.base64EncodeWebSafe(JSON.stringify(claims),Utilities.Charset.UTF_8).replace(/=+$/,'');
+    const signature=Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature('receipt-direct-v1.'+encoded,config.apiKey,Utilities.Charset.UTF_8)).replace(/=+$/,'');
+    return {url:config.url+'/v1/receipt-direct',token:encoded+'.'+signature,expiresAt:claims.exp*1000,outlet:outlet,location:location};
+  });
+}
+function getLocalStockUploadStatus(token){
+  return safe_(function(){const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);return{jobs:otherStockUploadJobs_().filter(function(job){return job.ownerNik===employee.nik;}).map(goodsUploadJobView_)};});
 }
