@@ -980,7 +980,7 @@ async function listMovements(url, env, requestId) {
   const from = isoDate(url.searchParams.get("from")) || "0000-01-01";
   const to = isoDate(url.searchParams.get("to")) || "9999-12-31";
   const cursor = cleanText(url.searchParams.get("cursor"), 500);
-  const resolveScope = url.searchParams.get('resolve_scope') === '1';
+  const resolveScope = url.searchParams.get('resolve_scope') === '1' || Boolean(url.searchParams.get('source_hashes'));
   const limit = positiveInt(url.searchParams.get("limit"), 500, resolveScope ? 200 : 5e3);
   const conditions = ["event_date BETWEEN ? AND ?"], bindings = [from, to];
   const add = /* @__PURE__ */ __name((condition, value) => {
