@@ -25,6 +25,8 @@ async function get(extra=''){
   const response=await worker.fetch(new Request(url,{headers:{'x-api-key':'test'}}),env);
   assert.equal(response.status,200);return response.json();
 }
+later.db.exec("UPDATE stock_movements_history SET source_hash='revised-hash' WHERE record_id='new'");
+const hashReply=await worker.fetch(new Request('https://test/v1/movements?outlet=BICP&source_hashes=hash',{headers:{'x-api-key':'test'}}),env);assert.deepEqual((await hashReply.json()).data.map(r=>r.record_id),['valid'],'source identity lookups resolve corrections even when callers omit resolve_scope');
 assert.deepEqual((await get()).data.map(r=>r.record_id),['valid'],'correction outside date/item/outlet/type suppresses its old receipt');
 ops.db.exec('DELETE FROM stock_movements');history.db.exec('DELETE FROM stock_movements_history');later.db.exec('DELETE FROM stock_movements_history');
 for(let i=0;i<201;i++){
