@@ -695,9 +695,12 @@ try {
   }
   backgroundContext.reduceSalesCogsBatchSize_(job);
   if (job.batchSize !== 25) failures.push('Batch Sales COGS belum mengecil setelah eksekusi melewati waktu');
-  const fallbackJob = { ...job, processed: 0, status: 'PROCESSING', batchSize: 250 };
+  const fallbackJob = { ...job, processed: 0, status: 'PROCESSING', batchSize: 10 };
   backgroundContext.processSalesCogsJobChunk_(fallbackJob);
   if (batchSizes[3] !== 50 || fallbackJob.processed !== 50) failures.push('Ukuran batch pemulihan Sales COGS belum diterapkan');
+  const recoveryJob = { ...job, jobId: 'JOB-RECOVERY', processed: 0, status: 'PROCESSING', batchSize: 10, d1CpuRecovery: true };
+  backgroundContext.processSalesCogsJobChunk_(recoveryJob);
+  if (batchSizes[4] !== 10 || recoveryJob.processed !== 10 || recoveryJob.batchSize !== 20) failures.push('Batch Sales COGS belum naik bertahap setelah pemulihan D1');
 } catch (error) {
   failures.push(`Uji job background Sales COGS gagal: ${error.message}`);
 }
