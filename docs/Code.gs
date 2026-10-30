@@ -7948,9 +7948,10 @@ function cloudflarePreloadSalesFifoRowsBatch_(requests) {
 function cloudflareWriteStockRows_(rows) {
   if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
   let accepted = 0, duplicates = 0;
-  // A movement can update both the balance and ledger. Keep each request
-  // deliberately small so a large Sales COGS expansion cannot exhaust D1 CPU.
-  const batchSize = 25;
+  // The Worker splits this into 20-movement D1 transactions. Sending 100 at
+  // once avoids hundreds of serial Apps Script round trips for a large COGS
+  // file while keeping every individual D1 write below its CPU budget.
+  const batchSize = 100;
   for (let index = 0; index < rows.length; index += batchSize) {
     const result = cloudflareInventoryRequest_('POST', '/v1/stock-movements', { rows: rows.slice(index, index + batchSize) });
     accepted += Number(result.accepted || 0);

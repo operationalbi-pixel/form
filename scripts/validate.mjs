@@ -493,7 +493,7 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }
 if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preload'") ||
-    !backend.includes('const batchSize = 25;') ||
+    !backend.includes('const batchSize = 100;') ||
     !backend.includes('const runtime = {}, deadline = Date.now() + 240000;') ||
     backend.slice(backend.indexOf('function preloadSalesFifoLots_('), backend.indexOf('function salesHistoryBalanceAtDate_(')).includes('runNamedQuery_(')) {
   failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis terpecah, dan multi-batch worker');
