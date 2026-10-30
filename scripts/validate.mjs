@@ -501,7 +501,7 @@ if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preloa
 if (!inventoryWorker.includes('async function preloadMovements(') ||
     !inventoryWorker.includes('url.pathname === "/v1/movements/preload"') ||
     !inventoryWorker.includes('STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH') ||
-    !inventoryWorker.includes('env.OPERATIONS_DB.batch(statements2.slice(')) {
+    !inventoryWorker.includes('env.OPERATIONS_DB.batch(entries.map((entry) => entry.statement))')) {
   failures.push('Worker Cloudflare belum mendukung preload FIFO dan pemecahan batch transaksi stok');
 }
 const uploadProgressBackend = backend.slice(
