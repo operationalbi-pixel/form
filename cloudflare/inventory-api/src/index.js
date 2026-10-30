@@ -957,7 +957,9 @@ async function listBalances(url, env, requestId) {
   const outlet = cleanText(url.searchParams.get("outlet"), 40).toUpperCase();
   const location = cleanText(url.searchParams.get("location"), 80);
   const cursor = cleanText(url.searchParams.get("cursor"), 80).toUpperCase();
-  const limit = positiveInt(url.searchParams.get("limit"), 100);
+  // Stock Card requests the outlet's compact balance rows in one response.
+  // Other list endpoints retain their 200-row safety cap.
+  const limit = positiveInt(url.searchParams.get("limit"), 100, 5000);
   if (!outlet || !location) return apiError(400, "INVALID_SCOPE", "Outlet dan lokasi wajib diisi.", requestId);
   const codes=[...new Set((url.searchParams.get("item_codes")||"").split("|").map(code=>code.trim().toUpperCase()).filter(Boolean))];
   if(codes.length>40 || codes.some(code=>code.length>80))return apiError(400,"INVALID_ITEM_CODES","Maksimal 40 kode item.",requestId);
