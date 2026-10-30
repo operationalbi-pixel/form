@@ -13120,7 +13120,7 @@ function queueSalesCogsUpload(token, payload) {
     const job = {
       jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
       sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
-      writePlanVersion:2, status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 50,
+      writePlanVersion:2, status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 100,
       processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
       outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
     };
@@ -13293,10 +13293,10 @@ function processSalesCogsJobChunk_(job, runtime) {
   const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
   const request = runtime.request || (runtime.request = readSalesCogsJobJson_(job.requestDriveId));
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
-  let batchSize = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
+  let batchSize = Math.max(10, Math.min(100, Math.floor(Number(job.batchSize || 100))));
   // Old jobs could have been reduced to 10 source rows before the D1 writer
   // was sharded. Restore them once; new CPU recoveries ramp up gradually.
-  if (!job.d1CpuRecovery && batchSize < 25) batchSize = 50;
+  if (!job.d1CpuRecovery && batchSize < 100) batchSize = 100;
   job.batchSize = batchSize;
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
@@ -13327,9 +13327,9 @@ function processSalesCogsJobChunk_(job, runtime) {
   const pendingId=job.pendingDriveId;
   job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
   job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(plan.autoWipProductionCount || 0);
-  if (job.d1CpuRecovery && job.batchSize < 50) {
-    job.batchSize = Math.min(50, job.batchSize * 2);
-    if (job.batchSize >= 50) delete job.d1CpuRecovery;
+  if (job.d1CpuRecovery && job.batchSize < 100) {
+    job.batchSize = Math.min(100, job.batchSize * 2);
+    if (job.batchSize >= 100) delete job.d1CpuRecovery;
   }
   job.pendingDriveId='';job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83));
   writeSalesCogsJob_(job);
@@ -13347,7 +13347,7 @@ function processSalesCogsJobChunk_(job, runtime) {
 }
 
 function reduceSalesCogsBatchSize_(job) {
-  const current = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
+  const current = Math.max(10, Math.min(100, Math.floor(Number(job.batchSize || 100))));
   job.batchSize = Math.max(10, Math.floor(current / 2));
 }
 
