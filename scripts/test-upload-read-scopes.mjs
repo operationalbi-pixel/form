@@ -16,6 +16,8 @@ let response=await get('/v1/balances?outlet=BICP&location=Store&item_codes=A|C&l
 let page=await response.json();assert.deepEqual(page.data.map(r=>r.item_code),['A']);assert.equal(page.nextCursor,'A');
 page=await(await get('/v1/balances?outlet=BICP&location=Store&item_codes=A|C&limit=1&cursor=A')).json();assert.deepEqual(page.data.map(r=>r.item_code),['C']);assert.equal(page.nextCursor,null);
 assert.equal((await(await get('/v1/balances?outlet=BICP&location=Store')).json()).data.length,3,'legacy full balance reads remain supported');
+for(let i=0;i<250;i++)db.prepare('INSERT INTO stock_balances VALUES(?,?,?,?,?,?,?)').run('BIG','Store','ITEM'+String(i).padStart(4,'0'),'Item',1,'PCS','now');
+page=await(await get('/v1/balances?outlet=BIG&location=Store&limit=5000')).json();assert.equal(page.data.length,250,'Stock Card balance read is not silently capped at 200');assert.equal(page.nextCursor,null);
 page=await(await get('/v1/transfer-events?outlet=BICP&transfer_ids=old|private|missing')).json();assert.deepEqual(page.data,[{transfer_id:'old'}],'exact transfer presence is restricted to outlet and has no recent-event truncation');
 assert.equal((await get('/v1/transfer-events?outlet=BICP&transfer_ids='+Array.from({length:41},(_,i)=>'ID'+i).join('|'))).status,400);
 assert.equal((await get('/v1/balances?outlet=BICP&location=Store&item_codes='+Array.from({length:41},(_,i)=>'ID'+i).join('|'))).status,400);
