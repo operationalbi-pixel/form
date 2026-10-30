@@ -11,6 +11,7 @@ var MASTER_SYNC_BATCH_SIZE = 75;
 var MAX_MIGRATION_BATCH_ROWS = 1e3;
 var MAX_STOCK_MOVEMENT_BATCH_ROWS = 500;
 var MAX_STOCK_WRITE_BATCH_ROWS = 400;
+var STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH = 40;
 function responseJson(payload, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -567,7 +568,11 @@ async function writeStockMovements(request, env, requestId) {
       statements2.push(movementBalanceStatement(env.OPERATIONS_DB, row, previous));
       statements2.push(movementInsertStatement(env.OPERATIONS_DB, row));
     }
-    const batchResults = statements2.length ? await env.OPERATIONS_DB.batch(statements2) : [];
+    const batchResults = [];
+    for (let index = 0; index < statements2.length; index += STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH) {
+      const result = await env.OPERATIONS_DB.batch(statements2.slice(index, index + STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH));
+      batchResults.push(...result);
+    }
     const inserted = batchResults.reduce((sum, result, index) => sum + (index % 2 ? Number(result.meta?.changes || 0) : 0), 0);
     const written = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
     console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: inserted, written, requestId }));
@@ -575,7 +580,7 @@ async function writeStockMovements(request, env, requestId) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ event: "stock_movement_write_failed", message, requestId }));
-    const retryable=/overloaded|SQLITE_BUSY|database.*locked|temporar|timeout|timed out|network|unavailable|internal error/i.test(message);
+    const retryable=/overloaded|SQLITE_BUSY|database.*locked|temporar|timeout|timed out|network|unavailable|internal error|d1.*(?:cpu|time|reset)|(?:cpu|storage) time limit|exceeded.*cpu/i.test(message);
     return apiError(retryable?503:400, "STOCK_MOVEMENT_WRITE_FAILED", message, requestId);
   }
 }
