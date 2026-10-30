@@ -493,15 +493,16 @@ if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.incl
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }
 if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preload'") ||
-    !backend.includes('const batchSize = 400;') ||
+    !backend.includes('const batchSize = 25;') ||
     !backend.includes('const runtime = {}, deadline = Date.now() + 240000;') ||
     backend.slice(backend.indexOf('function preloadSalesFifoLots_('), backend.indexOf('function salesHistoryBalanceAtDate_(')).includes('runNamedQuery_(')) {
-  failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis besar, dan multi-batch worker');
+  failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis terpecah, dan multi-batch worker');
 }
 if (!inventoryWorker.includes('async function preloadMovements(') ||
     !inventoryWorker.includes('url.pathname === "/v1/movements/preload"') ||
-    !inventoryWorker.includes('env.OPERATIONS_DB.batch(statements2)')) {
-  failures.push('Worker Cloudflare belum mendukung preload FIFO dan batch transaksi stok besar');
+    !inventoryWorker.includes('STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH') ||
+    !inventoryWorker.includes('env.OPERATIONS_DB.batch(statements2.slice(')) {
+  failures.push('Worker Cloudflare belum mendukung preload FIFO dan pemecahan batch transaksi stok');
 }
 const uploadProgressBackend = backend.slice(
   backend.indexOf('function readStockUploadProgress_('),
@@ -661,8 +662,8 @@ try {
 try {
   const backgroundContext = vm.createContext({ console });
   new vm.Script(backend, { filename: 'docs/Code.gs#sales-background-job-test' }).runInContext(backgroundContext);
-  const preparedJob = { fileName: 'sales.xlsx', rows: Array.from({ length: 501 }, (_, index) => ({ sourceRow: index + 2 })),
-    showcaseRows: Array.from({ length: 263 }, (_, index) => ({ sourceRow: index + 503 })) };
+  const preparedJob = { fileName: 'sales.xlsx', rows: Array.from({ length: 51 }, (_, index) => ({ sourceRow: index + 2 })),
+    showcaseRows: Array.from({ length: 26 }, (_, index) => ({ sourceRow: index + 53 })) };
   const batchSizes = [];
   let completed = 0;
   backgroundContext.readSalesCogsJobJson_ = id => id === 'PREPARED' ? preparedJob : { conversions: {}, wipChoices: {} };
@@ -681,22 +682,22 @@ try {
   backgroundContext.writeSalesCogsJob_ = job => job;
   backgroundContext.markStockTaskCompleteFromUploads_ = () => { completed++; };
   backgroundContext.cleanupSalesCogsJobFiles_ = () => {};
-  const job = { writePlanVersion:2, jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 764, batchSize: 500,
-    itemCount: 501, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
+  const job = { writePlanVersion:2, jobId: 'JOB-1', preparedDriveId: 'PREPARED', requestDriveId: 'REQUEST', status: 'PROCESSING', processed: 0, total: 77, batchSize: 500,
+    itemCount: 51, outlets: ['BICP'], transactionDates: ['2026-09-01'], movementRows: 0, autoWipProductionCount: 0,
     ownerNik: 'HQ-1', ownerName: 'HQ', ownerOutlet: 'BIHQ' };
   backgroundContext.processSalesCogsJobChunk_(job);
-  if (batchSizes[0] !== 500 || job.processed !== 500 || job.status !== 'PROCESSING') failures.push('Batch pertama Sales COGS background belum memproses 500 baris');
+  if (batchSizes[0] !== 50 || job.processed !== 50 || job.status !== 'PROCESSING') failures.push('Batch pertama Sales COGS background belum membatasi 50 baris');
   backgroundContext.processSalesCogsJobChunk_(job);
-  if (batchSizes[1] !== 1 || job.processed !== 501 || job.status !== 'PROCESSING') failures.push('Batas antara Sales dan Showcase belum dijaga');
+  if (batchSizes[1] !== 1 || job.processed !== 51 || job.status !== 'PROCESSING') failures.push('Batas antara Sales dan Showcase belum dijaga');
   backgroundContext.processSalesCogsJobChunk_(job);
-  if (batchSizes[2] !== 263 || job.processed !== 764 || job.status !== 'COMPLETE' || job.progress !== 100 || completed !== 1) {
+  if (batchSizes[2] !== 26 || job.processed !== 77 || job.status !== 'COMPLETE' || job.progress !== 100 || completed !== 1) {
     failures.push('Job Sales COGS background belum menyelesaikan cursor dan status secara bertahap');
   }
   backgroundContext.reduceSalesCogsBatchSize_(job);
-  if (job.batchSize !== 250) failures.push('Batch Sales COGS belum mengecil setelah eksekusi melewati waktu');
+  if (job.batchSize !== 25) failures.push('Batch Sales COGS belum mengecil setelah eksekusi melewati waktu');
   const fallbackJob = { ...job, processed: 0, status: 'PROCESSING', batchSize: 250 };
   backgroundContext.processSalesCogsJobChunk_(fallbackJob);
-  if (batchSizes[3] !== 250 || fallbackJob.processed !== 250) failures.push('Ukuran batch pemulihan Sales COGS belum diterapkan');
+  if (batchSizes[3] !== 50 || fallbackJob.processed !== 50) failures.push('Ukuran batch pemulihan Sales COGS belum diterapkan');
 } catch (error) {
   failures.push(`Uji job background Sales COGS gagal: ${error.message}`);
 }

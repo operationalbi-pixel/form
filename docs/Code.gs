@@ -4224,6 +4224,10 @@ function stockPositionAlreadyImported_(outlet, location, sourceHash) {
 function stockUploadBusy_(error) {
   return /sedang menyimpan transaksi lain|batas waktu penguncian|penyimpanan sedang sibuk|lock timeout|could not acquire.*lock/i.test(String(error && error.message || error || ''));
 }
+
+function stockUploadD1CpuLimited_(error) {
+  return /d1.*(?:cpu|time|reset)|(?:cpu|storage) time limit|exceeded.*cpu|database.*was reset/i.test(String(error && error.message || error || ''));
+}
 function stockUploadJobEmployee_(job) {
   const employee=findEmployee_(job.ownerNik);assertEmployeeActive_(employee);
   if(job.ownerOutlet && employee.outlet!==job.ownerOutlet)throw new Error('Akses outlet pemilik upload sudah berubah.');
@@ -7944,7 +7948,9 @@ function cloudflarePreloadSalesFifoRowsBatch_(requests) {
 function cloudflareWriteStockRows_(rows) {
   if (!Array.isArray(rows) || !rows.length) return { received: 0, accepted: 0, duplicates: 0 };
   let accepted = 0, duplicates = 0;
-  const batchSize = 400;
+  // A movement can update both the balance and ledger. Keep each request
+  // deliberately small so a large Sales COGS expansion cannot exhaust D1 CPU.
+  const batchSize = 25;
   for (let index = 0; index < rows.length; index += batchSize) {
     const result = cloudflareInventoryRequest_('POST', '/v1/stock-movements', { rows: rows.slice(index, index + batchSize) });
     accepted += Number(result.accepted || 0);
@@ -13113,7 +13119,7 @@ function queueSalesCogsUpload(token, payload) {
     const job = {
       jobId: jobId, ownerNik: employee.nik, ownerName: employee.name, ownerOutlet: employee.outlet,
       sourceHash: sourceHash, sourceFileName: fileName, sourceDriveId: sourceFile.getId(), requestDriveId: requestFile.getId(), preparedDriveId: '',
-      writePlanVersion:2, status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 500,
+      writePlanVersion:2, status: 'QUEUED', stage: 'File diterima. Proses berlangsung di background.', progress: 3, batchSize: 50,
       processed: 0, total: 0, itemCount: 0, showcaseRowsSkipped: 0, movementRows: 0, autoWipProductionCount: 0,
       outlet: '', outlets: [], transactionDate: '', transactionDates: [], retryCount: 0, error: '', createdAt: now, updatedAt: now
     };
@@ -13286,7 +13292,7 @@ function processSalesCogsJobChunk_(job, runtime) {
   const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
   const request = runtime.request || (runtime.request = readSalesCogsJobJson_(job.requestDriveId));
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
-  const batchSize = Math.max(25, Math.min(500, Math.floor(Number(job.batchSize || 500))));
+  const batchSize = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
   else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + batchSize);
@@ -13332,8 +13338,8 @@ function processSalesCogsJobChunk_(job, runtime) {
 }
 
 function reduceSalesCogsBatchSize_(job) {
-  const current = Math.max(25, Math.min(500, Math.floor(Number(job.batchSize || 500))));
-  job.batchSize = Math.max(25, Math.floor(current / 2));
+  const current = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
+  job.batchSize = Math.max(10, Math.floor(current / 2));
 }
 
 function processSalesCogsUploadJobs() {
@@ -13385,9 +13391,10 @@ function processSalesCogsUploadJobs() {
     }
     catch (error) {
       job.workerLeaseUntil = 0;
-      job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      if (stockUploadBusy_(error) || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
-        if (/timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
+      const busy = stockUploadBusy_(error), d1CpuLimited = stockUploadD1CpuLimited_(error);
+      job.retryCount = busy ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
+      if (busy || d1CpuLimited || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
+        if (d1CpuLimited || /timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
         job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
