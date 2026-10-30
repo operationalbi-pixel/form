@@ -13292,7 +13292,11 @@ function processSalesCogsJobChunk_(job, runtime) {
   const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
   const request = runtime.request || (runtime.request = readSalesCogsJobJson_(job.requestDriveId));
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
-  const batchSize = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
+  let batchSize = Math.max(10, Math.min(50, Math.floor(Number(job.batchSize || 50))));
+  // Old jobs could have been reduced to 10 source rows before the D1 writer
+  // was sharded. Restore them once; new CPU recoveries ramp up gradually.
+  if (!job.d1CpuRecovery && batchSize < 25) batchSize = 50;
+  job.batchSize = batchSize;
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
   else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + batchSize);
@@ -13322,6 +13326,10 @@ function processSalesCogsJobChunk_(job, runtime) {
   const pendingId=job.pendingDriveId;
   job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
   job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(plan.autoWipProductionCount || 0);
+  if (job.d1CpuRecovery && job.batchSize < 50) {
+    job.batchSize = Math.min(50, job.batchSize * 2);
+    if (job.batchSize >= 50) delete job.d1CpuRecovery;
+  }
   job.pendingDriveId='';job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83));
   writeSalesCogsJob_(job);
   try{DriveApp.getFileById(pendingId).setTrashed(true);}catch(error){}
@@ -13393,9 +13401,11 @@ function processSalesCogsUploadJobs() {
       job.workerLeaseUntil = 0;
       const busy = stockUploadBusy_(error), d1CpuLimited = stockUploadD1CpuLimited_(error);
       job.retryCount = busy ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      if (busy || d1CpuLimited || (error.retryable !== false && job.retryCount < 4 && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
+      if (d1CpuLimited) job.d1CpuRecovery = true;
+      const retryLimit = d1CpuLimited ? 6 : 3;
+      if (busy || (d1CpuLimited && job.retryCount <= retryLimit) || (error.retryable !== false && job.retryCount <= retryLimit && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
         if (d1CpuLimited || /timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
-        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/3).'; job.error = ''; writeSalesCogsJob_(job);
+        job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/' + retryLimit + ').'; job.error = ''; writeSalesCogsJob_(job);
       } else {
         job.status = 'FAILED'; job.stage = 'Proses background dihentikan pada baris ' + (Number(job.processed || 0) + 1) + '.';
         job.error = String(error.message || error); writeSalesCogsJob_(job);
