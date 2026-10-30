@@ -541,6 +541,54 @@ function movementBalanceStatement(database, row, prior) {
     signedMovement(row),row.outlet_code,row.location_code,row.item_code,row.item_name,row.unit,row.created_at,row.record_id,
     row.version,row.version,row.created_at,row.created_at,row.record_id);
 }
+
+function canAggregateFreshMovements(rows, state) {
+  return state.active.size === 0 && rows.length > 0 && rows.every((row) => row.record_type === "MOVEMENT" && row.version === 1 && row.logical_id && ["IN", "OUT"].includes(row.direction));
+}
+__name(canAggregateFreshMovements, "canAggregateFreshMovements");
+function freshMovementBalanceStatement(database, rows) {
+  const sample = rows[rows.length - 1];
+  const values = [];
+  const candidates = rows.map((row) => {
+    values.push(row.record_id, row.logical_id, row.version, row.direction, row.quantity);
+    return "(?,?,?,?,?)";
+  }).join(",");
+  return database.prepare(`
+    WITH candidates(record_id,logical_id,version,direction,quantity) AS (VALUES ${candidates}),
+    fresh AS (
+      SELECT c.* FROM candidates c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM stock_movements m
+        WHERE m.record_id=c.record_id OR (m.logical_id=c.logical_id AND m.version=c.version)
+      )
+    ), effect AS (
+      SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN quantity WHEN direction='OUT' THEN -quantity ELSE 0 END),0) AS delta
+      FROM fresh
+    )
+    INSERT INTO stock_balances(outlet_code,location_code,item_code,item_name,current_qty,unit,updated_at)
+    SELECT ?,?,?,?,delta,?,? FROM effect WHERE ABS(delta)>0.000000001
+    ON CONFLICT(outlet_code,location_code,item_code) DO UPDATE SET
+      item_name=excluded.item_name,current_qty=stock_balances.current_qty+excluded.current_qty,
+      unit=excluded.unit,updated_at=excluded.updated_at
+  `).bind(...values, sample.outlet_code, sample.location_code, sample.item_code, sample.item_name, sample.unit, sample.created_at);
+}
+__name(freshMovementBalanceStatement, "freshMovementBalanceStatement");
+function freshMovementStatements(database, rows) {
+  const entries = [];
+  for (let offset = 0; offset < rows.length; offset += 20) {
+    const chunk = rows.slice(offset, offset + 20);
+    const groups = /* @__PURE__ */ new Map();
+    for (const row of chunk) {
+      const key = `${row.outlet_code}\u0000${row.location_code}\u0000${row.item_code}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    for (const group of groups.values()) entries.push({ statement: freshMovementBalanceStatement(database, group), insert: false });
+    for (const row of chunk) entries.push({ statement: movementInsertStatement(database, row), insert: true });
+  }
+  return entries;
+}
+__name(freshMovementStatements, "freshMovementStatements");
 async function writeStockMovements(request, env, requestId) {
   let payload;
   try {
@@ -556,25 +604,34 @@ async function writeStockMovements(request, env, requestId) {
   try {
     const rows = input.map(normalizeMovement);
     const state = await existingMovementState(env, rows);
-    const accepted = [], seen = new Set(), statements2 = [];
+    const accepted = [], seen = new Set(), statementEntries = [];
     rows.sort((a, b) => a.version - b.version || a.created_at.localeCompare(b.created_at) || a.record_id.localeCompare(b.record_id));
     for (const row of rows) {
       if (state.duplicateIds.has(row.record_id) || seen.has(row.record_id)) continue;
       seen.add(row.record_id);
       accepted.push(row);
-      // Recheck identity and latest version INSIDE the write transaction. A
-      // preflight read is not a lock: another request may commit before batch().
-      const previous = state.active.get(row.logical_id || row.record_id);
-      statements2.push(movementBalanceStatement(env.OPERATIONS_DB, row, previous));
-      statements2.push(movementInsertStatement(env.OPERATIONS_DB, row));
     }
-    const batchResults = [];
-    for (let index = 0; index < statements2.length; index += STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH) {
-      const result = await env.OPERATIONS_DB.batch(statements2.slice(index, index + STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH));
-      batchResults.push(...result);
+    if (canAggregateFreshMovements(accepted, state)) {
+      statementEntries.push(...freshMovementStatements(env.OPERATIONS_DB, accepted));
+    } else {
+      for (const row of accepted) {
+        // Recheck identity and latest version INSIDE the write transaction. A
+        // preflight read is not a lock: another request may commit before batch().
+        const previous = state.active.get(row.logical_id || row.record_id);
+        statementEntries.push({ statement: movementBalanceStatement(env.OPERATIONS_DB, row, previous), insert: false });
+        statementEntries.push({ statement: movementInsertStatement(env.OPERATIONS_DB, row), insert: true });
+      }
     }
-    const inserted = batchResults.reduce((sum, result, index) => sum + (index % 2 ? Number(result.meta?.changes || 0) : 0), 0);
-    const written = batchResults.reduce((sum, result) => sum + Number(result.meta?.changes || 0), 0);
+    let inserted = 0, written = 0;
+    for (let index = 0; index < statementEntries.length; index += STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH) {
+      const entries = statementEntries.slice(index, index + STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH);
+      const result = await env.OPERATIONS_DB.batch(entries.map((entry) => entry.statement));
+      result.forEach((item, resultIndex) => {
+        const changes = Number(item.meta?.changes || 0);
+        written += changes;
+        if (entries[resultIndex].insert) inserted += changes;
+      });
+    }
     console.log(JSON.stringify({ event: "stock_movements_written", received: rows.length, accepted: inserted, written, requestId }));
     return responseJson({ ok: true, received: rows.length, accepted: inserted, duplicates: rows.length - inserted, written, requestId });
   } catch (error) {
