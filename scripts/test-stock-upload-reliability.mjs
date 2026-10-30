@@ -8,12 +8,21 @@ const prepared={fileName:'COGS.xlsx',rows:[{outlet:'BISS',rowHash:'sale',salesNu
 const ledger=new Map();
 Object.assign(c,{stockUploadJobEmployee_:()=>({nik:'N',outlet:'BISS'}),acquireStockUploadLock_:()=>noopLock,
  readSalesCogsJobJson_:file=>files.has(file)?JSON.parse(files.get(file)):file==='request'?{}:prepared,
- writeSalesCogsJob_:job=>{stored.push(JSON.parse(JSON.stringify(job)));return job;},salesCogsReferenceData_:()=>({wipCatalog:{},savedConversions:{},salesMappings:{},masterByCode:{}}),preloadSalesFifoLots_:()=>{builds++;return{};},salesTargetIsWip_:()=>false,salesConsumeInventoryLots_:()=>[{qty:5}],
+ writeSalesCogsJob_:job=>{stored.push(JSON.parse(JSON.stringify(job)));return job;},salesCogsReferenceData_:()=>({wipCatalog:{},savedConversions:{},salesMappings:{},masterByCode:{}}),salesCogsFifoHistoryCache_:(job,prepared,runtime)=>runtime.salesCogsFifoHistoryCache={histories:{},targets:{}},salesCogsFifoEnsureRows_:()=>{},salesCogsFifoCacheApplyRows_:()=>{},preloadSalesFifoLots_:()=>{builds++;return{};},salesTargetIsWip_:()=>false,salesConsumeInventoryLots_:()=>[{qty:5}],
  Utilities:{getUuid:()=>String(++id),newBlob:value=>({value})},DriveApp:{createFile:blob=>{const key='file-'+(++id);files.set(key,blob.value);return{getId:()=>key};},getFileById:key=>({setTrashed:()=>files.delete(key)})},salesUploadCreatedAt_:()=>1,cleanText_:v=>v,acquireStockWriteLock_:()=>assert.fail('background Usage must not hold the global stock lock'),
  insertStockCardRows_:rows=>{assert.ok(stored.some(j=>j.pendingDriveId),'plan durable before writing');for(const r of rows)ledger.set(r.json.record_id,r);if(first){first=false;throw Error('timeout after commit');}},cleanupSalesCogsJobFiles_(){}});
 const job={writePlanVersion:2,jobId:'J',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:1,ownerNik:'N',ownerOutlet:'BISS',outlets:[],transactionDates:[]};
 assert.throws(()=>c.processSalesCogsJobChunk_(job,{}),/timeout/);const pending=job.pendingDriveId;assert.ok(pending);assert.equal(job.processed,0);
 c.processSalesCogsJobChunk_(job,{});assert.equal(ledger.size,1);assert.equal(builds,1);assert.equal(job.processed,1);assert.ok(!files.has(pending));
+// A durable FIFO cache must include successful earlier batches so later batches
+// keep allocating from the same stock history without re-reading Cloudflare.
+const fifoCache=make(),fifoFiles=new Map(),fifoRuntime={salesCogsFifoHistoryCache:{histories:{'BISS|P':[]},targets:{}}},fifoJob={fifoHistoryDriveId:'FIFO'};fifoRuntime.salesCogsFifoHistories=fifoRuntime.salesCogsFifoHistoryCache.histories;
+Object.assign(fifoCache,{DriveApp:{getFileById:id=>({setContent:value=>fifoFiles.set(id,value)})}});
+fifoCache.salesCogsFifoCacheApplyRows_(fifoJob,fifoRuntime,[{json:{record_id:'SALE-1',logical_id:'SALE-1',version:1,record_type:'MOVEMENT',outlet:'BISS',location:'Store',item_code:'P',item_name:'Product',unit:'PCS',direction:'OUT',qty:5,movement_type:'Sold',event_date:'2026-10-28',created_at:'2026-10-28T10:00:00Z'}}]);
+assert.equal(fifoRuntime.salesCogsFifoHistories['BISS|P'][0].recordId,'SALE-1');assert.equal(JSON.parse(fifoFiles.get('FIFO')).histories['BISS|P'][0].qty,5);
+const fifoLoad=make(),fifoRequests=[];const fifoLoadRuntime={salesCogsFifoHistoryCache:{histories:{},targets:{'BISS|P':'2026-10-31'}},salesCogsFifoHistories:{}};
+Object.assign(fifoLoad,{salesCogsReferenceData_:()=>({wipCatalog:{},masterByCode:{},salesMappings:{}}),collectSalesFifoPreloadRows_:()=>[{outlet:'BISS',item:{code:'P',name:'Product'},transactionDate:'2026-10-28'}],cloudflarePreloadSalesFifoRows_:request=>{fifoRequests.push(request);return[{itemCode:'P',date:'2026-10-01'}]},DriveApp:{getFileById:()=>({setContent(){}})}});
+fifoLoad.salesCogsFifoEnsureRows_({fifoHistoryDriveId:'FIFO'},fifoLoadRuntime,[{}]);fifoLoad.salesCogsFifoEnsureRows_({fifoHistoryDriveId:'FIFO'},fifoLoadRuntime,[{}]);assert.equal(fifoRequests.length,1);assert.equal(fifoRequests[0].to,'2026-10-31');
 // Permanent HTTP errors and daily quotas never sleep/replay; transient failures may.
 for(const [status,message,expected] of [[400,'INVALID_BATCH',1],[401,'Unauthorized',1],[503,'temporarily unavailable',3]]){
  const client=make();let calls=0;

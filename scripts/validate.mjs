@@ -498,6 +498,10 @@ if (!backend.includes("cloudflareInventoryRequest_('POST', '/v1/movements/preloa
     backend.slice(backend.indexOf('function preloadSalesFifoLots_('), backend.indexOf('function salesHistoryBalanceAtDate_(')).includes('runNamedQuery_(')) {
   failures.push('Upload Sales COGS belum memakai preload FIFO Cloudflare, batch tulis terpecah, dan multi-batch worker');
 }
+if (!backend.includes('function salesCogsFifoHistoryCache_(') || !backend.includes('function salesCogsFifoCacheApplyRows_(') ||
+    !backend.includes('Menyiapkan cache FIFO satu kali untuk seluruh file.') || !backend.includes('job.fifoHistoryDriveId')) {
+  failures.push('Upload Sales COGS belum menyimpan dan memakai ulang histori FIFO per pekerjaan');
+}
 if (!inventoryWorker.includes('async function preloadMovements(') ||
     !inventoryWorker.includes('url.pathname === "/v1/movements/preload"') ||
     !inventoryWorker.includes('STOCK_MOVEMENT_D1_STATEMENTS_PER_BATCH') ||
@@ -679,6 +683,9 @@ try {
   backgroundContext.DriveApp={createFile:blob=>{const id='PENDING-'+(++pendingSequence);pendingPlans.set(id,JSON.parse(blob.value));return{getId:()=>id};},getFileById:id=>({setTrashed:()=>pendingPlans.delete(id)})};
   backgroundContext.stockUploadJobEmployee_=()=>({nik:'HQ-1',outlet:'BIHQ'});
   backgroundContext.acquireStockUploadLock_=()=>({releaseLock(){}});
+   backgroundContext.salesCogsFifoHistoryCache_=(job,prepared,runtime)=>runtime.salesCogsFifoHistoryCache={histories:{},targets:{}};
+   backgroundContext.salesCogsFifoEnsureRows_=()=>{};
+   backgroundContext.salesCogsFifoCacheApplyRows_=()=>{};
   backgroundContext.writeSalesCogsJob_ = job => job;
   backgroundContext.markStockTaskCompleteFromUploads_ = () => { completed++; };
   backgroundContext.cleanupSalesCogsJobFiles_ = () => {};

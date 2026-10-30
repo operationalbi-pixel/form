@@ -12267,9 +12267,42 @@ function collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, sales
  * tidak bisa dipakai untuk transaksi historis. Semua bahan WIP (termasuk WIP bertingkat)
  * ikut dipreload agar lot yang dipotong dapat dikunci pada row upload.
  */
-function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes) {
+function salesFifoHistoryKey_(outlet, itemCode) {
+  return String(outlet || '').toUpperCase() + '|' + String(itemCode || '').trim().toUpperCase();
+}
+
+function salesFifoStateFromHistories_(refs, historiesByKey) {
+  const byOutlet = {}, result = { __balances: {} };
+  (refs || []).forEach(function (ref) {
+    if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
+    const code = String(ref.item.code || '').trim().toUpperCase();
+    if (!code) return;
+    if (!byOutlet[ref.outlet][code]) byOutlet[ref.outlet][code] = { item: ref.item, dates: {} };
+    byOutlet[ref.outlet][code].dates[ref.transactionDate] = true;
+  });
+  Object.keys(byOutlet).forEach(function (outlet) {
+    result[outlet] = {}; result.__balances[outlet] = {};
+    Object.keys(byOutlet[outlet]).forEach(function (code) {
+      const entry = byOutlet[outlet][code], history = (historiesByKey && historiesByKey[salesFifoHistoryKey_(outlet, code)]) || [];
+      result[outlet][code] = result[outlet][code] || {};
+      result.__balances[outlet][code] = result.__balances[outlet][code] || {};
+      Object.keys(entry.dates).sort().forEach(function (date) {
+        const datedHistory = history.filter(function (movement) { return String(movement.date || '').slice(0, 10) <= date; });
+        const movementHistory = applyStockHistoryAuditRows_(datedHistory), snapshots = calculateFifoSnapshots_(movementHistory), dates = Object.keys(snapshots).sort();
+        result[outlet][code][date] = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
+          return { qty: Number(lot.qty || 0), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
+        }).filter(function (lot) { return lot.qty > 0.0000001; }) : [];
+        result.__balances[outlet][code][date] = salesHistoryBalanceAtDate_(datedHistory, date);
+      });
+    });
+  });
+  return result;
+}
+
+function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMappings, excludedSourceHashes, cachedHistories) {
   excludedSourceHashes = (excludedSourceHashes || []).map(function (value) { return String(value || ''); }).filter(Boolean);
   const refs = collectSalesFifoPreloadRows_(salesRows, wipCatalog, masterByCode, salesMappings);
+  if (cachedHistories) return salesFifoStateFromHistories_(refs, cachedHistories);
   const byOutlet = {}, result = { __balances: {} }, chunkSize = 30;
   refs.forEach(function (ref) {
     if (!byOutlet[ref.outlet]) byOutlet[ref.outlet] = {};
@@ -12328,6 +12361,74 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
     }
   });
   return result;
+}
+
+/** Persists the one FIFO source-history cache used by a queued Sales COGS job. */
+function salesCogsFifoHistoryCache_(job, prepared, runtime) {
+  runtime = runtime || {};
+  if (runtime.salesCogsFifoHistoryCache) return runtime.salesCogsFifoHistoryCache;
+  if (job.fifoHistoryDriveId) {
+    const saved = readSalesCogsJobJson_(job.fifoHistoryDriveId);
+    runtime.salesCogsFifoHistoryCache = saved && saved.histories ? saved : { histories: {}, targets: {} };
+    runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
+    return runtime.salesCogsFifoHistoryCache;
+  }
+  const referenceData = salesCogsReferenceData_(runtime);
+  const refs = collectSalesFifoPreloadRows_(prepared.rows || [], referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings);
+  const targets = {};
+  refs.forEach(function (ref) {
+    const outlet = String(ref.outlet || '').toUpperCase(), code = String(ref.item && ref.item.code || '').trim().toUpperCase();
+    if (!outlet || !code) return;
+    const key = salesFifoHistoryKey_(outlet, code), date = String(ref.transactionDate || '');
+    if (!targets[key] || date > targets[key]) targets[key] = date;
+  });
+  runtime.salesCogsFifoHistoryCache = { histories: {}, targets: targets };
+  const cacheFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(runtime.salesCogsFifoHistoryCache), 'application/json', 'TEMP_SALES_COGS_FIFO_' + job.jobId + '.json'));
+  job.fifoHistoryDriveId = cacheFile.getId(); runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
+  writeSalesCogsJob_(job);
+  return runtime.salesCogsFifoHistoryCache;
+}
+
+function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
+  const cache = runtime.salesCogsFifoHistoryCache, histories = cache.histories, referenceData = salesCogsReferenceData_(runtime);
+  const refs = collectSalesFifoPreloadRows_(salesRows || [], referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings), byOutlet = {};
+  refs.forEach(function (ref) {
+    const outlet = String(ref.outlet || '').toUpperCase(), code = String(ref.item && ref.item.code || '').trim().toUpperCase(), key = salesFifoHistoryKey_(outlet, code);
+    if (!outlet || !code || Object.prototype.hasOwnProperty.call(histories, key)) return;
+    if (!byOutlet[outlet]) byOutlet[outlet] = {};
+    byOutlet[outlet][code] = ref.item;
+  });
+  Object.keys(byOutlet).forEach(function (outlet) {
+    const entries = Object.keys(byOutlet[outlet]).map(function (code) { return { code: code, item: byOutlet[outlet][code] }; });
+    for (let offset = 0; offset < entries.length; offset += 30) {
+      const chunk = entries.slice(offset, offset + 30), to = chunk.reduce(function (latest, entry) {
+        const target = String(cache.targets[salesFifoHistoryKey_(outlet, entry.code)] || ''); return latest > target ? latest : target;
+      }, '');
+      const rows = cloudflarePreloadSalesFifoRows_( { outlet: outlet, location: 'Store', to: to, itemCodes: chunk.map(function (entry) { return entry.code; }), itemNames: chunk.map(function (entry) { return String(entry.item.name || ''); }), perItemLimit: 500 } );
+      chunk.forEach(function (entry) { histories[salesFifoHistoryKey_(outlet, entry.code)] = []; });
+      rows.forEach(function (row) {
+        const key = salesFifoHistoryKey_(outlet, row.itemCode);
+        if (Object.prototype.hasOwnProperty.call(histories, key)) histories[key].push(row);
+      });
+    }
+  });
+  DriveApp.getFileById(job.fifoHistoryDriveId).setContent(JSON.stringify(cache));
+}
+
+function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
+  const histories = runtime && runtime.salesCogsFifoHistories;
+  if (!histories || !job.fifoHistoryDriveId) return;
+  (rows || []).forEach(function (entry) {
+    const row = entry && entry.json ? entry.json : entry || {};
+    if (String(row.record_type || '').toUpperCase() !== 'MOVEMENT' || String(row.location || '') !== 'Store') return;
+    const key = salesFifoHistoryKey_(row.outlet, row.item_code);
+    if (!histories[key]) histories[key] = [];
+    histories[key].push({ recordType: String(row.record_type || 'MOVEMENT').toUpperCase(), recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
+      date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0), movementType: String(row.movement_type || ''), info: String(row.info || ''),
+      productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''), sourceArrivalDate: String(row.source_arrival_date || ''), sourceFile: String(row.source_file || ''), sourceHash: String(row.source_hash || ''), sourceRow: Number(row.source_row || 0),
+      transferId: String(row.transfer_id || ''), systemGenerated: Boolean(row.transfer_id), createdBy: String(row.created_by || ''), createdAt: String(row.created_at || ''), itemCode: String(row.item_code || ''), itemName: String(row.item_name || ''), category: String(row.category || ''), unit: String(row.unit || ''), opnameBalance: null, opnameDate: '' });
+  });
+  DriveApp.getFileById(job.fifoHistoryDriveId).setContent(JSON.stringify(runtime.salesCogsFifoHistoryCache));
 }
 
 function salesHistoryBalanceAtDate_(history, date) {
@@ -13185,10 +13286,10 @@ function readSalesCogsJobJson_(driveId) {
 }
 
 function cleanupSalesCogsJobFiles_(job) {
-  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId, job.pendingDriveId].filter(Boolean).forEach(function (id) {
+  [job.sourceDriveId, job.requestDriveId, job.preparedDriveId, job.pendingDriveId, job.fifoHistoryDriveId].filter(Boolean).forEach(function (id) {
     try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
   });
-  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = '';
+  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = ''; job.fifoHistoryDriveId = '';
 }
 
 function prepareSalesCogsJob_(job) {
@@ -13229,7 +13330,7 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
   const provided = payload.conversions || {}, salesMappings = referenceData.salesMappings;
   const masterByCode = referenceData.masterByCode, writeClock = { sequence: 0 };
   let autoWipCount = 0;
-  const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings);
+  const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings, [], runtime && runtime.salesCogsFifoHistories);
   prepared.rows.forEach(function (sale) {
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
     let soldLots = [];
@@ -13292,6 +13393,10 @@ function processSalesCogsJobChunk_(job, runtime) {
   runtime = runtime || {};
   const prepared = runtime.prepared || (runtime.prepared = readSalesCogsJobJson_(job.preparedDriveId));
   const request = runtime.request || (runtime.request = readSalesCogsJobJson_(job.requestDriveId));
+  if (!job.fifoHistoryDriveId && !runtime.salesCogsFifoHistoryCache) {
+    job.status = 'PROCESSING'; job.stage = 'Menyiapkan cache FIFO satu kali untuk seluruh file.'; writeSalesCogsJob_(job);
+  }
+  salesCogsFifoHistoryCache_(job, prepared, runtime);
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
   let batchSize = Math.max(10, Math.min(100, Math.floor(Number(job.batchSize || 100))));
   // Old jobs could have been reduced to 10 source rows before the D1 writer
@@ -13301,6 +13406,7 @@ function processSalesCogsJobChunk_(job, runtime) {
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
   else showcaseRows = prepared.showcaseRows.slice(start - salesTotal, start - salesTotal + batchSize);
+  if (rows.length) salesCogsFifoEnsureRows_(job, runtime, rows);
   const count = rows.length + showcaseRows.length;
   if (!count && start < job.total) throw new Error('Batch Sales COGS tidak dapat dibentuk pada posisi ' + start + '.');
   job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
@@ -13323,7 +13429,10 @@ function processSalesCogsJobChunk_(job, runtime) {
     const file=DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan),'application/json','TEMP_SALES_COGS_PENDING_'+job.jobId+'_'+start+'.json'));
     job.pendingDriveId=file.getId();writeSalesCogsJob_(job);
   }
-  if(plan.stockRows.length)insertStockCardRows_(plan.stockRows);
+  if(plan.stockRows.length) {
+    insertStockCardRows_(plan.stockRows);
+    salesCogsFifoCacheApplyRows_(job, runtime, plan.stockRows);
+  }
   const pendingId=job.pendingDriveId;
   job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
   job.autoWipProductionCount = Number(job.autoWipProductionCount || 0) + Number(plan.autoWipProductionCount || 0);
