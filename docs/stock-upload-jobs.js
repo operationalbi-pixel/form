@@ -14,7 +14,7 @@ function startStockUploadWorkers(jobs) {
     // A lost response never cancels an accepted job or resubmits the workbook.
     Promise.resolve().then(function () { return BAKERZIN_API.call('startStockUploadWorker', [token, job.jobId, engine]); })
       .then(function (response) { if (!response || !response.ok) throw new Error(response && response.error || 'Pemroses belum dapat dimulai.'); state.error = ''; })
-      .catch(function (error) { state.error = String(error && error.message || error); if (!byId('goodsUploadStatusModal').classList.contains('hidden')) renderGoodsUploadStatus(GOODS_UPLOAD_PANEL.jobs); })
+      .catch(function (error) { state.error = String(error && error.message || error); if (typeof byId === 'function' && typeof renderGoodsUploadStatus === 'function' && !byId('goodsUploadStatusModal').classList.contains('hidden')) renderGoodsUploadStatus(GOODS_UPLOAD_PANEL.jobs); })
       .finally(function () { state.running = false; });
   });
 }
