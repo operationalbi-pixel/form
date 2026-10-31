@@ -12368,7 +12368,7 @@ function salesCogsFifoHistoryCache_(job, prepared, runtime) {
   runtime = runtime || {};
   if (runtime.salesCogsFifoHistoryCache) return runtime.salesCogsFifoHistoryCache;
   if (job.fifoHistoryDriveId) {
-    const saved = readSalesCogsJobJson_(job.fifoHistoryDriveId);
+    const saved = readSalesCogsFifoCache_(job);
     runtime.salesCogsFifoHistoryCache = saved && saved.histories ? saved : { histories: {}, targets: {} };
     runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
     return runtime.salesCogsFifoHistoryCache;
@@ -12383,10 +12383,34 @@ function salesCogsFifoHistoryCache_(job, prepared, runtime) {
     if (!targets[key] || date > targets[key]) targets[key] = date;
   });
   runtime.salesCogsFifoHistoryCache = { histories: {}, targets: targets };
-  const cacheFile = DriveApp.createFile(Utilities.newBlob(JSON.stringify(runtime.salesCogsFifoHistoryCache), 'application/json', 'TEMP_SALES_COGS_FIFO_' + job.jobId + '.json'));
-  job.fifoHistoryDriveId = cacheFile.getId(); runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
-  writeSalesCogsJob_(job);
+  runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
+  persistSalesCogsFifoCache_(job, runtime);
   return runtime.salesCogsFifoHistoryCache;
+}
+
+function readSalesCogsFifoCache_(job) {
+  const blob = DriveApp.getFileById(job.fifoHistoryDriveId).getBlob();
+  return JSON.parse((job.fifoHistoryGzip ? Utilities.ungzip(blob) : blob).getDataAsString('UTF-8'));
+}
+
+// Drive File.setContent rejects JSON larger than 10 MB. Write a compressed
+// checkpoint first, then switch the job pointer; older plain JSON jobs can resume.
+function persistSalesCogsFifoCache_(job, runtime) {
+  const previousId = job.fifoHistoryDriveId || '', previousGzip = Boolean(job.fifoHistoryGzip);
+  const name = 'TEMP_SALES_COGS_FIFO_' + job.jobId + '.json.gz';
+  const blob = Utilities.gzip(Utilities.newBlob(JSON.stringify(runtime.salesCogsFifoHistoryCache), 'application/json'), name);
+  const file = DriveApp.createFile(blob);
+  job.fifoHistoryDriveId = file.getId(); job.fifoHistoryGzip = true;
+  try { writeSalesCogsJob_(job); }
+  catch (error) {
+    job.fifoHistoryDriveId = previousId; job.fifoHistoryGzip = previousGzip;
+    try { file.setTrashed(true); } catch (cleanupError) {}
+    throw error;
+  }
+  if (previousId) {
+    try { DriveApp.getFileById(previousId).setTrashed(true); }
+    catch (cleanupError) { console.error('Cache FIFO lama belum dibersihkan: ' + cleanupError.message); }
+  }
 }
 
 function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
@@ -12412,7 +12436,7 @@ function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
       });
     }
   });
-  DriveApp.getFileById(job.fifoHistoryDriveId).setContent(JSON.stringify(cache));
+  persistSalesCogsFifoCache_(job, runtime);
 }
 
 function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
@@ -12428,7 +12452,7 @@ function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
       productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''), sourceArrivalDate: String(row.source_arrival_date || ''), sourceFile: String(row.source_file || ''), sourceHash: String(row.source_hash || ''), sourceRow: Number(row.source_row || 0),
       transferId: String(row.transfer_id || ''), systemGenerated: Boolean(row.transfer_id), createdBy: String(row.created_by || ''), createdAt: String(row.created_at || ''), itemCode: String(row.item_code || ''), itemName: String(row.item_name || ''), category: String(row.category || ''), unit: String(row.unit || ''), opnameBalance: null, opnameDate: '' });
   });
-  DriveApp.getFileById(job.fifoHistoryDriveId).setContent(JSON.stringify(runtime.salesCogsFifoHistoryCache));
+  persistSalesCogsFifoCache_(job, runtime);
 }
 
 function salesHistoryBalanceAtDate_(history, date) {
@@ -13289,7 +13313,7 @@ function cleanupSalesCogsJobFiles_(job) {
   [job.sourceDriveId, job.requestDriveId, job.preparedDriveId, job.pendingDriveId, job.fifoHistoryDriveId].filter(Boolean).forEach(function (id) {
     try { DriveApp.getFileById(id).setTrashed(true); } catch (error) {}
   });
-  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = ''; job.fifoHistoryDriveId = '';
+  job.sourceDriveId = ''; job.requestDriveId = ''; job.preparedDriveId = ''; job.pendingDriveId = ''; job.fifoHistoryDriveId = ''; delete job.fifoHistoryGzip;
 }
 
 function prepareSalesCogsJob_(job) {
