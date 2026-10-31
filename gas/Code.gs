@@ -12368,10 +12368,17 @@ function salesCogsFifoHistoryCache_(job, prepared, runtime) {
   runtime = runtime || {};
   if (runtime.salesCogsFifoHistoryCache) return runtime.salesCogsFifoHistoryCache;
   if (job.fifoHistoryDriveId) {
-    const saved = readSalesCogsFifoCache_(job);
-    runtime.salesCogsFifoHistoryCache = saved && saved.histories ? saved : { histories: {}, targets: {} };
-    runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
-    return runtime.salesCogsFifoHistoryCache;
+    try {
+      const saved = readSalesCogsFifoCache_(job);
+      runtime.salesCogsFifoHistoryCache = saved && saved.histories ? saved : { histories: {}, targets: {} };
+      runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
+      return runtime.salesCogsFifoHistoryCache;
+    } catch (error) {
+      if (!/exceeds the maximum file size/i.test(String(error.message || error))) throw error;
+      // The old checkpoint cannot be read through DriveApp. Rebuild each
+      // needed item's history from the committed Cloudflare journal below.
+      console.error('Cache FIFO lama terlalu besar untuk dibaca; membangun ulang dari jurnal stok.');
+    }
   }
   const referenceData = salesCogsReferenceData_(runtime);
   const refs = collectSalesFifoPreloadRows_(prepared.rows || [], referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings);
@@ -12442,11 +12449,16 @@ function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
 function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
   const histories = runtime && runtime.salesCogsFifoHistories;
   if (!histories || !job.fifoHistoryDriveId) return;
+  const seen = {};
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry || {};
     if (String(row.record_type || '').toUpperCase() !== 'MOVEMENT' || String(row.location || '') !== 'Store') return;
     const key = salesFifoHistoryKey_(row.outlet, row.item_code);
     if (!histories[key]) histories[key] = [];
+    if (!seen[key]) seen[key] = new Set(histories[key].map(function (movement) { return String(movement.recordId || ''); }).filter(Boolean));
+    const recordId = String(row.record_id || '');
+    if (recordId && seen[key].has(recordId)) return;
+    if (recordId) seen[key].add(recordId);
     histories[key].push({ recordType: String(row.record_type || 'MOVEMENT').toUpperCase(), recordId: String(row.record_id || ''), logicalId: String(row.logical_id || row.record_id || ''), version: Number(row.version || 1),
       date: String(row.event_date || ''), direction: String(row.direction || ''), qty: Number(row.qty || 0), movementType: String(row.movement_type || ''), info: String(row.info || ''),
       productionDate: String(row.production_date || ''), expiryDate: String(row.expiry_date || ''), sourceArrivalDate: String(row.source_arrival_date || ''), sourceFile: String(row.source_file || ''), sourceHash: String(row.source_hash || ''), sourceRow: Number(row.source_row || 0),
