@@ -65,6 +65,11 @@ responseJobs=[{jobId:'next',status:'QUEUED'}];ui.refreshGoodsUploadStatus();awai
 // including when the periodic maintenance trigger was lost.
 const localStatus=make();let recoveredJobs=[];Object.assign(localStatus,{requireSession_:()=>({nik:'N'}),findEmployee_:()=>({nik:'N'}),assertEmployeeActive_(){},otherStockUploadJobs_:()=>[{jobId:'USAGE-1',ownerNik:'N',engine:'USAGE',status:'PROCESSING',workerLeaseUntil:0}],recoverStockUploadWorkers_:jobs=>{recoveredJobs=jobs;},goodsUploadJobView_:job=>job});
 const localResult=localStatus.getLocalStockUploadStatus('T');assert.equal(localResult.ok,true);assert.equal(recoveredJobs[0].jobId,'USAGE-1');assert.equal(localResult.data.jobs.length,1);
+// A rejected or unsuccessful start request must be visible rather than leaving
+// an upload indefinitely labelled "Diproses" with no explanation.
+const starter={APP:{token:'T'},STOCK_UPLOAD_STARTS:{},GOODS_UPLOAD_PANEL:{jobs:[{jobId:'USAGE-1',engine:'USAGE',status:'PROCESSING'}]},BAKERZIN_API:{call:async()=>({ok:false,error:'Daily trigger quota exceeded'})},byId:()=>({classList:{contains:()=>false}}),renderGoodsUploadStatus:()=>{}};
+vm.createContext(starter);vm.runInContext(uiSource.slice(uiSource.indexOf('function startStockUploadWorkers('),uiSource.indexOf('function goodsUploadRequestId(')),starter);
+starter.startStockUploadWorkers(starter.GOODS_UPLOAD_PANEL.jobs);await new Promise(r=>setImmediate(r));assert.equal(starter.STOCK_UPLOAD_STARTS['T|USAGE'].error,'Daily trigger quota exceeded');
 console.log('Upload reliability: durable Usage replay, permanent/transient failures, disjoint Goods jobs, adaptive Position execution, live access, scoped locks and background UI refresh passed.');
 
 // Unit conversions have a separate lease from stock writes and validate before mutation.
