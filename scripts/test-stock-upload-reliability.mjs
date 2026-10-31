@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';import {createHash} from 'node:crypto';
+import {gzipSync,gunzipSync} from 'node:zlib';
 const source=fs.readFileSync('docs/Code.gs','utf8');
 const make=()=>{const c={console};vm.createContext(c);vm.runInContext(source,c);return c;};
 const noopLock={releaseLock(){}};
@@ -16,12 +17,15 @@ assert.throws(()=>c.processSalesCogsJobChunk_(job,{}),/timeout/);const pending=j
 c.processSalesCogsJobChunk_(job,{});assert.equal(ledger.size,1);assert.equal(builds,1);assert.equal(job.processed,1);assert.ok(!files.has(pending));
 // A durable FIFO cache must include successful earlier batches so later batches
 // keep allocating from the same stock history without re-reading Cloudflare.
-const fifoCache=make(),fifoFiles=new Map(),fifoRuntime={salesCogsFifoHistoryCache:{histories:{'BISS|P':[]},targets:{}}},fifoJob={fifoHistoryDriveId:'FIFO'};fifoRuntime.salesCogsFifoHistories=fifoRuntime.salesCogsFifoHistoryCache.histories;
-Object.assign(fifoCache,{DriveApp:{getFileById:id=>({setContent:value=>fifoFiles.set(id,value)})}});
+const fifoCache=make(),fifoFiles=new Map([['FIFO',Buffer.from(JSON.stringify({histories:{'BISS|P':[]},targets:{}}))]]),fifoRuntime={salesCogsFifoHistoryCache:{histories:{'BISS|P':[]},targets:{}}},fifoJob={jobId:'J',fifoHistoryDriveId:'FIFO'};fifoRuntime.salesCogsFifoHistories=fifoRuntime.salesCogsFifoHistoryCache.histories;
+let nextFifoFile=0;
+Object.assign(fifoCache,{Utilities:{newBlob:value=>({bytes:Buffer.from(value)}),gzip:blob=>({bytes:gzipSync(blob.bytes)}),ungzip:blob=>({bytes:gunzipSync(blob.bytes),getDataAsString(){return this.bytes.toString('utf8')}})},DriveApp:{createFile:blob=>{const id='FIFO-GZ-'+(++nextFifoFile);fifoFiles.set(id,blob.bytes);return{getId:()=>id,setTrashed:()=>fifoFiles.delete(id)}},getFileById:id=>({getBlob:()=>({bytes:fifoFiles.get(id),getDataAsString:()=>fifoFiles.get(id).toString('utf8')}),setTrashed:()=>fifoFiles.delete(id)})},writeSalesCogsJob_:job=>job});
+assert.equal(fifoCache.salesCogsFifoHistoryCache_(fifoJob,{},{}).histories['BISS|P'].length,0,'a legacy plain JSON checkpoint remains readable');
 fifoCache.salesCogsFifoCacheApplyRows_(fifoJob,fifoRuntime,[{json:{record_id:'SALE-1',logical_id:'SALE-1',version:1,record_type:'MOVEMENT',outlet:'BISS',location:'Store',item_code:'P',item_name:'Product',unit:'PCS',direction:'OUT',qty:5,movement_type:'Sold',event_date:'2026-10-28',created_at:'2026-10-28T10:00:00Z'}}]);
-assert.equal(fifoRuntime.salesCogsFifoHistories['BISS|P'][0].recordId,'SALE-1');assert.equal(JSON.parse(fifoFiles.get('FIFO')).histories['BISS|P'][0].qty,5);
+assert.equal(fifoRuntime.salesCogsFifoHistories['BISS|P'][0].recordId,'SALE-1');assert.equal(JSON.parse(gunzipSync(fifoFiles.get(fifoJob.fifoHistoryDriveId))).histories['BISS|P'][0].qty,5);assert.equal(fifoJob.fifoHistoryGzip,true);assert.ok(!fifoFiles.has('FIFO'));
+const oversized={salesCogsFifoHistoryCache:{histories:{'BISS|P':[{info:'x'.repeat(11*1024*1024)}]},targets:{}}};fifoCache.persistSalesCogsFifoCache_(fifoJob,oversized);assert.ok(fifoFiles.get(fifoJob.fifoHistoryDriveId).length<10*1024*1024,'large FIFO checkpoints are compressed before Drive storage');assert.equal(fifoCache.readSalesCogsFifoCache_(fifoJob).histories['BISS|P'][0].info.length,11*1024*1024);
 const fifoLoad=make(),fifoRequests=[];const fifoLoadRuntime={salesCogsFifoHistoryCache:{histories:{},targets:{'BISS|P':'2026-10-31'}},salesCogsFifoHistories:{}};
-Object.assign(fifoLoad,{salesCogsReferenceData_:()=>({wipCatalog:{},masterByCode:{},salesMappings:{}}),collectSalesFifoPreloadRows_:()=>[{outlet:'BISS',item:{code:'P',name:'Product'},transactionDate:'2026-10-28'}],cloudflarePreloadSalesFifoRows_:request=>{fifoRequests.push(request);return[{itemCode:'P',date:'2026-10-01'}]},DriveApp:{getFileById:()=>({setContent(){}})}});
+Object.assign(fifoLoad,{salesCogsReferenceData_:()=>({wipCatalog:{},masterByCode:{},salesMappings:{}}),collectSalesFifoPreloadRows_:()=>[{outlet:'BISS',item:{code:'P',name:'Product'},transactionDate:'2026-10-28'}],cloudflarePreloadSalesFifoRows_:request=>{fifoRequests.push(request);return[{itemCode:'P',date:'2026-10-01'}]},persistSalesCogsFifoCache_:()=>{}});
 fifoLoad.salesCogsFifoEnsureRows_({fifoHistoryDriveId:'FIFO'},fifoLoadRuntime,[{}]);fifoLoad.salesCogsFifoEnsureRows_({fifoHistoryDriveId:'FIFO'},fifoLoadRuntime,[{}]);assert.equal(fifoRequests.length,1);assert.equal(fifoRequests[0].to,'2026-10-31');
 // Permanent HTTP errors and daily quotas never sleep/replay; transient failures may.
 for(const [status,message,expected] of [[400,'INVALID_BATCH',1],[401,'Unauthorized',1],[503,'temporarily unavailable',3]]){
