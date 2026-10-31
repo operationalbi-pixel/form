@@ -61,6 +61,10 @@ let loads=0,timers=[],responseJobs=[{jobId:'new',status:'COMPLETE'}];
 const ui={APP:{token:'T',outlet:'BISS',location:'Store'},GOODS_UPLOAD_PANEL:{loading:false,jobs:[]},byId:()=>({classList:{contains:()=>true},textContent:''}),clearTimeout(){},setTimeout:fn=>{timers.push(fn);return timers.length;},BAKERZIN_API:{call:async()=>({ok:true,data:{jobs:responseJobs}})},renderGoodsUploadStatus:jobs=>ui.GOODS_UPLOAD_PANEL.jobs=jobs,startStockUploadWorkers(){},clearStockDataCaches(){},loadData:()=>loads++,toast(){}};
 vm.createContext(ui);vm.runInContext(uiSource.slice(a,b),ui);ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.equal(loads,1);ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.equal(loads,1,'completion only refreshes once');
 responseJobs=[{jobId:'next',status:'QUEUED'}];ui.refreshGoodsUploadStatus();await new Promise(r=>setImmediate(r));assert.ok(timers.length>0,'closed status panel still monitors active work');
+// The local Status Upload read must schedule an expired Sales COGS worker,
+// including when the periodic maintenance trigger was lost.
+const localStatus=make();let recoveredJobs=[];Object.assign(localStatus,{requireSession_:()=>({nik:'N'}),findEmployee_:()=>({nik:'N'}),assertEmployeeActive_(){},otherStockUploadJobs_:()=>[{jobId:'USAGE-1',ownerNik:'N',engine:'USAGE',status:'PROCESSING',workerLeaseUntil:0}],recoverStockUploadWorkers_:jobs=>{recoveredJobs=jobs;},goodsUploadJobView_:job=>job});
+const localResult=localStatus.getLocalStockUploadStatus('T');assert.equal(localResult.ok,true);assert.equal(recoveredJobs[0].jobId,'USAGE-1');assert.equal(localResult.data.jobs.length,1);
 console.log('Upload reliability: durable Usage replay, permanent/transient failures, disjoint Goods jobs, adaptive Position execution, live access, scoped locks and background UI refresh passed.');
 
 // Unit conversions have a separate lease from stock writes and validate before mutation.
