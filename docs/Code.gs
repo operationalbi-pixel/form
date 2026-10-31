@@ -12443,7 +12443,7 @@ function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
       });
     }
   });
-  persistSalesCogsFifoCache_(job, runtime);
+  if (Object.keys(byOutlet).length) persistSalesCogsFifoCache_(job, runtime);
 }
 
 function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
@@ -13477,6 +13477,7 @@ function processSalesCogsJobChunk_(job, runtime) {
     if (job.batchSize >= 100) delete job.d1CpuRecovery;
   }
   job.pendingDriveId='';job.retryCount = 0; job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, job.total) * 83));
+  job.stage = 'Tersimpan sampai baris ' + job.processed + ' dari ' + job.total + '. Menjadwalkan bagian berikutnya.';
   writeSalesCogsJob_(job);
   try{DriveApp.getFileById(pendingId).setTrashed(true);}catch(error){}
   if (job.processed >= job.total) {
