@@ -13446,7 +13446,7 @@ function processSalesCogsJobChunk_(job, runtime) {
   const count = rows.length + showcaseRows.length;
   if (!count && start < job.total) throw new Error('Batch Sales COGS tidak dapat dibentuk pada posisi ' + start + '.');
   job.status = 'PROCESSING'; job.stage = 'Memproses baris ' + (start + 1) + '-' + (start + count) + ' dari ' + job.total + '.';
-  job.progress = Math.min(96, 15 + Math.round(start / Math.max(1, job.total) * 81)); writeSalesCogsJob_(job);
+  job.progress = Math.max(Number(job.progress || 0), Math.min(96, 15 + Math.round(start / Math.max(1, job.total) * 83))); writeSalesCogsJob_(job);
   const employee = { nik: job.ownerNik, name: job.ownerName, outlet: job.ownerOutlet };
   const scope=acquireStockUploadLock_({outlets:job.outlets,outlet:job.outlet,ownerOutlet:job.ownerOutlet,location:'Store'});
   try {
