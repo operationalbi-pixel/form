@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import {handleStockDirect} from '../cloudflare/inventory-api/lib/stock-direct.mjs';
+import gateway from '../cloudflare/inventory-gateway/_worker.js';
+
+let forwarded;
+const gatewayEnv={INVENTORY:{fetch:async request=>{forwarded=request;return new Response('forwarded');}}};
+let gatewayResponse=await gateway.fetch(new Request('https://bakerzin-inventory-gateway.pages.dev/v1/stock-direct',{method:'POST',headers:{origin:'https://operationalbi-pixel.github.io',authorization:'Bearer scoped'},body:JSON.stringify({action:'snapshot'})}),gatewayEnv);
+assert.equal(gatewayResponse.status,200);
+assert.equal(forwarded.url,'https://internal/v1/stock-direct');
+assert.equal(forwarded.headers.get('authorization'),'Bearer scoped');
+assert.equal(forwarded.headers.get('origin'),'https://operationalbi-pixel.github.io');
+assert.equal(await forwarded.text(),'{"action":"snapshot"}');
+gatewayResponse=await gateway.fetch(new Request('https://bakerzin-inventory-gateway.pages.dev/v1/private'),gatewayEnv);
+assert.equal(gatewayResponse.status,404);
 
 const key='test-key',now=Math.floor(Date.now()/1000);
 async function signed(claims){const text=Buffer.from(JSON.stringify(claims)).toString('base64url'),cryptoKey=await crypto.subtle.importKey('raw',new TextEncoder().encode(key),{name:'HMAC',hash:'SHA-256'},false,['sign']),signature=Buffer.from(await crypto.subtle.sign('HMAC',cryptoKey,new TextEncoder().encode('stock-direct-v1.'+text))).toString('base64url');return text+'.'+signature;}
@@ -32,7 +44,7 @@ response=await handleStockDirect(new Request('https://test/v1/stock-direct',{met
 response=await handleStockDirect(new Request('https://test/v1/stock-direct',{method:'POST',headers:{origin:'https://evil.test',authorization:auth,'content-type':'application/json'},body:JSON.stringify({action:'snapshot'})}),env,deps);assert.equal(response.status,403);
 response=await handleStockDirect(new Request('https://test/v1/stock-direct',{method:'POST',headers:{origin:'https://operationalbi-pixel.github.io',authorization:'Bearer invalid','content-type':'application/json'},body:JSON.stringify({action:'snapshot'})}),env,deps);assert.equal(response.status,401);
 
-const calls=[],browser={APP:{location:'Store'},todayLocal:()=> '2026-10-29'};browser.window=browser;browser.BAKERZIN_API={call:async(action,args)=>{calls.push(action);if(action==='localStockContext')return{ok:true,data:{outlet:'BISS',location:'Store',items:[],inventoryUnavailable:false}};if(action==='localStockSupplementary')return{ok:true,data:{outlet:'BISS',pendingTransfers:[],completions:{}}};if(action==='stockDirectGrant')return{ok:true,data:{url:'https://direct',token:'short',expiresAt:Date.now()+300000}};throw Error('unexpected Apps Script call '+action);}};browser.fetch=async(url,options)=>{assert.equal(url,'https://direct');var body=JSON.parse(options.body);return{status:200,json:async()=>body.action==='snapshot'?({ok:true,data:{items:[{code:'P1',name:'Cake',qty:7}]}}):body.action==='history'?({ok:true,data:{item:{code:'P1'},history:[],month:'2026-10',currentQty:7}}):({ok:true,data:{data:[{event_date:'2026-10-29',upload_type:'goodsReceipt',actual_rows:3}]}})}};
+const calls=[],browser={APP:{location:'Store'},URL,todayLocal:()=> '2026-10-29'};browser.window=browser;browser.BAKERZIN_API={call:async(action,args)=>{calls.push(action);if(action==='localStockContext')return{ok:true,data:{outlet:'BISS',location:'Store',items:[],inventoryUnavailable:false}};if(action==='localStockSupplementary')return{ok:true,data:{outlet:'BISS',pendingTransfers:[],completions:{}}};if(action==='stockDirectGrant')return{ok:true,data:{url:'https://direct/v1/stock-direct',token:'short',expiresAt:Date.now()+300000}};throw Error('unexpected Apps Script call '+action);}};browser.fetch=async(url,options)=>{assert.equal(url,'https://bakerzin-inventory-gateway.pages.dev/v1/stock-direct');var body=JSON.parse(options.body);return{status:200,json:async()=>body.action==='snapshot'?({ok:true,data:{items:[{code:'P1',name:'Cake',qty:7}]}}):body.action==='history'?({ok:true,data:{item:{code:'P1'},history:[],month:'2026-10',currentQty:7}}):({ok:true,data:{data:[{event_date:'2026-10-29',upload_type:'goodsReceipt',actual_rows:3}]}})}};
 vm.createContext(browser);vm.runInContext(await fs.readFile('docs/stock-receipt-direct.js','utf8'),browser);
 const direct=await browser.BAKERZIN_API.call('bootstrap',['T','BISS']);assert.equal(direct.ok,true);assert.equal(direct.data.inventoryUnavailable,false);assert.deepEqual(direct.data.items.map(item=>item.qty),[7]);const supplementary=await browser.BAKERZIN_API.call('supplementary',['T','BISS','']);assert.equal(supplementary.data.uploadProgress.days[28].goodsReceipt,true);assert.deepEqual(calls,['localStockContext','stockDirectGrant','localStockSupplementary']);
 const browserHistory=await browser.BAKERZIN_API.call('history',['T',{outlet:'BISS',location:'Store',itemCode:'P1',month:'2026-10'}]);assert.equal(browserHistory.ok,true);assert.equal(browserHistory.data.currentQty,7);assert.deepEqual(calls,['localStockContext','stockDirectGrant','localStockSupplementary']);
