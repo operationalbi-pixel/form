@@ -13435,9 +13435,8 @@ function processSalesCogsJobChunk_(job, runtime) {
   salesCogsFifoHistoryCache_(job, prepared, runtime);
   const salesTotal = prepared.rows.length, start = Number(job.processed || 0);
   let batchSize = Math.max(10, Math.min(100, Math.floor(Number(job.batchSize || 100))));
-  // Old jobs could have been reduced to 10 source rows before the D1 writer
-  // was sharded. Restore them once; new CPU recoveries ramp up gradually.
-  if (!job.d1CpuRecovery && batchSize < 100) batchSize = 100;
+  // A timed-out execution deliberately reduces the next batch. Never undo
+  // that reduction on entry, or the same oversized batch can time out forever.
   job.batchSize = batchSize;
   let rows = [], showcaseRows = [];
   if (start < salesTotal) rows = prepared.rows.slice(start, Math.min(salesTotal, start + batchSize));
@@ -13529,7 +13528,9 @@ function processSalesCogsUploadJobs() {
       reduceSalesCogsBatchSize_(job);
     }
     job.lastWorkedAt = new Date().toISOString();
-    job.workerLeaseUntil = Date.now() + 10 * 60 * 1000; writeSalesCogsJob_(job);
+    // Apps Script executions are capped at six minutes. A seven-minute lease
+    // leaves a safety margin while allowing an interrupted job to recover.
+    job.workerLeaseUntil = Date.now() + 7 * 60 * 1000; writeSalesCogsJob_(job);
     try {
       const runtime = {}, deadline = Date.now() + 240000;
       let lastStepMillis = 0;
