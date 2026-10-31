@@ -15,6 +15,10 @@ Object.assign(c,{stockUploadJobEmployee_:()=>({nik:'N',outlet:'BISS'}),acquireSt
 const job={writePlanVersion:2,jobId:'J',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:1,progress:25,ownerNik:'N',ownerOutlet:'BISS',outlets:[],transactionDates:[]};
 assert.throws(()=>c.processSalesCogsJobChunk_(job,{}),/timeout/);const pending=job.pendingDriveId;assert.ok(pending);assert.equal(job.processed,0);assert.ok(job.progress>=25,'a resumed batch must not move the displayed percentage backwards');
 c.processSalesCogsJobChunk_(job,{});assert.equal(ledger.size,1);assert.equal(builds,1);assert.equal(job.processed,1);assert.ok(!files.has(pending));
+// A timed-out Sales COGS batch must actually resume at the reduced size.
+const recovery=make(),recoveryRows=Array.from({length:100},(_,i)=>({sourceRow:i+1})),recoveryJob={jobId:'RECOVERY',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:100,batchSize:100};
+Object.assign(recovery,{stockUploadJobEmployee_:()=>({}),readSalesCogsJobJson_:()=>({rows:recoveryRows,showcaseRows:[]}),writeSalesCogsJob_:j=>j,salesCogsFifoHistoryCache_:(j,p,r)=>{r.salesCogsFifoHistoryCache={histories:{},targets:{}};return r.salesCogsFifoHistoryCache;},salesCogsFifoEnsureRows_:()=>{},acquireStockUploadLock_:()=>{throw Error('stop before write');}});
+recovery.reduceSalesCogsBatchSize_(recoveryJob);assert.equal(recoveryJob.batchSize,50);assert.throws(()=>recovery.processSalesCogsJobChunk_(recoveryJob,{}),/stop before write/);assert.equal(recoveryJob.batchSize,50);assert.match(recoveryJob.stage,/baris 1-50 dari 100/);
 // A durable FIFO cache must include successful earlier batches so later batches
 // keep allocating from the same stock history without re-reading Cloudflare.
 const fifoCache=make(),fifoFiles=new Map([['FIFO',Buffer.from(JSON.stringify({histories:{'BISS|P':[]},targets:{}}))]]),fifoRuntime={salesCogsFifoHistoryCache:{histories:{'BISS|P':[]},targets:{}}},fifoJob={jobId:'J',fifoHistoryDriveId:'FIFO'};fifoRuntime.salesCogsFifoHistories=fifoRuntime.salesCogsFifoHistoryCache.histories;
