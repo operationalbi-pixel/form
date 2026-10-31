@@ -20435,7 +20435,7 @@ function getStockDirectGrant(token,requestedOutlet,requestedLocation){
   });
 }
 function getLocalStockUploadStatus(token){
-  return safe_(function(){const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);return{jobs:otherStockUploadJobs_().filter(function(job){return job.ownerNik===employee.nik;}).map(goodsUploadJobView_)};});
+  return safe_(function(){const session=requireSession_(token),employee=findEmployee_(session.nik);assertEmployeeActive_(employee);const jobs=otherStockUploadJobs_().filter(function(job){return job.ownerNik===employee.nik;});try{recoverStockUploadWorkers_(jobs);}catch(error){console.error('Pemulihan upload lokal tertunda: '+error.message);}return{jobs:jobs.map(goodsUploadJobView_)};});
 }
 
 function getLocalStockSupplementary(token,requestedOutlet,taskId){
