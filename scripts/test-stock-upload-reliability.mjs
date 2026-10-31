@@ -72,13 +72,14 @@ vm.createContext(starter);vm.runInContext(uiSource.slice(uiSource.indexOf('funct
 starter.startStockUploadWorkers(starter.GOODS_UPLOAD_PANEL.jobs);await new Promise(r=>setImmediate(r));assert.equal(starter.STOCK_UPLOAD_STARTS['T|USAGE'].error,'Daily trigger quota exceeded');
 // A global claim protects job selection, then releases before a disjoint outlet runs.
 const parallel=make(),active={jobId:'A',status:'PROCESSING',outlet:'BISS',workerLeaseUntil:Date.now()+60000,lastWorkedAt:'2026-10-28'},queued={jobId:'B',status:'QUEUED',outlet:'BICP',workerLeaseUntil:0,createdAt:'2026-10-28'};
-const parallelJobs={'sales-cogs-upload-job-A':JSON.stringify(active),'sales-cogs-upload-job-B':JSON.stringify(queued)};let claimReleased=false,selected='';
+const older={...queued,jobId:'C',outlet:'BILW',createdAt:'2026-10-27'};
+const parallelJobs={'sales-cogs-upload-job-A':JSON.stringify(active),'sales-cogs-upload-job-B':JSON.stringify(queued),'sales-cogs-upload-job-C':JSON.stringify(older)};let claimReleased=false,selected='';
 Object.assign(parallel,{acquireStockScopeLock_:()=>({releaseLock(){claimReleased=true}}),PropertiesService:{getScriptProperties:()=>({getProperties:()=>({...parallelJobs}),deleteProperty:key=>delete parallelJobs[key]})},ScriptApp:{getProjectTriggers:()=>[]},writeSalesCogsJob_:job=>{parallelJobs['sales-cogs-upload-job-'+job.jobId]=JSON.stringify(job);return job;},processSalesCogsJobChunk_:job=>{assert.equal(claimReleased,true,'global claim lock releases before processing');selected=job.jobId;job.status='COMPLETE';job.processed=job.total=1;return job;},scheduleSalesCogsWorker_:()=>true});
 assert.equal(parallel.salesCogsJobsOverlap_(active,queued),false);assert.equal(parallel.salesCogsJobsOverlap_(active,{outlet:'BISS'}),true);assert.equal(parallel.salesCogsJobsOverlap_(active,{outlet:'BIHQ'}),true);
-parallel.processSalesCogsUploadJobs();assert.equal(selected,'B');
+parallel.processSalesCogsUploadJobs('B');assert.equal(selected,'B','a browser restart claims the requested job even when another outlet has an older job');
 const sameOutlet=make(),sameJobs={'sales-cogs-upload-job-A':JSON.stringify(active),'sales-cogs-upload-job-B':JSON.stringify({...queued,outlet:'BISS'})};
 Object.assign(sameOutlet,{acquireStockScopeLock_:()=>noopLock,PropertiesService:{getScriptProperties:()=>({getProperties:()=>({...sameJobs}),deleteProperty:key=>delete sameJobs[key]})},ScriptApp:{getProjectTriggers:()=>[]}});
-assert.equal(sameOutlet.processSalesCogsUploadJobs().status,'WAITING_FOR_LEASE');
+assert.equal(sameOutlet.processSalesCogsUploadJobs('B').status,'WAITING_FOR_LEASE');
 console.log('Upload reliability: durable Usage replay, permanent/transient failures, disjoint Goods jobs, adaptive Position execution, live access, scoped locks and background UI refresh passed.');
 
 // Unit conversions have a separate lease from stock writes and validate before mutation.

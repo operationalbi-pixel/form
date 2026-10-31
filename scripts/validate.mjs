@@ -488,7 +488,7 @@ if (!frontendStockCard.includes("server('queueUsageUpload'") || !frontendStockCa
   failures.push('Upload Sales COGS belum memakai job background dengan progress polling dan resume');
 }
 if (!backend.includes('queueUsageUpload: queueSalesCogsUpload') || !backend.includes('usageUploadStatus: getSalesCogsUploadStatus') ||
-    !backend.includes('function processSalesCogsUploadJobs()') || !backend.includes('function processSalesCogsJobChunk_(') ||
+    !backend.includes('function processSalesCogsUploadJobs(') || !backend.includes('function processSalesCogsJobChunk_(') ||
     !backend.includes("recoverStockUploadWorkers_(otherStockUploadJobs_())")) {
   failures.push('Backend job background Sales COGS belum lengkap atau belum terhubung ke maintenance worker');
 }

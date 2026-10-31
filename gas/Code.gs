@@ -4484,7 +4484,7 @@ function startStockUploadWorker(token, id, engine) {
     if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || Number(job.workerLeaseUntil || 0) > Date.now()) return { started: false };
     // This separate API request starts a worker without waiting for trigger delivery.
     // Existing engine locks/leases still serialize execution; the UI does not await it.
-    try { workers[engine](); } catch (error) {
+    try { if (engine === 'USAGE') workers[engine](id); else workers[engine](); } catch (error) {
       if (!stockUploadBusy_(error)) throw error;
       recoverStockUploadWorkers_([job]); return { started: false };
     }
@@ -13512,7 +13512,7 @@ function salesCogsJobsOverlap_(a, b) {
   return left.indexOf('BIHQ') >= 0 || right.indexOf('BIHQ') >= 0 || left.some(function (scope) { return right.indexOf(scope) >= 0; });
 }
 
-function processSalesCogsUploadJobs() {
+function processSalesCogsUploadJobs(preferredJobId) {
   const scopeLock = acquireStockScopeLock_('sales-cogs-background-worker', 1000);
   let scopeReleased = false;
   try {
@@ -13536,7 +13536,7 @@ function processSalesCogsUploadJobs() {
     const now = Date.now(), leased = jobs.filter(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > now; });
     if (leased.length >= 3) return { processed: false, status: 'WAITING_FOR_CAPACITY' };
     let job = jobs.filter(function (candidate) {
-      return Number(candidate.workerLeaseUntil || 0) <= now && !leased.some(function (active) { return salesCogsJobsOverlap_(candidate, active); });
+      return (!preferredJobId || candidate.jobId === preferredJobId) && Number(candidate.workerLeaseUntil || 0) <= now && !leased.some(function (active) { return salesCogsJobsOverlap_(candidate, active); });
     })[0];
     if (!job) {
       return { processed: false, status: 'WAITING_FOR_LEASE', leased: true };
