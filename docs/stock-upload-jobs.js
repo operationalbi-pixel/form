@@ -71,13 +71,14 @@ function renderGoodsUploadStatus(jobs) {
   byId('goodsUploadStatusBadge').classList.toggle('hidden', !active && !attention);
   byId('goodsUploadStatusRows').innerHTML = jobs.length ? jobs.map(function (job) {
     var progress = Math.max(0, Math.min(100, Number(job.progress) || 0));
+    var lastActivity = job.updatedAt && !isNaN(new Date(job.updatedAt).getTime()) ? new Date(job.updatedAt).toLocaleString('id-ID') : '';
     var action = job.engine && job.engine !== 'GOODS' && job.status === 'FAILED' && !job.canRetry ? '<button class="btn btn-light btn-small" data-stock-open="' + escapeAttr(job.type) + '">Pilih Ulang File</button>' : job.status === 'ACTION_REQUIRED' ? '<button class="btn btn-light btn-small" data-goods-review="' + escapeAttr(job.jobId) + '">Tinjau</button>' :
       job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="'+escapeAttr(job.engine||'GOODS')+'">Coba Lagi</button>' : '';
     return '<article class="goods-job"><div class="goods-job-heading"><strong>' + escapeHtml(job.fileName) + '</strong><span class="goods-job-status ' + (job.status === 'COMPLETE' ? 'done' : '') + '">' + escapeHtml(goodsUploadStatusLabel(job.status)) + '</span></div>' +
       '<p>' + ({WIP_PRODUCTION:'Produksi WIP',TRANSACTION_REPAIR:'Repair Upload Lama',GOODS_DELIVERY:'Goods Delivery',GOODS_RECEIPT:'Goods Receipt',ITEM_JOURNAL:'Item Journal',STOCK_OPNAME:'Stock Opname',BIHQ_GOODS_DELIVERY:'Batch Goods Delivery',BIHQ_GOODS_RECEIPT:'Batch Goods Receipt',SALES_USAGE:'Usage Penjualan',STOCK_POSITION:'Stock Posisi',EXPIRY:'Expired Date'}[job.type] || job.type) + ' · ' + escapeHtml(job.outlet) + ' · ' + escapeHtml(job.location) + '</p>' +
       '<div class="goods-job-progress" role="progressbar" aria-label="Progres upload" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + progress + '"><span style="width:' + progress + '%"></span></div>' +
       '<p>' + progress + '% · ' + escapeHtml(job.stage) + '</p>' + (job.error ? '<p class="goods-job-error">' + escapeHtml(job.error) + '</p>' : '') +
-      '<div class="goods-job-footer"><small>' + escapeHtml(new Date(job.createdAt).toLocaleString('id-ID')) + '</small>' + action + '</div></article>';
+      '<div class="goods-job-footer"><small>Dikirim ' + escapeHtml(new Date(job.createdAt).toLocaleString('id-ID')) + (lastActivity ? ' · Aktivitas server ' + escapeHtml(lastActivity) : '') + '</small>' + action + '</div></article>';
   }).join('') : '<div class="empty"><strong>Belum ada upload background.</strong><p>Semua upload Stock Card yang dikirim akan tampil di sini.</p></div>';
 }
 function refreshGoodsUploadStatus() {
