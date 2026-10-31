@@ -11627,12 +11627,16 @@ function acquireStockScopeLock_(scope, waitMs) {
           properties.setProperty(key, JSON.stringify({ token: token, scope: String(scope || ''), expiresAt: Date.now() + 8 * 60000 }));
           return {
             releaseLock: function () {
-              const releaseGate = LockService.getScriptLock();
-              if (!releaseGate.tryLock(3000)) return;
-              try {
-                const currentRaw = properties.getProperty(key), current = currentRaw ? JSON.parse(currentRaw) : null;
-                if (current && current.token === token) properties.deleteProperty(key);
-              } finally { releaseGate.releaseLock(); }
+              for (let attempt = 0; attempt < 3; attempt++) {
+                const releaseGate = LockService.getScriptLock();
+                if (!releaseGate.tryLock(3000)) continue;
+                try {
+                  const currentRaw = properties.getProperty(key), current = currentRaw ? JSON.parse(currentRaw) : null;
+                  if (current && current.token === token) properties.deleteProperty(key);
+                } finally { releaseGate.releaseLock(); }
+                return;
+              }
+              console.error('Kunci proses belum terlepas: ' + scope);
             }
           };
         }
@@ -13219,6 +13223,7 @@ function readSalesCogsJob_(jobId) {
 function salesCogsJobView_(job) {
   return {
     jobId: job.jobId, fileName: String(job.sourceFileName || ''), status: job.status, stage: String(job.stage || ''), progress: Number(job.progress || 0),
+    workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), updatedAt: job.updatedAt || job.createdAt,
     processed: Number(job.processed || 0), total: Number(job.total || 0), movementRows: Number(job.movementRows || 0),
     itemCount: Number(job.itemCount || 0), showcaseRowsSkipped: Number(job.showcaseRowsSkipped || 0),
     autoWipProductionCount: Number(job.autoWipProductionCount || 0), negativeItemCount: 0,
@@ -13496,8 +13501,20 @@ function reduceSalesCogsBatchSize_(job) {
   job.batchSize = Math.max(10, Math.floor(current / 2));
 }
 
+function salesCogsJobScopes_(job) {
+  const values = job.outlets && job.outlets.length ? job.outlets : [job.outlet || job.ownerOutlet || 'BIHQ'];
+  const scopes = values.join(',').split(',').map(function (value) { return String(value).trim().toUpperCase(); }).filter(Boolean);
+  return scopes.length ? scopes : ['BIHQ'];
+}
+
+function salesCogsJobsOverlap_(a, b) {
+  const left = salesCogsJobScopes_(a), right = salesCogsJobScopes_(b);
+  return left.indexOf('BIHQ') >= 0 || right.indexOf('BIHQ') >= 0 || left.some(function (scope) { return right.indexOf(scope) >= 0; });
+}
+
 function processSalesCogsUploadJobs() {
   const scopeLock = acquireStockScopeLock_('sales-cogs-background-worker', 1000);
+  let scopeReleased = false;
   try {
     PropertiesService.getScriptProperties().deleteProperty('sales-cogs-worker-scheduled-at');
     ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; })
@@ -13516,8 +13533,10 @@ function processSalesCogsUploadJobs() {
       return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt));
     });
     if (!jobs.length) return { processed: false };
+    const now = Date.now(), leased = jobs.filter(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > now; });
+    if (leased.length >= 3) return { processed: false, status: 'WAITING_FOR_CAPACITY' };
     let job = jobs.filter(function (candidate) {
-      return Number(candidate.workerLeaseUntil || 0) <= Date.now();
+      return Number(candidate.workerLeaseUntil || 0) <= now && !leased.some(function (active) { return salesCogsJobsOverlap_(candidate, active); });
     })[0];
     if (!job) {
       return { processed: false, status: 'WAITING_FOR_LEASE', leased: true };
@@ -13531,6 +13550,10 @@ function processSalesCogsUploadJobs() {
     // Apps Script executions are capped at six minutes. A seven-minute lease
     // leaves a safety margin while allowing an interrupted job to recover.
     job.workerLeaseUntil = Date.now() + 7 * 60 * 1000; writeSalesCogsJob_(job);
+    // The global scope only protects the job claim. Each batch has its own
+    // outlet lock, so disjoint outlets can be processed concurrently.
+    scopeLock.releaseLock(); scopeReleased = true;
+    if (jobs.some(function (candidate) { return candidate.jobId !== job.jobId && Number(candidate.workerLeaseUntil || 0) <= now && !salesCogsJobsOverlap_(candidate, job); })) scheduleSalesCogsWorker_();
     try {
       const runtime = {}, deadline = Date.now() + 240000;
       let lastStepMillis = 0;
@@ -13564,7 +13587,7 @@ function processSalesCogsUploadJobs() {
       return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(JSON.parse(pending[key]).status) >= 0;
     } catch (error) { return false; } })) scheduleSalesCogsWorker_();
     return { processed: true, jobId: job.jobId, status: job.status };
-  } finally { scopeLock.releaseLock(); }
+  } finally { if (!scopeReleased) scopeLock.releaseLock(); }
 }
 
 function transactionRepairPreviewResult_(plan, repairType) {
