@@ -11076,7 +11076,7 @@ function addBalancesToGroupedHistory_(groups, currentQty) {
   });
 }
 
-function calculateFifoSnapshots_(history) {
+function calculateFifoSnapshots_(history, finalOnly) {
   let activeRecalculation = null, activeRecalculationInfo = null, activeRecalculationCreated = -1;
   (history || []).forEach(function (movement) {
     const override = stockLotOverrideInfo_(movement);
@@ -11207,9 +11207,12 @@ function calculateFifoSnapshots_(history) {
       if (remaining > 0.0000001) uncoveredQueue.push({ movement: movement, qty: remaining });
       for (let i = lots.length - 1; i >= 0; i--) if (lots[i].qty <= 0.0000001) lots.splice(i, 1);
     }
-    snapshots[String(movement.date || '')] = lots.filter(function (lot) { return lot.qty > 0.0000001; }).map(function (lot) {
+    if (!finalOnly) snapshots[String(movement.date || '')] = lots.filter(function (lot) { return lot.qty > 0.0000001; }).map(function (lot) {
       return { qty: lot.qty, productionDate: lot.productionDate, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate, showcaseDate: lot.showcaseDate };
     });
+  });
+  if (finalOnly) snapshots.__final = lots.filter(function (lot) { return lot.qty > 0.0000001; }).map(function (lot) {
+    return { qty: lot.qty, productionDate: lot.productionDate, expiryDate: lot.expiryDate, sourceDate: lot.sourceDate, showcaseDate: lot.showcaseDate };
   });
   return snapshots;
 }
@@ -12292,10 +12295,10 @@ function salesFifoStateFromHistories_(refs, historiesByKey) {
       result.__balances[outlet][code] = result.__balances[outlet][code] || {};
       Object.keys(entry.dates).sort().forEach(function (date) {
         const datedHistory = history.filter(function (movement) { return String(movement.date || '').slice(0, 10) <= date; });
-        const movementHistory = applyStockHistoryAuditRows_(datedHistory), snapshots = calculateFifoSnapshots_(movementHistory), dates = Object.keys(snapshots).sort();
-        result[outlet][code][date] = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
+        const movementHistory = applyStockHistoryAuditRows_(datedHistory), snapshots = calculateFifoSnapshots_(movementHistory, true);
+        result[outlet][code][date] = snapshots.__final.map(function (lot) {
           return { qty: Number(lot.qty || 0), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
-        }).filter(function (lot) { return lot.qty > 0.0000001; }) : [];
+        }).filter(function (lot) { return lot.qty > 0.0000001; });
         result.__balances[outlet][code][date] = salesHistoryBalanceAtDate_(datedHistory, date);
       });
     });
@@ -12355,10 +12358,10 @@ function preloadSalesFifoLots_(salesRows, wipCatalog, masterByCode, salesMapping
             return String(movement.date || '').slice(0, 10) <= date;
           });
           const movementHistory = applyStockHistoryAuditRows_(history);
-          const snapshots = calculateFifoSnapshots_(movementHistory), dates = Object.keys(snapshots).sort();
-          result[outlet][code][date] = dates.length ? snapshots[dates[dates.length - 1]].map(function (lot) {
+          const snapshots = calculateFifoSnapshots_(movementHistory, true);
+          result[outlet][code][date] = snapshots.__final.map(function (lot) {
             return { qty: Number(lot.qty || 0), productionDate: lot.productionDate || '', expiryDate: lot.expiryDate || '', sourceDate: lot.sourceDate || '' };
-          }).filter(function (lot) { return lot.qty > 0.0000001; }) : [];
+          }).filter(function (lot) { return lot.qty > 0.0000001; });
           result.__balances[outlet][code][date] = salesHistoryBalanceAtDate_(history, date);
         });
       });

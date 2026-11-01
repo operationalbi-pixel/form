@@ -108,4 +108,13 @@ const movements=Array.from({length:400},(_,i)=>({logical_id:i?'id'+i:'same',reco
 const existing=await w.existingMovementState({OPERATIONS_DB:operations},movements);
 assert.equal(batches,2,'400 IDs use two D1 read round trips instead of sixteen');assert.equal(reads,16,'all original ID checks remain');assert.equal(existing.active.get('same').version,2);assert.equal(existing.duplicateIds.has('corrected'),true);
 await assert.rejects(()=>w.existingMovementState({OPERATIONS_DB:{...operations,batch:async()=>{throw Error('unavailable')}}},movements),/unavailable/,'a failed shard read cannot be mistaken for no duplicates');
+const fifoHistory=[
+ {recordId:'in-1',date:'2026-10-01',createdAt:'2026-10-01T08:00:00Z',direction:'IN',qty:12,movementType:'Goods Receipt',productionDate:'2026-09-30',sourceArrivalDate:'2026-10-01'},
+ {recordId:'out-1',date:'2026-10-02',createdAt:'2026-10-02T08:00:00Z',direction:'OUT',qty:5,movementType:'Sold'},
+ {recordId:'in-2',date:'2026-10-03',createdAt:'2026-10-03T08:00:00Z',direction:'IN',qty:4,movementType:'Goods Receipt',productionDate:'2026-10-02',sourceArrivalDate:'2026-10-03'}
+];
+const fullFifo=g.calculateFifoSnapshots_(JSON.parse(JSON.stringify(fifoHistory)));
+const finalFifo=g.calculateFifoSnapshots_(JSON.parse(JSON.stringify(fifoHistory)),true);
+assert.deepEqual(JSON.parse(JSON.stringify(finalFifo.__final)),JSON.parse(JSON.stringify(fullFifo['2026-10-03'])),'final-only FIFO keeps the exact closing lots');
+assert.deepEqual(Object.keys(finalFifo),['__final'],'large imports avoid cloning a snapshot for every historical movement');
 console.log(`COGS speed checks passed: ${input.length} rows / ${Object.keys(master).length} products; ${preloads} scoped preload requests (mock history); 29 batches in one simulated 145-second execution; duplicate/correction checks preserved.`);
