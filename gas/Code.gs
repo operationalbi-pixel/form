@@ -3211,7 +3211,7 @@ function processMissingExpiryUploadJobs() {
       } catch (error) { properties.deleteProperty(key); }
     });
     jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
-    if (!jobs.length) { clearSalesCogsWorkerTrigger_(); return { processed: false }; }
+    if (!jobs.length) return { processed: false };
     let job = jobs[0];
     try {
       stockUploadJobEmployee_(job);
@@ -13543,7 +13543,7 @@ function processSalesCogsUploadJobs(preferredJobId) {
     jobs.sort(function (a, b) {
       return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt));
     });
-    if (!jobs.length) return { processed: false };
+    if (!jobs.length) { clearSalesCogsWorkerTrigger_(); return { processed: false }; }
     const now = Date.now(), leased = jobs.filter(function (candidate) { return Number(candidate.workerLeaseUntil || 0) > now; });
     if (leased.length >= 3) return { processed: false, status: 'WAITING_FOR_CAPACITY' };
     let job = jobs.filter(function (candidate) {
