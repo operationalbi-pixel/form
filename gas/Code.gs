@@ -3211,7 +3211,7 @@ function processMissingExpiryUploadJobs() {
       } catch (error) { properties.deleteProperty(key); }
     });
     jobs.sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
-    if (!jobs.length) return { processed: false };
+    if (!jobs.length) { clearSalesCogsWorkerTrigger_(); return { processed: false }; }
     let job = jobs[0];
     try {
       stockUploadJobEmployee_(job);
@@ -13297,29 +13297,43 @@ function getSalesCogsUploadStatus(token, jobId) {
 }
 
 function scheduleSalesCogsWorker_() {
-  const scheduleKey = 'sales-cogs-worker-scheduled-at';
+  const scheduleKey = 'sales-cogs-worker-recurring-v1';
   const gate = LockService.getScriptLock();
   if (!gate.tryLock(2000)) return false;
   try {
     const properties = PropertiesService.getScriptProperties();
-    const scheduledAt = Number(properties.getProperty(scheduleKey) || 0);
     const triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
       return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs';
     });
-    // A one-shot trigger that is still registered after two minutes is no
-    // longer trusted. Replace it so polling can recover a lost worker.
-    if (triggers.length && scheduledAt && Date.now() - scheduledAt < 120000) return true;
+    if (triggers.length && properties.getProperty(scheduleKey) === '1') return true;
+    // Replace the legacy one-shot trigger once. A recurring minute tick avoids
+    // spending most of a large upload waiting for the next trigger delivery.
     triggers.forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (deleteError) {} });
-    properties.setProperty(scheduleKey, String(Date.now()));
-    ScriptApp.newTrigger('processSalesCogsUploadJobs').timeBased().after(1000).create();
+    ScriptApp.newTrigger('processSalesCogsUploadJobs').timeBased().everyMinutes(1).create();
+    properties.setProperty(scheduleKey, '1');
+    properties.deleteProperty('sales-cogs-worker-scheduled-at');
     return true;
   } catch (error) {
     try { PropertiesService.getScriptProperties().deleteProperty(scheduleKey); } catch (cleanupError) {}
-    console.error('Worker Sales COGS diproses trigger maintenance: ' + error.message);
+    console.error('Worker Sales COGS belum dapat dijadwalkan: ' + error.message);
     return false;
   } finally {
     gate.releaseLock();
   }
+}
+
+function clearSalesCogsWorkerTrigger_() {
+  const gate = LockService.getScriptLock();
+  if (!gate.tryLock(2000)) return false;
+  try {
+    ScriptApp.getProjectTriggers().filter(function (trigger) {
+      return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs';
+    }).forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
+    const properties = PropertiesService.getScriptProperties();
+    properties.deleteProperty('sales-cogs-worker-recurring-v1');
+    properties.deleteProperty('sales-cogs-worker-scheduled-at');
+    return true;
+  } finally { gate.releaseLock(); }
 }
 
 function readSalesCogsJobJson_(driveId) {
@@ -13516,9 +13530,6 @@ function processSalesCogsUploadJobs(preferredJobId) {
   const scopeLock = acquireStockScopeLock_('sales-cogs-background-worker', 1000);
   let scopeReleased = false;
   try {
-    PropertiesService.getScriptProperties().deleteProperty('sales-cogs-worker-scheduled-at');
-    ScriptApp.getProjectTriggers().filter(function (trigger) { return trigger.getHandlerFunction() === 'processSalesCogsUploadJobs'; })
-      .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
     const properties = PropertiesService.getScriptProperties(), all = properties.getProperties(), jobs = [];
     Object.keys(all).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; }).forEach(function (key) {
       try {
