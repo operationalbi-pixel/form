@@ -571,7 +571,9 @@ if (!frontendStockCard.includes("server('queueStockPosition'") ||
     frontendStockCard.includes("server('uploadStockPosition'")) {
   failures.push('Upload Stock Posisi masih menunggu penyimpanan sinkron atau belum dapat menyambungkan ulang job');
 }
-if (!backend.includes("const scheduleKey = 'sales-cogs-worker-scheduled-at'") ||
+if (!backend.includes("const scheduleKey = 'sales-cogs-worker-recurring-v1'") ||
+    !backend.includes("everyMinutes(1).create()") ||
+    !backend.includes("if (!jobs.length) { clearSalesCogsWorkerTrigger_();") ||
     !backend.includes('Proses terhenti terdeteksi. Worker dijalankan kembali otomatis.') ||
     !backend.includes('candidate.workerLeaseUntil') || !backend.includes('a.lastWorkedAt || a.createdAt')) {
   failures.push('Antrean Sales COGS belum dapat memulihkan trigger macet atau melewati job lama yang masih terkunci');
