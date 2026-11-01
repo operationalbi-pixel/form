@@ -26,6 +26,35 @@ const saved=JSON.parse(store['sales-cogs-upload-job-large']);assert.equal(saved.
 store['sales-cogs-upload-job-new']=JSON.stringify({jobId:'new',status:'PROCESSING',processed:0,total:1,createdAt:'2026-10-11T23:59:00Z'});
 assert.equal(c.processSalesCogsUploadJobs().jobId,'new','a remaining large job still gives the next outlet a turn');
 
+
+// Recurring scheduling replaces a one-shot trigger once, then keeps one
+// lightweight minute tick until the queue is empty.
+const scheduler={console};vm.createContext(scheduler);vm.runInContext(source,scheduler);
+const triggerProperties={},triggers=[];let created=0,deleted=0;
+Object.assign(scheduler,{
+  LockService:{getScriptLock:()=>({tryLock:()=>true,releaseLock(){}})},
+  PropertiesService:{getScriptProperties:()=>({
+    getProperty:key=>triggerProperties[key]||'',
+    setProperty:(key,value)=>{triggerProperties[key]=value},
+    deleteProperty:key=>{delete triggerProperties[key]},
+    getProperties:()=>({})
+  })},
+  ScriptApp:{
+    getProjectTriggers:()=>triggers.slice(),
+    deleteTrigger:trigger=>{deleted++;triggers.splice(triggers.indexOf(trigger),1)},
+    newTrigger:handler=>({timeBased:()=>({everyMinutes:n=>{assert.equal(n,1);return{create:()=>{created++;triggers.push({getHandlerFunction:()=>handler})}}}})})
+  },
+  acquireStockScopeLock_:()=>({releaseLock(){}})
+});
+assert.equal(scheduler.scheduleSalesCogsWorker_(),true);
+assert.equal(scheduler.scheduleSalesCogsWorker_(),true);
+assert.equal(created,1,'repeated status polls must not create duplicate triggers');
+assert.equal(triggers.length,1);
+assert.equal(scheduler.processSalesCogsUploadJobs().processed,false);
+assert.equal(triggers.length,0,'idle queue removes the minute trigger');
+assert.equal(deleted,1);
+assert.equal(triggerProperties['sales-cogs-worker-recurring-v1'],undefined);
+
 const g={console};vm.createContext(g);vm.runInContext(source,g);
 const input=process.argv[2]?JSON.parse(fs.readFileSync(process.argv[2],'utf8')).rows:Array.from({length:14172},(_,i)=>({product:'P'+i%452,unit:'PCS',qty:1,transactionDate:'2026-10-'+String(6+i%6).padStart(2,'0')}));
 const master=Object.fromEntries([...new Set(input.map(r=>r.product))].map((name,i)=>[name,{code:'P'+i,name,unit:'PCS'}]));
