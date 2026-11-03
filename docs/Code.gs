@@ -243,6 +243,7 @@ function apiActions_() {
     goodsUploadRequest: getGoodsUploadRequest,
     retryGoodsUpload: retryGoodsUpload,
     retryStockUpload: retryStockUpload,
+    cancelSalesCogsUpload: cancelSalesCogsUpload,
     verifyStockPosition: previewStockPositionUpload,
     queueStockPosition: queueStockPositionUpload,
     findStockPositionUpload: findStockPositionUpload,
@@ -4366,6 +4367,10 @@ function otherStockUploadJobs_() {
     else return;
     try {
       const job = JSON.parse(all[key]); job.engine = engine; job.type = type;
+      if (engine === 'USAGE' && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0 && all[salesCogsCancelKey_(job.jobId)]) {
+        job.cancelRequested = true;
+        job.stage = 'Permintaan berhenti diterima. Menunggu batch aktif selesai.';
+      }
       job.fileName = job.fileName || job.sourceFileName || ''; jobs.push(job);
     } catch (error) { console.error('Metadata upload tidak dapat dibaca: ' + key); }
   });
@@ -4394,7 +4399,7 @@ function goodsUploadJobs_(activeOnly,ownerNik) {
 }
 function goodsUploadJobView_(job) {
   return { rowEdit:job.rowEdit||null, requestId:job.requestId||'', eventDate:job.eventDate||'', result:job.type==='SHOWCASE_LOG'?job.result||null:null, jobId: job.jobId, type: job.type, engine: job.engine || 'GOODS', fileName: job.fileName, outlet: job.outlet, location: job.location,
-    status: job.status, canRetry:Boolean(job.planDriveId||job.preparedDriveId||job.pendingDriveId||job.sourceDriveId), workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
+    status: job.status, cancelRequested:Boolean(job.cancelRequested), canRetry:Boolean(job.planDriveId||job.preparedDriveId||job.pendingDriveId||job.sourceDriveId), workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), stage: job.stage, progress: Number(job.progress || 0), processed: Number(job.processed || 0),
     total: Number(job.total || 0), error: job.error || '', createdAt: job.createdAt, updatedAt: job.updatedAt };
 }
 function goodsUploadOwner_(token, id) {
@@ -4532,8 +4537,9 @@ function retryStockUpload(token, id, engine) {
       const config=engines[engine],raw=PropertiesService.getScriptProperties().getProperty(config.prefix+cleanText_(id,100)),job=raw?JSON.parse(raw):null;
       if(!job||job.ownerNik!==employee.nik)throw new Error('Upload tidak ditemukan atau bukan milik akun ini.');
       stockUploadJobEmployee_(job);
-      if(job.status!=='FAILED'||Number(job.workerLeaseUntil||0)>Date.now())throw new Error('Upload ini belum dapat dicoba ulang.');
+      if((job.status!=='FAILED' && !(engine==='USAGE' && job.status==='CANCELLED'))||Number(job.workerLeaseUntil||0)>Date.now())throw new Error('Upload ini belum dapat dicoba ulang.');
       if(!job.preparedDriveId&&!job.pendingDriveId&&!job.sourceDriveId)throw new Error('File pemulihan lama sudah tidak tersedia. Pilih ulang file dan verifikasi.');
+      if(engine==='USAGE')PropertiesService.getScriptProperties().deleteProperty(salesCogsCancelKey_(job.jobId));
       job.status='QUEUED';job.error='';job.retryCount=0;job.workerLeaseUntil=0;job.stage='Melanjutkan bagian terakhir yang belum terkonfirmasi.';
       config.write(job);config.schedule();return goodsUploadJobView_(Object.assign({},job,{engine:engine}));
     }finally{gate.releaseLock();}
@@ -12378,6 +12384,7 @@ function salesCogsFifoHistoryCache_(job, prepared, runtime) {
     try {
       const saved = readSalesCogsFifoCache_(job);
       runtime.salesCogsFifoHistoryCache = saved && saved.histories ? saved : { histories: {}, targets: {} };
+      runtime.salesCogsFifoHistoryCache.snapshots = runtime.salesCogsFifoHistoryCache.snapshots || {};
       runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
       return runtime.salesCogsFifoHistoryCache;
     } catch (error) {
@@ -12389,14 +12396,17 @@ function salesCogsFifoHistoryCache_(job, prepared, runtime) {
   }
   const referenceData = salesCogsReferenceData_(runtime);
   const refs = collectSalesFifoPreloadRows_(prepared.rows || [], referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings);
-  const targets = {};
+  const targets = {}, dates = {};
   refs.forEach(function (ref) {
     const outlet = String(ref.outlet || '').toUpperCase(), code = String(ref.item && ref.item.code || '').trim().toUpperCase();
     if (!outlet || !code) return;
     const key = salesFifoHistoryKey_(outlet, code), date = String(ref.transactionDate || '');
     if (!targets[key] || date > targets[key]) targets[key] = date;
+    if (!dates[key]) dates[key] = [];
+    if (dates[key].indexOf(date) < 0) dates[key].push(date);
   });
-  runtime.salesCogsFifoHistoryCache = { histories: {}, targets: targets };
+  Object.keys(dates).forEach(function (key) { dates[key].sort(); });
+  runtime.salesCogsFifoHistoryCache = { histories: {}, targets: targets, dates: dates, snapshots: {} };
   runtime.salesCogsFifoHistories = runtime.salesCogsFifoHistoryCache.histories;
   persistSalesCogsFifoCache_(job, runtime);
   return runtime.salesCogsFifoHistoryCache;
@@ -12428,11 +12438,11 @@ function persistSalesCogsFifoCache_(job, runtime) {
 }
 
 function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
-  const cache = runtime.salesCogsFifoHistoryCache, histories = cache.histories, referenceData = salesCogsReferenceData_(runtime);
+  const cache = runtime.salesCogsFifoHistoryCache, histories = cache.histories, snapshots = cache.snapshots || {}, referenceData = salesCogsReferenceData_(runtime);
   const refs = collectSalesFifoPreloadRows_(salesRows || [], referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings), byOutlet = {};
   refs.forEach(function (ref) {
     const outlet = String(ref.outlet || '').toUpperCase(), code = String(ref.item && ref.item.code || '').trim().toUpperCase(), key = salesFifoHistoryKey_(outlet, code);
-    if (!outlet || !code || Object.prototype.hasOwnProperty.call(histories, key)) return;
+    if (!outlet || !code || Object.prototype.hasOwnProperty.call(histories, key) || Object.prototype.hasOwnProperty.call(snapshots, key)) return;
     if (!byOutlet[outlet]) byOutlet[outlet] = {};
     byOutlet[outlet][code] = ref.item;
   });
@@ -12453,14 +12463,23 @@ function salesCogsFifoEnsureRows_(job, runtime, salesRows) {
   if (Object.keys(byOutlet).length) persistSalesCogsFifoCache_(job, runtime);
 }
 
-function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
+function salesCogsFifoCacheApplyRows_(job, runtime, rows, snapshotUpdates) {
   const histories = runtime && runtime.salesCogsFifoHistories;
   if (!histories || !job.fifoHistoryDriveId) return;
+  if (snapshotUpdates && Object.keys(snapshotUpdates).length) {
+    const cache = runtime.salesCogsFifoHistoryCache;
+    cache.snapshots = cache.snapshots || {};
+    Object.keys(snapshotUpdates).forEach(function (key) {
+      cache.snapshots[key] = snapshotUpdates[key];
+      delete histories[key];
+    });
+  }
   const seen = {};
   (rows || []).forEach(function (entry) {
     const row = entry && entry.json ? entry.json : entry || {};
     if (String(row.record_type || '').toUpperCase() !== 'MOVEMENT' || String(row.location || '') !== 'Store') return;
     const key = salesFifoHistoryKey_(row.outlet, row.item_code);
+    if (snapshotUpdates && snapshotUpdates[key]) return;
     if (!histories[key]) histories[key] = [];
     if (!seen[key]) seen[key] = new Set(histories[key].map(function (movement) { return String(movement.recordId || ''); }).filter(Boolean));
     const recordId = String(row.record_id || '');
@@ -12472,6 +12491,91 @@ function salesCogsFifoCacheApplyRows_(job, runtime, rows) {
       transferId: String(row.transfer_id || ''), systemGenerated: Boolean(row.transfer_id), createdBy: String(row.created_by || ''), createdAt: String(row.created_at || ''), itemCode: String(row.item_code || ''), itemName: String(row.item_name || ''), category: String(row.category || ''), unit: String(row.unit || ''), opnameBalance: null, opnameDate: '' });
   });
   persistSalesCogsFifoCache_(job, runtime);
+}
+
+// A queued upload touches the same item on many sales rows. Keep the closing
+// lots for every report date, then checkpoint only those lots after a durable
+// write. Legacy history checkpoints are converted one item at a time.
+function salesCogsFifoStateFromCache_(salesRows, referenceData, runtime) {
+  const cache = runtime.salesCogsFifoHistoryCache;
+  cache.snapshots = cache.snapshots || {};
+  cache.legacyKeys = cache.legacyKeys || {};
+  if (!cache.dates) {
+    cache.dates = {};
+    const allRows = runtime.prepared && runtime.prepared.rows || salesRows;
+    collectSalesFifoPreloadRows_(allRows, referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings).forEach(function (ref) {
+      const key = salesFifoHistoryKey_(ref.outlet, ref.item.code), date = String(ref.transactionDate || '');
+      if (!cache.dates[key]) cache.dates[key] = [];
+      if (cache.dates[key].indexOf(date) < 0) cache.dates[key].push(date);
+    });
+    Object.keys(cache.dates).forEach(function (key) { cache.dates[key].sort(); });
+  }
+  const refs = collectSalesFifoPreloadRows_(salesRows, referenceData.wipCatalog, referenceData.masterByCode, referenceData.salesMappings);
+  const active = {}, missing = [], legacyRefs = [], snapshotKeys = {};
+  refs.forEach(function (ref) {
+    const key = salesFifoHistoryKey_(ref.outlet, ref.item.code);
+    active[key] = { outlet: ref.outlet, code: String(ref.item.code || '').trim().toUpperCase(), item: ref.item };
+  });
+  Object.keys(active).forEach(function (key) {
+    const entry = active[key];
+    const dates = cache.dates[key] || [];
+    // Automatic WIP production adds a new lot. Keep its full movement history
+    // so a later report date can rebuild the correct lot ordering.
+    if (referenceData.wipCatalog && referenceData.wipCatalog.byCode &&
+        referenceData.wipCatalog.byCode[entry.code]) cache.legacyKeys[key] = true;
+    if (!cache.snapshots[key] && !cache.legacyKeys[key] && (cache.histories[key] || []).some(function (row) {
+      const date = String(row.opnameDate || row.date || '').slice(0, 10);
+      return date >= dates[0] && date <= dates[dates.length - 1] &&
+        (row.movementType === 'Stock Opname' || row.movementType === 'Lot Balance Override');
+    })) cache.legacyKeys[key] = true;
+    if (cache.legacyKeys[key]) {
+      refs.filter(function (ref) { return salesFifoHistoryKey_(ref.outlet, ref.item.code) === key; }).forEach(function (ref) { legacyRefs.push(ref); });
+      return;
+    }
+    snapshotKeys[key] = entry;
+    if (cache.snapshots[key]) return;
+    (cache.dates[key] || [refs.filter(function (ref) { return salesFifoHistoryKey_(ref.outlet, ref.item.code) === key; })[0].transactionDate]).forEach(function (date) {
+      missing.push({ outlet: entry.outlet, item: entry.item, transactionDate: date });
+    });
+  });
+  if (missing.length) {
+    const calculated = salesFifoStateFromHistories_(missing, cache.histories);
+    Object.keys(snapshotKeys).forEach(function (key) {
+      if (cache.snapshots[key]) return;
+      const entry = active[key];
+      cache.snapshots[key] = {
+        lots: calculated[entry.outlet] && calculated[entry.outlet][entry.code] || {},
+        balances: calculated.__balances[entry.outlet] && calculated.__balances[entry.outlet][entry.code] || {}
+      };
+    });
+  }
+  const legacyCalculated = legacyRefs.length ? salesFifoStateFromHistories_(legacyRefs, cache.histories) : null;
+  const state = { __balances: {} };
+  Object.keys(active).forEach(function (key) {
+    const entry = active[key], snapshot = cache.snapshots[key];
+    if (!state[entry.outlet]) state[entry.outlet] = {};
+    if (!state.__balances[entry.outlet]) state.__balances[entry.outlet] = {};
+    state[entry.outlet][entry.code] = cache.legacyKeys[key]
+      ? legacyCalculated[entry.outlet][entry.code]
+      : JSON.parse(JSON.stringify(snapshot.lots));
+    state.__balances[entry.outlet][entry.code] = cache.legacyKeys[key]
+      ? legacyCalculated.__balances[entry.outlet][entry.code]
+      : Object.assign({}, snapshot.balances);
+  });
+  runtime.salesCogsActiveKeys = snapshotKeys;
+  return state;
+}
+
+function salesCogsFifoSnapshotUpdates_(state, active) {
+  const updates = {};
+  Object.keys(active || {}).forEach(function (key) {
+    const entry = active[key];
+    updates[key] = {
+      lots: state[entry.outlet][entry.code],
+      balances: state.__balances[entry.outlet][entry.code]
+    };
+  });
+  return updates;
 }
 
 function salesHistoryBalanceAtDate_(history, date) {
@@ -12557,7 +12661,25 @@ function salesConsumeInventoryLots_(fifoState, outlet, code, transactionDate, qt
   const allocated = salesConsolidateLots_(consumeSalesFifoLots_(currentLots, qty));
   const byDate = fifoState[outlet] && fifoState[outlet][code] ? fifoState[outlet][code] : {};
   Object.keys(byDate).filter(function (date) { return date > transactionDate; }).sort().forEach(function (date) {
-    consumeSalesFifoLots_(byDate[date], qty);
+    // A later receipt can have a higher FEFO priority than the lot actually
+    // sold today. Future snapshots must consume the pinned sale lot first,
+    // exactly as the committed journal will when rebuilt from history.
+    allocated.forEach(function (saleLot) {
+      const futureLots = byDate[date];
+      let remaining = Number(saleLot.qty || 0);
+      if (saleLot.productionDate || saleLot.expiryDate || saleLot.sourceDate) {
+        for (let i = 0; i < futureLots.length && remaining > 0.0000001; i++) {
+          const lot = futureLots[i];
+          if (saleLot.productionDate && String(lot.productionDate || '') !== String(saleLot.productionDate)) continue;
+          if (saleLot.expiryDate && String(lot.expiryDate || '') !== String(saleLot.expiryDate)) continue;
+          if (saleLot.sourceDate && String(lot.sourceDate || '') !== String(saleLot.sourceDate)) continue;
+          const taken = Math.min(Math.max(0, Number(lot.qty || 0)), remaining);
+          lot.qty -= taken; remaining -= taken;
+        }
+      }
+      if (remaining > 0.0000001) consumeSalesFifoLots_(futureLots, remaining);
+    });
+    for (let i = byDate[date].length - 1; i >= 0; i--) if (Number(byDate[date][i].qty || 0) <= 0.0000001) byDate[date].splice(i, 1);
   });
   salesAdjustBalancesFromDate_(fifoState, outlet, code, transactionDate, -qty);
   return allocated;
@@ -13211,6 +13333,49 @@ function stockCheckpointBalanceSql_(movementAlias, checkpointAlias) {
 }
 
 function salesCogsJobKey_(jobId) { return 'sales-cogs-upload-job-' + String(jobId || '').trim(); }
+function salesCogsCancelKey_(jobId) { return 'sales-cogs-cancel-' + String(jobId || '').trim(); }
+function salesCogsCancellationRequested_(jobId) {
+  const properties = PropertiesService.getScriptProperties(), key = salesCogsCancelKey_(jobId);
+  return Boolean(typeof properties.getProperty === 'function' ? properties.getProperty(key) : properties.getProperties()[key]);
+}
+
+function finishSalesCogsCancellation_(job) {
+  job.status = 'CANCELLED';
+  job.workerLeaseUntil = 0;
+  job.cancelRequested = false;
+  job.error = '';
+  job.stage = 'Sisa upload dihentikan pada baris ' + Number(job.processed || 0) + ' dari ' + Number(job.total || 0) + '. Transaksi yang sudah tersimpan tetap berlaku.';
+  writeSalesCogsJob_(job);
+  PropertiesService.getScriptProperties().deleteProperty(salesCogsCancelKey_(job.jobId));
+  return job;
+}
+
+function cancelSalesCogsUpload(token, jobId) {
+  return safe_(function () {
+    const session = requireSession_(token), employee = findEmployee_(session.nik); assertEmployeeActive_(employee);
+    const claim = acquireStockScopeLock_('sales-cogs-background-worker', 2000);
+    try {
+      let job = readSalesCogsJob_(cleanText_(jobId, 100));
+      if (!job || job.ownerNik !== employee.nik) throw new Error('Upload Usage tidak ditemukan atau bukan milik akun ini.');
+      if (job.status === 'CANCELLED') return goodsUploadJobView_(Object.assign({}, job, { engine: 'USAGE', type: 'SALES_USAGE' }));
+      if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0) throw new Error('Upload ini sudah selesai atau gagal. Periksa status sebelum mencoba lagi.');
+      const properties = PropertiesService.getScriptProperties();
+      properties.setProperty(salesCogsCancelKey_(job.jobId), new Date().toISOString());
+      const latest = readSalesCogsJob_(job.jobId);
+      if (latest.status === 'COMPLETE' || latest.status === 'FAILED') {
+        properties.deleteProperty(salesCogsCancelKey_(job.jobId));
+        return goodsUploadJobView_(Object.assign({}, latest, { engine: 'USAGE', type: 'SALES_USAGE' }));
+      }
+      job = latest;
+      if (Number(job.workerLeaseUntil || 0) <= Date.now()) finishSalesCogsCancellation_(job);
+      else {
+        job.cancelRequested = true;
+        job.stage = 'Permintaan berhenti diterima. Menunggu batch aktif selesai.';
+      }
+      return goodsUploadJobView_(Object.assign({}, job, { engine: 'USAGE', type: 'SALES_USAGE' }));
+    } finally { claim.releaseLock(); }
+  });
+}
 
 function writeSalesCogsJob_(job) {
   job.updatedAt = new Date().toISOString();
@@ -13225,7 +13390,7 @@ function readSalesCogsJob_(jobId) {
 
 function salesCogsJobView_(job) {
   return {
-    jobId: job.jobId, fileName: String(job.sourceFileName || ''), status: job.status, stage: String(job.stage || ''), progress: Number(job.progress || 0),
+    jobId: job.jobId, fileName: String(job.sourceFileName || ''), status: job.status, cancelRequested:Boolean(job.cancelRequested), stage: String(job.stage || ''), progress: Number(job.progress || 0),
     workerRunning: Number(job.workerLeaseUntil || 0) > Date.now(), updatedAt: job.updatedAt || job.createdAt,
     processed: Number(job.processed || 0), total: Number(job.total || 0), movementRows: Number(job.movementRows || 0),
     itemCount: Number(job.itemCount || 0), showcaseRowsSkipped: Number(job.showcaseRowsSkipped || 0),
@@ -13253,6 +13418,19 @@ function queueSalesCogsUpload(token, payload) {
       .map(function (key) { try { return JSON.parse(properties.getProperty(key)); } catch (error) { return null; } })
       .filter(function (job) { return job && job.ownerNik === employee.nik && job.sourceHash === sourceHash && ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0; })[0];
     if (active) return salesCogsJobView_(active);
+    const previous = Object.keys(properties.getProperties()).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; })
+      .map(function (key) { try { return JSON.parse(properties.getProperty(key)); } catch (error) { return null; } })
+      .filter(function (job) { return job && job.ownerNik === employee.nik && job.sourceHash === sourceHash &&
+        ['CANCELLED', 'FAILED'].indexOf(job.status) >= 0 && (job.preparedDriveId || job.pendingDriveId || job.sourceDriveId); })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); })[0];
+    if (previous) {
+      if (previous.status === 'FAILED') throw new Error('File ini memiliki upload lama yang dapat dilanjutkan. Buka Status Upload lalu klik Coba Lagi agar checkpoint lama digunakan.');
+      properties.deleteProperty(salesCogsCancelKey_(previous.jobId));
+      previous.status = 'QUEUED'; previous.error = ''; previous.retryCount = 0; previous.workerLeaseUntil = 0;
+      previous.stage = 'Melanjutkan upload lama dari baris terakhir yang terkonfirmasi.';
+      writeSalesCogsJob_(previous); scheduleSalesCogsWorker_();
+      return salesCogsJobView_(previous);
+    }
 
     const jobId = Utilities.getUuid(), now = new Date().toISOString();
     const sourceFile = DriveApp.createFile(Utilities.newBlob(bytes,
@@ -13281,6 +13459,10 @@ function getSalesCogsUploadStatus(token, jobId) {
   return safe_(function () {
     const session = requireSession_(token), job = readSalesCogsJob_(cleanText_(jobId, 100));
     if (!job || job.ownerNik !== session.nik) throw new Error('Job upload Sales COGS tidak ditemukan atau bukan milik akun ini.');
+    if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0 && salesCogsCancellationRequested_(job.jobId)) {
+      job.cancelRequested = true;
+      job.stage = 'Permintaan berhenti diterima. Menunggu batch aktif selesai.';
+    }
     const pending = ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0;
     const staleMs = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
     const leased = Number(job.workerLeaseUntil || 0) > Date.now();
@@ -13388,7 +13570,9 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
   const provided = payload.conversions || {}, salesMappings = referenceData.salesMappings;
   const masterByCode = referenceData.masterByCode, writeClock = { sequence: 0 };
   let autoWipCount = 0;
-  const fifoState = preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings, [], runtime && runtime.salesCogsFifoHistories);
+  const fifoState = runtime && runtime.salesCogsFifoHistoryCache
+    ? salesCogsFifoStateFromCache_(prepared.rows, referenceData, runtime)
+    : preloadSalesFifoLots_(prepared.rows, wipCatalog, masterByCode, salesMappings, [], runtime && runtime.salesCogsFifoHistories);
   prepared.rows.forEach(function (sale) {
     const traceId = 'SALE|' + sale.rowHash, itemCode = String(sale.item.code || '').toUpperCase();
     let soldLots = [];
@@ -13437,7 +13621,8 @@ function writePreparedSalesCogsChunk_(prepared, employee, payload, runtime) {
       source_file: 'SALES_COGS|' + prepared.fileName, source_hash: sale.rowHash, source_row: sale.sourceRow, transfer_id: 'SALE|' + sale.rowHash
     }});
   });
-  if (runtime && runtime.planOnly) return { stockRows: rows, movementRows: rows.length, autoWipProductionCount: autoWipCount };
+  if (runtime && runtime.planOnly) return { stockRows: rows, movementRows: rows.length, autoWipProductionCount: autoWipCount,
+    fifoSnapshotUpdates: runtime.salesCogsActiveKeys ? salesCogsFifoSnapshotUpdates_(fifoState, runtime.salesCogsActiveKeys) : null };
   if (rows.length) {
     const lock = acquireStockWriteLock_();
     try { insertStockCardRows_(rows); } finally { lock.releaseLock(); }
@@ -13488,7 +13673,7 @@ function processSalesCogsJobChunk_(job, runtime) {
   }
   if(plan.stockRows.length) {
     insertStockCardRows_(plan.stockRows);
-    salesCogsFifoCacheApplyRows_(job, runtime, plan.stockRows);
+    salesCogsFifoCacheApplyRows_(job, runtime, plan.stockRows, plan.fifoSnapshotUpdates);
   }
   const pendingId=job.pendingDriveId;
   job.processed = start + plan.count; job.movementRows = Number(job.movementRows || 0) + Number(plan.movementRows || 0);
@@ -13537,7 +13722,7 @@ function processSalesCogsUploadJobs(preferredJobId) {
     Object.keys(all).filter(function (key) { return key.indexOf('sales-cogs-upload-job-') === 0; }).forEach(function (key) {
       try {
         const job = JSON.parse(all[key]), age = Date.now() - new Date(job.updatedAt || job.createdAt || 0).getTime();
-        if ((job.status === 'COMPLETE' || job.status === 'FAILED') && age > 7 * 86400000) {cleanupSalesCogsJobFiles_(job);properties.deleteProperty(key);}
+        if ((job.status === 'COMPLETE' || job.status === 'FAILED' || job.status === 'CANCELLED') && age > 7 * 86400000) {cleanupSalesCogsJobFiles_(job);properties.deleteProperty(key);}
         else if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) jobs.push(job);
       } catch (error) { properties.deleteProperty(key); }
     });
@@ -13554,6 +13739,10 @@ function processSalesCogsUploadJobs(preferredJobId) {
     })[0];
     if (!job) {
       return { processed: false, status: 'WAITING_FOR_LEASE', leased: true };
+    }
+    if (all[salesCogsCancelKey_(job.jobId)]) {
+      finishSalesCogsCancellation_(job);
+      return { processed: false, jobId: job.jobId, status: 'CANCELLED' };
     }
     // A previous execution may have exceeded its runtime without entering the catch block.
     // Retry with a smaller batch so a large upload can make progress again.
@@ -13572,6 +13761,10 @@ function processSalesCogsUploadJobs(preferredJobId) {
       const runtime = {}, deadline = Date.now() + 240000;
       let lastStepMillis = 0;
       do {
+        if (salesCogsCancellationRequested_(job.jobId)) {
+          finishSalesCogsCancellation_(job);
+          break;
+        }
         const stepStartedAt = Date.now();
         job = processSalesCogsJobChunk_(job, runtime);
         lastStepMillis = Date.now() - stepStartedAt;
@@ -13579,7 +13772,9 @@ function processSalesCogsUploadJobs(preferredJobId) {
         // Continue while the execution has room for another batch. Do not spend
         // several trigger-delivery cycles on an arbitrary four-batch ceiling.
         // Keep a margin for checkpointing and slower network responses.
-      } while (job.status !== 'COMPLETE' && Date.now() + Math.max(5000, lastStepMillis * 1.5) + 15000 < deadline);
+      } while (job.status !== 'COMPLETE' && job.status !== 'CANCELLED' && Date.now() + Math.max(5000, lastStepMillis * 1.5) + 15000 < deadline);
+      if (job.status === 'COMPLETE') PropertiesService.getScriptProperties().deleteProperty(salesCogsCancelKey_(job.jobId));
+      else if (job.status !== 'CANCELLED' && salesCogsCancellationRequested_(job.jobId)) finishSalesCogsCancellation_(job);
       job.workerLeaseUntil = 0; writeSalesCogsJob_(job);
     }
     catch (error) {
@@ -13588,7 +13783,9 @@ function processSalesCogsUploadJobs(preferredJobId) {
       job.retryCount = busy ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
       if (d1CpuLimited) job.d1CpuRecovery = true;
       const retryLimit = d1CpuLimited ? 6 : 3;
-      if (busy || (d1CpuLimited && job.retryCount <= retryLimit) || (error.retryable !== false && job.retryCount <= retryLimit && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
+      if (salesCogsCancellationRequested_(job.jobId)) {
+        finishSalesCogsCancellation_(job);
+      } else if (busy || (d1CpuLimited && job.retryCount <= retryLimit) || (error.retryable !== false && job.retryCount <= retryLimit && /penguncian|sedang menyimpan|rate|backend|timeout|waktu|service/i.test(String(error.message || error)))) {
         if (d1CpuLimited || /timeout|waktu/i.test(String(error.message || error))) reduceSalesCogsBatchSize_(job);
         job.status = 'QUEUED'; job.stage = stockUploadBusy_(error) ? 'Diproses giliran penyimpanan. Upload tetap dalam proses background.' : 'Gangguan sementara. Sistem mencoba ulang otomatis (' + job.retryCount + '/' + retryLimit + ').'; job.error = ''; writeSalesCogsJob_(job);
       } else {
