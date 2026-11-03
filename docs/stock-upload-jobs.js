@@ -79,7 +79,7 @@ function renderGoodsUploadStatus(jobs) {
       job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="'+escapeAttr(job.engine||'GOODS')+'">Coba Lagi</button>' : '';
     if (job.engine === 'USAGE') {
       if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) {
-        action = job.cancelRequested ? '<span>Menunggu batch berhenti...</span>' :
+        action = job.cancelRequested ? '<span>Mengakhiri batch aktif...</span>' :
           (job.workerRunning ? '' : '<button class="btn btn-primary btn-small" data-usage-resume="' + escapeAttr(job.jobId) + '">Lanjutkan Sekarang</button>') +
           '<button class="btn btn-light btn-small" data-usage-cancel="' + escapeAttr(job.jobId) + '">Hentikan Sisa</button>';
       } else if (job.status === 'CANCELLED') {
@@ -139,7 +139,7 @@ function cancelUsageUploadJob(id) {
   askConfirm('Hentikan sisa Usage Penjualan', 'Sudah diproses ' + Number(job.processed || 0) + ' dari ' + Number(job.total || 0) + ' baris. Transaksi yang sudah tersimpan tetap berlaku. Sisa baris akan berhenti setelah batch aktif selesai. Lanjutkan?', 'Hentikan Sisa', function() {
     BAKERZIN_API.call('cancelSalesCogsUpload', [APP.token, id]).then(function(response) {
       if (!response || !response.ok) throw new Error(response && response.error || 'Permintaan berhenti belum diterima.');
-      toast(response.data.status === 'CANCELLED' ? 'Sisa upload dihentikan. Baris yang sudah tercatat tetap berlaku.' : 'Permintaan berhenti diterima. Menunggu batch aktif selesai.');
+      toast(response.data.status === 'CANCELLED' ? 'Sisa upload dihentikan. Baris yang sudah tercatat tetap berlaku.' : 'Permintaan berhenti diterima. Batch aktif diselesaikan dahulu.');
       refreshGoodsUploadStatus();
     }).catch(function(error) { toast(error.message, true); refreshGoodsUploadStatus(); });
   });
