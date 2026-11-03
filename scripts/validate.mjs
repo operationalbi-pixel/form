@@ -9,7 +9,7 @@ const failures = [];
 const contents = new Map();
 
 async function text(path) {
-  if (!contents.has(path)) contents.set(path, await readFile(path, 'utf8'));
+  if (!contents.has(path)) contents.set(path, (await readFile(path, 'utf8')).replace(/\r\n/g, '\n'));
   return contents.get(path);
 }
 

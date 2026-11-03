@@ -2,6 +2,7 @@
 (function(global){
  'use strict';
  var base=global.BAKERZIN_API,grants={},pending={},stockGrants={},stockPending={},jobScopes={};
+ var legacyStatus={token:'',jobs:[],fetchedAt:0,pending:null};
  var gateway='https://bakerzin-inventory-gateway.pages.dev';
  function publicGrantUrl(url,path){var parsed=new URL(url);if(parsed.protocol!=='https:'||parsed.pathname!==path)throw Error('Alamat layanan stok tidak valid.');return gateway+path;}
  function grant(token,context){
@@ -17,6 +18,14 @@
  function progressFromRows(month,rows){var parts=month.split('-'),lastDay=new Date(Number(parts[0]),Number(parts[1]),0).getDate(),today=(global.todayLocal?global.todayLocal():new Date().toISOString().slice(0,10)),byDate={};(rows||[]).forEach(function(row){var date=String(row.event_date||'').slice(0,10),type=String(row.upload_type||'');if(!date||['goodsReceipt','salesUsage','itemJournal','goodsDelivery'].indexOf(type)<0)return;var state=byDate[date]||(byDate[date]={goodsReceipt:false,goodsReceiptRows:0,salesUsage:false,salesUsageRows:0,itemJournal:false,itemJournalRows:0,goodsDelivery:false,goodsDeliveryRows:0}),count=Number(row.actual_rows||0);state[type]=count>0;state[type+'Rows']=count;});var days=[];for(var day=1;day<=lastDay;day++){var date=month+'-'+String(day).padStart(2,'0'),state=byDate[date]||{};days.push({day:day,date:date,future:date>today,goodsReceipt:Boolean(state.goodsReceipt),goodsReceiptRows:Number(state.goodsReceiptRows||0),salesUsage:Boolean(state.salesUsage),salesUsageRows:Number(state.salesUsageRows||0),itemJournal:Boolean(state.itemJournal),itemJournalRows:Number(state.itemJournalRows||0),goodsDelivery:Boolean(state.goodsDelivery),goodsDeliveryRows:Number(state.goodsDeliveryRows||0),complete:Boolean(state.goodsReceipt&&state.salesUsage&&state.itemJournal)});}return{monthKey:month,today:today,days:days};}
  function stockUploadProgress(token,outlet,location,month){var current=monthNow();if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||month>current)return Promise.reject(Error('Bulan progress tidak valid.'));return stockDirect(token,{outlet:outlet,location:location||'Store'},'progress',{month:month}).then(function(remote){if(!remote||!remote.ok)throw Error(remote&&remote.error||'Progress upload belum tersedia.');return{ok:true,data:progressFromRows(month,remote.data.data)};});}
  function stockSupplementary(token,outlet,taskId){var app=global.APP||{},scope={outlet:outlet,location:app.location||'Store'},month=monthNow();return base.call('localStockSupplementary',[token,outlet,taskId]).then(function(local){if(!local||!local.ok)throw Error(local&&local.error||'Data pendukung belum tersedia.');return stockDirect(token,scope,'progress',{month:month}).then(function(remote){if(!remote||!remote.ok)throw Error(remote&&remote.error||'Progress upload belum tersedia.');local.data.uploadProgress=progressFromRows(month,remote.data.data);return local;});});}
+ function localUploadStatus(token){
+  if(legacyStatus.token!==token)legacyStatus={token:token,jobs:[],fetchedAt:0,pending:null};
+  if(!legacyStatus.pending&&Date.now()-legacyStatus.fetchedAt>30000){
+   legacyStatus.pending=base.call('localStockUploadStatus',[token]).then(function(r){if(legacyStatus.token===token&&r&&r.ok)legacyStatus.jobs=r.data.jobs||[];}).catch(function(){}).finally(function(){if(legacyStatus.token===token){legacyStatus.fetchedAt=Date.now();legacyStatus.pending=null;}});
+  }
+  if(!legacyStatus.pending)return Promise.resolve(legacyStatus.jobs);
+  return Promise.race([legacyStatus.pending.then(function(){return legacyStatus.jobs;}),new Promise(function(resolve){setTimeout(function(){resolve(legacyStatus.jobs);},1500);})]);
+ }
  function call(action,args){args=args||[];var app=global.APP||{};
   if(action==='bootstrap'||action==='data')return stockContext(args[0],args[1]||'',args[2]||'');
   if(action==='supplementary')return args[3]?stockUploadProgress(args[0],args[1]||'',app.location||'Store',args[3]):stockSupplementary(args[0],args[1]||'',args[2]||'');
@@ -25,7 +34,7 @@
   if(action==='queueGoodsUpload'&&args[1]&&args[1].type==='GOODS_RECEIPT')return direct(args[0],'accept',args[1]).then(function(r){if(r&&r.ok)jobScopes[r.data.jobId]={outlet:r.data.outlet,location:r.data.location};return r;});
   if(action==='saveConversions'&&app.goodsReceipt&&app.goodsReceipt.savingConversions)return base.call('saveConversions',args).then(function(r){return r&&r.ok?direct(args[0],'conversions',args[1]):r;});
   if(action==='retryStockUpload'&&args[2]==='RECEIPT_CF')return direct(args[0],'retry',{jobId:args[1]},jobScopes[args[1]]||context());
-  if(action==='goodsUploadStatus')return direct(args[0],'status',{},context()).then(function(native){if(!native||!native.ok)return native;native.data.jobs.forEach(function(j){jobScopes[j.jobId]={outlet:j.outlet,location:j.location};});return base.call('localStockUploadStatus',[args[0]]).then(function(local){return{ok:true,data:{jobs:native.data.jobs.concat(local&&local.ok?local.data.jobs:[])}}}).catch(function(){return native})});
+  if(action==='goodsUploadStatus')return direct(args[0],'status',{},context()).then(function(native){if(!native||!native.ok)return native;native.data.jobs.forEach(function(j){jobScopes[j.jobId]={outlet:j.outlet,location:j.location};});return localUploadStatus(args[0]).then(function(jobs){return{ok:true,data:{jobs:native.data.jobs.concat(jobs)}}});});
   return base.call(action,args);
  }
  global.BAKERZIN_API=Object.freeze({call:call});
