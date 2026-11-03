@@ -62,7 +62,7 @@ function closeGoodsUploadStatus() {
   if(GOODS_UPLOAD_PANEL.jobs.some(function(job){return ['QUEUED','PREPARING','PROCESSING'].indexOf(job.status)>=0;}))refreshGoodsUploadStatus();
 }
 function goodsUploadStatusLabel(status) {
-  return { QUEUED: 'Diproses', PREPARING: 'Memeriksa', PROCESSING: 'Diproses', COMPLETE: 'Selesai', ACTION_REQUIRED: 'Perlu Tindakan', FAILED: 'Gagal' }[status] || status;
+  return { QUEUED: 'Diproses', PREPARING: 'Memeriksa', PROCESSING: 'Diproses', COMPLETE: 'Selesai', ACTION_REQUIRED: 'Perlu Tindakan', FAILED: 'Gagal', CANCELLED: 'Dihentikan' }[status] || status;
 }
 function renderGoodsUploadStatus(jobs) {
   GOODS_UPLOAD_PANEL.jobs = jobs;
@@ -77,6 +77,16 @@ function renderGoodsUploadStatus(jobs) {
     var workerError = ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0 && workerState && workerState.error || '';
     var action = job.engine && job.engine !== 'GOODS' && job.status === 'FAILED' && !job.canRetry ? '<button class="btn btn-light btn-small" data-stock-open="' + escapeAttr(job.type) + '">Pilih Ulang File</button>' : job.status === 'ACTION_REQUIRED' ? '<button class="btn btn-light btn-small" data-goods-review="' + escapeAttr(job.jobId) + '">Tinjau</button>' :
       job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="'+escapeAttr(job.engine||'GOODS')+'">Coba Lagi</button>' : '';
+    if (job.engine === 'USAGE') {
+      if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) {
+        action = job.cancelRequested ? '<span>Menunggu batch berhenti...</span>' :
+          (job.workerRunning ? '' : '<button class="btn btn-primary btn-small" data-usage-resume="' + escapeAttr(job.jobId) + '">Lanjutkan Sekarang</button>') +
+          '<button class="btn btn-light btn-small" data-usage-cancel="' + escapeAttr(job.jobId) + '">Hentikan Sisa</button>';
+      } else if (job.status === 'CANCELLED') {
+        action = job.canRetry ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="USAGE">Lanjutkan</button>' :
+          '<button class="btn btn-light btn-small" data-stock-open="SALES_USAGE">Pilih Ulang File</button>';
+      }
+    }
     return '<article class="goods-job"><div class="goods-job-heading"><strong>' + escapeHtml(job.fileName) + '</strong><span class="goods-job-status ' + (job.status === 'COMPLETE' ? 'done' : '') + '">' + escapeHtml(goodsUploadStatusLabel(job.status)) + '</span></div>' +
       '<p>' + ({WIP_PRODUCTION:'Produksi WIP',TRANSACTION_REPAIR:'Repair Upload Lama',GOODS_DELIVERY:'Goods Delivery',GOODS_RECEIPT:'Goods Receipt',ITEM_JOURNAL:'Item Journal',STOCK_OPNAME:'Stock Opname',BIHQ_GOODS_DELIVERY:'Batch Goods Delivery',BIHQ_GOODS_RECEIPT:'Batch Goods Receipt',SALES_USAGE:'Usage Penjualan',STOCK_POSITION:'Stock Posisi',EXPIRY:'Expired Date'}[job.type] || job.type) + ' · ' + escapeHtml(job.outlet) + ' · ' + escapeHtml(job.location) + '</p>' +
       '<div class="goods-job-progress" role="progressbar" aria-label="Progres upload" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + progress + '"><span style="width:' + progress + '%"></span></div>' +
@@ -116,6 +126,24 @@ function retryGoodsUploadJob(id,engine) {
     toast('Upload kembali masuk proses background.'); refreshGoodsUploadStatus();
   }).catch(function (error) { toast(error.message, true); });
 }
+function resumeUsageUploadJob(id) {
+  toast('Meminta pemroses melanjutkan upload lama. Pantau progres di sini.');
+  BAKERZIN_API.call('startStockUploadWorker', [APP.token, id, 'USAGE']).then(function(response) {
+    if (!response || !response.ok) throw new Error(response && response.error || 'Pemroses belum dapat dimulai.');
+    refreshGoodsUploadStatus();
+  }).catch(function(error) { toast(error.message, true); refreshGoodsUploadStatus(); });
+}
+function cancelUsageUploadJob(id) {
+  var job = GOODS_UPLOAD_PANEL.jobs.filter(function(item) { return item.jobId === id && item.engine === 'USAGE'; })[0];
+  if (!job) return;
+  askConfirm('Hentikan sisa Usage Penjualan', 'Sudah diproses ' + Number(job.processed || 0) + ' dari ' + Number(job.total || 0) + ' baris. Transaksi yang sudah tersimpan tetap berlaku. Sisa baris akan berhenti setelah batch aktif selesai. Lanjutkan?', 'Hentikan Sisa', function() {
+    BAKERZIN_API.call('cancelSalesCogsUpload', [APP.token, id]).then(function(response) {
+      if (!response || !response.ok) throw new Error(response && response.error || 'Permintaan berhenti belum diterima.');
+      toast(response.data.status === 'CANCELLED' ? 'Sisa upload dihentikan. Baris yang sudah tercatat tetap berlaku.' : 'Permintaan berhenti diterima. Menunggu batch aktif selesai.');
+      refreshGoodsUploadStatus();
+    }).catch(function(error) { toast(error.message, true); refreshGoodsUploadStatus(); });
+  });
+}
 function reviewGoodsUploadJob(id) {
   BAKERZIN_API.call('goodsUploadRequest', [APP.token, id]).then(function (response) {
     if (!response || !response.ok) throw new Error(response && response.error || 'File tidak dapat dibuka.');
@@ -138,6 +166,9 @@ byId('goodsUploadStatusRows').addEventListener('click', function (event) {
   var retry = event.target.closest('[data-goods-retry]'), review = event.target.closest('[data-goods-review]');
   if (retry) retryGoodsUploadJob(retry.getAttribute('data-goods-retry'),retry.getAttribute('data-engine'));
   if (review) reviewGoodsUploadJob(review.getAttribute('data-goods-review'));
+  var resume = event.target.closest('[data-usage-resume]'), cancel = event.target.closest('[data-usage-cancel]');
+  if (resume) resumeUsageUploadJob(resume.getAttribute('data-usage-resume'));
+  if (cancel) cancelUsageUploadJob(cancel.getAttribute('data-usage-cancel'));
   var open = event.target.closest('[data-stock-open]'); if (open) openExistingUploadForm(open.getAttribute('data-stock-open'));
 });
 document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && !byId('goodsUploadStatusModal').classList.contains('hidden')) closeGoodsUploadStatus(); });
@@ -188,7 +219,7 @@ function reviewOtherStockUpload(data) {
 }
 function openExistingUploadForm(type) {
   closeGoodsUploadStatus();
-  if(type==='GOODS_RECEIPT')openGoodsReceiptModal();else if (type === 'SALES_USAGE') openUsageModal(); else if (type === 'STOCK_POSITION') openStockPositionModal(); else openExpiryAlertModal('MISSING');
+  if(type==='GOODS_RECEIPT')openGoodsReceiptModal();else if (type === 'SALES_USAGE') { forgetUsageJob(); openUsageModal(); } else if (type === 'STOCK_POSITION') openStockPositionModal(); else openExpiryAlertModal('MISSING');
 }
 
 function queueWipFileUpload() {

@@ -14,7 +14,8 @@ Object.assign(c,{stockUploadJobEmployee_:()=>({nik:'N',outlet:'BISS'}),acquireSt
  insertStockCardRows_:rows=>{assert.ok(stored.some(j=>j.pendingDriveId),'plan durable before writing');for(const r of rows)ledger.set(r.json.record_id,r);if(first){first=false;throw Error('timeout after commit');}},cleanupSalesCogsJobFiles_(){}});
 const job={writePlanVersion:2,jobId:'J',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:1,progress:25,ownerNik:'N',ownerOutlet:'BISS',outlets:[],transactionDates:[]};
 assert.throws(()=>c.processSalesCogsJobChunk_(job,{}),/timeout/);const pending=job.pendingDriveId;assert.ok(pending);assert.equal(job.processed,0);assert.ok(job.progress>=25,'a resumed batch must not move the displayed percentage backwards');
-c.processSalesCogsJobChunk_(job,{});assert.equal(ledger.size,1);assert.equal(builds,1);assert.equal(job.processed,1);assert.ok(!files.has(pending));
+assert.ok(JSON.parse(files.get(pending)).fifoSnapshotUpdates['BISS|P'],'a failed write retains the exact FIFO checkpoint with its durable plan');
+c.processSalesCogsJobChunk_(job,{});assert.equal(ledger.size,1);assert.equal(builds,0,'queued Usage uses the checkpointed FIFO state');assert.equal(job.processed,1);assert.ok(!files.has(pending));
 // A timed-out Sales COGS batch must actually resume at the reduced size.
 const recovery=make(),recoveryRows=Array.from({length:100},(_,i)=>({sourceRow:i+1})),recoveryJob={jobId:'RECOVERY',preparedDriveId:'prepared',requestDriveId:'request',processed:0,total:100,batchSize:100};
 Object.assign(recovery,{stockUploadJobEmployee_:()=>({}),readSalesCogsJobJson_:()=>({rows:recoveryRows,showcaseRows:[]}),writeSalesCogsJob_:j=>j,salesCogsFifoHistoryCache_:(j,p,r)=>{r.salesCogsFifoHistoryCache={histories:{},targets:{}};return r.salesCogsFifoHistoryCache;},salesCogsFifoEnsureRows_:()=>{},acquireStockUploadLock_:()=>{throw Error('stop before write');}});
@@ -27,6 +28,12 @@ Object.assign(fifoCache,{Utilities:{newBlob:value=>({bytes:Buffer.from(value)}),
 assert.equal(fifoCache.salesCogsFifoHistoryCache_(fifoJob,{},{}).histories['BISS|P'].length,0,'a legacy plain JSON checkpoint remains readable');
 fifoCache.salesCogsFifoCacheApplyRows_(fifoJob,fifoRuntime,[{json:{record_id:'SALE-1',logical_id:'SALE-1',version:1,record_type:'MOVEMENT',outlet:'BISS',location:'Store',item_code:'P',item_name:'Product',unit:'PCS',direction:'OUT',qty:5,movement_type:'Sold',event_date:'2026-10-28',created_at:'2026-10-28T10:00:00Z'}}]);
 assert.equal(fifoRuntime.salesCogsFifoHistories['BISS|P'][0].recordId,'SALE-1');assert.equal(JSON.parse(gunzipSync(fifoFiles.get(fifoJob.fifoHistoryDriveId))).histories['BISS|P'][0].qty,5);assert.equal(fifoJob.fifoHistoryGzip,true);assert.ok(!fifoFiles.has('FIFO'));
+fifoRuntime.salesCogsFifoHistories['BISS|P2']=[{recordId:'old'}];
+fifoCache.salesCogsFifoCacheApplyRows_(fifoJob,fifoRuntime,[{json:{record_type:'MOVEMENT',record_id:'WIP-1',outlet:'BISS',location:'Store',item_code:'WIP',direction:'IN',qty:3,event_date:'2026-10-28'}}],{'BISS|P2':{lots:{'2026-10-28':[{qty:2}]},balances:{'2026-10-28':2}}});
+const compact=JSON.parse(gunzipSync(fifoFiles.get(fifoJob.fifoHistoryDriveId)));
+assert.equal(compact.histories['BISS|P2'],undefined,'converted history is removed from the checkpoint');
+assert.equal(compact.snapshots['BISS|P2'].balances['2026-10-28'],2);
+assert.equal(compact.histories['BISS|WIP'][0].recordId,'WIP-1','WIP movements retain full-history replay');
 const oversized={salesCogsFifoHistoryCache:{histories:{'BISS|P':[{info:'x'.repeat(11*1024*1024)}]},targets:{}}};fifoCache.persistSalesCogsFifoCache_(fifoJob,oversized);assert.ok(fifoFiles.get(fifoJob.fifoHistoryDriveId).length<10*1024*1024,'large FIFO checkpoints are compressed before Drive storage');assert.equal(fifoCache.readSalesCogsFifoCache_(fifoJob).histories['BISS|P'][0].info.length,11*1024*1024);
 fifoFiles.set('OVERSIZED',Buffer.from('legacy'));const oversizedJob={jobId:'LEGACY',fifoHistoryDriveId:'OVERSIZED'},recovered={};
 Object.assign(fifoCache,{salesCogsReferenceData_:()=>({wipCatalog:{},masterByCode:{},salesMappings:{}}),collectSalesFifoPreloadRows_:()=>[{outlet:'BISS',item:{code:'P',name:'Product'},transactionDate:'2026-10-28'}],cloudflarePreloadSalesFifoRows_:()=>[{itemCode:'P',recordId:'SALE-1',qty:5,date:'2026-10-28'}]});
