@@ -4598,7 +4598,17 @@ function processGoodsUploadJobs() {
       opnameOptions = { report: report, jobId: job.jobId };
       console.log('Stock Opname %s: ambil kunci %s', job.jobId, job.outlets.join(','));
     }
-    lock = acquireStockUploadLock_(job);
+    if (job.type === 'STOCK_OPNAME' && !job.planDriveId && opnameOptions) {
+      job.opnameCompleted = job.opnameCompleted || [];
+      const remaining = job.outlets.filter(function (outlet) { return job.opnameCompleted.indexOf(outlet) < 0; });
+      job.opnameOutlet = remaining[Number(job.opnameTurn || 0) % remaining.length];
+      opnameOptions.report = Object.assign({}, opnameOptions.report, {
+        outlets: [job.opnameOutlet],
+        rows: opnameOptions.report.rows.filter(function (row) { return row.outlet === job.opnameOutlet; })
+      });
+    }
+    const lockJob = job.opnameOutlet ? Object.assign({}, job, { outlets: [job.opnameOutlet] }) : job;
+    lock = acquireStockUploadLock_(lockJob);
     if (employee.outlet !== 'BIHQ' && employee.outlet !== job.outlet) throw new Error('Akses outlet pemilik upload sudah berubah.');
     if (['GOODS_DELIVERY', 'GOODS_RECEIPT', 'WIP_PRODUCTION'].indexOf(job.type) >= 0 && readStockLocations_(job.outlet).indexOf(job.location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
     const context = { employee: employee, outlet: job.outlet, location: job.location };
@@ -4611,7 +4621,8 @@ function processGoodsUploadJobs() {
       plan = buildBackgroundUploadPlan_(job.type, context, payload, opnameOptions);
       const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan), 'application/json', 'TEMP_GOODS_PLAN_' + job.jobId + '.json'));
       job.planDriveId = file.getId(); job.total = plan.stockRows.length + plan.pendingRows.length;
-      job.progress = 15; job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyimpan transaksi.';
+      job.progress = job.opnameOutlet ? Math.floor(100 * job.opnameCompleted.length / job.outlets.length) : 15;
+      job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyimpan transaksi ' + (job.opnameOutlet || '') + '.';
       // Persist IDs and complete write plan BEFORE any master, movement or transfer mutation.
       writeGoodsUploadJob_(job);
     }
@@ -4629,11 +4640,26 @@ function processGoodsUploadJobs() {
       if (stockPhase) insertStockCardRows_(batch); else cloudflareWriteTransferEvents_(batch);
       job.lastBatchMillis=Date.now()-batchStarted;job.batchSize=job.lastBatchMillis>15000?Math.max(50,Math.floor(size/2)):job.lastBatchMillis<3000?Math.min(400,size*2):size;
       job.processed = cursor + batch.length; job.total = total; job.retryCount = 0;
-      job.progress = Math.min(98, 15 + Math.round(job.processed / Math.max(1, total) * 83));
-      job.stage = 'Menyimpan ' + job.processed + ' dari ' + total + ' baris.'; writeGoodsUploadJob_(job);
+      job.progress = job.opnameOutlet ? Math.min(99, Math.floor(100 * (job.opnameCompleted.length + job.processed / Math.max(1, total)) / job.outlets.length)) : Math.min(98, 15 + Math.round(job.processed / Math.max(1, total) * 83));
+      job.stage = 'Menyimpan ' + (job.opnameOutlet || '') + ' ' + job.processed + ' dari ' + total + ' baris.'; writeGoodsUploadJob_(job);
     }
     job.workerLeaseUntil = 0;
     if (job.processed >= total) {
+      if (job.opnameOutlet) {
+        if (job.opnameCompleted.indexOf(job.opnameOutlet) < 0) job.opnameCompleted.push(job.opnameOutlet);
+        job.opnameResults = (job.opnameResults || []).filter(function (entry) { return entry.outlet !== job.opnameOutlet; }).concat((plan.result || {}).outletResults || []);
+        if (job.opnameCompleted.length < job.outlets.length) {
+          const completedPlanId = job.planDriveId;
+          job.planDriveId = ''; job.opnameOutlet = ''; job.processed = 0; job.total = 0;
+          job.status = 'QUEUED'; job.error = ''; job.retryCount = 0; job.opnameTurn = 0;
+          job.stage = job.opnameCompleted.length + ' dari ' + job.outlets.length + ' outlet selesai.';
+          writeGoodsUploadJob_(job);
+          try { DriveApp.getFileById(completedPlanId).setTrashed(true); } catch (cleanupError) { console.error(cleanupError); }
+          scheduleGoodsUploadWorker_();
+          return goodsUploadJobView_(job);
+        }
+        plan.result = Object.assign({}, plan.result, { outletCount: job.outlets.length, outletResults: job.opnameResults });
+      }
       if(plan.showcaseRowCheckpoint)commitShowcaseRowCheckpoint_(plan.showcaseRowCheckpoint);
       job.result=plan.result||null;
       if(job.type==='SHOWCASE_LOG'){removeScriptCacheKeys_([showcaseAgingCacheKey_(job.outlet,job.eventDate)]);if(plan.result&&plan.result.completed)markShowcaseLogTaskComplete_(employee,job.outlet,job.eventDate);}
@@ -4648,6 +4674,7 @@ function processGoodsUploadJobs() {
     const transient = error.retryable !== false && /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
     if (busy || (transient && Number(job.retryCount || 0) < 5)) {
       if (busy) {
+        if (job.opnameOutlet && !job.planDriveId) job.opnameTurn = Number(job.opnameTurn || 0) + 1;
         job.error = '';
         job.stage = 'Proses berjalan di background dan dilanjutkan otomatis.';
       } else {
