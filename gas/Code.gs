@@ -4521,7 +4521,7 @@ function retryGoodsUpload(token, id) {
     try {
       job = goodsUploadOwner_(token, id);
       if (job.status !== 'FAILED' || Number(job.workerLeaseUntil || 0) > Date.now()) throw new Error('Upload ini belum dapat dicoba ulang.');
-      job.status = 'QUEUED'; job.error = ''; job.retryCount = 0; job.stage = 'Melanjutkan dari bagian terakhir yang belum terkonfirmasi.';
+      job.status = 'QUEUED'; job.error = ''; job.retryCount = 0; job.retryNotBefore = 0; job.stage = 'Melanjutkan dari bagian terakhir yang belum terkonfirmasi.';
       writeGoodsUploadJob_(job);
     } finally { gate.releaseLock(); }
     scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job);
@@ -4545,10 +4545,10 @@ function retryStockUpload(token, id, engine) {
     }finally{gate.releaseLock();}
   });
 }
-function scheduleGoodsUploadWorker_() {
+function scheduleGoodsUploadWorker_(delayMs) {
   try {
     const exists = ScriptApp.getProjectTriggers().some(function (trigger) { return trigger.getHandlerFunction() === 'processGoodsUploadJobs'; });
-    if (!exists) ScriptApp.newTrigger('processGoodsUploadJobs').timeBased().after(1000).create();
+    if (!exists) ScriptApp.newTrigger('processGoodsUploadJobs').timeBased().after(Math.max(1000, Number(delayMs) || 0)).create();
     return true;
   } catch (error) { console.error('Proses background Goods Upload diproses maintenance: ' + error.message); return false; }
 }
@@ -4560,11 +4560,20 @@ function processGoodsUploadJobs() {
       .forEach(function (trigger) { try { ScriptApp.deleteTrigger(trigger); } catch (error) {} });
     const jobs = goodsUploadJobs_(true).filter(function(candidate){return candidate.engine!=='SALES';});
     if (jobs.filter(function(candidate){return Number(candidate.workerLeaseUntil||0)>Date.now();}).length>=3)return;
-    job = jobs.filter(function (candidate) { return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0 && Number(candidate.workerLeaseUntil||0)<=Date.now(); })
+    const now = Date.now();
+    const pending = jobs.filter(function (candidate) {
+      return ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(candidate.status) >= 0 && Number(candidate.workerLeaseUntil || 0) <= now;
+    });
+    job = pending.filter(function (candidate) { return Number(candidate.retryNotBefore || 0) <= now; })
       .filter(function(candidate){return !jobs.some(function(other){return other.jobId!==candidate.jobId&&Number(other.workerLeaseUntil||0)>Date.now()&&(other.outlet===candidate.outlet||other.outlet==='BIHQ'||candidate.outlet==='BIHQ');});})
       .filter(function(candidate){return candidate.type!=='SHOWCASE_LOG'||!jobs.some(function(earlier){return earlier.type==='SHOWCASE_LOG'&&earlier.outlet===candidate.outlet&&earlier.location===candidate.location&&earlier.jobId!==candidate.jobId&&String(earlier.createdAt)+'|'+earlier.jobId<String(candidate.createdAt)+'|'+candidate.jobId;});})
       .sort(function (a, b) { return String(a.lastWorkedAt || a.createdAt).localeCompare(String(b.lastWorkedAt || b.createdAt)); })[0];
-    if (!job) return;
+    if (!job) {
+      const delayed = pending.map(function (candidate) { return Number(candidate.retryNotBefore || 0); }).filter(function (time) { return time > now; });
+      if (delayed.length) scheduleGoodsUploadWorker_(Math.min.apply(null, delayed) - now);
+      return;
+    }
+    job.retryNotBefore = 0;
     job.workerLeaseUntil = Date.now() + 8 * 60000; job.lastWorkedAt = new Date().toISOString();
     job.status = job.planDriveId ? 'PROCESSING' : 'PREPARING'; job.stage = 'Memeriksa data untuk pembaruan stok.';
     writeGoodsUploadJob_(job);
@@ -4624,12 +4633,18 @@ function processGoodsUploadJobs() {
     const busy = stockUploadBusy_(job.error);
     const transient = error.retryable !== false && /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
     if (busy || (transient && Number(job.retryCount || 0) < 5)) {
-      if(busy)job.error='';
-      job.status = 'QUEUED'; job.retryCount = stockUploadBusy_(error) ? Number(job.retryCount || 0) : Number(job.retryCount || 0) + 1;
-      job.stage = busy ? 'Proses berjalan di background dan dilanjutkan otomatis.' : 'Gangguan sementara. Melanjutkan otomatis dengan ID transaksi yang sama.';
+      if (busy) {
+        job.error = '';
+        job.stage = 'Proses berjalan di background dan dilanjutkan otomatis.';
+      } else {
+        job.retryCount = Number(job.retryCount || 0) + 1;
+        job.retryNotBefore = Date.now() + Math.min(120000, 15000 * Math.pow(2, job.retryCount - 1));
+        job.stage = 'Layanan stok sedang terganggu. Upload akan dilanjutkan otomatis.';
+      }
+      job.status = 'QUEUED';
     } else {
-      job.status = job.planDriveId ? 'FAILED' : 'ACTION_REQUIRED';
-      job.stage = job.planDriveId ? 'Penyimpanan belum selesai. Klik Coba Lagi untuk melanjutkan.' : 'Perlu tindakan. Tinjau file, konversi, atau duplikat.';
+      job.status = job.planDriveId || transient ? 'FAILED' : 'ACTION_REQUIRED';
+      job.stage = job.status === 'FAILED' ? 'Upload belum selesai. Klik Coba Lagi untuk melanjutkan.' : 'Perlu tindakan. Tinjau file, konversi, atau duplikat.';
     }
     writeGoodsUploadJob_(job);
   } finally { if (lock) lock.releaseLock(); }
@@ -6886,12 +6901,12 @@ function cloudflareInventoryRequest_(method, path, payload) {
       // Daily quotas cannot recover by immediately replaying the same upload.
       if (/too many times for (?:one )?day|daily quota|kuota harian|terlalu sering.*hari yang sama/i.test(lastMessage)) {error.retryable=false;throw error;}
       if (attempt === maxAttempts - 1) {
-        throw new Error('Cloudflare inventory gagal setelah dicoba ulang: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
+        throw new Error('Cloudflare inventory gagal setelah dicoba ulang: ' + lastMessage + '.');
       }
     }
     Utilities.sleep(300 * Math.pow(2, attempt) + Math.floor(Math.random() * 180));
   }
-  throw new Error('Cloudflare inventory gagal: ' + lastMessage + '. Tidak ada fallback ke BigQuery.');
+  throw new Error('Cloudflare inventory gagal: ' + lastMessage + '.');
 }
 
 function cloudflareQueryString_(params) {
