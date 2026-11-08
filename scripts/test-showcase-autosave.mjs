@@ -48,6 +48,8 @@ assert.notEqual(server.showcaseRowEditIdentity_(another.employee,'BISS','2026-10
 {
   const w=vm.createContext({console:{log(){},error(){}}});vm.runInContext(source,w);
   const active={...first.job,planDriveId:'plan',status:'QUEUED',processed:0,workerLeaseUntil:0};
+  let now = Date.now();
+  w.Date = class extends Date { static now() { return now; } };
   let lostAck=true,commits=0;const ids=new Set();
   Object.assign(w,{LockService:{getUserLock:()=>({tryLock:()=>true,releaseLock(){}})},ScriptApp:{getProjectTriggers:()=>[]},
     goodsUploadJobs_:()=>['QUEUED','PREPARING','PROCESSING'].includes(active.status)?[active]:[],writeGoodsUploadJob_:job=>Object.assign(active,job),
@@ -55,6 +57,9 @@ assert.notEqual(server.showcaseRowEditIdentity_(another.employee,'BISS','2026-10
     appendOrActivateStockMasterItems_(){},insertStockCardRows_:batch=>{batch.forEach(row=>ids.add(row.json.record_id));if(lostAck){lostAck=false;throw Error('Cloudflare inventory gagal HTTP 503');}},
     commitShowcaseRowCheckpoint_:()=>commits++,removeScriptCacheKeys_(){},showcaseAgingCacheKey_:()=>'',markShowcaseLogTaskComplete_(){},notifyPendingStockTransfers_(){},cleanupGoodsUploadFiles_(){},scheduleGoodsUploadWorker_(){}});
   w.processGoodsUploadJobs();assert.equal(commits,0);assert.equal(active.status,'QUEUED');assert.equal(active.processed,0);
+  w.processGoodsUploadJobs();assert.equal(commits,0,'Retry waits for the cooldown');
+  assert.ok(active.retryNotBefore > now);
+  now = active.retryNotBefore;
   w.processGoodsUploadJobs();assert.equal(commits,1);assert.equal(active.status,'COMPLETE');assert.equal(ids.size,p1.stockRows.length);
 }
 // Grants expose only a signed, expiring row scope. Legacy unaccepted work is fenced before recovery.

@@ -5,7 +5,12 @@ import vm from 'node:vm';
 const source = await readFile('docs/Code.gs', 'utf8');
 const properties = new Map(), jobRecords = new Map(), files = new Map(), stock = new Map(), transfers = new Map();
 let metadataInterrupted=false, fileSequence = 0, buildCount = 0, busy = false, interrupted = false, owner = 'N1', lease = false;
-const context = vm.createContext({ console });
+let clockOffset = 0;
+const context = vm.createContext({ console, Date: class extends Date { static now() { return Date.now() + clockOffset; } } });
+function advanceToRetry(job) {
+  assert.ok(job.retryNotBefore > context.Date.now());
+  clockOffset = job.retryNotBefore - Date.now() + 1;
+}
 vm.runInContext(source, context);
 const jobList = () => [...jobRecords.values()].map(value=>JSON.parse(value));
 const lock = { waitLock() {}, tryLock: () => true, releaseLock() {} };
@@ -68,6 +73,7 @@ assert.equal(stock.size, 1);
 assert.equal(jobList()[0].status, 'QUEUED');
 const persistedPlan = jobList()[0].planDriveId;
 assert.ok(persistedPlan);
+advanceToRetry(jobList()[0]);
 context.processGoodsUploadJobs();
 assert.equal(jobList()[0].status, 'COMPLETE');
 assert.equal(jobList()[0].progress, 100);
@@ -220,6 +226,7 @@ assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).sourceDriveId,unde
 context.requireSession_=()=>{throw new Error('Browser session expired');};
 busy=true;context.processGoodsUploadJobs();busy=false;assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'QUEUED');assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).error,'');
 interrupted=true;context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'QUEUED');assert.equal(taskCompletions,0);
+advanceToRetry(context.readGoodsUploadJob_(showcase.data.jobId));
 context.processGoodsUploadJobs();assert.equal(context.readGoodsUploadJob_(showcase.data.jobId).status,'COMPLETE');assert.equal(showcaseBuilds,1);assert.equal(taskCompletions,1);
 context.requireSession_=()=>({nik:owner});assert.equal(context.queueShowcaseLog('login',showcasePayload).data.status,'COMPLETE');
 const needsReview=context.queueShowcaseLog('login',{...showcasePayload,requestId:'showcase-request-000002'});
