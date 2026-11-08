@@ -4594,6 +4594,10 @@ function processGoodsUploadJobs() {
       if (job.sourceDriveId) opnamePayload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
       const base64 = String(opnamePayload.base64 || '').replace(/^data:[^,]+,/, '').trim();
       const report = parseStockOpnameReport_(base64, cleanText_(opnamePayload.fileName, 180));
+      if (!job.opnameCompleted || !job.opnameCompleted.length) {
+        const preview = prepareStockOpnameForEmployee_(employee, opnamePayload, { report: report, validationOnly: true });
+        if (preview.requiresConversion) throw new Error('Lengkapi seluruh konversi unit Stock Opname sebelum melanjutkan upload.');
+      }
       job.outlets = report.outlets.slice();
       opnameOptions = { report: report, jobId: job.jobId };
       console.log('Stock Opname %s: ambil kunci %s', job.jobId, job.outlets.join(','));
@@ -4658,7 +4662,11 @@ function processGoodsUploadJobs() {
           scheduleGoodsUploadWorker_();
           return goodsUploadJobView_(job);
         }
-        plan.result = Object.assign({}, plan.result, { outletCount: job.outlets.length, outletResults: job.opnameResults });
+        plan.result = Object.assign({}, plan.result, { outlet: job.outlets.length === 1 ? job.outlets[0] : '', outletCount: job.outlets.length, outletResults: job.opnameResults });
+        ['adjustmentCount', 'unchangedCount', 'increaseCount', 'decreaseCount'].forEach(function (key) {
+          plan.result[key] = job.opnameResults.reduce(function (sum, entry) { return sum + Number(entry[key] || 0); }, 0);
+        });
+        plan.result.movementCount = job.opnameResults.reduce(function (sum, entry) { return sum + Number(entry.sourceItemCount || 0); }, 0);
       }
       if(plan.showcaseRowCheckpoint)commitShowcaseRowCheckpoint_(plan.showcaseRowCheckpoint);
       job.result=plan.result||null;
