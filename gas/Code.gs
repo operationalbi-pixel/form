@@ -3821,7 +3821,7 @@ function stockOpnameDisplayEventDate_(row) {
 }
 
 function stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash) {
-  return cloudflareSourceExists_({ outlet: outlet, location: location, from: eventDate, to: eventDate, sourceHash: sourceHash, movementTypes: ['Stock Opname'], recordTypes: ['MOVEMENT', 'IMPORT'] });
+  return cloudflareSourceExists_({ outlet: outlet, location: location, from: eventDate, to: eventDate, sourceHash: sourceHash, movementTypes: ['Stock Opname'], recordTypes: ['MOVEMENT', 'IMPORT'], resolveScope: true });
 }
 
 function getStockOpnameUploadHistory(token, payload) {
