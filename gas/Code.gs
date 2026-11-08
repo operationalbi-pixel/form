@@ -3540,8 +3540,8 @@ function uploadStockOpname(token, payload) {
   });
 }
 
-function buildStockOpnamePlan_(context, payload) {
-      const prepared = prepareStockOpnameForEmployee_(context.employee, payload);
+function buildStockOpnamePlan_(context, payload, options) {
+      const prepared = prepareStockOpnameForEmployee_(context.employee, payload, options);
       if (prepared.requiresConversion) throw new Error('Lengkapi seluruh konversi unit Stock Opname sebelum melanjutkan upload.');
       const masterItemsAdded = prepared.newItems.length;
       const opnameCreatedAt = new Date().getTime() / 1000, rows = [];
@@ -3680,7 +3680,7 @@ function prepareStockOpnameForEmployee_(employee, payload, options) {
   const effectiveDate = eventDate;
   assertEmployeeActive_(employee);
   if (employee.outlet !== 'BIHQ') throw new Error('Upload Stock Opname hanya dapat dilakukan oleh BIHQ.');
-  const sourceHash = digest_(base64), report = parseStockOpnameReport_(base64, fileName);
+  const sourceHash = digest_(base64), report = options.report || parseStockOpnameReport_(base64, fileName);
   ensureStockCardInfrastructure_();
   // BIHQ can upload a multi-branch workbook without selecting one outlet first.
   // In that state the page has no active storage, so Stock Opname defaults to Store.
@@ -3693,6 +3693,7 @@ function prepareStockOpnameForEmployee_(employee, payload, options) {
   // Preview validates the workbook and access only. Duplicate and live balance
   // checks remain mandatory when the durable background job builds its plan.
   const duplicates = options.validationOnly ? [] : reportOutlets.filter(function (outlet) {
+    if (options.jobId) console.log('Stock Opname %s: cek duplikat %s', options.jobId, outlet);
     return stockOpnameAlreadyImported_(outlet, location, eventDate, sourceHash);
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
@@ -3705,7 +3706,9 @@ function prepareStockOpnameForEmployee_(employee, payload, options) {
   reportOutlets.forEach(function (outlet) {
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
     const codes=Array.from(new Set(rows.map(function(row){return row.code;})));
+    if (options.jobId) console.log('Stock Opname %s: baca saldo tanggal opname %s', options.jobId, outlet);
     const balanceAtDate = options.validationOnly ? {} : readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
+    if (options.jobId) console.log('Stock Opname %s: baca saldo saat ini %s', options.jobId, outlet);
     const currentBalance = options.validationOnly ? {} : readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
     const items = [], auditItems = [];
     let outletIncrease = 0, outletDecrease = 0, outletUnchanged = 0;
@@ -4333,14 +4336,14 @@ function buildRepairUploadPlan_(context, payload) {
   });
   return { stockRows: rows, pendingRows: [], masterChanges: [], batchEnds: batchEnds, result: { repaired: true, sourceRowsRepaired: plan.changedHashes.length } };
 }
-function buildBackgroundUploadPlan_(type, context, payload) {
+function buildBackgroundUploadPlan_(type, context, payload, options) {
   if(type==='SHOWCASE_LOG')return payload.rowEdit ? buildShowcaseRowSavePlan_(context,payload) : buildShowcaseSavePlan_(context,payload);
   if (type === 'GOODS_DELIVERY') return buildGoodsDeliveryPlan_(context, payload);
   if (type === 'GOODS_RECEIPT') return buildGoodsReceiptPlan_(context, payload);
   if (type === 'WIP_PRODUCTION') return buildWipUploadPlan_(context, payload);
   if (type === 'TRANSACTION_REPAIR') return buildRepairUploadPlan_(context, payload);
   if (type === 'ITEM_JOURNAL') return buildItemJournalPlan_(context, payload);
-  if (type === 'STOCK_OPNAME') return buildStockOpnamePlan_(context, payload);
+  if (type === 'STOCK_OPNAME') return buildStockOpnamePlan_(context, payload, options);
   if (String(type).indexOf('BIHQ_') === 0) {
     if (context.employee.outlet !== 'BIHQ') throw new Error('Akses BIHQ sudah berubah.');
     payload.type = type.slice(5);
@@ -4583,8 +4586,19 @@ function processGoodsUploadJobs() {
   let lock;
   const deadline = Date.now() + 240000;
   try {
-    lock = acquireStockUploadLock_(job);
     const employee = stockUploadJobEmployee_(job);
+    let opnamePayload, opnameOptions;
+    if (job.type === 'STOCK_OPNAME' && !job.planDriveId && job.requestDriveId) {
+      console.log('Stock Opname %s: baca file Excel', job.jobId);
+      opnamePayload = stockPositionJobJson_(job.requestDriveId);
+      if (job.sourceDriveId) opnamePayload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+      const base64 = String(opnamePayload.base64 || '').replace(/^data:[^,]+,/, '').trim();
+      const report = parseStockOpnameReport_(base64, cleanText_(opnamePayload.fileName, 180));
+      job.outlets = report.outlets.slice();
+      opnameOptions = { report: report, jobId: job.jobId };
+      console.log('Stock Opname %s: ambil kunci %s', job.jobId, job.outlets.join(','));
+    }
+    lock = acquireStockUploadLock_(job);
     if (employee.outlet !== 'BIHQ' && employee.outlet !== job.outlet) throw new Error('Akses outlet pemilik upload sudah berubah.');
     if (['GOODS_DELIVERY', 'GOODS_RECEIPT', 'WIP_PRODUCTION'].indexOf(job.type) >= 0 && readStockLocations_(job.outlet).indexOf(job.location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
     const context = { employee: employee, outlet: job.outlet, location: job.location };
@@ -4592,9 +4606,9 @@ function processGoodsUploadJobs() {
     if (job.planDriveId) plan = stockPositionJobJson_(job.planDriveId);
     else {
       if(!job.requestDriveId)throw new Error('File permintaan upload lama sudah tidak tersedia. Pilih ulang file untuk melanjutkan.');
-      const payload = stockPositionJobJson_(job.requestDriveId);
-      if(job.sourceDriveId)payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
-      plan = buildBackgroundUploadPlan_(job.type, context, payload);
+      const payload = opnamePayload || stockPositionJobJson_(job.requestDriveId);
+      if (!opnamePayload && job.sourceDriveId) payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+      plan = buildBackgroundUploadPlan_(job.type, context, payload, opnameOptions);
       const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan), 'application/json', 'TEMP_GOODS_PLAN_' + job.jobId + '.json'));
       job.planDriveId = file.getId(); job.total = plan.stockRows.length + plan.pendingRows.length;
       job.progress = 15; job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyimpan transaksi.';
