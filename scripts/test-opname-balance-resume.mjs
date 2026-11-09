@@ -22,7 +22,7 @@ let job={sourceHash:'file',opnameOutlet:'BIPS',jobId:'job'},report={rows:[{code:
 do{result=step(job,payload,report,Date.now()+240000);attempts++;assert(attempts<10,'must finish');}while(!result.ready);
 assert(attempts===6 && calls===101,'101 pages resume without rereading');
 assert(result.balances.A===101 && result.balances.ZERO===0,'exact sum and zero item');
-assert(saved.A===101 && writes===5,'snapshot and checkpoints saved');
+assert(saved.A===101 && writes===6,'snapshot and checkpoints saved');
 calls=0;job={sourceHash:'file',opnameOutlet:'BIPS',jobId:'cached'};
 result=step(job,payload,report,Date.now()+240000);assert(result.ready && calls===0,'cache avoids history');
 saved={};calls=0;job={sourceHash:'file',opnameOutlet:'BIPS',jobId:'changed'};
@@ -39,3 +39,24 @@ const rows=[
 assert(f.balance(f.audit(rows),'2026-11-01')===7,'SO checkpoint semantics');
 
 console.log('Stock Opname resumable balance preparation passed');
+
+let lockCalls=0,ready=false;
+const workerJob={jobId:'worker',type:'STOCK_OPNAME',status:'QUEUED',outlet:'BIHQ',location:'Store',requestDriveId:'request',createdAt:'2026-11-08',opnameOutlet:'BIPS',opnameBalanceDriveId:'checkpoint',opnameTurn:135,opnameCompleted:[]};
+const workerEnv={Date,console:{log(){},warn(){},error(){}},
+LockService:{getUserLock:()=>({tryLock:()=>true,releaseLock(){}})},ScriptApp:{getProjectTriggers:()=>[]},
+goodsUploadJobs_:()=>[workerJob],writeGoodsUploadJob_:()=>{},stockUploadJobEmployee_:()=>({outlet:'BIHQ'}),
+stockPositionJobJson_:()=>({base64:'file',fileName:'test.xlsx'}),cleanText_:s=>s,
+parseStockOpnameReport_:()=>({outlets:['BICP','BIPS'],rows:[{outlet:'BICP',code:'A'},{outlet:'BIPS',code:'A'}]}),
+prepareStockOpnameForEmployee_:()=>({requiresConversion:false}),
+prepareStockOpnameBalancesStep_:()=>{if(!ready){workerJob.workerLeaseUntil=0;workerJob.status='QUEUED';}return {ready,balances:{A:1},revision:'r'};},
+acquireStockUploadLock_:()=>{lockCalls++;throw Error('Sistem sedang menyimpan transaksi lain');},
+stockUploadBusy_:e=>String(e).includes('sedang menyimpan transaksi lain'),scheduleGoodsUploadWorker_:()=>{},goodsUploadJobView_:j=>j};
+const worker=new Function('env','with(env){'+extract('processGoodsUploadJobs')+';return processGoodsUploadJobs;}')(workerEnv);
+worker();
+assert(lockCalls===0,'read preparation must not acquire outlet write lock');
+assert(workerJob.opnameOutlet==='BIPS','checkpoint pins outlet');
+ready=true;worker();
+assert(lockCalls===1,'ready preparation requires write lock');
+assert(workerJob.opnameTurn===135 && workerJob.opnameBalanceDriveId==='checkpoint','busy write preserves prepared outlet');
+assert(workerJob.stage.includes('Menunggu kunci penyimpanan BIPS'),'surface exact lock wait');
+console.log('SO preparation lock ordering and checkpoint preservation passed');

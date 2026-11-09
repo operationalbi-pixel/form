@@ -3596,7 +3596,14 @@ function prepareStockOpnameBalancesStep_(job, payload, report, deadline) {
   }
   if (state && state.offset === codes.length) {
     const check = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{outlet:outlet,location:location,date:eventDate,codes:[codes[0]]});
-    if (check.revision === state.revision) return {ready:true,balances:state.balances};
+    if (check.revision === state.revision) {
+      const content = JSON.stringify(state);
+      if (job.opnameBalanceDriveId) DriveApp.getFileById(job.opnameBalanceDriveId).setContent(content);
+      else job.opnameBalanceDriveId = DriveApp.createFile(Utilities.newBlob(content,'application/json','TEMP_SO_BALANCES_'+job.jobId+'.json')).getId();
+      // Keep completed preparation if the short write lock is busy.
+      writeGoodsUploadJob_(job);
+      return {ready:true,balances:state.balances,revision:state.revision};
+    }
     state = null;
   }
   const content = JSON.stringify(state);
@@ -4673,14 +4680,14 @@ function processGoodsUploadJobs() {
     if (job.type === 'STOCK_OPNAME' && !job.planDriveId && opnameOptions) {
       job.opnameCompleted = job.opnameCompleted || [];
       const remaining = job.outlets.filter(function (outlet) { return job.opnameCompleted.indexOf(outlet) < 0; });
-      job.opnameOutlet = remaining[Number(job.opnameTurn || 0) % remaining.length];
+      job.opnameOutlet = job.opnameBalanceDriveId && remaining.indexOf(job.opnameOutlet) >= 0 ? job.opnameOutlet : remaining[Number(job.opnameTurn || 0) % remaining.length];
       opnameOptions.report = Object.assign({}, opnameOptions.report, {
         outlets: [job.opnameOutlet],
         rows: opnameOptions.report.rows.filter(function (row) { return row.outlet === job.opnameOutlet; })
       });
     }
     const lockJob = job.opnameOutlet ? Object.assign({}, job, { outlets: [job.opnameOutlet] }) : job;
-    lock = acquireStockUploadLock_(lockJob);
+    if (!(job.type === 'STOCK_OPNAME' && !job.planDriveId && opnameOptions)) lock = acquireStockUploadLock_(lockJob);
     if (employee.outlet !== 'BIHQ' && employee.outlet !== job.outlet) throw new Error('Akses outlet pemilik upload sudah berubah.');
     if (['GOODS_DELIVERY', 'GOODS_RECEIPT', 'WIP_PRODUCTION'].indexOf(job.type) >= 0 && readStockLocations_(job.outlet).indexOf(job.location) < 0) throw new Error('Lokasi penyimpanan tidak valid.');
     const context = { employee: employee, outlet: job.outlet, location: job.location };
@@ -4693,6 +4700,12 @@ function processGoodsUploadJobs() {
       if (job.type === 'STOCK_OPNAME' && opnameOptions) {
         const preparedBalances = prepareStockOpnameBalancesStep_(job,payload,opnameOptions.report,deadline);
         if (!preparedBalances.ready) { scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job); }
+        lock = acquireStockUploadLock_(lockJob);
+        const currentRevision = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{
+          outlet:job.opnameOutlet,location:normalizeLocation_(payload.location || 'Store') || 'Store',
+          date:normalizeDate_(payload.eventDate,false),codes:[String(opnameOptions.report.rows[0].code).toUpperCase()]
+        });
+        if (currentRevision.revision !== preparedBalances.revision) throw new Error('Cloudflare inventory gagal: transaksi berubah sebelum penyimpanan SO.');
         opnameOptions.balanceAtDate = preparedBalances.balances;
       }
       plan = buildBackgroundUploadPlan_(job.type, context, payload, opnameOptions);
@@ -4760,9 +4773,12 @@ function processGoodsUploadJobs() {
     const transient = error.retryable !== false && /Cloudflare inventory gagal|HTTP (408|429|5\d\d)|tidak merespons|Service invoked too many times|timed out/i.test(job.error);
     if (busy || (transient && Number(job.retryCount || 0) < 5)) {
       if (busy) {
-        if (job.opnameOutlet && !job.planDriveId) job.opnameTurn = Number(job.opnameTurn || 0) + 1;
+        if (job.opnameOutlet && !job.planDriveId && !job.opnameBalanceDriveId) job.opnameTurn = Number(job.opnameTurn || 0) + 1;
         job.error = '';
-        job.stage = 'Proses berjalan di background dan dilanjutkan otomatis.';
+        job.lockWaitCount = Number(job.lockWaitCount || 0) + 1;
+        job.retryNotBefore = job.type === 'STOCK_OPNAME' ? Date.now() + 15000 : 0;
+        job.stage = 'Menunggu kunci penyimpanan ' + (job.opnameOutlet || job.outlet) + '. Saldo yang sudah disiapkan tetap tersimpan.';
+        console.warn('Upload %s menunggu kunci %s (%s): %s',job.jobId,job.opnameOutlet || job.outlet,job.lockWaitCount,String(error.message || error));
       } else {
         job.retryCount = Number(job.retryCount || 0) + 1;
         job.retryNotBefore = Date.now() + Math.min(120000, 15000 * Math.pow(2, job.retryCount - 1));
