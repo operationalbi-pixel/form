@@ -3540,6 +3540,74 @@ function uploadStockOpname(token, payload) {
   });
 }
 
+function prepareStockOpnameBalancesStep_(job, payload, report, deadline) {
+  const outlet = job.opnameOutlet, location = normalizeLocation_(payload.location || 'Store') || 'Store';
+  const eventDate = normalizeDate_(payload.eventDate, false);
+  const codes = Array.from(new Set(report.rows.map(function(row) { return String(row.code).toUpperCase(); }))).sort();
+  if (!codes.length) throw new Error('File Stock Opname tidak berisi item.');
+  const identity = JSON.stringify([job.sourceHash,outlet,location,eventDate,codes]);
+  let state = job.opnameBalanceDriveId ? stockPositionJobJson_(job.opnameBalanceDriveId) : null;
+  const probe = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{outlet:outlet,location:location,date:eventDate,codes:[codes[0]]});
+  if (!state || state.identity !== identity || state.revision !== probe.revision) {
+    state = {identity:identity,revision:probe.revision,offset:0,balances:{},active:null,pages:0};
+  }
+  let requests = 0;
+  while (state.offset < codes.length && requests < 20 && Date.now() < deadline - 45000) {
+    if (!state.active) {
+      const batch = codes.slice(state.offset,state.offset+10);
+      const cached = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{outlet:outlet,location:location,date:eventDate,codes:batch});
+      if (cached.revision !== state.revision) { state = null; break; }
+      Object.keys(cached.balances).forEach(function(code) { state.balances[code] = cached.balances[code]; });
+      const missing = batch.filter(function(code) { return !Object.prototype.hasOwnProperty.call(cached.balances,code); });
+      if (!missing.length) { state.offset += batch.length; requests++; continue; }
+      state.active = {batch:batch,missing:missing,cursor:'',rows:{}};
+    }
+    const active = state.active;
+    const query = {outlet:outlet,location:location,to:eventDate,item_codes:active.missing.join('|'),resolve_scope:1,limit:200};
+    if (active.cursor) query.cursor = active.cursor;
+    const page = cloudflareInventoryRequest_('GET','/v1/movements?'+cloudflareQueryString_(query));
+    (page.data || []).forEach(function(row) {
+      const id = String(row.logical_id || row.record_id || '');
+      if (!id) throw new Error('Cloudflare mengembalikan transaksi tanpa identitas.');
+      active.rows[id] = row;
+    });
+    const next = String(page.nextCursor || '');
+    if (next && next === active.cursor) throw new Error('Cloudflare inventory gagal: cursor saldo tidak bergerak.');
+    active.cursor = next; state.pages++; requests++;
+    if (!next) {
+      const grouped = {}, values = {};
+      active.missing.forEach(function(code) { grouped[code] = []; });
+      Object.keys(active.rows).forEach(function(id) {
+        const raw = active.rows[id], code = String(raw.item_code || '').toUpperCase();
+        if (grouped[code] && ['MOVEMENT','OPNAME_DETAIL'].indexOf(raw.record_type) >= 0) {
+          grouped[code].push(mapStockHistoryQueryRow_(Object.assign({},raw,{qty:Number(raw.quantity || 0)})));
+        }
+      });
+      active.missing.forEach(function(code) {
+        values[code] = stockCheckpointBalanceUntil_(applyStockHistoryAuditRows_(grouped[code]),stockIsoDateOffset_(eventDate,1));
+      });
+      const saved = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{
+        action:'save',outlet:outlet,location:location,date:eventDate,codes:active.missing,revision:state.revision,balances:values
+      });
+      if (!saved.saved) { state = null; break; }
+      Object.keys(values).forEach(function(code) { state.balances[code] = values[code]; });
+      state.offset += active.batch.length; state.active = null;
+    }
+  }
+  if (state && state.offset === codes.length) {
+    const check = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',{outlet:outlet,location:location,date:eventDate,codes:[codes[0]]});
+    if (check.revision === state.revision) return {ready:true,balances:state.balances};
+    state = null;
+  }
+  const content = JSON.stringify(state);
+  if (job.opnameBalanceDriveId) DriveApp.getFileById(job.opnameBalanceDriveId).setContent(content);
+  else job.opnameBalanceDriveId = DriveApp.createFile(Utilities.newBlob(content,'application/json','TEMP_SO_BALANCES_'+job.jobId+'.json')).getId();
+  job.status = 'QUEUED'; job.workerLeaseUntil = 0; job.error = ''; job.retryNotBefore = 0;
+  job.stage = state ? 'Menyiapkan saldo '+outlet+': '+state.offset+'/'+codes.length+' item; '+state.pages+' halaman riwayat tersimpan.' : 'Transaksi berubah. Memperbarui saldo sebelum menerapkan SO.';
+  writeGoodsUploadJob_(job);
+  return {ready:false};
+}
+
 function buildStockOpnamePlan_(context, payload, options) {
       const prepared = prepareStockOpnameForEmployee_(context.employee, payload, options);
       if (prepared.requiresConversion) throw new Error('Lengkapi seluruh konversi unit Stock Opname sebelum melanjutkan upload.');
@@ -3707,7 +3775,7 @@ function prepareStockOpnameForEmployee_(employee, payload, options) {
     const rows = report.rows.filter(function (row) { return row.outlet === outlet; });
     const codes=Array.from(new Set(rows.map(function(row){return row.code;})));
     if (options.jobId) console.log('Stock Opname %s: baca saldo tanggal opname %s', options.jobId, outlet);
-    const balanceAtDate = options.validationOnly ? {} : readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes);
+    const balanceAtDate = options.validationOnly ? {} : (options.balanceAtDate || readStockCodeQtyMapAtDate_(outlet, location, eventDate, codes));
     if (options.jobId) console.log('Stock Opname %s: baca saldo saat ini %s', options.jobId, outlet);
     const currentBalance = options.validationOnly ? {} : readCurrentStockCodeQtyMapForItems_(outlet, location, codes);
     const items = [], auditItems = [];
@@ -4622,6 +4690,11 @@ function processGoodsUploadJobs() {
       if(!job.requestDriveId)throw new Error('File permintaan upload lama sudah tidak tersedia. Pilih ulang file untuk melanjutkan.');
       const payload = opnamePayload || stockPositionJobJson_(job.requestDriveId);
       if (!opnamePayload && job.sourceDriveId) payload.base64 = Utilities.base64Encode(DriveApp.getFileById(job.sourceDriveId).getBlob().getBytes());
+      if (job.type === 'STOCK_OPNAME' && opnameOptions) {
+        const preparedBalances = prepareStockOpnameBalancesStep_(job,payload,opnameOptions.report,deadline);
+        if (!preparedBalances.ready) { scheduleGoodsUploadWorker_(); return goodsUploadJobView_(job); }
+        opnameOptions.balanceAtDate = preparedBalances.balances;
+      }
       plan = buildBackgroundUploadPlan_(job.type, context, payload, opnameOptions);
       const file = DriveApp.createFile(Utilities.newBlob(JSON.stringify(plan), 'application/json', 'TEMP_GOODS_PLAN_' + job.jobId + '.json'));
       job.planDriveId = file.getId(); job.total = plan.stockRows.length + plan.pendingRows.length;
@@ -4629,6 +4702,11 @@ function processGoodsUploadJobs() {
       job.status = 'PROCESSING'; job.stage = 'Validasi selesai. Menyimpan transaksi ' + (job.opnameOutlet || '') + '.';
       // Persist IDs and complete write plan BEFORE any master, movement or transfer mutation.
       writeGoodsUploadJob_(job);
+      if (job.opnameBalanceDriveId) {
+        const balanceFile = job.opnameBalanceDriveId; job.opnameBalanceDriveId = '';
+        writeGoodsUploadJob_(job);
+        try { DriveApp.getFileById(balanceFile).setTrashed(true); } catch (cleanupError) { console.error(cleanupError); }
+      }
     }
     appendOrActivateStockMasterItems_(plan.masterChanges);
     if (plan.opnameMasterItems) addStockOpnameMasterItems_(plan.opnameMasterItems);
