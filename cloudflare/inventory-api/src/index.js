@@ -1,3 +1,4 @@
+import {balanceSnapshots} from './balance-snapshots.js';
 import {handleReceiptDirect,processReceiptQueue} from './receipt-direct.js';
 import {handleStockDirect} from '../lib/stock-direct.mjs';
 import {handleShowcaseDirect} from './showcase-direct.js';
@@ -4071,6 +4072,7 @@ async function route(request, env) {
   if(url.pathname==='/v1/stock-direct')return handleStockDirect(request,env,{listUploadProgress,listMovements});
   const auth = await authorize(request, env);
   if (!auth.ok) return apiError(auth.status, auth.code, auth.message, requestId);
+  if(request.method === 'POST' && url.pathname === '/v1/balance-snapshots') return balanceSnapshots(request,env,{readJsonWithLimit,historyDatabaseEntries});
   if (request.method === "POST" && url.pathname === "/v1/sales-save-jobs") return acceptSalesSaveJob(request,env,requestId);
   if (request.method === "POST" && url.pathname === "/v1/application-records/compact") return compactApplicationRecords(request,env,requestId);
   if (["GET","POST","DELETE"].includes(request.method) && url.pathname === "/v1/application-records") return applicationRecords(request, url, env, requestId);

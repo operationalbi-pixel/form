@@ -11025,7 +11025,24 @@ function readTransferAvailableLotsBatch_(outlet, location, items) {
   return result;
 }
 
-function readStockCodeQtyMapAtDate_(outlet, location, eventDate, itemCodes) { return cloudflareBalanceAtDate_(outlet, location, eventDate, [], itemCodes); }
+function readStockCodeQtyMapAtDate_(outlet, location, eventDate, itemCodes) {
+  if (!itemCodes || !eventDate || PropertiesService.getScriptProperties().getProperty('STOCK_BALANCE_SNAPSHOTS_ENABLED') !== 'true') {
+    return cloudflareBalanceAtDate_(outlet, location, eventDate, [], itemCodes);
+  }
+  const codes = Array.from(new Set(itemCodes)), balances = {};
+  for (let offset = 0; offset < codes.length; offset += 80) {
+    const scope = {outlet:outlet,location:location,date:eventDate,codes:codes.slice(offset,offset+80)};
+    const snapshot = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',scope);
+    Object.keys(snapshot.balances).forEach(function(code) { balances[code] = snapshot.balances[code]; });
+    const missing = scope.codes.filter(function(code) { return !Object.prototype.hasOwnProperty.call(snapshot.balances,code); });
+    if (!missing.length) continue;
+    const calculated = cloudflareBalanceAtDate_(outlet,location,eventDate,[],missing), values = {};
+    missing.forEach(function(code) { values[code] = Number(calculated[code] || 0); balances[code] = values[code]; });
+    const saved = cloudflareInventoryRequest_('POST','/v1/balance-snapshots',Object.assign({},scope,{action:'save',codes:missing,revision:snapshot.revision,balances:values}));
+    if (!saved.saved) throw new Error('Cloudflare inventory gagal: transaksi berubah saat snapshot dihitung.');
+  }
+  return balances;
+}
 
 function getCurrentStock_(outlet, location, itemCode, itemName) {
   // Gunakan daftar saldo lengkap yang sudah di-cache. Sebagian versi Worker
