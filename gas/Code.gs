@@ -4776,7 +4776,7 @@ function processGoodsUploadJobs() {
         if (job.opnameOutlet && !job.planDriveId && !job.opnameBalanceDriveId) job.opnameTurn = Number(job.opnameTurn || 0) + 1;
         job.error = '';
         job.lockWaitCount = Number(job.lockWaitCount || 0) + 1;
-        job.retryNotBefore = Date.now() + 15000;
+        job.retryNotBefore = job.type === 'STOCK_OPNAME' ? Date.now() + 15000 : 0;
         job.stage = 'Menunggu kunci penyimpanan ' + (job.opnameOutlet || job.outlet) + '. Saldo yang sudah disiapkan tetap tersimpan.';
         console.warn('Upload %s menunggu kunci %s (%s): %s',job.jobId,job.opnameOutlet || job.outlet,job.lockWaitCount,String(error.message || error));
       } else {
