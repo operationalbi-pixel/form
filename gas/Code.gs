@@ -20274,6 +20274,25 @@ function mppFormatRupiah_(num) {
 
 
 /** Native Cloudflare ledger reads. Never falls back to another datastore. */
+function cloudflareReadScopedMovements_(query) {
+  try { return cloudflareReadAllPages_('/v1/movements', query, 200, 100); }
+  catch (error) {
+    if (String(error.message || error).indexOf('Data Cloudflare melebihi batas halaman aman') < 0) throw error;
+    const codes = String(query.item_codes || '').split('|').filter(Boolean);
+    if (codes.length > 1) {
+      const middle = Math.floor(codes.length / 2);
+      return cloudflareReadScopedMovements_(Object.assign({}, query, {item_codes:codes.slice(0,middle).join('|')}))
+        .concat(cloudflareReadScopedMovements_(Object.assign({}, query, {item_codes:codes.slice(middle).join('|')})));
+    }
+    const from = query.from || '0000-01-01', to = query.to || '9999-12-31';
+    const start = Date.parse(from + 'T00:00:00Z'), end = Date.parse(to + 'T00:00:00Z');
+    if (!isFinite(start) || !isFinite(end) || start >= end) throw error;
+    const middle = start + Math.floor((end - start) / 86400000 / 2) * 86400000;
+    return cloudflareReadScopedMovements_(Object.assign({}, query, {from:from,to:new Date(middle).toISOString().slice(0,10)}))
+      .concat(cloudflareReadScopedMovements_(Object.assign({}, query, {from:new Date(middle+86400000).toISOString().slice(0,10),to:to})));
+  }
+}
+
 function cloudflareLedgerRows_(scope) {
   scope = scope || {};
   // Source identity lookups must not scan every movement in the outlet.
@@ -20294,7 +20313,8 @@ function cloudflareLedgerRows_(scope) {
   const outlets = scope.outlet ? [scope.outlet] : (scope.outlets || readActiveOutlets_());
   let rows = [];
   outlets.forEach(function (outlet) {
-    rows = rows.concat(cloudflareReadAllPages_('/v1/movements', Object.assign({}, query, { outlet: outlet }), scope.resolveScope?200:5000, 100));
+    const request = Object.assign({}, query, {outlet:outlet});
+    rows = rows.concat(scope.resolveScope ? cloudflareReadScopedMovements_(request) : cloudflareReadAllPages_('/v1/movements', request, 5000, 100));
   });
   const latest = {};
   rows.forEach(function (raw) {
