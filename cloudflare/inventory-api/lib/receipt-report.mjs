@@ -213,3 +213,6 @@ function normalizeUnit_(value) { return String(value || '').trim().replace(/\s+/
 
 function cleanText_(value, max) { return String(value || '').trim().replace(/[<>]/g, '').slice(0, max); }
 export {parseGoodsReceiptReport_ as parseReceipt};
+
+// Shared, bounded workbook reader used by the independent SO pipeline.
+export {extractReportCells_,findReportHeader_,reportDataRows_,reportCell_,parseReportNumber_,normalizeStoreName_,cleanText_};

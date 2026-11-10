@@ -23,3 +23,9 @@ jobs:
 
       - name: Validate source
         run: npm test
+
+      - name: Install SO parser test dependencies
+        run: npm install --prefix cloudflare/inventory-api --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Validate replacement SO pipeline
+        run: npm run test:so-v2
