@@ -2208,11 +2208,26 @@ function changeStockItemDefaultUnit(token, payload) {
     if (!itemCode || !newUnit) throw new Error('Pilih item dan Unit Default baru terlebih dahulu.');
 
     const masterSheet = ensureStockMasterSheet_();
-    if (masterSheet.getLastRow() < 2) throw new Error('STOCK_ITEMS masih kosong.');
-    const masterRows = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 5).getDisplayValues();
-    let masterIndex = -1;
-    for (let i = 0; i < masterRows.length; i++) {
-      if (String(masterRows[i][0] || '').trim().toUpperCase() === itemCode) { masterIndex = i; break; }
+    let masterRows = masterSheet.getLastRow() >= 2
+      ? masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 5).getDisplayValues() : [];
+    let masterIndex = masterRows.findIndex(function (row) {
+      return String(row[0] || '').trim().toUpperCase() === itemCode;
+    });
+    if (masterIndex < 0 && payload.fromStockOpname === true) {
+      // An item may already exist in D1 (with historic stock) while its Sheet
+      // mirror is missing. Restore the canonical D1 metadata before conversion,
+      // never invent a "new" item with the file unit and overwrite history.
+      const found = readCloudflareStockOpnameMasterItems_([itemCode]);
+      const canonical = found.filter(function (item) { return item.code === itemCode; })[0];
+      if (!canonical) throw new Error('Item ' + itemCode + ' tidak ada di master Cloudflare. Verifikasi ulang file SO.');
+      if (payload.oldUnit && normalizeUnit_(payload.oldUnit) !== canonical.unit) {
+        throw new Error('Unit Default master Cloudflare untuk ' + itemCode + ' berubah. Verifikasi ulang file SO.');
+      }
+      addStockOpnameMasterItems_([canonical]);
+      masterRows = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 5).getDisplayValues();
+      masterIndex = masterRows.findIndex(function (row) {
+        return String(row[0] || '').trim().toUpperCase() === itemCode;
+      });
     }
     if (masterIndex < 0) throw new Error('Item ' + itemCode + ' tidak ditemukan pada STOCK_ITEMS.');
     const itemName = String(masterRows[masterIndex][2] || '').trim();
@@ -3784,7 +3799,10 @@ function syncNewStockOpnameMasterItems_(items) {
     const hash = digest_('SO_MASTER_ITEMS_V1|' + JSON.stringify(data));
     cloudflareInventoryRequest_('POST', '/v1/sync/master', {
       syncId: 'so-items-' + hash.slice(0, 48), sourceHash: hash,
-      generatedAt: new Date().toISOString(), data: { items: data }
+      generatedAt: new Date().toISOString(), data: {
+        outlets: [], locations: [], items: data, conversions: [],
+        formulas: [], materials: [], showcaseItems: []
+      }
     });
   }
 }
