@@ -83,11 +83,21 @@ export async function stageSoStep(env,id,directory,{parse=parseSoWorkbook,clock=
 
 export async function dispatchSoOutbox(env) {
   const pending=await env.OPERATIONS_DB.prepare(`SELECT o.job_id FROM so_upload_outbox o JOIN so_upload_jobs j ON j.job_id=o.job_id WHERE o.available_at<=? AND j.lease_until<=? AND j.status IN ('RECEIVED','STAGING') LIMIT 50`).bind(Date.now(),Date.now()).all();
+  let sent=0;
   for(const row of pending.results) {
-    await env.SO_UPLOAD_QUEUE.send({kind:'SO_V2',id:row.job_id});
-    await env.OPERATIONS_DB.prepare('UPDATE so_upload_outbox SET available_at=? WHERE job_id=?').bind(Date.now()+60000,row.job_id).run();
+    // A temporarily unavailable Queue must not prevent other accepted jobs
+    // from being dispatched. Keep failed wake-ups in the durable outbox.
+    try {
+      await env.SO_UPLOAD_QUEUE.send({kind:'SO_V2',id:row.job_id});
+      sent++;
+      await env.OPERATIONS_DB.prepare('UPDATE so_upload_outbox SET available_at=? WHERE job_id=?').bind(Date.now()+60000,row.job_id).run();
+    } catch(error) {
+      console.error(JSON.stringify({event:'so_dispatch_deferred',id:row.job_id,message:String(error.message)}));
+      // Delay retries to avoid hammering a failing Queue; the job stays durable.
+      await env.OPERATIONS_DB.prepare('UPDATE so_upload_outbox SET available_at=? WHERE job_id=?').bind(Date.now()+30000,row.job_id).run();
+    }
   }
-  return pending.results.length;
+  return sent;
 }
 
 export function soJobProgress(job) {
