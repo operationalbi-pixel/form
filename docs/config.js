@@ -3,7 +3,10 @@ window.BAKERZIN_CONFIG = Object.freeze({
   API_URL: 'https://script.google.com/macros/s/AKfycbw2_tBBWOn9Ld6QcCJBorJyZ06Lh1ZB_gEnIEqc76N7D2WWOv3trlGVqtIAqYml060_/exec',
 
   // Kosongkan agar alamat dashboard mengikuti lokasi GitHub Pages saat ini.
-  SITE_BASE_URL: ''
+  SITE_BASE_URL: '',
+
+  // Jalur Stock Opname V2 diproses oleh Cloudflare Worker dan antrean khusus.
+  SO_V2_ENABLED: true
 });
 
 // Enhancement khusus halaman Chat. Dipisahkan dari chat.html agar perubahan

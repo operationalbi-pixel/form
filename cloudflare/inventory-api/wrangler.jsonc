@@ -23,7 +23,7 @@
     "SOPI_MODEL": "@cf/openai/gpt-oss-120b",
     "SOPI_FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
     "SOPI_LANGUAGE_MODEL": "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
-    "SO_V2_ENABLED": "0"
+    "SO_V2_ENABLED": "1"
   },
   "ai": {
     "binding": "AI"
