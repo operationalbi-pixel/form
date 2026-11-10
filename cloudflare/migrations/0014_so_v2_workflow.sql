@@ -4,6 +4,7 @@ ALTER TABLE so_upload_jobs ADD COLUMN planned INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE so_upload_jobs ADD COLUMN committed INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE so_upload_jobs ADD COLUMN planning_cursor INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE so_upload_jobs ADD COLUMN commit_cursor INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE so_upload_jobs ADD COLUMN master_cursor INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE so_upload_jobs ADD COLUMN projection_id TEXT;
 ALTER TABLE so_upload_jobs ADD COLUMN plan_revision TEXT;
 CREATE TABLE IF NOT EXISTS so_upload_plans (
