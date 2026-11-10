@@ -52,7 +52,11 @@ async function sharedProjectionStep(env,sources){
   // source watermark before allowing any keyset copy to advance.
   await captureProjectionWatermarks(db,PROJECTION,sources);
   if(run.source_index<run.source_count){
-   run=await copyProjectionPage(db,PROJECTION,sources,{limit:500});
+   // Reuse the durable keyset cursor while reducing Queue round-trips.
+   // Bound the work per delivery so D1/Worker limits and other queues are respected.
+   for(let page=0;page<4&&run.source_index<run.source_count;page++){
+    run=await copyProjectionPage(db,PROJECTION,sources,{limit:500});
+   }
    return {ready:false,stage:'Membangun snapshot historis satu kali',scanned:run.scanned};
   }
   await sealProjection(db,PROJECTION,'journal-feed-v1');
