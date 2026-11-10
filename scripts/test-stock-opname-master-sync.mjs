@@ -66,7 +66,7 @@ const restored=ctx.prepareStockOpnameMasterItems_([row],[],cloudflare);
 assert.equal(restored.master[row.code].unit,'PCK@50GR');
 assert.equal(restored.newItems[0].alreadyInCloudflare,true);
 assert.equal(ctx.addStockOpnameMasterItems_(restored.newItems),1);
-assert.deepEqual(sheetRows[0],['FGR01170','GROCERIES','NORI TABUR / KOREAN NORI','PCK@50GR',true]);
+assert.deepEqual([...sheetRows[0]],['FGR01170','GROCERIES','NORI TABUR / KOREAN NORI','PCK@50GR',true]);
 assert.equal(calls.filter(c=>c.method==='POST').length,0,'D1-existing item must NOT be overwritten');
 assert.equal(ctx.addStockOpnameMasterItems_(restored.newItems),0,'Repeated job cannot duplicate Sheet rows');
 
@@ -76,7 +76,7 @@ assert.equal(unknown.length,0);
 const plan=ctx.prepareStockOpnameMasterItems_([newRow],[],unknown);
 assert.equal(plan.newItems[0].alreadyInCloudflare,undefined);
 assert.equal(ctx.addStockOpnameMasterItems_(plan.newItems),1);
-assert.deepEqual(sheetRows[1],['NEW001','BAKERY','New Material','PCS',true]);
+assert.deepEqual([...sheetRows[1]],['NEW001','BAKERY','New Material','PCS',true]);
 const posts=calls.filter(c=>c.method==='POST');
 assert.equal(posts.length,1);
 assert.equal(posts[0].payload.data.items[0].itemCode,'NEW001');
