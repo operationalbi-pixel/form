@@ -8,7 +8,11 @@ let report={outlets,rows:outlets.flatMap(outlet=>master.map((item,i)=>({...item,
 let historyReads=0,currentReads=0,duplicateReads=0,duplicate=false,uuid=0;
 Object.assign(ctx,{Utilities:{getUuid:()=> 'ID'+ ++uuid},safe_:fn=>fn(),requireSession_:()=>({nik:'HQ'}),findEmployee_:()=>employee,assertEmployeeActive_:e=>{if(e.inactive)throw Error('inactive')},
  normalizeDate_:value=>value,todayIso_:()=> '2026-10-12',digest_:()=> 'file-hash',parseStockOpnameReport_:()=>structuredClone(report),
- ensureStockCardInfrastructure_(){},readActiveOutlets_:()=>outlets,readStockLocations_:()=>['Store'],readStockMaster_:()=>master,readStockUnitConversions_:()=>({}),
+ ensureStockCardInfrastructure_(){},readActiveOutlets_:()=>outlets,readStockLocations_:()=>['Store'],readStockMaster_:(all,fresh)=>{assert.equal(all,true);assert.equal(fresh,true);return master;},readStockUnitConversions_:()=>({}),
+ cloudflareInventoryRequest_:(method,path)=>{
+   assert.equal(method,'GET');assert.match(path,/^\/v1\/stock-items\?/);
+   return {ok:true,data:[],nextCursor:null};
+ },
  stockOpnameAlreadyImported_:()=>{duplicateReads++;return duplicate},
  readStockCodeQtyMapAtDate_:()=>{historyReads++;return Object.fromEntries(master.map(i=>[i.code,5]))},
  readCurrentStockCodeQtyMapForItems_:()=>{currentReads++;return Object.fromEntries(master.map(i=>[i.code,9]))}});

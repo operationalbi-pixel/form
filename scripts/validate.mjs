@@ -769,6 +769,8 @@ try {
     { code: 'ITEM2', category: 'Food', name: 'Item 2', unit: 'KG' }
   ];
   backendContext.readStockUnitConversions_ = () => ({});
+  // SO now reconciles Sheet-only gaps against D1; this FIFO test has no external API.
+  backendContext.cloudflareInventoryRequest_ = () => ({ ok: true, data: [], nextCursor: null });
   backendContext.readStockCodeQtyMapAtDate_ = outlet => outlet === 'BICP' ? { ITEM1: 10 } : { ITEM2: 3 };
   backendContext.readCurrentStockCodeQtyMapForItems_ = outlet => outlet === 'BICP' ? { ITEM1: 14 } : { ITEM2: 8 };
   const opname = backendContext.prepareStockOpnameImport_('TOKEN', { fileName: 'SO.xlsx', base64: 'DATA', eventDate: '2026-09-01', location: 'Store' });
