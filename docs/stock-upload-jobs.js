@@ -6,7 +6,7 @@ function startStockUploadWorkers(jobs) {
   var token = APP.token;
   (jobs || []).forEach(function (job) {
     if (!job || !job.jobId || ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || job.workerRunning) return;
-    if(job.engine==='RECEIPT_CF')return;
+    if(job.engine==='RECEIPT_CF'||job.engine==='SO_V2')return;
     var engine = job.engine || 'GOODS', key = token + '|' + engine, state = STOCK_UPLOAD_STARTS[key];
     if (state && (state.running || Date.now() - state.at < 60000)) return;
     state = STOCK_UPLOAD_STARTS[key] = { running: true, at: Date.now() };
