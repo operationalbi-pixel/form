@@ -1,4 +1,4 @@
-import {acceptSo,cancelSo,readSoJob,soJobProgress} from './so-intake.mjs';
+import {acceptSo,cancelSo,retrySo,readSoJob,soJobProgress} from './so-intake.mjs';
 import {parseSoWorkbook,validateSoDate} from './so-report.mjs';
 
 const todayJakarta=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -55,6 +55,11 @@ export async function handleSoDirectAction(action,payload,scope,env){
  if(action==='so-status'){
   const jobs=await env.OPERATIONS_DB.prepare('SELECT * FROM so_upload_jobs WHERE owner_nik=? ORDER BY created_at DESC LIMIT 25').bind(scope.owner).all();
   return {jobs:jobs.results.map(asJob)};
+ }
+ if(action==='so-retry'){
+  const id=clean(payload?.jobId);
+  if(!/^so2-[0-9a-f]{64}$/.test(id))throw Error('Job SO tidak valid.');
+  return asJob(await retrySo(env,id,scope.owner));
  }
  if(action==='so-cancel'){
   const id=clean(payload?.jobId);
