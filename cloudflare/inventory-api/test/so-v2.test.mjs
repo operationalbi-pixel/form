@@ -191,6 +191,19 @@ test('atomic batch applies delta once and a repeated delivery returns its receip
   assert.equal(env.sql.prepare('SELECT COUNT(*) n FROM so_commit_batches').get().n,1);
   await assert.rejects(()=>commitSoPlanBatch(env.OPERATIONS_DB,job,[{...planned.rows[0],delta:4}],opts),/rencana berbeda/);
 });
+test('backdated SO writes the historical audit without changing stock after a newer SO',async()=>{
+  const {env,job}=await commitEnvironment();
+  const rows=[{sourceRow:2,outlet:'A',code:'I',name:'Item',unit:'PCS',actualQty:3}];
+  const plan=await buildSoPlanRows(job,rows,{I:{item_name:'Item',default_unit:'PCS',category:'Food'}},{I:5},{I:true});
+  assert.equal(plan.rows[0].delta,-2);
+  assert.equal(plan.rows[0].balanceDelta,0);
+  await commitSoPlanBatch(env.OPERATIONS_DB,job,plan.rows,{batchId:'backdated',expectedRevision:0,leaseToken:'lease'});
+  assert.equal(env.sql.prepare('SELECT current_qty FROM stock_balances').get().current_qty,9);
+  const movement=env.sql.prepare("SELECT quantity,direction FROM stock_movements WHERE record_type='MOVEMENT'").get();
+  assert.equal(movement.quantity,2);
+  assert.equal(movement.direction,'OUT');
+});
+
 test('stale revision or cancelled consumer cannot write stock',async()=>{
   const {env,job,planned}=await commitEnvironment();
   const opts={batchId:'batch',expectedRevision:10,leaseToken:'lease'};
