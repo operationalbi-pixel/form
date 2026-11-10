@@ -8,6 +8,7 @@ import {parseSoCells,parseSoWorkbook,validateSoDate} from '../lib/so-report.mjs'
 import {soBalances} from '../lib/so-balance.mjs';
 import {projectionSchema,startProjection,projectionPageStatement,sealProjection,projectedSoBalances,projectedSoLaterCheckpoints,copyProjectionPage} from '../lib/so-projection.mjs';
 import {buildSoPlanRows,commitSchema,commitSoPlanBatch} from '../lib/so-plan.mjs';
+import {sourceChangeFeedSchema,sourceChangeFeedTriggers,projectionWatermarkSchema,captureProjectionWatermarks,synchronizeProjectionPage,projectionFeedCaughtUp} from '../lib/so-projection-feed.mjs';
 import {acceptSo,stageSoStep,cancelSo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
 
 const directory=[{code:'A',name:'Outlet A',active:true},{code:'B',name:'Outlet B',active:true}];
@@ -235,4 +236,35 @@ test('ledger failure rolls back balance, audit rows and durable batch receipt',a
   assert.equal(env.sql.prepare('SELECT current_qty FROM stock_balances').get().current_qty,9);
   assert.equal(env.sql.prepare('SELECT COUNT(*) n FROM stock_movements').get().n,0);
   assert.equal(env.sql.prepare('SELECT COUNT(*) n FROM so_commit_batches').get().n,0);
+});
+
+test('incremental projection journal repairs newer corrections and restores deleted fallback',async()=>{
+ const env=environment(),db=env.OPERATIONS_DB;
+ env.sql.exec(readFileSync(new URL('../../migrations/0000_container_metadata.sql',import.meta.url),'utf8'));
+ env.sql.exec(readFileSync(new URL('../../migrations/0001_operations.sql',import.meta.url),'utf8'));
+ env.sql.exec(projectionSchema+sourceChangeFeedSchema+projectionWatermarkSchema+sourceChangeFeedTriggers('stock_movements'));
+ const sources=[{key:'ops',table:'stock_movements',database:db}];
+ function insert(row){
+  env.sql.prepare(`INSERT INTO stock_movements(record_id,logical_id,version,record_type,outlet_code,location_code,item_code,unit,direction,quantity,movement_type,event_date,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+   .run(row.record_id,row.logical_id,row.version,row.record_type,row.outlet_code,row.location_code,row.item_code,'PCS',row.direction,row.quantity,row.movement_type,row.event_date,'TEST',row.created_at);
+ }
+ const old=movement('first',{logical_id:'shared',version:1}),newer=movement('second',{logical_id:'shared',version:2,outlet_code:'B',quantity:7,created_at:'2026-11-02T00:00:00Z'});
+ insert(old);
+ await startProjection(db,'p','snapshot',1);
+ await captureProjectionWatermarks(db,'p',sources);
+ await db.batch([projectionPageStatement(db,'p',[old])]);
+ env.sql.exec("UPDATE so_projection_runs SET source_index=1 WHERE projection_id='p'");
+ await sealProjection(db,'p','snapshot');
+ assert.equal(await projectionFeedCaughtUp(db,'p',sources),true);
+ insert(newer);
+ assert.equal(await projectionFeedCaughtUp(db,'p',sources),false);
+ assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,1);
+ assert.equal(await projectionFeedCaughtUp(db,'p',sources),true);
+ assert.deepEqual(await projectedSoBalances(db,'p',{outlet:'A',location:'Store',eventDate:'2026-10-31',codes:['I']}),{I:0});
+ assert.deepEqual(await projectedSoBalances(db,'p',{outlet:'B',location:'Store',eventDate:'2026-10-31',codes:['I']}),{I:7});
+ env.sql.prepare('DELETE FROM stock_movements WHERE record_id=?').run('second');
+ assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,1);
+ assert.deepEqual(await projectedSoBalances(db,'p',{outlet:'A',location:'Store',eventDate:'2026-10-31',codes:['I']}),{I:5});
+ assert.equal(await projectionFeedCaughtUp(db,'p',sources),true);
+ assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,0);
 });
