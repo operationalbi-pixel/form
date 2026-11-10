@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import {zipSync,strToU8} from 'fflate';
 import {parseSoCells,parseSoWorkbook,validateSoDate} from '../lib/so-report.mjs';
 import {soBalances} from '../lib/so-balance.mjs';
-import {projectionSchema,startProjection,projectionPageStatement,sealProjection,projectedSoBalances,copyProjectionPage} from '../lib/so-projection.mjs';
+import {projectionSchema,startProjection,projectionPageStatement,sealProjection,projectedSoBalances,projectedSoLaterCheckpoints,copyProjectionPage} from '../lib/so-projection.mjs';
 import {buildSoPlanRows,commitSchema,commitSoPlanBatch} from '../lib/so-plan.mjs';
 import {acceptSo,stageSoStep,cancelSo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
 
@@ -153,6 +153,22 @@ test('SQL audit values override legacy text and respect effective SO dates',asyn
   await db.batch([projectionPageStatement(db,'p',rows)]);env.sql.exec("UPDATE so_projection_runs SET source_index=1");await sealProjection(db,'p','r');
   const scope={outlet:'A',location:'Store',eventDate:'2026-10-31',codes:['I']};assert.deepEqual(await projectedSoBalances(db,'p',scope),{I:2});
 });
+test('detects newer SO checkpoint by audit-effective date, including zero count',async()=>{
+  const env=environment(),db=env.OPERATIONS_DB;env.sql.exec(projectionSchema);
+  await startProjection(db,'p','revision',1);
+  const rows=[
+    movement('earlier',{movement_type:'Stock Opname',item_code:'EARLY',event_date:'2026-10-10',info:'Balance 5'}),
+    movement('later',{movement_type:'Stock Opname',item_code:'LATER',source_hash:'sh',source_row:17,event_date:'2026-10-10',info:'Balance 99'}),
+    movement('audit-later',{record_type:'OPNAME_DETAIL',item_code:'LATER',source_hash:'sh',source_row:17,info:JSON.stringify({actualQty:0,eventDate:'2026-11-02'})}),
+    movement('gr',{item_code:'NORMAL',movement_type:'Goods Receipt',event_date:'2026-11-05'})
+  ];
+  await db.batch([projectionPageStatement(db,'p',rows)]);
+  env.sql.exec("UPDATE so_projection_runs SET source_index=1 WHERE projection_id='p'");
+  await sealProjection(db,'p','revision');
+  const found=await projectedSoLaterCheckpoints(db,'p',{outlet:'A',location:'Store',eventDate:'2026-10-31',codes:['EARLY','LATER','NORMAL']});
+  assert.deepEqual(found,{LATER:true});
+});
+
 test('bounded keyset copy resumes without skipping rows or losing cross-shard corrections',async()=>{
   const env=environment(),db=env.OPERATIONS_DB;env.sql.exec(projectionSchema);
   const sets=[[movement('a'),movement('b'),movement('c')],[movement('d',{logical_id:'b',version:2,outlet_code:'B'})]];
