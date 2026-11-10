@@ -48,6 +48,9 @@ async function sharedProjectionStep(env,sources){
   await captureProjectionWatermarks(db,PROJECTION,sources);
  }
  if(run.state==='BUILDING'){
+  // If the first Worker dies after creating the run, finish recording every
+  // source watermark before allowing any keyset copy to advance.
+  await captureProjectionWatermarks(db,PROJECTION,sources);
   if(run.source_index<run.source_count){
    run=await copyProjectionPage(db,PROJECTION,sources,{limit:500});
    return {ready:false,stage:'Membangun snapshot historis satu kali',scanned:run.scanned};
@@ -128,7 +131,7 @@ export async function prepareSoStep(env,job,sources){
   const last=source.at(-1).source_row;
   await db.batch([
    db.prepare(`INSERT INTO so_upload_plans(job_id,source_row,outlet_code,item_code,payload_json)
-    SELECT ?,json_extract(value,'$.sourceRow'),json_extract(value,'$.outlet'),json_extract(value,'$.code'),value FROM json_each(?)
+    SELECT ?,json_extract(value,'$.sourceRow'),json_extract(value,'$.outlet'),json_extract(value,'$.code'),value FROM json_each(?) WHERE true
     ON CONFLICT(job_id,source_row) DO NOTHING`).bind(job.job_id,JSON.stringify(planned)),
    db.prepare('UPDATE so_upload_jobs SET planned=planned+?,planning_cursor=?,updated_at=?,lease_token=NULL,lease_until=0 WHERE job_id=? AND lease_token=? AND status=? AND planning_cursor=?')
     .bind(source.length,last,iso(),job.job_id,active.lease_token,'PREPARING',active.planning_cursor||0)
@@ -172,6 +175,8 @@ export async function commitSoStep(env,job,sources){
   const expectedRevision=first?first.revision+2*Number(earlier.n):Number(current?.revision||0);
   if(first&&Number(current?.revision||0)!==expectedRevision)throw Error('Saldo outlet '+outlet+' berubah saat menyimpan SO.');
   if(!first)await db.prepare('INSERT OR IGNORE INTO so_upload_scope_revisions(job_id,outlet_code,revision) VALUES(?,?,?)').bind(job.job_id,outlet,expectedRevision).run();
+  if(committedRevision(active.plan_revision,Number(active.committed||0))!==await soRevisions(sources))
+   throw Error('Revisi stok berubah sebelum transaksi SO ditulis.');
   const last=group.at(-1).source_row;
   const batchId='so2-b-'+await soHash([job.job_id,group[0].source_row,last].join('|'));
   await commitSoPlanBatch(db,active,plans,{batchId,expectedRevision,leaseToken:active.lease_token,
