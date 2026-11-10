@@ -99,3 +99,32 @@ export async function projectedSoBalances(db,id,{outlet,location,eventDate,codes
   `).bind(JSON.stringify([...new Set(codes)]),id,outlet,location,eventDate).all();
   return Object.fromEntries(result.results.map(r=>[r.item_code,Number(r.quantity)]));
 }
+
+/**
+ * Detect later effective SO checkpoints for a dated upload. Once a newer
+ * checkpoint exists, inserting an older SO must preserve the current balance.
+ * Audit records are paired with their movement so corrected effective dates
+ * take precedence over the text on the movement itself.
+ */
+export async function projectedSoLaterCheckpoints(db,id,{outlet,location,eventDate,codes}) {
+  if(!Array.isArray(codes)||!codes.length||codes.length>500)throw Error('Batch checkpoint SO harus 1–500 item.');
+  const run=(await db.prepare('SELECT state FROM so_projection_runs WHERE projection_id=?').bind(id).all()).results[0];
+  if(run?.state!=='READY')throw Error('Snapshot saldo belum lengkap atau sudah berubah.');
+  const result=await db.prepare(`
+    WITH wanted AS (SELECT value AS item_code FROM json_each(?)),
+    scoped AS (SELECT r.* FROM so_projection_rows r JOIN wanted w ON w.item_code=r.item_code
+      WHERE r.projection_id=? AND r.outlet_code=? AND r.location_code=?),
+    audits AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY item_code,source_hash,source_row
+      ORDER BY created_ms DESC,record_id DESC) audit_rank
+      FROM scoped WHERE record_type='OPNAME_DETAIL'),
+    checkpoints AS (SELECT m.item_code,
+      COALESCE(NULLIF(a.opname_date,''),NULLIF(m.opname_date,''),m.event_date) AS effective_date,
+      COALESCE(a.opname_qty,m.opname_qty) AS actual
+      FROM scoped m LEFT JOIN audits a ON a.item_code=m.item_code AND
+        a.source_hash=m.source_hash AND a.source_row=m.source_row AND a.audit_rank=1
+      WHERE m.record_type='MOVEMENT' AND m.movement_type='Stock Opname')
+    SELECT item_code FROM checkpoints WHERE actual IS NOT NULL AND effective_date>?
+      GROUP BY item_code
+  `).bind(JSON.stringify([...new Set(codes)]),id,outlet,location,eventDate).all();
+  return Object.fromEntries(result.results.map(r=>[r.item_code,true]));
+}
