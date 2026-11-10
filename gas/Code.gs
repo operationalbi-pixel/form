@@ -2233,6 +2233,9 @@ function changeStockItemDefaultUnit(token, payload) {
     const itemName = String(masterRows[masterIndex][2] || '').trim();
     const oldUnit = normalizeUnit_(masterRows[masterIndex][3]);
     if (!oldUnit) throw new Error(itemCode + ' · Unit Default lama masih kosong.');
+    if (payload.oldUnit && normalizeUnit_(payload.oldUnit) !== oldUnit) {
+      throw new Error('Unit Default ' + itemCode + ' sudah berubah. Verifikasi ulang SO sebelum konversi.');
+    }
     if (oldUnit === newUnit) throw new Error(itemCode + ' sudah menggunakan Unit Default ' + newUnit + '.');
     const savedFactor = resolveUnitConversionFactor_(itemCode, oldUnit, newUnit, {}, readStockUnitConversions_());
     const providedFactor = Number(payload.factor);
@@ -2246,7 +2249,14 @@ function changeStockItemDefaultUnit(token, payload) {
     let converted = false;
     try {
       lock = acquireStockWriteLock_();
-      const contexts = cloudflareDistinctContexts_(cloudflareLedgerRows_({itemCode:itemCode,itemName:itemName,recordTypes:['MOVEMENT']}));
+      // Use bounded outlet/storage metadata for cache invalidation, not a
+      // full 12-outlet stock-movement scan before converting the item.
+      const directory = readStoreCodeDirectory_(), contexts = [];
+      Object.keys(directory.byCode || {}).forEach(function (outlet) {
+        readStockLocations_(outlet).forEach(function (location) {
+          contexts.push({ outlet: outlet, location: location });
+        });
+      });
       const result = convertStockDefaultUnitBigQuery_(itemCode, itemName, newUnit, factor, oldUnit);
       converted = true;
       try {
@@ -2281,8 +2291,13 @@ function changeStockItemDefaultUnit(token, payload) {
 
       removeScriptCacheKeys_(['stock-master-all', 'stock-master-active', 'stock-unit-conversions']);
       const cacheRows = contexts.map(function (row) { return { outlet: row.outlet, location: row.location, item_code: itemCode, item_name: itemName, record_type: 'MOVEMENT' }; });
-      invalidateStockItemCachesForRows_(cacheRows);
-      invalidateFastStockHistoryRows_(cacheRows);
+      // A failed cache invalidation cannot roll back the D1 conversion.
+      try {
+        invalidateStockItemCachesForRows_(cacheRows);
+        invalidateFastStockHistoryRows_(cacheRows);
+      } catch (cacheError) {
+        console.error('Konversi stok berhasil tetapi cache belum dibersihkan: ' + cacheError.message);
+      }
       return { changed: true, itemCode: itemCode, itemName: itemName, oldUnit: oldUnit, newUnit: newUnit, factor: factor,
         affectedStockRows: Number(result.stock_rows || 0), affectedTransferRows: Number(result.transfer_rows || 0) };
     } catch (error) {
