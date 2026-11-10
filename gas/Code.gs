@@ -3820,7 +3820,15 @@ function prepareStockOpnameForEmployee_(employee, payload, options) {
   });
   if (duplicates.length) throw new Error('File Stock Opname yang sama sudah pernah di-upload pada ' + eventDate + ' untuk: ' + duplicates.join(', ') + '.');
 
-  const masterPrepared = prepareStockOpnameMasterItems_(report.rows, readStockMaster_(true));
+  // SO must use live STOCK_ITEMS rather than the 10-minute master cache.
+  // Reconcile missing sheet codes against D1 before calling them "new" or
+  // attempting a unit conversion (D1 can already contain their history).
+  const stockMaster = readStockMaster_(true, true);
+  const knownCodes = {};
+  stockMaster.forEach(function (item) { knownCodes[item.code] = true; });
+  const missingCodes = Array.from(new Set(report.rows.map(function (row) { return row.code; }).filter(function (code) { return !knownCodes[code]; })));
+  const cloudflareItems = missingCodes.length ? readCloudflareStockOpnameMasterItems_(missingCodes) : [];
+  const masterPrepared = prepareStockOpnameMasterItems_(report.rows, stockMaster, cloudflareItems);
   const master = masterPrepared.master;
   const savedConversions = readStockUnitConversions_(), conversionMap = {};
   const allItems = [], allAuditItems = [], outlets = [];
@@ -10022,9 +10030,9 @@ function showcaseProductNameMap_() {
   return map;
 }
 
-function readStockMaster_(includeInactive) {
+function readStockMaster_(includeInactive, forceFresh) {
   const cacheKey = includeInactive ? 'stock-master-all' : 'stock-master-active';
-  const cached = readScriptJsonCache_(cacheKey);
+  const cached = forceFresh ? null : readScriptJsonCache_(cacheKey);
   if (cached) return cached;
   const sheet = ensureStockMasterSheet_();
   if (sheet.getLastRow() < 2) return [];
