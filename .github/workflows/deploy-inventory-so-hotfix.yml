@@ -36,7 +36,7 @@ jobs:
       - name: Install Worker dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Run SO V2 regression tests
-        run: npm run test:so-v2
+        run: npm run test:so-v2 --prefix ../..
       - name: Validate Worker bundle
         run: npx wrangler deploy --config wrangler.jsonc --dry-run
       - name: Deploy only Worker code (preserve production data and vars)
