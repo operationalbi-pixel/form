@@ -6,7 +6,7 @@ function startStockUploadWorkers(jobs) {
   var token = APP.token;
   (jobs || []).forEach(function (job) {
     if (!job || !job.jobId || ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) < 0 || job.workerRunning) return;
-    if(job.engine==='RECEIPT_CF')return;
+    if(job.engine==='RECEIPT_CF'||job.engine==='SO_V2')return;
     var engine = job.engine || 'GOODS', key = token + '|' + engine, state = STOCK_UPLOAD_STARTS[key];
     if (state && (state.running || Date.now() - state.at < 60000)) return;
     state = STOCK_UPLOAD_STARTS[key] = { running: true, at: Date.now() };
@@ -77,6 +77,9 @@ function renderGoodsUploadStatus(jobs) {
     var workerError = ['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0 && workerState && workerState.error || '';
     var action = job.engine && job.engine !== 'GOODS' && job.status === 'FAILED' && !job.canRetry ? '<button class="btn btn-light btn-small" data-stock-open="' + escapeAttr(job.type) + '">Pilih Ulang File</button>' : job.status === 'ACTION_REQUIRED' ? '<button class="btn btn-light btn-small" data-goods-review="' + escapeAttr(job.jobId) + '">Tinjau</button>' :
       job.status === 'FAILED' ? '<button class="btn btn-primary btn-small" data-goods-retry="' + escapeAttr(job.jobId) + '" data-engine="'+escapeAttr(job.engine||'GOODS')+'">Coba Lagi</button>' : '';
+    if(job.engine==='SO_V2'&&job.status==='ACTION_REQUIRED'){
+      action=Number(job.committed||0)>0?'<span class="goods-job-error">Sebagian stok sudah tersimpan; perlu rekonsiliasi sebelum dapat dilanjutkan.</span>':'<button class="btn btn-primary btn-small" data-goods-retry="'+escapeAttr(job.jobId)+'" data-engine="SO_V2">Validasi Ulang</button>';
+    }
     if (job.engine === 'USAGE') {
       if (['QUEUED', 'PREPARING', 'PROCESSING'].indexOf(job.status) >= 0) {
         action = job.cancelRequested ? '<span>Mengakhiri batch aktif...</span>' :

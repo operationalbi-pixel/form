@@ -1,3 +1,4 @@
+import {handleSoDirectAction} from './so-direct.mjs';
 const clean=(value,limit=120)=>String(value??'').trim().replace(/[<>]/g,'').slice(0,limit);
 const json=(body,status,headers)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store',...headers}});
 class Failure extends Error{constructor(status,message){super(message);this.status=status;}}
@@ -23,8 +24,14 @@ export async function handleStockDirect(request,env,deps){
   if(request.method==='OPTIONS')return new Response(null,{status:204,headers:cors});
   try{
     if(request.method!=='POST')fail(405,'Metode tidak diizinkan.');
-    const body=await request.json();
+    const maximum=7*1024*1024+16384;
+    const reader=request.body?.getReader(),chunks=[];let length=0;
+    if(!reader)fail(400,'Payload kosong.');
+    while(true){const next=await reader.read();if(next.done)break;length+=next.value.length;if(length>maximum){await reader.cancel();fail(413,'File SO maksimal 5 MB.');}chunks.push(next.value);}
+    const buffer=new Uint8Array(length);let offset=0;for(const chunk of chunks){buffer.set(chunk,offset);offset+=chunk.length;}
+    const body=JSON.parse(new TextDecoder().decode(buffer));
     const scope=await claims(request,env);
+    if(String(body?.action||'').startsWith('so-'))return json({ok:true,data:await handleSoDirectAction(body.action,body.payload||{},scope,env)},200,cors);
     if(body?.action==='snapshot'){
       const [master,balances,visibility]=await Promise.all([
         env.MASTER_DB.prepare('SELECT item_code,category,item_name,default_unit FROM stock_items WHERE active=1 ORDER BY item_code').all(),

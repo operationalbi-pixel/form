@@ -21,5 +21,14 @@ jobs:
         with:
           node-version: 22.22.0
 
+      - name: Install Worker dependencies
+        run: npm install --prefix cloudflare/inventory-api --ignore-scripts --no-audit --no-fund
+
       - name: Validate source
         run: npm test
+
+      - name: Validate replacement SO pipeline
+        run: npm run test:so-v2
+
+      - name: Validate Worker bundle without deploying
+        run: npm run check --prefix cloudflare/inventory-api
