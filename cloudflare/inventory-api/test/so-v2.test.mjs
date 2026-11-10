@@ -230,11 +230,11 @@ test('SO batch receipt, stock movements and resume cursor commit atomically',asy
   const first=await commitSoPlanBatch(env.OPERATIONS_DB,job,planned.rows,opts);
   assert.equal(first.replayed,false);
   let state=env.sql.prepare('SELECT committed,commit_cursor FROM so_upload_jobs WHERE job_id=?').get(job.job_id);
-  assert.deepEqual(state,{committed:1,commit_cursor:2});
+  assert.deepEqual({...state},{committed:1,commit_cursor:2});
   const again=await commitSoPlanBatch(env.OPERATIONS_DB,job,planned.rows,opts);
   assert.equal(again.replayed,true);
   state=env.sql.prepare('SELECT committed,commit_cursor FROM so_upload_jobs WHERE job_id=?').get(job.job_id);
-  assert.deepEqual(state,{committed:1,commit_cursor:2});
+  assert.deepEqual({...state},{committed:1,commit_cursor:2});
   assert.equal(env.sql.prepare('SELECT COUNT(*) n FROM so_commit_batches').get().n,1);
 });
 
@@ -300,7 +300,7 @@ test('SO coordinator creates new master only after validation and saves its stoc
   if(['COMPLETE','CANCELLED','ACTION_REQUIRED'].includes(state?.status))break;
  }
  assert.equal(state?.status,'COMPLETE',JSON.stringify(state));
- assert.deepEqual(env.sql.prepare("SELECT item_name,default_unit FROM stock_items WHERE item_code='NEW'").get(),{item_name:'Brand New',default_unit:'PCS'});
+ assert.deepEqual({...env.sql.prepare("SELECT item_name,default_unit FROM stock_items WHERE item_code='NEW'").get()},{item_name:'Brand New',default_unit:'PCS'});
  assert.equal(env.sql.prepare("SELECT current_qty FROM stock_balances WHERE item_code='NEW'").get().current_qty,8);
  assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM so_commit_batches").get().n,1);
 });
