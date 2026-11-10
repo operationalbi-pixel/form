@@ -971,13 +971,13 @@
           ' detik. Proses dapat memerlukan waktu karena histori stok. Jangan membuka upload yang sama di tab lain.';
       }
       clock=setInterval(progressMessage,1000);progressMessage();
-      function finish(){
+      function finishStockOpnameUnitConversion(){
         clearInterval(clock);APP.stockOpname.unitChanging=false;
         button.disabled=false;button.textContent='Konversi & Lanjutkan';
       }
       function convertNext(index){
         if(index>=entries.length){
-          finish();notice.textContent='';
+          finishStockOpnameUnitConversion();notice.textContent='';
           clearStockDataCaches();APP.managedConversions=null;APP.stockOpname.pendingConversions=[];
           closeStockOpnameConversionModal();
           setStockOpnameProgress(82,'Seluruh unit dikonversi. Verifikasi ulang file...','VERIFIKASI ULANG');
@@ -992,7 +992,7 @@
         }],function(){convertNext(index+1)},{
           blocking:false,
           onError:function(message){
-            finish();
+            finishStockOpnameUnitConversion();
             var ambiguous=/tidak merespons|timed out|timeout|koneksi|terputus|Cloudflare inventory gagal/i.test(String(message));
             if(ambiguous){
               notice.textContent='Status konversi '+active.itemCode+' belum dapat dipastikan. Jangan ulangi konversi. Periksa Unit Default di master dan riwayat stok terlebih dahulu.';
