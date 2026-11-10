@@ -103,15 +103,31 @@ export async function prepareSoStep(env,job,sources){
    if(active.planned!==active.total)throw Error('Jumlah baris perencanaan SO tidak cocok.');
    const after=await soRevisions(sources);
    if(after!==active.plan_revision)throw Error('Data stok berubah sebelum penyimpanan. Harap validasi ulang.');
+   // All workbook rows are validated before inserting any previously unknown
+   // master item. This phase is independently checkpointed and resumable.
+   const duplicates=await dbRows(db,`SELECT item_code FROM so_upload_plans WHERE job_id=? AND json_extract(payload_json,'$.newItem') IS NOT NULL
+    GROUP BY item_code HAVING COUNT(DISTINCT UPPER(REPLACE(json_extract(payload_json,'$.newItem.default_unit'),' ','')))>1 LIMIT 5`,job.job_id);
+   if(duplicates.length)throw Error('Unit item baru tidak konsisten antar outlet: '+duplicates.map(x=>x.item_code).join(', '));
+   const pending=await dbRows(db,`SELECT source_row,payload_json FROM so_upload_plans WHERE job_id=? AND source_row>? AND json_extract(payload_json,'$.newItem') IS NOT NULL ORDER BY source_row LIMIT 25`,job.job_id,active.master_cursor||0);
+   if(pending.length){
+    for(const row of pending){
+     const item=JSON.parse(row.payload_json).newItem;
+     await env.MASTER_DB.prepare('INSERT OR IGNORE INTO stock_items(item_code,category,item_name,default_unit,active) VALUES(?,?,?,?,1)')
+      .bind(item.item_code,item.category,item.item_name,item.default_unit).run();
+     const saved=await dbRow(env.MASTER_DB,'SELECT default_unit,active FROM stock_items WHERE item_code=?',item.item_code);
+     if(!saved?.active||String(saved.default_unit).replace(/\\s/g,'').toUpperCase()!==String(item.default_unit).replace(/\\s/g,'').toUpperCase())
+      throw Error('Unit master item baru tidak cocok: '+item.item_code);
+    }
+    await db.prepare('UPDATE so_upload_jobs SET master_cursor=?,lease_token=NULL,lease_until=0,updated_at=? WHERE job_id=? AND lease_token=?').bind(pending.at(-1).source_row,iso(),job.job_id,active.lease_token).run();
+    return readSoJob(db,job.job_id);
+   }
    await db.prepare("UPDATE so_upload_jobs SET status='PROCESSING',lease_token=NULL,lease_until=0,updated_at=? WHERE job_id=? AND lease_token=?").bind(iso(),job.job_id,active.lease_token).run();
    return readSoJob(db,job.job_id);
   }
   const master=await env.MASTER_DB.prepare(`SELECT item_code,item_name,category,default_unit,active FROM stock_items
     WHERE item_code IN (${source.map(()=>'?').join(',')})`).bind(...source.map(x=>x.item_code)).all();
   const found=Object.fromEntries(master.results.map(x=>[x.item_code,x]));
-  const missing=source.filter(x=>!found[x.item_code]);
-  if(missing.length)throw Error('Item belum ada dalam master: '+missing.slice(0,5).map(x=>x.item_code).join(', ')+'. Tambahkan item master terlebih dahulu.');
-  const disabled=source.filter(x=>!found[x.item_code].active);
+  const disabled=source.filter(x=>found[x.item_code]&&!found[x.item_code].active);
   if(disabled.length)throw Error('Item master tidak aktif: '+disabled.slice(0,5).map(x=>x.item_code).join(', '));
   const outlets=[...new Set(source.map(x=>x.outlet_code))];
   const outletMaster=await env.MASTER_DB.prepare(`SELECT outlet_code,active FROM outlets WHERE outlet_code IN (${outlets.map(()=>'?').join(',')})`).bind(...outlets).all();
