@@ -1,0 +1,59 @@
+name: Verify Stock Opname V2 staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: so-v2-staging-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Deploy and verify isolated SO V2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/inventory-api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      V2_VERIFY_API_KEY: v2-verify-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Worker dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Validate the V2 Worker bundle without deployment
+        run: npx wrangler deploy --config wrangler.v2-verify.jsonc --dry-run
+
+      - name: Prepare isolated V2 schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          database=bakerzin-inventory-v2-verify-20261110
+          for migration in 0000_container_metadata.sql 0001_master.sql 0001_operations.sql 0004_snapshot_operations.sql 0007_so_upload_v2.sql 0013_so_v2_operations.sql; do
+            npx wrangler d1 execute "$database" --remote --file "../migrations/$migration" --yes
+          done
+          if ! npx wrangler d1 execute "$database" --remote --command "SELECT planned FROM so_upload_jobs LIMIT 1" --json >/dev/null 2>&1; then
+            npx wrangler d1 execute "$database" --remote --file ../migrations/0014_so_v2_workflow.sql --yes
+          fi
+          npx wrangler d1 execute "$database" --remote --command "INSERT OR IGNORE INTO outlets(outlet_code,outlet_name,active) VALUES('V2T','V2 Test Outlet',1); INSERT OR IGNORE INTO stock_locations(outlet_code,location_code,location_name,active) VALUES('V2T','Store','Store',1); INSERT OR IGNORE INTO stock_items(item_code,category,item_name,default_unit,active) VALUES('V2ITEM','Verification','V2 Test Item','PCS',1);" --yes
+
+      - name: Deploy isolated V2 Worker
+        run: npx wrangler deploy --config wrangler.v2-verify.jsonc
+
+      - name: Set an ephemeral staging API key
+        shell: bash
+        run: printf '%s' "$V2_VERIFY_API_KEY" | npx wrangler secret put API_KEY --config wrangler.v2-verify.jsonc
+
+      - name: Upload and complete a synthetic Stock Opname V2
+        run: node scripts/verify-so-v2-staging.mjs

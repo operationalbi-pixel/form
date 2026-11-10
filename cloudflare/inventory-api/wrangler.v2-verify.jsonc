@@ -1,0 +1,37 @@
+{
+  "name": "bakerzin-inventory-api-v2-verify-20261110",
+  "account_id": "fe457ffab133de1899e2660b0c60760e",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {"enabled": true},
+  "vars": {
+    "ENVIRONMENT": "v2-verify",
+    "SO_V2_ENABLED": "1",
+    "SHOWCASE_ALLOWED_ORIGINS": "https://operationalbi-pixel.github.io"
+  },
+  "d1_databases": [
+    {"binding":"MASTER_DB","database_name":"bakerzin-inventory-v2-verify-20261110","database_id":"c70d6f94-363b-401c-97d8-87ac56aedc1b"},
+    {"binding":"OPERATIONS_DB","database_name":"bakerzin-inventory-v2-verify-20261110","database_id":"c70d6f94-363b-401c-97d8-87ac56aedc1b"}
+  ],
+  "r2_buckets": [
+    {"binding":"FILES","bucket_name":"bakerzin-inventory-files-v2-verify-20261110"}
+  ],
+  "queues": {
+    "producers": [
+      {"binding":"SO_UPLOAD_QUEUE","queue":"bakerzin-so-uploads-v2-verify-20261110"}
+    ],
+    "consumers": [
+      {
+        "queue":"bakerzin-so-uploads-v2-verify-20261110",
+        "max_batch_size":1,
+        "max_batch_timeout":1,
+        "max_retries":5,
+        "max_concurrency":1,
+        "dead_letter_queue":"bakerzin-so-uploads-dlq-v2-verify-20261110"
+      }
+    ]
+  },
+  "triggers": {"crons":["*/1 * * * *"]}
+}
