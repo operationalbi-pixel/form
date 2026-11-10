@@ -1035,18 +1035,45 @@ function adminAddPage(token, payload) {
   });
 }
 
+/**
+ * Pengaturan akses jabatan menggunakan lease khusus, bukan stock write lock.
+ * LockService.getScriptLock() tetap dipakai sebentar oleh helper untuk klaim
+ * lease atomik; operasi Spreadsheet di bawah ini berjalan tanpa memegangnya.
+ */
+function acquireAdminVisibilityLock_() {
+  try {
+    return acquireStockScopeLock_('ADMIN_SUBPAGE_VISIBILITY_V1', 20000);
+  } catch (error) {
+    if (/Sistem sedang menyimpan transaksi lain/i.test(String(error && error.message || error))) {
+      throw new Error('Pengaturan sub halaman sedang diproses. Coba simpan lagi; perubahan Anda belum tersimpan.');
+    }
+    throw error;
+  }
+}
+
+/** Revision berasal dari isi izin aktif; client lama wajib refresh sebelum menulis. */
+function adminPageVisibilityRevision_(sheet) {
+  const count = Math.max(0, sheet.getLastRow() - 1);
+  const rows = count ? sheet.getRange(2, 1, count, 3).getDisplayValues() : [];
+  return digest_(JSON.stringify(rows));
+}
+
 function getAdminPageVisibility(token) {
   return safe_(function () {
     requireAdmin_(token);
-    const subpages = readAllActiveTasks_(), positions = readEmployeePositions_(), state = readSubpageVisibilityState_();
-    const checked = {};
-    subpages.forEach(function (task) {
-      checked[task.id] = {};
-      positions.forEach(function (entry) {
-        checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
+    const subpages = readAllActiveTasks_(), positions = readEmployeePositions_();
+    const lock = acquireAdminVisibilityLock_();
+    try {
+      const state = readSubpageVisibilityState_(), checked = {};
+      subpages.forEach(function (task) {
+        checked[task.id] = {};
+        positions.forEach(function (entry) {
+          checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
+        });
       });
-    });
-    return { matrixSource: 'APP_TASKS', subpages: subpages, positions: positions, checked: checked };
+      return { matrixSource: 'APP_TASKS', subpages: subpages, positions: positions,
+        checked: checked, revision: adminPageVisibilityRevision_(ensureSubpageVisibilitySheet_()) };
+    } finally { lock.releaseLock(); }
   });
 }
 
@@ -1054,25 +1081,45 @@ function saveAdminPageVisibility(token, payload) {
   return safe_(function () {
     const employee = requireAdmin_(token), subpages = readAllActiveTasks_(), positions = readEmployeePositions_();
     payload = payload || {};
+    const expectedRevision = String(payload.revision || '').trim();
+    if (!expectedRevision) throw new Error('Versi pengaturan belum tersedia. Muat ulang Pengaturan Sub Halaman lalu simpan kembali.');
     const selected = payload.selected && typeof payload.selected === 'object' ? payload.selected : {};
     const positionIds = {}; positions.forEach(function (entry) { positionIds[entry.position] = true; });
-    const rows = [];
+    const rows = [], updatedAt = new Date();
     subpages.forEach(function (task) {
       const enabledPositions = Array.isArray(selected[task.id]) ? selected[task.id] : [];
       const enabledMap = {};
       enabledPositions.forEach(function (position) { position = normalizeEmployeePosition_(position); if (positionIds[position]) enabledMap[position] = true; });
       positions.forEach(function (entry) {
-        rows.push([task.id, entry.position, Boolean(enabledMap[entry.position]), new Date(), employee.nik]);
+        rows.push([task.id, entry.position, Boolean(enabledMap[entry.position]), updatedAt, employee.nik]);
       });
     });
-    const lock = acquireStockWriteLock_();
+    const lock = acquireAdminVisibilityLock_();
     try {
       const sheet = ensureSubpageVisibilitySheet_();
-      if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
-      if (rows.length) sheet.getRange(2, 1, rows.length, 5).setValues(rows);
-      SpreadsheetApp.flush();
+      if (adminPageVisibilityRevision_(sheet) !== expectedRevision) {
+        throw new Error('Pengaturan telah berubah karena penyimpanan admin lain. Pilihan Anda belum disimpan; periksa ulang sebelum menyimpan.');
+      }
+      // Satu setValues menggantikan clearContent + setValues. Cadangkan isi
+      // untuk pemulihan bila operasi Sheets gagal, tanpa menghapusnya dahulu.
+      const oldCount = Math.max(0, sheet.getLastRow() - 1), size = Math.max(oldCount, rows.length);
+      const previous = size ? sheet.getRange(2, 1, size, 5).getValues() : [];
+      const replacement = rows.concat(Array.from({ length: size - rows.length }, function () { return ['', '', '', '', '']; }));
+      try {
+        if (size) sheet.getRange(2, 1, size, 5).setValues(replacement);
+        SpreadsheetApp.flush();
+      } catch (writeError) {
+        try {
+          if (size) sheet.getRange(2, 1, size, 5).setValues(previous);
+          SpreadsheetApp.flush();
+        } catch (restoreError) {
+          console.error('Pemulihan pengaturan subhalaman gagal: ' + restoreError.message);
+        }
+        throw new Error('Penyimpanan pengaturan gagal. Perubahan belum dapat dikonfirmasi: ' + writeError.message);
+      }
+      return { saved: true, subpageCount: subpages.length, positionCount: positions.length,
+        revision: adminPageVisibilityRevision_(sheet) };
     } finally { lock.releaseLock(); }
-    return { saved: true, subpageCount: subpages.length, positionCount: positions.length };
   });
 }
 
