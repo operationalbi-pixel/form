@@ -40,9 +40,9 @@ export async function handleSoDirectAction(action,payload,scope,env){
    if(String(m.default_unit).replace(/\s+/g,'').toUpperCase()!==String(row.unit).replace(/\s+/g,'').toUpperCase()
       &&!conversions.some(x=>x.itemCode===row.code))conversions.push({itemCode:row.code,itemName:m.item_name,oldUnit:m.default_unit,newUnit:row.unit});
   }
-  if(missing.length)throw Error('Tambahkan item baru ke master sebelum upload: '+missing.slice(0,10).join(', ')+(missing.length>10?' dan '+(missing.length-10)+' lainnya':''));
+  // Unknown items are queued for master creation only after every SO row is validated.
   return {eventDate:input.eventDate,fileName:input.fileName,sourceItemCount:report.rows.length,
-   outletCount:report.outlets.length,newItemCount:0,balancePending:true,
+   outletCount:report.outlets.length,newItemCount:missing.length,balancePending:true,
    requiresConversion:Boolean(conversions.length),conversions:conversions.slice(0,100),
    message:'File valid secara struktur; saldo dan duplikat divalidasi sebelum transaksi disimpan.'};
  }
