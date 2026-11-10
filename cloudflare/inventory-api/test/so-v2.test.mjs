@@ -10,7 +10,7 @@ import {projectionSchema,startProjection,projectionPageStatement,sealProjection,
 import {buildSoPlanRows,commitSchema,commitSoPlanBatch} from '../lib/so-plan.mjs';
 import {sourceChangeFeedSchema,sourceChangeFeedTriggers,projectionWatermarkSchema,captureProjectionWatermarks,synchronizeProjectionPage,projectionFeedCaughtUp} from '../lib/so-projection-feed.mjs';
 import {processSoJob} from '../lib/so-coordinator.mjs';
-import {acceptSo,stageSoStep,cancelSo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
+import {acceptSo,stageSoStep,cancelSo,retrySo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
 
 const directory=[{code:'A',name:'Outlet A',active:true},{code:'B',name:'Outlet B',active:true}];
 const headers=['BRANCH','LOCATION','PRODUCT','PRODUCT CODE','CATEGORY','SUBCATEGORY','UNIT','OPNAME STOCK'];
@@ -286,6 +286,21 @@ test('incremental projection journal repairs newer corrections and restores dele
  assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,0);
 });
 
+test('SO retry restarts only uncommitted validation while preserving staged file',async()=>{
+ const env=environment();
+ for(const file of ['0000_container_metadata.sql','0001_operations.sql','0004_snapshot_operations.sql','0007_so_upload_v2.sql','0013_so_v2_operations.sql','0014_so_v2_workflow.sql'])
+  env.sql.exec(readFileSync(new URL('../../migrations/'+file,import.meta.url),'utf8'));
+ const job=await acceptSo(env,claims,payload(),'2026-11-09');
+ env.sql.prepare("UPDATE so_upload_jobs SET status='ACTION_REQUIRED',total=1,staged=1,parsed_key='so-v2/parsed/test.json',planned=1,planning_cursor=2 WHERE job_id=?").run(job.job_id);
+ env.sql.prepare("INSERT INTO so_upload_plans(job_id,source_row,outlet_code,item_code,payload_json) VALUES(?,2,'A','I','{}')").run(job.job_id);
+ const recovered=await retrySo(env,job.job_id,'HQ');
+ assert.equal(recovered.status,'READY');
+ assert.equal(recovered.planned,0);
+ assert.equal(recovered.staged,1);
+ assert.equal(env.sql.prepare('SELECT COUNT(*) n FROM so_upload_plans').get().n,0);
+ env.sql.prepare("UPDATE so_upload_jobs SET status='ACTION_REQUIRED',committed=1 WHERE job_id=?").run(job.job_id);
+ await assert.rejects(()=>retrySo(env,job.job_id,'HQ'),/rekonsiliasi/);
+});
 test('SO coordinator creates new master only after validation and saves its stock',async()=>{
  const env=environment();
  for(const file of ['0000_container_metadata.sql','0001_operations.sql','0001_master.sql','0004_snapshot_operations.sql','0007_so_upload_v2.sql','0013_so_v2_operations.sql','0014_so_v2_workflow.sql'])
