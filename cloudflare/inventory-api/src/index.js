@@ -1,6 +1,8 @@
 import {balanceSnapshots} from './balance-snapshots.js';
 import {handleReceiptDirect,processReceiptQueue} from './receipt-direct.js';
 import {handleStockDirect} from '../lib/stock-direct.mjs';
+import {processSoJob} from '../lib/so-coordinator.mjs';
+import {dispatchSoOutbox} from '../lib/so-intake.mjs';
 import {handleShowcaseDirect} from './showcase-direct.js';
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
@@ -4139,7 +4141,31 @@ async function route(request, env) {
 }
 __name(route, "route");
 var index_default = {
-  async queue(batch,env){await processReceiptQueue(batch,env,{listMovements,writeStockMovements,ensureApplicationRecords,readJsonWithLimit});},
+  async queue(batch,env){
+    const so=batch.messages.filter(x=>x.body?.kind==='SO_V2');
+    if(so.length){
+      for(const message of batch.messages){
+        if(message.body?.kind!=='SO_V2'||!/^so2-[0-9a-f]{64}$/.test(String(message.body?.id||''))){message.ack();continue;}
+        if(env.SO_V2_ENABLED!=='1'){message.ack();continue;}
+        try{
+          const status=await processSoJob(env,message.body.id);
+          if(status&&!['COMPLETE','ACTION_REQUIRED','CANCELLED'].includes(status.status)){
+            try{await env.SO_UPLOAD_QUEUE.send({kind:'SO_V2',id:message.body.id});}
+            catch(error){console.error(JSON.stringify({event:'so_requeue_deferred',id:message.body.id,message:String(error.message)}));}
+          }
+          message.ack();
+        }catch(error){
+          console.error(JSON.stringify({event:'so_queue_failed',id:message.body.id,message:String(error.message)}));
+          message.retry();
+        }
+      }
+      return;
+    }
+    await processReceiptQueue(batch,env,{listMovements,writeStockMovements,ensureApplicationRecords,readJsonWithLimit});
+  },
+  async scheduled(controller,env,ctx){
+    if(env.SO_V2_ENABLED==='1')ctx.waitUntil(dispatchSoOutbox(env));
+  },
   async fetch(request, env) {
     try {
       return await route(request, env);
