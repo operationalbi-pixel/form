@@ -42,6 +42,31 @@ export async function cancelSo(db,id,owner) {
   return result?.owner_nik===owner?result:null;
 }
 
+// Retry is permitted only before the first committed stock batch. A partially
+// saved SO requires reconciliation; resetting its plan would duplicate stock.
+export async function retrySo(env,id,owner){
+ const db=env.OPERATIONS_DB;
+ const job=await readSoJob(db,id);
+ if(!job||job.owner_nik!==owner)throw Error('Job SO tidak ditemukan.');
+ if(job.status!=='ACTION_REQUIRED')throw Error('Hanya job yang perlu tindakan yang dapat divalidasi ulang.');
+ const receipt=await first(db.prepare('SELECT COUNT(*) AS n FROM so_commit_batches WHERE job_id=?').bind(id));
+ if(Number(job.committed||0)>0||Number(receipt?.n||0)>0)throw Error('Job telah menulis sebagian stok. Lakukan rekonsiliasi dahulu; tidak aman memulai ulang.');
+ const next=job.staged===job.total&&job.parsed_key&&job.total>0?'READY':'RECEIVED';
+ // Existing staged rows are kept if already parsed and valid; invalid source
+ // must be reparsed from R2 after the directory/master has been corrected.
+ await db.batch([
+  db.prepare('DELETE FROM so_upload_plans WHERE job_id=? AND EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND owner_nik=? AND status=\'ACTION_REQUIRED\' AND committed=0)').bind(id,id,owner),
+  db.prepare('DELETE FROM so_upload_scope_revisions WHERE job_id=?').bind(id),
+  db.prepare(`UPDATE so_upload_jobs SET status=?,planned=0,committed=0,planning_cursor=0,commit_cursor=0,master_cursor=0,
+    projection_id=NULL,plan_revision=NULL,error_json=NULL,lease_token=NULL,lease_until=0,updated_at=?
+    WHERE job_id=? AND owner_nik=? AND status='ACTION_REQUIRED' AND committed=0`).bind(next,nowIso(),id,owner),
+  db.prepare('INSERT OR IGNORE INTO so_upload_outbox(job_id) VALUES(?)').bind(id),
+  db.prepare('UPDATE so_upload_outbox SET available_at=0 WHERE job_id=?').bind(id)
+ ]);
+ try{await env.SO_UPLOAD_QUEUE.send({kind:'SO_V2',id});}catch(error){console.error(JSON.stringify({event:'so_retry_deferred',id,message:String(error.message)}));}
+ return readSoJob(db,id);
+}
+
 export async function stageSoStep(env,id,directory,{parse=parseSoWorkbook,clock=Date.now}={}) {
   const db=env.OPERATIONS_DB,token=crypto.randomUUID(),now=clock();
   const claimed=await db.prepare(`UPDATE so_upload_jobs SET lease_token=?,lease_until=?,updated_at=? WHERE job_id=? AND status IN ('RECEIVED','STAGING') AND lease_until<=? RETURNING *`).bind(token,now+120000,nowIso(),id,now).all();
