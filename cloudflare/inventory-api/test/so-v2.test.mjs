@@ -9,6 +9,7 @@ import {soBalances} from '../lib/so-balance.mjs';
 import {projectionSchema,startProjection,projectionPageStatement,sealProjection,projectedSoBalances,projectedSoLaterCheckpoints,copyProjectionPage} from '../lib/so-projection.mjs';
 import {buildSoPlanRows,commitSchema,commitSoPlanBatch} from '../lib/so-plan.mjs';
 import {sourceChangeFeedSchema,sourceChangeFeedTriggers,projectionWatermarkSchema,captureProjectionWatermarks,synchronizeProjectionPage,projectionFeedCaughtUp} from '../lib/so-projection-feed.mjs';
+import {processSoJob} from '../lib/so-coordinator.mjs';
 import {acceptSo,stageSoStep,cancelSo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
 
 const directory=[{code:'A',name:'Outlet A',active:true},{code:'B',name:'Outlet B',active:true}];
@@ -282,4 +283,32 @@ test('incremental projection journal repairs newer corrections and restores dele
  assert.deepEqual(await projectedSoBalances(db,'p',{outlet:'A',location:'Store',eventDate:'2026-10-31',codes:['I']}),{I:5});
  assert.equal(await projectionFeedCaughtUp(db,'p',sources),true);
  assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,0);
+});
+
+test('SO coordinator stages, validates, writes exactly once and reconciles a complete job',async()=>{
+ const env=environment();
+ for(const file of ['0000_container_metadata.sql','0001_operations.sql','0001_master.sql','0004_snapshot_operations.sql','0007_so_upload_v2.sql','0013_so_v2_operations.sql','0014_so_v2_workflow.sql']){
+  env.sql.exec(readFileSync(new URL('../../migrations/'+file,import.meta.url),'utf8'));
+ }
+ env.MASTER_DB=env.OPERATIONS_DB;
+ env.sql.prepare("INSERT INTO outlets(outlet_code,outlet_name,active) VALUES('A','Outlet A',1)").run();
+ env.sql.prepare("INSERT INTO stock_items(item_code,item_name,default_unit,category,active) VALUES('I','Item','PCS','Food',1)").run();
+ env.sql.prepare("INSERT INTO stock_balances(outlet_code,location_code,item_code,item_name,current_qty,unit,updated_at) VALUES('A','Store','I','Item',5,'PCS','2026-11-09')").run();
+ env.sql.prepare("INSERT INTO stock_movements(record_id,logical_id,version,record_type,outlet_code,location_code,item_code,unit,direction,quantity,movement_type,event_date,created_by,created_at) VALUES('initial','initial',1,'MOVEMENT','A','Store','I','PCS','IN',5,'Goods Receipt','2026-10-01','TEST','2026-10-01T00:00:00Z')").run();
+ const job=await acceptSo(env,claims,payload(),'2026-11-09');
+ let finished;
+ for(let n=0;n<20;n++){
+  finished=await processSoJob(env,job.job_id);
+  if(['COMPLETE','ACTION_REQUIRED','CANCELLED'].includes(finished?.status))break;
+ }
+ assert.equal(finished?.status,'COMPLETE',JSON.stringify(finished));
+ assert.equal(finished.stockCommitted,true);
+ assert.equal(finished.committed,1);
+ assert.equal(env.sql.prepare("SELECT current_qty AS qty FROM stock_balances WHERE outlet_code='A' AND item_code='I'").get().qty,0);
+ assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM stock_movements WHERE movement_type='Stock Opname'").get().n,1);
+ assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM stock_movements WHERE record_type='OPNAME_DETAIL'").get().n,1);
+ assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM so_commit_batches").get().n,1);
+ const repeated=await processSoJob(env,job.job_id);
+ assert.equal(repeated.status,'COMPLETE');
+ assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM stock_movements WHERE record_type='OPNAME_DETAIL'").get().n,1);
 });
