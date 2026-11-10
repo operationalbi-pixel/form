@@ -225,6 +225,7 @@ test('backdated SO writes the historical audit without changing stock after a ne
 test('SO batch receipt, stock movements and resume cursor commit atomically',async()=>{
   const {env,job,planned}=await commitEnvironment();
   env.sql.exec(readFileSync(new URL('../../migrations/0014_so_v2_workflow.sql',import.meta.url),'utf8'));
+  env.sql.prepare('UPDATE so_upload_jobs SET total=1 WHERE job_id=?').run(job.job_id);
   const opts={batchId:'cursor-batch',expectedRevision:0,leaseToken:'lease',progress:{from:0,to:2,count:1}};
   const first=await commitSoPlanBatch(env.OPERATIONS_DB,job,planned.rows,opts);
   assert.equal(first.replayed,false);
