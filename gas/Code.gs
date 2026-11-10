@@ -3727,9 +3727,79 @@ function buildStockOpnamePlan_(context, payload, options) {
       return { stockRows: rows, pendingRows: [], masterChanges: [], opnameMasterItems: prepared.newItems, result: result };
 }
 
-function prepareStockOpnameMasterItems_(reportRows, masterItems) {
+/**
+ * Fetch only SO codes absent from STOCK_ITEMS. Cursor starts at the proper
+ * prefix of each wanted code; it is lexicographically before the full code,
+ * so we never assume that a missing Sheet row is also missing from D1.
+ * Requests are grouped by prefix and bounded to avoid scanning full master.
+ */
+function readCloudflareStockOpnameMasterItems_(codes) {
+  const wanted = {}, groups = {}, found = {};
+  (codes || []).forEach(function (value) {
+    const code = String(value || '').trim().toUpperCase();
+    if (!code || wanted[code]) return;
+    wanted[code] = true;
+    const prefix = code.slice(0, -1), group = groups[prefix] || (groups[prefix] = []);
+    group.push(code);
+  });
+  Object.keys(groups).sort().forEach(function (prefix) {
+    const maxCode = groups[prefix].sort().slice(-1)[0];
+    let cursor = prefix, complete = false;
+    for (let page = 0; page < 20 && !complete; page++) {
+      const response = cloudflareInventoryRequest_('GET',
+        '/v1/stock-items?include_inactive=1&limit=200&cursor=' + encodeURIComponent(cursor));
+      if (!Array.isArray(response.data)) throw new Error('Master Cloudflare tidak dapat diverifikasi untuk SO.');
+      response.data.forEach(function (item) {
+        const code = String(item.item_code || '').trim().toUpperCase();
+        if (!wanted[code]) return;
+        found[code] = {
+          code: code, category: cleanText_(item.category || 'Uncategorized', 100) || 'Uncategorized',
+          name: cleanText_(item.item_name, 180), unit: normalizeUnit_(item.default_unit),
+          active: Number(item.active) !== 0, alreadyInCloudflare: true
+        };
+      });
+      const last = response.data.length ? String(response.data[response.data.length - 1].item_code || '').toUpperCase() : '';
+      if (!response.nextCursor || !response.data.length || last >= maxCode) {
+        complete = true;
+      } else {
+        const next = String(response.nextCursor).toUpperCase();
+        if (next <= cursor) throw new Error('Cursor master Cloudflare tidak bergerak.');
+        cursor = next;
+      }
+    }
+    if (!complete) throw new Error('Pemeriksaan master Cloudflare terlalu panjang untuk ' + prefix + '.');
+  });
+  return Object.keys(found).map(function (code) { return found[code]; });
+}
+
+/** Add only genuinely new SO codes; D1-existing items are never overwritten. */
+function syncNewStockOpnameMasterItems_(items) {
+  const unsynced = (items || []).filter(function (item) { return !item.alreadyInCloudflare; });
+  for (let start = 0; start < unsynced.length; start += 100) {
+    const chunk = unsynced.slice(start, start + 100);
+    const data = chunk.map(function (item) {
+      return { itemCode: item.code, category: item.category, itemName: item.name,
+        defaultUnit: item.unit, active: true };
+    });
+    const hash = digest_('SO_MASTER_ITEMS_V1|' + JSON.stringify(data));
+    cloudflareInventoryRequest_('POST', '/v1/sync/master', {
+      syncId: 'so-items-' + hash.slice(0, 48), sourceHash: hash,
+      generatedAt: new Date().toISOString(), data: { items: data }
+    });
+  }
+}
+
+function prepareStockOpnameMasterItems_(reportRows, masterItems, cloudflareItems) {
   const master = {}, pending = {}, issues = [];
   (masterItems || []).forEach(function (item) { master[String(item.code || '').trim().toUpperCase()] = item; });
+  (cloudflareItems || []).forEach(function (item) {
+    const code = String(item.code || '').trim().toUpperCase();
+    if (!code || master[code]) return;
+    if (!item.name || !item.unit) throw new Error('Master Cloudflare tidak lengkap untuk item ' + code + '.');
+    if (item.active === false) throw new Error('Item ' + code + ' tidak aktif pada master Cloudflare.');
+    master[code] = item;
+    pending[code] = item; // Restore STOCK_ITEMS from D1 before saving any SO stock.
+  });
   (reportRows || []).forEach(function (row) {
     const code = String(row.code || '').trim().toUpperCase();
     if (!code || master[code]) return;
@@ -3780,6 +3850,11 @@ function addStockOpnameMasterItems_(items) {
     existing[item.code] = { name: item.name, unit: item.unit };
   });
   if (additions.length) {
+    // Sync new items to Cloudflare D1 before writing their Sheet mirror.
+    // Existing D1 items never go through an upsert, preserving history units.
+    syncNewStockOpnameMasterItems_(items.filter(function (item) {
+      return additions.some(function (row) { return row[0] === item.code; });
+    }));
     sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, 5).setValues(additions);
     SpreadsheetApp.flush();
     removeScriptCacheKeys_(['stock-master-active', 'stock-master-all']);
