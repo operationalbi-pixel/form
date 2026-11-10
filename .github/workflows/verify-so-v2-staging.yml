@@ -2,6 +2,12 @@ name: Verify Stock Opname V2 staging
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/verify-so-v2-staging.yml
+      - cloudflare/inventory-api/wrangler.v2-verify.jsonc
+      - cloudflare/inventory-api/scripts/verify-so-v2-staging.mjs
 
 permissions:
   contents: read
