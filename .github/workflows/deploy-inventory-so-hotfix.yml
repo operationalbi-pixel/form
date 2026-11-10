@@ -1,0 +1,43 @@
+name: Deploy Inventory SO Worker fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cloudflare/inventory-api/lib/so-coordinator.mjs
+      - cloudflare/inventory-api/lib/so-direct.mjs
+      - cloudflare/inventory-api/lib/so-intake.mjs
+      - cloudflare/inventory-api/lib/so-projection.mjs
+      - .github/workflows/deploy-inventory-so-hotfix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-inventory-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Validate and deploy inventory SO worker (no migrations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cloudflare/inventory-api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Worker dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Run SO V2 regression tests
+        run: npm run test:so-v2
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --config wrangler.jsonc --dry-run
+      - name: Deploy only Worker code (preserve production data and vars)
+        run: npx wrangler deploy --config wrangler.jsonc --keep-vars
