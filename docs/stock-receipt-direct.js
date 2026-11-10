@@ -37,7 +37,7 @@
   if(soEnabled()&&action==='verifyStockOpname')return soResult(soDirect(args[0],'so-verify',args[1]));
   if(soEnabled()&&action==='queueGoodsUpload'&&args[1]&&args[1].type==='STOCK_OPNAME')return soResult(soDirect(args[0],'so-accept',args[1]));
   if(soEnabled()&&action==='startStockUploadWorker'&&args[2]==='SO_V2')return Promise.resolve({ok:true,data:{queued:true}});
-  if(soEnabled()&&action==='retryStockUpload'&&args[2]==='SO_V2')return Promise.resolve({ok:false,error:'Upload SO baru perlu divalidasi ulang jika ada kesalahan.'});
+  if(soEnabled()&&action==='retryStockUpload'&&args[2]==='SO_V2')return soResult(soDirect(args[0],'so-retry',{jobId:args[1]}));
   if(action==='verifyGoodsReceipt')return direct(args[0],'verify',args[1]);
   if(action==='queueGoodsUpload'&&args[1]&&args[1].type==='GOODS_RECEIPT')return direct(args[0],'accept',args[1]).then(function(r){if(r&&r.ok)jobScopes[r.data.jobId]={outlet:r.data.outlet,location:r.data.location};return r;});
   if(action==='saveConversions'&&app.goodsReceipt&&app.goodsReceipt.savingConversions)return base.call('saveConversions',args).then(function(r){return r&&r.ok?direct(args[0],'conversions',args[1]):r;});
