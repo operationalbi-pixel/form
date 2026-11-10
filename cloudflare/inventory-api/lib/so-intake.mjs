@@ -67,7 +67,7 @@ export async function stageSoStep(env,id,directory,{parse=parseSoWorkbook,clock=
         WHERE EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND lease_token=? AND lease_until>? AND status IN ('RECEIVED','STAGING'))
         ON CONFLICT(job_id,source_row) DO NOTHING`).bind(id,encoded,id,token,fenceTime),
       db.prepare(`UPDATE so_upload_jobs SET parsed_key=?,total=?,staged=?,status=?,lease_token=NULL,lease_until=0,error_json=NULL,updated_at=? WHERE job_id=? AND lease_token=? AND lease_until>? AND status IN ('RECEIVED','STAGING')`).bind(parsedKey,report.rows.length,next,complete?'READY':'STAGING',nowIso(),id,token,fenceTime),
-      db.prepare(`DELETE FROM so_upload_outbox WHERE job_id=? AND EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND status IN ('READY','CANCELLED','ACTION_REQUIRED'))`).bind(id,id)
+      db.prepare(`DELETE FROM so_upload_outbox WHERE job_id=? AND EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND status IN ('CANCELLED','ACTION_REQUIRED'))`).bind(id,id)
     ]);
     return readSoJob(db,id);
   } catch(error) {
@@ -82,7 +82,7 @@ export async function stageSoStep(env,id,directory,{parse=parseSoWorkbook,clock=
 }
 
 export async function dispatchSoOutbox(env) {
-  const pending=await env.OPERATIONS_DB.prepare(`SELECT o.job_id FROM so_upload_outbox o JOIN so_upload_jobs j ON j.job_id=o.job_id WHERE o.available_at<=? AND j.lease_until<=? AND j.status IN ('RECEIVED','STAGING') LIMIT 50`).bind(Date.now(),Date.now()).all();
+  const pending=await env.OPERATIONS_DB.prepare(`SELECT o.job_id FROM so_upload_outbox o JOIN so_upload_jobs j ON j.job_id=o.job_id WHERE o.available_at<=? AND j.lease_until<=? AND j.status IN ('RECEIVED','STAGING','READY','PREPARING','PROCESSING') LIMIT 50`).bind(Date.now(),Date.now()).all();
   let sent=0;
   for(const row of pending.results) {
     // A temporarily unavailable Queue must not prevent other accepted jobs
@@ -102,5 +102,9 @@ export async function dispatchSoOutbox(env) {
 
 export function soJobProgress(job) {
   // READY means staging complete; it must NEVER be presented as stock saved.
-  return {jobId:job.job_id,status:job.status,stage:job.status==='READY'?'File selesai dibaca; menunggu validasi saldo dan penyimpanan stok.':job.status==='STAGING'?`Menyiapkan baris ${job.staged}/${job.total}.`:job.status==='CANCELLED'?'Upload dihentikan.':'File diterima.',staged:job.staged,total:job.total,stockCommitted:false};
+  const total=Number(job.total||0),staged=Number(job.staged||0),planned=Number(job.planned||0),committed=Number(job.committed||0);
+  const stage=job.status==='COMPLETE'?'Stok dan audit sudah disimpan.':job.status==='PROCESSING'?`Menyimpan transaksi ${committed}/${total}.`:job.status==='PREPARING'?`Memvalidasi saldo ${planned}/${total}.`:job.status==='READY'?'File selesai dibaca; menunggu pemeriksaan saldo dan duplikat.':job.status==='STAGING'?`Menyiapkan baris ${staged}/${total}.`:job.status==='CANCELLED'?'Upload dihentikan.':job.status==='ACTION_REQUIRED'?'Upload perlu diperiksa.':'File diterima.';
+  return {jobId:job.job_id,status:job.status,stage,staged,planned,committed,total,
+    progress:job.status==='COMPLETE'?100:job.status==='PROCESSING'?60+Math.floor(39*committed/Math.max(1,total)):job.status==='PREPARING'?25+Math.floor(35*planned/Math.max(1,total)):job.status==='READY'?25:Math.floor(25*staged/Math.max(1,total)),
+    stockCommitted:job.status==='COMPLETE',error:job.error_json?JSON.parse(job.error_json):null};
 }
