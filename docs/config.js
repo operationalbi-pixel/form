@@ -3,7 +3,11 @@ window.BAKERZIN_CONFIG = Object.freeze({
   API_URL: 'https://script.google.com/macros/s/AKfycbw2_tBBWOn9Ld6QcCJBorJyZ06Lh1ZB_gEnIEqc76N7D2WWOv3trlGVqtIAqYml060_/exec',
 
   // Kosongkan agar alamat dashboard mengikuti lokasi GitHub Pages saat ini.
-  SITE_BASE_URL: ''
+  SITE_BASE_URL: '',
+
+  // Stock Opname V2 tetap nonaktif sampai seluruh pemeriksaan rollout production lulus.
+  // Aktifkan hanya bersama SO_V2_ENABLED pada Worker, setelah uji canary selesai.
+  SO_V2_ENABLED: false
 });
 
 // Enhancement khusus halaman Chat. Dipisahkan dari chat.html agar perubahan
