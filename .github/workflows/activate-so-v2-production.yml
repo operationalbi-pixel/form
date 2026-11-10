@@ -1,0 +1,60 @@
+name: Activate Stock Opname V2 production
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/activate-so-v2-production.yml
+      - cloudflare/inventory-api/wrangler.jsonc
+      - docs/config.js
+      - docs/stock-receipt-direct.js
+
+permissions:
+  contents: read
+
+concurrency:
+  group: activate-so-v2-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Migrate and deploy Stock Opname V2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cloudflare/inventory-api
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Worker dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Validate the V2 Worker bundle without deployment
+        run: npx wrangler deploy --config wrangler.jsonc --dry-run
+
+      - name: Apply production Stock Opname V2 migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          operations=bakerzin-inventory-operations
+          for migration in 0007_so_upload_v2.sql 0013_so_v2_operations.sql; do
+            npx wrangler d1 execute "$operations" --remote --file "../migrations/$migration" --yes
+          done
+          if ! npx wrangler d1 execute "$operations" --remote --command "SELECT planned FROM so_upload_jobs LIMIT 1" --json >/dev/null 2>&1; then
+            npx wrangler d1 execute "$operations" --remote --file ../migrations/0014_so_v2_workflow.sql --yes
+          fi
+          for history in bakerzin-inventory-history-2026 bakerzin-inventory-history-2026-06 bakerzin-inventory-history-2026-07 bakerzin-inventory-history-2026-08 bakerzin-inventory-history-2026-09 bakerzin-inventory-history-2026-10 bakerzin-inventory-history-2026-11 bakerzin-inventory-history-2026-12; do
+            npx wrangler d1 execute "$history" --remote --file ../migrations/0013_so_v2_history.sql --yes
+          done
+
+      - name: Deploy the production Worker with V2 enabled
+        run: npx wrangler deploy --config wrangler.jsonc --keep-vars
