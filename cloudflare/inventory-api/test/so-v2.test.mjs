@@ -286,6 +286,25 @@ test('incremental projection journal repairs newer corrections and restores dele
  assert.equal((await synchronizeProjectionPage(db,'p',sources)).changed,0);
 });
 
+test('SO coordinator creates new master only after validation and saves its stock',async()=>{
+ const env=environment();
+ for(const file of ['0000_container_metadata.sql','0001_operations.sql','0001_master.sql','0004_snapshot_operations.sql','0007_so_upload_v2.sql','0013_so_v2_operations.sql','0014_so_v2_workflow.sql'])
+  env.sql.exec(readFileSync(new URL('../../migrations/'+file,import.meta.url),'utf8'));
+ env.MASTER_DB=env.OPERATIONS_DB;
+ env.sql.prepare("INSERT INTO outlets(outlet_code,outlet_name,active) VALUES('A','Outlet A',1)").run();
+ const p=payload();p.base64=workbook(cells([['Outlet A','','Brand New','NEW','Food','','PCS',8]]));
+ const job=await acceptSo(env,claims,p,'2026-11-09');
+ let state;
+ for(let i=0;i<25;i++){
+  state=await processSoJob(env,job.job_id);
+  if(['COMPLETE','CANCELLED','ACTION_REQUIRED'].includes(state?.status))break;
+ }
+ assert.equal(state?.status,'COMPLETE',JSON.stringify(state));
+ assert.deepEqual(env.sql.prepare("SELECT item_name,default_unit FROM stock_items WHERE item_code='NEW'").get(),{item_name:'Brand New',default_unit:'PCS'});
+ assert.equal(env.sql.prepare("SELECT current_qty FROM stock_balances WHERE item_code='NEW'").get().current_qty,8);
+ assert.equal(env.sql.prepare("SELECT COUNT(*) n FROM so_commit_batches").get().n,1);
+});
+
 test('SO coordinator stages, validates, writes exactly once and reconciles a complete job',async()=>{
  const env=environment();
  for(const file of ['0000_container_metadata.sql','0001_operations.sql','0001_master.sql','0004_snapshot_operations.sql','0007_so_upload_v2.sql','0013_so_v2_operations.sql','0014_so_v2_workflow.sql']){
