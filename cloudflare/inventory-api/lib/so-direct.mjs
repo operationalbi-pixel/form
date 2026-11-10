@@ -15,12 +15,16 @@ function ensureScope(scope,env){
  if(env.SO_V2_ENABLED!=='1')throw Error('Jalur SO baru belum diaktifkan.');
  if(scope.outlet!=='BIHQ'||!scope.owner)throw Error('Upload Stock Opname hanya dapat dilakukan oleh BIHQ.');
 }
-function asJob(job){
+function asJob(job,projection=null){
  const p=soJobProgress(job);
  return {jobId:job.job_id,type:'STOCK_OPNAME',engine:'SO_V2',outlet:'BIHQ',
   location:job.location_code,fileName:job.file_name,eventDate:job.event_date,
   status:job.status==='RECEIVED'||job.status==='STAGING'||job.status==='READY'?'QUEUED':job.status,
-  rawStatus:job.status,progress:p.progress,stage:p.stage,
+  rawStatus:job.status,progress:p.progress,
+  stage:projection?.state==='BUILDING'&&['READY','PREPARING'].includes(job.status)
+   ?'Menyiapkan riwayat saldo: '+Number(projection.scanned||0).toLocaleString('id-ID')+' baris diperiksa; validasi SO dimulai setelah riwayat siap.'
+   :p.stage,
+  snapshotScanned:projection?.state==='BUILDING'?Number(projection.scanned||0):null,
   sourceRows:p.total,staged:p.staged,planned:p.planned,committed:p.committed,
   createdAt:job.created_at,updatedAt:job.updated_at,error:p.error?.message||'',workerRunning:true};
 }
@@ -53,8 +57,11 @@ export async function handleSoDirectAction(action,payload,scope,env){
   return asJob(job);
  }
  if(action==='so-status'){
-  const jobs=await env.OPERATIONS_DB.prepare('SELECT * FROM so_upload_jobs WHERE owner_nik=? ORDER BY created_at DESC LIMIT 25').bind(scope.owner).all();
-  return {jobs:jobs.results.map(asJob)};
+  const [jobs,projection]=await Promise.all([
+   env.OPERATIONS_DB.prepare('SELECT * FROM so_upload_jobs WHERE owner_nik=? ORDER BY created_at DESC LIMIT 25').bind(scope.owner).all(),
+   env.OPERATIONS_DB.prepare("SELECT state,scanned FROM so_projection_runs WHERE projection_id='so-v2-shared-2026'").first()
+  ]);
+  return {jobs:jobs.results.map(job=>asJob(job,projection))};
  }
  if(action==='so-retry'){
   const id=clean(payload?.jobId);
