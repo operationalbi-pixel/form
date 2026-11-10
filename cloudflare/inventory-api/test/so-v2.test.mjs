@@ -65,6 +65,30 @@ test('durable acceptance, duplicate request, lost wake-up, source survives',asyn
   assert.equal(await dispatchSoOutbox(env),1);assert.equal(env.messages[0].id,a.job_id);
   await assert.rejects(()=>acceptSo(env,{...claims,outlet:'A'},payload(),'2026-11-09'),/BIHQ/);
 });
+test('Queue outage is isolated per SO job and failed wake-ups remain recoverable',async()=>{
+  const env=environment();
+  const a=await acceptSo(env,claims,payload(),'2026-11-09');
+  const other=payload();other.base64=workbook(cells([['A','','Other','OTHER','','','PCS',2]]));
+  const b=await acceptSo(env,claims,other,'2026-11-09');
+  const attempted=[];
+  env.SO_UPLOAD_QUEUE.send=async message=>{
+    attempted.push(message.id);
+    if(message.id===a.job_id)throw Error('Queue temporarily unavailable');
+    env.messages.push(message);
+  };
+  assert.equal(await dispatchSoOutbox(env),1);
+  assert.deepEqual(attempted,[a.job_id,b.job_id]);
+  const pending=env.sql.prepare('SELECT job_id,available_at FROM so_upload_outbox ORDER BY job_id').all();
+  assert.equal(pending.length,2);
+  assert.ok(pending.every(row=>row.available_at>Date.now()));
+  assert.equal(env.messages.at(-1).id,b.job_id);
+  // An unsuccessfully delivered job can be retried without accepting another file.
+  env.sql.prepare('UPDATE so_upload_outbox SET available_at=0 WHERE job_id=?').run(a.job_id);
+  env.SO_UPLOAD_QUEUE.send=async message=>env.messages.push(message);
+  assert.equal(await dispatchSoOutbox(env),1);
+  assert.equal(env.messages.at(-1).id,a.job_id);
+});
+
 test('parse once across chunks and repeated delivery, progress never claims stock saved',async()=>{
   const env=environment(),j=await acceptSo(env,claims,payload(),'2026-11-09');let calls=0;
   const parse=()=>{calls++;return {rows:Array.from({length:1201},(_,i)=>({sourceRow:i+2,outlet:'A',code:'I'+i,actualQty:0,unit:'PCS'}))};};
