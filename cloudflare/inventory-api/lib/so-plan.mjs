@@ -42,7 +42,7 @@ const ledgerColumns=['record_id','logical_id','version','record_type','outlet_co
 // single D1 transaction. This does NOT call the older multi-transaction writer.
 // The caller must check history revisions and master units immediately before
 // invoking this function; the operations revision is checked inside the batch.
-export async function commitSoPlanBatch(db,job,plans,{batchId,expectedRevision,leaseToken,clock=Date.now}) {
+export async function commitSoPlanBatch(db,job,plans,{batchId,expectedRevision,leaseToken,clock=Date.now,progress=null}) {
   if(!plans.length||plans.length>25)throw Error('Batch SO harus 1–25 item.');
   const outlet=plans[0].outlet;
   if(plans.some(p=>p.outlet!==outlet||p.movement.location_code!==job.location_code))throw Error('Batch SO harus satu outlet dan lokasi.');
@@ -52,21 +52,28 @@ export async function commitSoPlanBatch(db,job,plans,{batchId,expectedRevision,l
     if(existing.digest!==digest||existing.job_id!==job.job_id)throw Error('Identitas batch SO dipakai untuk rencana berbeda.');
     return {committed:true,replayed:true,count:existing.row_count};
   }
+  if(progress&&(!Number.isInteger(progress.from)||!Number.isInteger(progress.to)||!Number.isInteger(progress.count)||progress.count!==plans.length||progress.to<=progress.from))throw Error('Cursor batch SO tidak valid.');
   const encoded=JSON.stringify(plans.flatMap(p=>[p.audit,p.movement])),time=clock();
-  await db.batch([
+  const cursorGate=progress?" AND EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND commit_cursor=? AND committed+?<=total)":"";
+  const guardParams=[batchId,job.job_id,leaseToken,time,outlet,job.location_code,expectedRevision,batchId];
+  if(progress)guardParams.push(job.job_id,progress.from,progress.count);
+  const statements=[
     db.prepare(`INSERT OR REPLACE INTO so_commit_guard(id,valid) SELECT ?,CASE WHEN
       EXISTS(SELECT 1 FROM so_upload_jobs WHERE job_id=? AND status='PROCESSING' AND lease_token=? AND lease_until>?)
       AND COALESCE((SELECT revision FROM stock_snapshot_revisions WHERE outlet_code=? AND location_code=?),0)=?
       AND NOT EXISTS(SELECT 1 FROM so_commit_batches WHERE batch_id=?)
-      THEN 1 ELSE 0 END`).bind(batchId,job.job_id,leaseToken,time,outlet,job.location_code,expectedRevision,batchId),
+      ${cursorGate}
+      THEN 1 ELSE 0 END`).bind(...guardParams),
     db.prepare(`INSERT INTO stock_balances(outlet_code,location_code,item_code,item_name,current_qty,unit,updated_at)
       SELECT json_extract(value,'$.movement.outlet_code'),json_extract(value,'$.movement.location_code'),json_extract(value,'$.code'),json_extract(value,'$.movement.item_name'),json_extract(value,'$.balanceDelta'),json_extract(value,'$.movement.unit'),?
       FROM json_each(?) WHERE NOT EXISTS(SELECT 1 FROM stock_movements WHERE record_id=json_extract(value,'$.movement.record_id'))
       ON CONFLICT(outlet_code,location_code,item_code) DO UPDATE SET current_qty=stock_balances.current_qty+excluded.current_qty,item_name=excluded.item_name,unit=excluded.unit,updated_at=excluded.updated_at`).bind(nowIso(),content),
     db.prepare(`INSERT INTO stock_movements(${ledgerColumns.join(',')}) SELECT ${ledgerColumns.map(c=>`json_extract(value,'$.${c}')`).join(',')} FROM json_each(?) WHERE true ON CONFLICT(record_id) DO NOTHING`).bind(encoded),
     db.prepare(`INSERT INTO so_commit_batches(batch_id,job_id,outlet_code,digest,row_count,committed_at) VALUES(?,?,?,?,?,?)`).bind(batchId,job.job_id,outlet,digest,plans.length,nowIso()),
+    ...(progress?[db.prepare("UPDATE so_upload_jobs SET committed=committed+?,commit_cursor=?,updated_at=? WHERE job_id=? AND status='PROCESSING' AND lease_token=? AND commit_cursor=?").bind(progress.count,progress.to,nowIso(),job.job_id,leaseToken,progress.from)]:[]),
     db.prepare('DELETE FROM so_commit_guard WHERE id=?').bind(batchId)
-  ]);
+  ];
+  await db.batch(statements);
   return {committed:true,replayed:false,count:plans.length};
 }
 const nowIso=()=>new Date().toISOString();
