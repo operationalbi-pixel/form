@@ -9,7 +9,7 @@ import {soBalances} from '../lib/so-balance.mjs';
 import {projectionSchema,startProjection,projectionPageStatement,sealProjection,projectedSoBalances,projectedSoLaterCheckpoints,copyProjectionPage} from '../lib/so-projection.mjs';
 import {buildSoPlanRows,commitSchema,commitSoPlanBatch} from '../lib/so-plan.mjs';
 import {sourceChangeFeedSchema,sourceChangeFeedTriggers,projectionWatermarkSchema,captureProjectionWatermarks,synchronizeProjectionPage,projectionFeedCaughtUp} from '../lib/so-projection-feed.mjs';
-import {processSoJob} from '../lib/so-coordinator.mjs';
+import {processSoJob,soRevisions} from '../lib/so-coordinator.mjs';
 import {acceptSo,stageSoStep,cancelSo,retrySo,readSoJob,dispatchSoOutbox,soJobProgress} from '../lib/so-intake.mjs';
 
 const directory=[{code:'A',name:'Outlet A',active:true},{code:'B',name:'Outlet B',active:true}];
@@ -32,6 +32,27 @@ function environment() {
 }
 const claims={owner:'HQ',outlet:'BIHQ',locations:['Store']};
 const payload=()=>({fileName:'SO.xlsx',base64:workbook(),eventDate:'2026-10-31',location:'Store'});
+
+test('SO revision guard ignores unrelated outlets and locations but detects Store changes',async()=>{
+ const env=environment();
+ for(const name of ['0000_container_metadata.sql','0001_operations.sql','0004_snapshot_operations.sql'])
+  env.sql.exec(readFileSync(new URL('../../migrations/'+name,import.meta.url),'utf8'));
+ const job=await acceptSo(env,claims,payload(),'2026-11-09');
+ await stageSoStep(env,job.job_id,directory);
+ const scope=await readSoJob(env.OPERATIONS_DB,job.job_id);
+ const revisions=[['A','Store',3],['B','Store',100],['A','Showcase',200]];
+ for(const [outlet,location,n] of revisions)env.sql.prepare(
+  'INSERT INTO stock_snapshot_revisions(outlet_code,location_code,revision) VALUES(?,?,?)'
+ ).run(outlet,location,n);
+ const sources=[{key:'operations',database:env.OPERATIONS_DB}];
+ const initial=await soRevisions(sources,scope);
+ assert.deepEqual(JSON.parse(initial),[['operations',3]]);
+ env.sql.prepare("UPDATE stock_snapshot_revisions SET revision=revision+7 WHERE outlet_code='B' AND location_code='Store'").run();
+ env.sql.prepare("UPDATE stock_snapshot_revisions SET revision=revision+9 WHERE outlet_code='A' AND location_code='Showcase'").run();
+ assert.equal(await soRevisions(sources,scope),initial);
+ env.sql.prepare("UPDATE stock_snapshot_revisions SET revision=revision+1 WHERE outlet_code='A' AND location_code='Store'").run();
+ assert.notEqual(await soRevisions(sources,scope),initial);
+});
 
 test('real XLSX, branch mapping, zero counts, independent item identity per outlet',()=>{
   const report=parseSoWorkbook(workbook(),'SO.xlsx',directory);assert.equal(report.rows[0].actualQty,0);assert.equal(report.rows[0].outlet,'A');
