@@ -35,7 +35,8 @@ const payload=()=>({fileName:'SO.xlsx',base64:workbook(),eventDate:'2026-10-31',
 
 test('SO revision guard ignores unrelated outlets and locations but detects Store changes',async()=>{
  const env=environment();
- env.sql.exec(readFileSync(new URL('../../migrations/0004_snapshot_operations.sql',import.meta.url),'utf8'));
+ for(const name of ['0000_container_metadata.sql','0001_operations.sql','0004_snapshot_operations.sql'])
+  env.sql.exec(readFileSync(new URL('../../migrations/'+name,import.meta.url),'utf8'));
  const job=await acceptSo(env,claims,payload(),'2026-11-09');
  await stageSoStep(env,job.job_id,directory);
  const scope=await readSoJob(env.OPERATIONS_DB,job.job_id);
