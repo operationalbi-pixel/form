@@ -113,7 +113,7 @@ export async function prepareSoStep(env,job,sources){
    active.plan_revision=revision;
   }
   if(active.plan_revision!==revision)throw Error('Saldo berubah selama persiapan SO. File belum disimpan, jalankan validasi ulang.');
-  const source=await dbRows(db,'SELECT source_row,outlet_code,item_code,payload_json FROM so_upload_rows WHERE job_id=? AND source_row>? ORDER BY source_row LIMIT 25',job.job_id,active.planning_cursor||0);
+  const source=await dbRows(db,'SELECT source_row,outlet_code,item_code,payload_json FROM so_upload_rows WHERE job_id=? AND source_row>? ORDER BY source_row LIMIT 5',job.job_id,active.planning_cursor||0);
   if(!source.length){
    if(active.planned!==active.total)throw Error('Jumlah baris perencanaan SO tidak cocok.');
    const after=await soRevisions(sources,active);
@@ -160,6 +160,7 @@ export async function prepareSoStep(env,job,sources){
   }
   if(await soRevisions(sources,active)!==active.plan_revision)throw Error('Saldo berubah ketika memvalidasi SO. Tidak ada transaksi yang ditulis.');
   const last=source.at(-1).source_row;
+  console.log(JSON.stringify({event:'so_plan_page_ready',jobId:job.job_id,count:source.length,last}));
   await db.batch([
    db.prepare(`INSERT INTO so_upload_plans(job_id,source_row,outlet_code,item_code,payload_json)
     SELECT ?,json_extract(value,'$.sourceRow'),json_extract(value,'$.outlet'),json_extract(value,'$.code'),value FROM json_each(?) WHERE true
