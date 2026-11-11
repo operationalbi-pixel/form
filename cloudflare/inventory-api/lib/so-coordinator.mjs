@@ -14,10 +14,21 @@ export function soSources(env){
  for(const key of names)if(env[key])result.push({key,table:'stock_movements_history',database:env[key]});
  return result;
 }
-export async function soRevisions(sources){
+export async function soRevisions(sources,job){
+ // A Store SO must not be invalidated by unrelated Showcase or other-outlet
+ // writes. Scope the revision guard to every outlet actually in this workbook.
+ // Never omit a workbook outlet: the batch receipts still enforce per-outlet
+ // optimistic concurrency when stock is committed.
+ if(!job?.job_id||!job?.location_code||!sources?.length)throw Error('Lingkup revisi SO tidak valid.');
+ const entries=await dbRows(sources[0].database,
+  'SELECT DISTINCT outlet_code FROM so_upload_rows WHERE job_id=? ORDER BY outlet_code',job.job_id);
+ const outlets=entries.map(row=>row.outlet_code);
+ if(!outlets.length)throw Error('Baris outlet SO belum tersedia untuk validasi saldo.');
  const pairs=[];
  for(const s of sources){
-  const value=await dbRow(s.database,'SELECT COALESCE(SUM(revision),0) AS n FROM stock_snapshot_revisions');
+  const value=await dbRow(s.database,
+   'SELECT COALESCE(SUM(revision),0) AS n FROM stock_snapshot_revisions WHERE location_code=? AND outlet_code IN (SELECT value FROM json_each(?))',
+   job.location_code,JSON.stringify(outlets));
   pairs.push([s.key,Number(value?.n||0)]);
  }
  return JSON.stringify(pairs);
@@ -96,7 +107,7 @@ export async function prepareSoStep(env,job,sources){
  const active=await claim(db,job,['READY','PREPARING']);
  if(!active)return readSoJob(db,job.job_id);
  try{
-  const revision=await soRevisions(sources);
+  const revision=await soRevisions(sources,active);
   if(active.status==='READY'){
    await db.prepare("UPDATE so_upload_jobs SET status='PREPARING',projection_id=?,plan_revision=? WHERE job_id=? AND lease_token=? AND status='READY'").bind(PROJECTION,revision,job.job_id,active.lease_token).run();
    active.plan_revision=revision;
@@ -105,7 +116,7 @@ export async function prepareSoStep(env,job,sources){
   const source=await dbRows(db,'SELECT source_row,outlet_code,item_code,payload_json FROM so_upload_rows WHERE job_id=? AND source_row>? ORDER BY source_row LIMIT 25',job.job_id,active.planning_cursor||0);
   if(!source.length){
    if(active.planned!==active.total)throw Error('Jumlah baris perencanaan SO tidak cocok.');
-   const after=await soRevisions(sources);
+   const after=await soRevisions(sources,active);
    if(after!==active.plan_revision)throw Error('Data stok berubah sebelum penyimpanan. Harap validasi ulang.');
    // All workbook rows are validated before inserting any previously unknown
    // master item. This phase is independently checkpointed and resumable.
@@ -147,7 +158,7 @@ export async function prepareSoStep(env,job,sources){
    if(generated.issues.length)throw Error(generated.issues.slice(0,5).map(x=>'Baris '+x.row+': '+x.message).join('; '));
    planned.push(...generated.rows);
   }
-  if(await soRevisions(sources)!==active.plan_revision)throw Error('Saldo berubah ketika memvalidasi SO. Tidak ada transaksi yang ditulis.');
+  if(await soRevisions(sources,active)!==active.plan_revision)throw Error('Saldo berubah ketika memvalidasi SO. Tidak ada transaksi yang ditulis.');
   const last=source.at(-1).source_row;
   await db.batch([
    db.prepare(`INSERT INTO so_upload_plans(job_id,source_row,outlet_code,item_code,payload_json)
@@ -168,7 +179,7 @@ export async function commitSoStep(env,job,sources){
  const db=env.OPERATIONS_DB,active=await claim(db,job,['PROCESSING']);
  if(!active)return readSoJob(db,job.job_id);
  try{
-  if(committedRevision(active.plan_revision,Number(active.committed||0))!==await soRevisions(sources))
+  if(committedRevision(active.plan_revision,Number(active.committed||0))!==await soRevisions(sources,active))
    throw Error('Revisi stok berubah saat menyimpan SO. Transaksi sebelumnya tetap tersimpan; perlu rekonsiliasi sebelum melanjutkan.');
   const rows=await dbRows(db,'SELECT source_row,outlet_code,payload_json FROM so_upload_plans WHERE job_id=? AND source_row>? ORDER BY source_row LIMIT 25',job.job_id,active.commit_cursor||0);
   if(!rows.length){
@@ -195,7 +206,7 @@ export async function commitSoStep(env,job,sources){
   const expectedRevision=first?first.revision+2*Number(earlier.n):Number(current?.revision||0);
   if(first&&Number(current?.revision||0)!==expectedRevision)throw Error('Saldo outlet '+outlet+' berubah saat menyimpan SO.');
   if(!first)await db.prepare('INSERT OR IGNORE INTO so_upload_scope_revisions(job_id,outlet_code,revision) VALUES(?,?,?)').bind(job.job_id,outlet,expectedRevision).run();
-  if(committedRevision(active.plan_revision,Number(active.committed||0))!==await soRevisions(sources))
+  if(committedRevision(active.plan_revision,Number(active.committed||0))!==await soRevisions(sources,active))
    throw Error('Revisi stok berubah sebelum transaksi SO ditulis.');
   const last=group.at(-1).source_row;
   const batchId='so2-b-'+await soHash([job.job_id,group[0].source_row,last].join('|'));
