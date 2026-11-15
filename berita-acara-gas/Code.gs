@@ -1867,106 +1867,13 @@ function rekamData(
 
     if (
       baType === 'Penjualan & Dispose Asset' &&
-      !isUpdate &&
       String(formData.tindakan || '').trim() === 'Penjualan'
     ) {
-      const expectedPayment =
-        parseFloat(formData.paymentExpectedAmount) || 0;
-
-      const calculatedPayment =
-        parseFloat(
-          String(formData.grandTotalJual || '')
-            .replace(/[^0-9,-]+/g, '')
-            .replace(',', '.')
-        ) || 0;
-
-      if (calculatedPayment <= 0) {
+      const receipt = String(formData.paymentReceipt || '');
+      if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(receipt) || receipt.length > 7 * 1024 * 1024) {
         return {
           success: false,
-          message: 'Grand Total Harga Jual harus lebih dari Rp 0 sebelum pembayaran.'
-        };
-      }
-
-      let verifiedPayment;
-
-      try {
-        verifiedPayment =
-          baCloudflareRequest_(
-            'get',
-            '/v1/ba/payments/doku/status?order_id=' +
-            encodeURIComponent(
-              String(
-                formData.paymentOrderId ||
-                ''
-              )
-            )
-          ).payment;
-      } catch (paymentError) {
-        return {
-          success: false,
-          message: 'Pembayaran belum dapat diverifikasi: ' +
-            String(
-              paymentError &&
-              paymentError.message ||
-              paymentError
-            )
-        };
-      }
-
-      if (
-        expectedPayment !== calculatedPayment ||
-        !verifiedPayment ||
-        verifiedPayment.status !== 'PAID' ||
-        Number(verifiedPayment.amount) !== calculatedPayment
-      ) {
-        return {
-          success: false,
-          message: 'Pembayaran belum berhasil atau nominalnya tidak sesuai Grand Total.'
-        };
-      }
-
-      formData.paymentConfirmed =
-        true;
-
-      formData.paymentConfirmedAt =
-        verifiedPayment.paid_at ||
-        new Date().toISOString();
-
-      formData.paymentStatus =
-        verifiedPayment.status;
-
-      formData.paymentType =
-        verifiedPayment.payment_type ||
-        '';
-
-      formData.paymentVerificationMethod =
-        'DOKU_HTTP_NOTIFICATION';
-
-      try {
-        baCloudflareRequest_(
-          'post',
-          '/v1/ba/payments/doku/claim',
-          {
-            orderId:
-              String(
-                formData.paymentOrderId ||
-                ''
-              ),
-            amount:
-              calculatedPayment,
-            submissionId:
-              plannedSubmissionId
-          }
-        );
-      } catch (claimError) {
-        return {
-          success: false,
-          message: 'Pembayaran tidak dapat dipakai: ' +
-            String(
-              claimError &&
-              claimError.message ||
-              claimError
-            )
+          message: 'Upload bukti transfer JPG/PNG/WebP maksimal 5 MB sebelum Submit.'
         };
       }
     }

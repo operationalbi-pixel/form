@@ -118,15 +118,16 @@ const appsScript = await readFile('berita-acara-gas/Code.gs', 'utf8');
 new vm.Script(appsScript, { filename: 'berita-acara-gas/Code.gs' });
 assert.ok(appsScript.includes('createAssetDokuPayment'));
 assert.ok(appsScript.includes('getAssetDokuPaymentStatus'));
-assert.ok(appsScript.includes("'/v1/ba/payments/doku/claim'"));
-assert.ok(appsScript.includes('DOKU_HTTP_NOTIFICATION'));
+assert.ok(!appsScript.slice(appsScript.indexOf('function rekamData('), appsScript.indexOf('function getAllSubmissions(')).includes('/v1/ba/payments/doku/'));
+assert.ok(appsScript.includes('formData.paymentReceipt'));
 assert.ok(!appsScript.includes('/v1/ba/payments/midtrans/'));
 
 const form = await readFile('berita-acara-gas/BeritaAcaraPenjualanDisposeAssetForm.html', 'utf8');
-assert.ok(form.includes('createAssetDokuPayment'));
-assert.ok(form.includes('getAssetDokuPaymentStatus'));
-assert.ok(form.includes('payment.paymentUrl'));
-assert.ok(form.includes('DOKU_HTTP_NOTIFICATION'));
+assert.ok(!form.includes('createAssetDokuPayment'));
+assert.ok(!form.includes('getAssetDokuPaymentStatus'));
+assert.ok(!form.includes('payment.paymentUrl'));
+assert.ok(form.includes('data-key="paymentReceipt"'));
+assert.ok(form.includes('>SUBMIT</button>'));
 assert.ok(!form.includes('window.snap.pay'));
 assert.ok(!form.includes('snapJsUrl'));
 assert.ok(!form.includes('MIDTRANS_SERVER_WEBHOOK'));
@@ -135,4 +136,29 @@ for (const [index, match] of [...form.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s
   new vm.Script(source, { filename: `BeritaAcaraPenjualanDisposeAssetForm.html#${index + 1}` });
 }
 
-console.log('DOKU payment verification tests passed.');
+// Execute the real submission handler: receipts replace payment-provider verification.
+const context = vm.createContext({ Intl, Date });
+vm.runInContext(appsScript, context);
+vm.runInContext(`
+  var savedRows = [];
+  requireBaSession_ = function() { return { NIK: 'TEST', NAME: 'Tester', OUTLET: 'BIPS' }; };
+  generateStructuredId = function() { return 'AD-TEST'; };
+  baCompressImages_ = function(data) { return data; };
+  baCloudflareRequest_ = function() { throw new Error('Payment provider must not be called'); };
+  baCloudflareAppend_ = function(row) { savedRows.push(row); };
+  baNotificationState_ = function() { return {}; };
+  notifyBiSpaceBaEvent_ = function() {};
+  getRawLatestRow = function() { return savedRows[0]; };
+`, context);
+const receipt = 'data:image/png;base64,aGVsbG8=';
+const submit = (data, update = false) => context.rekamData(
+  { tindakan: 'Penjualan', items: [{ qty: 1, hargaJual: '50.000' }], ...data },
+  'Penjualan & Dispose Asset', { BA_SESSION: 'test' }, update, update ? 'AD-TEST' : null
+);
+assert.equal(submit({}).success, false, 'Sales must include a receipt');
+assert.equal(submit({ paymentReceipt: 'not-an-image' }).success, false);
+assert.equal(submit({ paymentReceipt: receipt }).success, true, 'Receipt permits submission without checkout');
+assert.equal(JSON.parse(context.savedRows[0].data_json).paymentReceipt, receipt);
+assert.equal(submit({ paymentReceipt: receipt }, true).success, true, 'Revision retains receipt');
+assert.equal(submit({ tindakan: 'Dispose' }).success, true, 'Dispose needs no transfer');
+console.log('DOKU utilities and asset transfer receipt submission tests passed.');
