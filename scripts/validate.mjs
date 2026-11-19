@@ -122,7 +122,7 @@ if (!sopiSourceHtml.includes('id="closeDocument"') || !sopiSourceHtml.includes('
 if (!inventoryWorker.includes('sopiIsUsableAiAnswer') || !inventoryWorker.includes('rejectIfBusy: true') || !inventoryWorker.includes('Math.min(models.length, 2)')) {
   failures.push('Fallback cepat dan penyaring jawaban AI SOPi belum lengkap');
 }
-if (!apiClient.includes("SOPI_ASSET_VERSION = '20261001-sopi12'")) {
+if (!apiClient.includes("SOPI_ASSET_VERSION = '20261119-sopi13'")) {
   failures.push('Cache aset SOPi belum diperbarui untuk viewer internal');
 }
 if (!sopiWrangler.includes('"binding": "AI"') || !sopiWrangler.includes('@cf/openai/gpt-oss-120b') || !sopiWrangler.includes('@cf/google/gemma-4-26b-a4b-it') || !sopiWrangler.includes('gemma-sea-lion')) {
