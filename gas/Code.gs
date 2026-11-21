@@ -1051,29 +1051,40 @@ function acquireAdminVisibilityLock_() {
   }
 }
 
-/** Revision berasal dari isi izin aktif; client lama wajib refresh sebelum menulis. */
-function adminPageVisibilityRevision_(sheet) {
+/** Baca satu snapshot: isi checkbox dan revision selalu berasal dari baris yang sama. */
+function adminPageVisibilitySnapshot_(sheet) {
   const count = Math.max(0, sheet.getLastRow() - 1);
   const rows = count ? sheet.getRange(2, 1, count, 3).getDisplayValues() : [];
-  return digest_(JSON.stringify(rows));
+  return { rows: rows, revision: digest_(JSON.stringify(rows)) };
+}
+
+/** Revision berasal dari isi izin aktif; client lama wajib refresh sebelum menulis. */
+function adminPageVisibilityRevision_(sheet) {
+  return adminPageVisibilitySnapshot_(sheet).revision;
 }
 
 function getAdminPageVisibility(token) {
   return safe_(function () {
     requireAdmin_(token);
     const subpages = readAllActiveTasks_(), positions = readEmployeePositions_();
-    const lock = acquireAdminVisibilityLock_();
-    try {
-      const state = readSubpageVisibilityState_(), checked = {};
-      subpages.forEach(function (task) {
-        checked[task.id] = {};
-        positions.forEach(function (entry) {
-          checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
-        });
+    // Membaca tidak memerlukan lease penulisan. setValues menyimpan seluruh
+    // matriks sekaligus; revision di bawah tetap mengikat snapshot yang dibaca.
+    const snapshot = adminPageVisibilitySnapshot_(ensureSubpageVisibilitySheet_());
+    const state = { configured: {}, allowed: {} }, checked = {};
+    snapshot.rows.forEach(function (row) {
+      const taskId = String(row[0] || '').trim(), position = normalizeEmployeePosition_(row[1]);
+      if (!taskId || !position) return;
+      state.configured[taskId] = true;
+      if (truthy_(row[2])) state.allowed[taskId + '|' + position] = true;
+    });
+    subpages.forEach(function (task) {
+      checked[task.id] = {};
+      positions.forEach(function (entry) {
+        checked[task.id][entry.position] = !state.configured[task.id] || Boolean(state.allowed[task.id + '|' + entry.position]);
       });
-      return { matrixSource: 'APP_TASKS', subpages: subpages, positions: positions,
-        checked: checked, revision: adminPageVisibilityRevision_(ensureSubpageVisibilitySheet_()) };
-    } finally { lock.releaseLock(); }
+    });
+    return { matrixSource: 'APP_TASKS', subpages: subpages, positions: positions,
+      checked: checked, revision: snapshot.revision };
   });
 }
 
