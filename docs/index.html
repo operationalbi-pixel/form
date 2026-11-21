@@ -151,7 +151,7 @@
         <button class="btn btn-primary">Tambahkan Halaman</button>
       </form>
     </div>
-    <section id="adminVisibilityPanel" class="card admin-visibility-panel hidden"><div class="admin-visibility-head"><div><h3>Pengaturan Sub Halaman</h3><p>Setiap baris adalah Menu, Link, atau Form seperti Stock Card dan Showcase Log. Centang posisi yang boleh melihatnya. Posisi bersumber dari EMP_LIST kolom E dan urut berdasarkan Grade kolom F terbesar ke terkecil.</p></div><button id="savePageVisibility" class="btn btn-primary" type="button">Simpan Pengaturan</button></div><div id="pageVisibilityMatrix" class="admin-visibility-loading">Memuat sub halaman dan posisi...</div></section>
+    <section id="adminVisibilityPanel" class="card admin-visibility-panel hidden"><div class="admin-visibility-head"><div><h3>Pengaturan Sub Halaman</h3><p>Setiap baris adalah Menu, Link, atau Form seperti Stock Card dan Showcase Log. Centang posisi yang boleh melihatnya. Posisi bersumber dari EMP_LIST kolom E dan urut berdasarkan Grade kolom F terbesar ke terkecil.</p></div><button id="savePageVisibility" class="btn btn-primary" type="button" disabled>Simpan Pengaturan</button></div><div id="pageVisibilityMatrix" class="admin-visibility-loading">Memuat sub halaman dan posisi...</div></section>
   </template>
 
   <script>
@@ -281,12 +281,30 @@
       setNewsImageSource('DRIVE');renderNewsHistory();
     }
     function switchAdminTab(tab){var visibility=tab==='VISIBILITY';document.querySelectorAll('[data-admin-tab]').forEach(function(button){button.classList.toggle('active',button.dataset.adminTab===(visibility?'VISIBILITY':'MANAGE'));button.setAttribute('aria-selected',String(button.dataset.adminTab===(visibility?'VISIBILITY':'MANAGE')))});bakerzinById('adminManagePanel').classList.toggle('hidden',visibility);bakerzinById('adminVisibilityPanel').classList.toggle('hidden',!visibility);if(visibility)loadPageVisibility()}
-    function loadPageVisibility(){var box=bakerzinById('pageVisibilityMatrix');if(!box)return;box.className='admin-visibility-loading';box.textContent='Memuat halaman dan posisi...';call('adminPageVisibility',[BAKERZIN_STATE.token],function(data){BAKERZIN_STATE.adminPageVisibility=data;renderPageVisibilityMatrix(data)},function(message){box.textContent=message;toast(message,true)},false)}
-    function renderPageVisibilityMatrix(data){var box=bakerzinById('pageVisibilityMatrix');if(data.matrixSource!=='APP_TASKS'||!Array.isArray(data.subpages)){box.className='admin-visibility-loading';box.innerHTML='<strong>Backend GAS belum diperbarui.</strong><br>Deploy versi terbaru gas/Code.gs sebagai versi Web App baru, lalu muat ulang halaman.';return}var subpages=data.subpages||[],positions=data.positions||[],checked=data.checked||{};if(!subpages.length){box.className='admin-visibility-loading';box.textContent='APP_TASKS terbaca, tetapi belum ada Menu, Link, atau Form aktif.';return}if(!positions.length){box.className='admin-visibility-loading';box.textContent='Posisi belum ditemukan pada EMP_LIST kolom E.';return}var pageNames={};(BAKERZIN_STATE.pages||[]).forEach(function(page){pageNames[page.id]=page.title});var head=positions.map(function(entry){return '<th>'+esc(entry.position)+'<small>Grade '+esc(entry.grade||'—')+'</small></th>'}).join(''),body=subpages.map(function(task){var location=task.pageId?pageNames[task.pageId]||'Halaman Khusus':labelFreq(task.frequency);return '<tr><td><strong>'+esc(task.title)+'</strong><small>'+esc(task.type+' · '+location)+'</small></td>'+positions.map(function(entry){var active=checked[task.id]&&checked[task.id][entry.position];return '<td><input class="admin-visibility-check" type="checkbox" data-visibility-task="'+escAttr(task.id)+'" data-visibility-position="'+escAttr(entry.position)+'" '+(active?'checked':'')+' aria-label="'+escAttr(task.title+' untuk '+entry.position)+'"></td>'}).join('')+'</tr>'}).join('');box.className='admin-visibility-wrap';box.innerHTML='<table class="admin-visibility-table"><thead><tr><th>Sub Halaman / Menu</th>'+head+'</tr></thead><tbody>'+body+'</tbody></table>'}
+    var BAKERZIN_PAGE_VISIBILITY_LOADING=false,BAKERZIN_PAGE_VISIBILITY_READY=false;
+    function loadPageVisibility(){
+      var box=bakerzinById('pageVisibilityMatrix'),button=bakerzinById('savePageVisibility');
+      if(!box||BAKERZIN_PAGE_VISIBILITY_LOADING)return;
+      BAKERZIN_PAGE_VISIBILITY_LOADING=true;BAKERZIN_PAGE_VISIBILITY_READY=false;
+      BAKERZIN_STATE.adminPageVisibility=null;button.disabled=true;
+      box.className='admin-visibility-loading';box.textContent='Memuat halaman dan posisi...';
+      function finishLoad(){BAKERZIN_PAGE_VISIBILITY_LOADING=false;button.disabled=!BAKERZIN_PAGE_VISIBILITY_READY}
+      call('adminPageVisibility',[BAKERZIN_STATE.token],function(data){
+        BAKERZIN_STATE.adminPageVisibility=data;
+        BAKERZIN_PAGE_VISIBILITY_READY=renderPageVisibilityMatrix(data)===true;finishLoad();
+      },function(message){
+        finishLoad();box.textContent=message;
+        var retry=document.createElement('button');retry.type='button';retry.className='btn btn-primary';
+        retry.textContent='Muat Ulang Pengaturan';retry.style.marginTop='16px';
+        retry.addEventListener('click',loadPageVisibility);box.appendChild(document.createElement('br'));box.appendChild(retry);
+        toast(message,true);
+      },false)
+    }
+    function renderPageVisibilityMatrix(data){var box=bakerzinById('pageVisibilityMatrix');if(!data||data.matrixSource!=='APP_TASKS'||!Array.isArray(data.subpages)){box.className='admin-visibility-loading';box.innerHTML='<strong>Backend GAS belum diperbarui.</strong><br>Deploy versi terbaru gas/Code.gs sebagai versi Web App baru, lalu muat ulang halaman.';return}var subpages=data.subpages||[],positions=data.positions||[],checked=data.checked||{};if(!subpages.length){box.className='admin-visibility-loading';box.textContent='APP_TASKS terbaca, tetapi belum ada Menu, Link, atau Form aktif.';return}if(!positions.length){box.className='admin-visibility-loading';box.textContent='Posisi belum ditemukan pada EMP_LIST kolom E.';return}var pageNames={};(BAKERZIN_STATE.pages||[]).forEach(function(page){pageNames[page.id]=page.title});var head=positions.map(function(entry){return '<th>'+esc(entry.position)+'<small>Grade '+esc(entry.grade||'—')+'</small></th>'}).join(''),body=subpages.map(function(task){var location=task.pageId?pageNames[task.pageId]||'Halaman Khusus':labelFreq(task.frequency);return '<tr><td><strong>'+esc(task.title)+'</strong><small>'+esc(task.type+' · '+location)+'</small></td>'+positions.map(function(entry){var active=checked[task.id]&&checked[task.id][entry.position];return '<td><input class="admin-visibility-check" type="checkbox" data-visibility-task="'+escAttr(task.id)+'" data-visibility-position="'+escAttr(entry.position)+'" '+(active?'checked':'')+' aria-label="'+escAttr(task.title+' untuk '+entry.position)+'"></td>'}).join('')+'</tr>'}).join('');box.className='admin-visibility-wrap';box.innerHTML='<table class="admin-visibility-table"><thead><tr><th>Sub Halaman / Menu</th>'+head+'</tr></thead><tbody>'+body+'</tbody></table>';return true}
     function savePageVisibility(){
       var button=bakerzinById('savePageVisibility'),version=BAKERZIN_STATE.adminPageVisibility&&BAKERZIN_STATE.adminPageVisibility.revision;
       if(button.disabled)return;
-      if(!version){toast('Muat ulang Pengaturan Sub Halaman sebelum menyimpan.',true);return}
+      if(!BAKERZIN_PAGE_VISIBILITY_READY||!version){toast('Muat ulang Pengaturan Sub Halaman sebelum menyimpan.',true);return}
       var selected={},inputs=Array.prototype.slice.call(document.querySelectorAll('[data-visibility-task]'));
       inputs.forEach(function(input){if(!selected[input.dataset.visibilityTask])selected[input.dataset.visibilityTask]=[];if(input.checked)selected[input.dataset.visibilityTask].push(input.dataset.visibilityPosition)});
       var originalText=button.textContent;button.disabled=true;button.textContent='Menyimpan...';

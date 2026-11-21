@@ -24,14 +24,14 @@ let rows=[
  ['task-b','MANAGER',true,'old','OLD']
 ];
 const original=()=>rows.map(r=>r.slice());
-let throwAfterWrite=false,flushes=0,activeLock=null;
+let throwAfterWrite=false,flushes=0,activeLock=null,snapshotReads=0;
 const leases=[],writes=[];
 const sheet={
  getLastRow(){let count=rows.length;while(count&&rows[count-1].every(x=>x===''))count--;return count+1;},
  getRange(first,col,size,width){
   assert.equal(first,2);assert.equal(col,1);
   return {
-   getDisplayValues(){return rows.slice(0,size).map(r=>r.slice(0,width).map(x=>String(x??'')));},
+   getDisplayValues(){snapshotReads++;return rows.slice(0,size).map(r=>r.slice(0,width).map(x=>String(x??'')));},
    getValues(){return rows.slice(0,size).map(r=>r.slice(0,width));},
    setValues(values){
     assert.equal(activeLock,'ADMIN_SUBPAGE_VISIBILITY_V1','Sheet write must be protected by admin lease.');
@@ -74,6 +74,7 @@ const context={
   }
   return state;
  },
+ truthy_(v){return v===true||String(v).toLowerCase()==='true';},
  normalizeEmployeePosition_(v){return String(v).trim().toUpperCase();},
  ensureSubpageVisibilitySheet_(){return sheet;}
 };
@@ -81,7 +82,15 @@ vm.createContext(context);
 vm.runInContext(code,context);
 const {getAdminPageVisibility:getPage,saveAdminPageVisibility:savePage}=context;
 
-const sessionA=getPage('ADMIN_A');assert(sessionA.ok);
+const claimWriteLease=context.acquireStockScopeLock_;
+context.acquireStockScopeLock_=()=>{throw Error('simulated busy writer/global gate');};
+const readsBefore=snapshotReads;
+const sessionA=getPage('ADMIN_A');assert(sessionA.ok,sessionA.error);
+assert.equal(snapshotReads,readsBefore+1,'One snapshot must provide both checkbox values and revision.');
+assert.equal(leases.length,0,'Opening settings must never claim a write lease.');
+assert.equal(sessionA.data.checked['task-a'].CASHIER,true);
+assert.equal(sessionA.data.checked['task-a'].MANAGER,false);
+context.acquireStockScopeLock_=claimWriteLease;
 const version=sessionA.data.revision;assert.equal(typeof version,'string');
 const selection={'task-a':['MANAGER'],'task-b':['CASHIER']};
 const first=savePage('ADMIN_A',{revision:version,selected:selection});
@@ -119,4 +128,4 @@ assert(writes.length>=3,'Failed write must attempt a safe restore');
 
 assert(leases.every(x=>x==='ADMIN_SUBPAGE_VISIBILITY_V1'));
 assert(flushes>=2);
-console.log('OK: admin permission save uses separate scoped lease, optimistic revision, duplicate-click guard and rollback.');
+console.log('OK: lock-free single-snapshot reads; admin permission save uses separate scoped lease, optimistic revision, duplicate-click guard and rollback.');
